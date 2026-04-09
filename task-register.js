@@ -476,9 +476,30 @@ async function extractSessionIdFromStorageState(storageState) {
   const hit = cookies.find(cookie => {
     const name = String(cookie?.name || '').toLowerCase();
     const domain = String(cookie?.domain || '').toLowerCase();
-    return name === 'sessionid' && domain.includes('capcut.com') && cookie.value;
+    const domainMatched = domain === '.capcut.com' || domain === 'dreamina.capcut.com' || domain.endsWith('.capcut.com');
+    return name === 'sessionid' && domainMatched && cookie.value;
   });
   return hit ? `${hit.name}=${hit.value}` : '';
+}
+
+async function waitForSessionIdCookie(context, account, proxy, timeoutMs = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const cookies = await context.cookies().catch(() => []);
+    const hit = cookies.find(cookie => {
+      const name = String(cookie?.name || '').toLowerCase();
+      const domain = String(cookie?.domain || '').toLowerCase();
+      const domainMatched = domain === '.capcut.com' || domain === 'dreamina.capcut.com' || domain.endsWith('.capcut.com');
+      return name === 'sessionid' && domainMatched && cookie.value;
+    });
+    if (hit) {
+      logTaskStage(5, account, proxy, '检测到 sessionid cookie', `${hit.domain} | ${hit.name}`);
+      return `${hit.name}=${hit.value}`;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  throw new Error('SESSIONID_COOKIE_NOT_FOUND');
 }
 
 async function saveStorageState(context, account, attempt) {
@@ -672,13 +693,20 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       Number(config.postRegisterReadyTimeoutMs || 45000),
     );
 
-    const finalStoragePath = path.join(__dirname, 'user.json');
+    const detectedSessionId = await waitForSessionIdCookie(
+      context,
+      account,
+      proxy,
+      Number(config.sessionIdCookieTimeoutMs || 30000),
+    );
+
+    const finalStoragePath = path.join(STORAGE_DIR, `${sanitizeName(account.email)}-attempt${attempt}-user.json`);
     await context.storageState({ path: finalStoragePath });
     const userStorageState = JSON.parse(await fs.promises.readFile(finalStoragePath, 'utf8'));
 
     const storagePath = await saveStorageState(context, account, attempt);
-    const sessionId = await extractSessionIdFromStorageState(userStorageState);
-    logTaskStage(5, account, proxy, '保存登录态', readyText);
+    const sessionId = await extractSessionIdFromStorageState(userStorageState) || detectedSessionId;
+    logTaskStage(5, account, proxy, '保存登录态', `${readyText} | userJson=${path.basename(finalStoragePath)}`);
     logSuccess('账号注册流程执行成功，已保存登录态');
     logInfo(`登录态文件：${storagePath}`);
     logInfo(`SessionID：${sessionId || '未提取到'}`);
