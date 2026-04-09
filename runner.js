@@ -32,33 +32,110 @@ function getScreenSize() {
   };
 }
 
-function computeGridWindowBounds(workerId, concurrency, config) {
-  const screen = getScreenSize();
+function buildTieredWindowSlots(concurrency, screen, config) {
   const margin = Number(config.windowMargin || 8);
   const gap = Number(config.windowGap || 12);
+  const topInset = Number(config.windowTopInset || 8);
+  const bottomInset = Number(config.windowBottomInset || 48);
+  const usableWidth = Math.max(1, screen.width - margin * 2);
+  const usableHeight = Math.max(1, screen.height - topInset - bottomInset);
+
+  function makeGrid(cols, rows) {
+    const cellWidth = Math.max(520, Math.floor((usableWidth - gap * (cols - 1)) / cols));
+    const cellHeight = Math.max(520, Math.floor((usableHeight - gap * (rows - 1)) / rows));
+    const slots = [];
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        slots.push({
+          row,
+          col,
+          cols,
+          rows,
+          x: margin + col * (cellWidth + gap),
+          y: topInset + row * (cellHeight + gap),
+          width: cellWidth,
+          height: cellHeight,
+          layout: `${cols}x${rows}`,
+        });
+      }
+    }
+    return slots;
+  }
+
+  if (concurrency <= 1) {
+    return [{
+      row: 0,
+      col: 0,
+      cols: 1,
+      rows: 1,
+      x: margin,
+      y: topInset,
+      width: Math.max(960, usableWidth),
+      height: Math.max(720, usableHeight),
+      layout: 'single',
+    }];
+  }
+
+  if (concurrency === 2) {
+    return makeGrid(2, 1).slice(0, 2).map(slot => ({ ...slot, layout: 'tier-2-horizontal' }));
+  }
+
+  if (concurrency === 3) {
+    const topHeight = Math.max(420, Math.floor((usableHeight - gap) * 0.58));
+    const bottomHeight = Math.max(320, usableHeight - topHeight - gap);
+    const topWidth = Math.max(900, usableWidth);
+    const bottomWidth = Math.max(520, Math.floor((usableWidth - gap) / 2));
+    return [
+      { row: 0, col: 0, cols: 1, rows: 2, x: margin, y: topInset, width: topWidth, height: topHeight, layout: 'tier-3-focus-top' },
+      { row: 1, col: 0, cols: 2, rows: 2, x: margin, y: topInset + topHeight + gap, width: bottomWidth, height: bottomHeight, layout: 'tier-3-focus-bottom' },
+      { row: 1, col: 1, cols: 2, rows: 2, x: margin + bottomWidth + gap, y: topInset + topHeight + gap, width: bottomWidth, height: bottomHeight, layout: 'tier-3-focus-bottom' },
+    ];
+  }
+
+  if (concurrency === 4) {
+    return makeGrid(2, 2).slice(0, 4).map(slot => ({ ...slot, layout: 'tier-4-balanced' }));
+  }
+
+  if (concurrency === 5) {
+    const topHeight = Math.max(340, Math.floor((usableHeight - gap) * 0.52));
+    const bottomHeight = Math.max(280, usableHeight - topHeight - gap);
+    const topWidth = Math.max(520, Math.floor((usableWidth - gap * 2) / 3));
+    const bottomWidth = Math.max(520, Math.floor((usableWidth - gap) / 2));
+    return [
+      { row: 0, col: 0, cols: 3, rows: 2, x: margin, y: topInset, width: topWidth, height: topHeight, layout: 'tier-5-top' },
+      { row: 0, col: 1, cols: 3, rows: 2, x: margin + topWidth + gap, y: topInset, width: topWidth, height: topHeight, layout: 'tier-5-top' },
+      { row: 0, col: 2, cols: 3, rows: 2, x: margin + (topWidth + gap) * 2, y: topInset, width: topWidth, height: topHeight, layout: 'tier-5-top' },
+      { row: 1, col: 0, cols: 2, rows: 2, x: margin, y: topInset + topHeight + gap, width: bottomWidth, height: bottomHeight, layout: 'tier-5-bottom' },
+      { row: 1, col: 1, cols: 2, rows: 2, x: margin + bottomWidth + gap, y: topInset + topHeight + gap, width: bottomWidth, height: bottomHeight, layout: 'tier-5-bottom' },
+    ];
+  }
+
+  if (concurrency === 6) {
+    return makeGrid(3, 2).slice(0, 6).map(slot => ({ ...slot, layout: 'tier-6-3x2' }));
+  }
+
   const cols = Math.max(1, Math.ceil(Math.sqrt(concurrency)));
   const rows = Math.max(1, Math.ceil(concurrency / cols));
-  const slotIndex = Math.max(0, workerId - 1);
-  const row = Math.floor(slotIndex / cols);
-  const col = slotIndex % cols;
+  return makeGrid(cols, rows).slice(0, concurrency).map(slot => ({ ...slot, layout: `fallback-${cols}x${rows}` }));
+}
 
-  const usableWidth = screen.width - margin * 2 - gap * (cols - 1);
-  const usableHeight = screen.height - margin * 2 - gap * (rows - 1) - 40;
-  const width = Math.max(520, Math.floor(usableWidth / cols));
-  const height = Math.max(720, Math.floor(usableHeight / rows));
-  const x = margin + col * (width + gap);
-  const y = margin + row * (height + gap);
+function computeGridWindowBounds(workerId, concurrency, config) {
+  const screen = getScreenSize();
+  const slotIndex = Math.max(0, workerId - 1);
+  const slots = buildTieredWindowSlots(concurrency, screen, config);
+  const slot = slots[Math.min(slotIndex, Math.max(0, slots.length - 1))] || slots[0];
 
   return {
     screen,
-    row,
-    col,
-    cols,
-    rows,
-    x,
-    y,
-    width,
-    height,
+    row: slot.row,
+    col: slot.col,
+    cols: slot.cols,
+    rows: slot.rows,
+    x: slot.x,
+    y: slot.y,
+    width: slot.width,
+    height: slot.height,
+    layout: slot.layout,
   };
 }
 
@@ -557,7 +634,7 @@ function removeProxyFromList(filePath, targetRaw) {
 
     await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} START worker=${workerId} window=${windowBounds.width}x${windowBounds.height}@${windowBounds.x},${windowBounds.y}`);
     logAccount(`[线程${workerId}] 开始处理账号：${account.email}`);
-    logInfo(`[线程${workerId}] 窗口布局：${windowBounds.width}x${windowBounds.height} @ (${windowBounds.x}, ${windowBounds.y}) | 网格=${windowBounds.cols}x${windowBounds.rows}`);
+    logInfo(`[线程${workerId}] 窗口布局：${windowBounds.width}x${windowBounds.height} @ (${windowBounds.x}, ${windowBounds.y}) | 网格=${windowBounds.cols}x${windowBounds.rows} | 分档=${windowBounds.layout || 'default'}`);
 
     for (let attempt = 1; attempt <= config.maxProxyRetriesPerAccount; attempt++) {
       const acquired = await acquireProxy(workerId);

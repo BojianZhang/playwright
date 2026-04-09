@@ -371,6 +371,8 @@ npm run reset:all
   "windowLayout": "grid",
   "windowGap": 12,
   "windowMargin": 8,
+  "windowTopInset": 8,
+  "windowBottomInset": 48,
   "resultsDir": "results"
 }
 ```
@@ -448,13 +450,27 @@ Firstmail API 单次请求超时。
 > 接口返回 `404 No messages found` 时不会直接失败，而是继续轮询，直到达到这个次数上限。
 
 #### `windowLayout`
-窗口布局模式。
+窗口布局模式。当前默认仍写作 `grid`，但实现已升级为“按并发分档布局优先，普通网格兜底”：
+
+- 1 并发：单窗口
+- 2 并发：左右双列
+- 3 并发：上 1 下 2
+- 4 并发：2×2
+- 5 并发：上 3 下 2
+- 6 并发：3×2
+- 更高并发：回退普通网格
 
 #### `windowGap`
 多窗口间距。
 
 #### `windowMargin`
-屏幕边缘留白。
+屏幕左右边缘留白。
+
+#### `windowTopInset`
+窗口布局顶部预留。
+
+#### `windowBottomInset`
+窗口布局底部预留，避免任务栏或系统边界挤压。
 
 #### `resultsDir`
 结果目录。

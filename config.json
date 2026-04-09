@@ -27,5 +27,7 @@
   "windowLayout": "grid",
   "windowGap": 12,
   "windowMargin": 8,
+  "windowTopInset": 8,
+  "windowBottomInset": 48,
   "resultsDir": "results"
 }
