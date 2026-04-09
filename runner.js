@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+const http = require('http');
+const https = require('https');
+const tls = require('tls');
 const { runRegisterTask } = require('./task-register');
 const { logSystem, logAccount, logProxy, logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
 
@@ -113,27 +115,254 @@ function parseProxy(line) {
   };
 }
 
-function pickProxy(proxies, policy, state) {
-  if (!proxies.length) {
-    throw new Error('代理列表为空');
-  }
-
-  if (policy === 'random') {
-    const index = Math.floor(Math.random() * proxies.length);
-    return { proxy: proxies[index], index };
-  }
-
-  const index = state.roundRobinIndex % proxies.length;
-  state.roundRobinIndex += 1;
-  return { proxy: proxies[index], index };
-}
-
 function appendLine(filePath, line) {
   fs.appendFileSync(filePath, line + '\n', 'utf8');
 }
 
 function formatBooleanLabel(value) {
   return value ? '是' : '否';
+}
+
+function buildBasicAuthHeader(username, password) {
+  const raw = `${username}:${password}`;
+  return `Basic ${Buffer.from(raw, 'utf8').toString('base64')}`;
+}
+
+function getProxyPrecheckConfig(config = {}) {
+  const url = String(config.proxyPrecheckUrl || 'https://www.google.com/').trim();
+  const method = String(config.proxyPrecheckMethod || 'GET').trim().toUpperCase();
+  const okMinStatus = Number(config.proxyPrecheckOkMinStatus || 200);
+  const okMaxStatus = Number(config.proxyPrecheckOkMaxStatus || 399);
+  const timeoutMs = Number(config.proxyConnectivityTimeoutMs || 15000);
+  const exitIpUrl = String(config.proxyExitIpUrl || 'https://api.ipify.org?format=json').trim();
+  const exitIpMethod = String(config.proxyExitIpMethod || 'GET').trim().toUpperCase();
+  return {
+    url,
+    method,
+    okMinStatus,
+    okMaxStatus,
+    timeoutMs,
+    exitIpUrl,
+    exitIpMethod,
+  };
+}
+
+function extractIpFromResponseBody(body) {
+  const text = String(body || '').trim();
+  if (!text) return '';
+
+  const jsonMatch = text.match(/"ip"\s*:\s*"([^"]+)"/i);
+  if (jsonMatch) return jsonMatch[1].trim();
+
+  const plainIpMatch = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  if (plainIpMatch) return plainIpMatch[0].trim();
+
+  return '';
+}
+
+function extractProxyCountryCode(proxy) {
+  const raw = String(proxy?.raw || '');
+  const match = raw.match(/-cc-([A-Za-z]{2})-sessid-/i);
+  return match ? match[1].toUpperCase() : '';
+}
+
+function extractProxySessionSourceId(proxy) {
+  const raw = String(proxy?.raw || '');
+  const match = raw.match(/-sessid-([^:]+)/i);
+  return match ? match[1] : '';
+}
+
+function normalizeCookieSessionValue(sessionId) {
+  const raw = String(sessionId || '').trim();
+  if (!raw) return '';
+  const match = raw.match(/^[^=]+=([^\s]+)$/);
+  return match ? match[1].trim() : raw;
+}
+
+function extractSessionName(sessionId) {
+  const raw = String(sessionId || '').trim();
+  if (!raw) return '';
+  const match = raw.match(/^([^=]+)=/);
+  return match ? match[1].trim() : '';
+}
+
+function buildSessionFormats(proxy, sessionId) {
+  const countryCode = extractProxyCountryCode(proxy);
+  const sourceSessionId = extractProxySessionSourceId(proxy);
+  const cookieSessionValue = normalizeCookieSessionValue(sessionId);
+  const sessionIdPlain = cookieSessionValue;
+  const sessionIdWithCountry = countryCode && sessionIdPlain ? `${countryCode}-${sessionIdPlain}` : sessionIdPlain;
+  return {
+    countryCode,
+    sourceSessionId,
+    cookieSessionValue,
+    sessionIdPlain,
+    sessionIdWithCountry,
+  };
+}
+
+function isHardProxyFailureReason(reason) {
+  const text = String(reason || '').trim();
+  return text === 'DREAMINA_WHITE_SCREEN' || text === 'DREAMINA_BIRTHDAY_STAGE_UNREACHABLE';
+}
+
+function requestViaHttpProxy(proxy, url, method, timeoutMs) {
+  const targetUrl = new URL(url);
+  const targetLabel = `${method} ${targetUrl.toString()}`;
+  const proxyAuth = buildBasicAuthHeader(proxy.username, proxy.password);
+
+  return new Promise((resolve) => {
+    const connectReq = http.request({
+      host: proxy.host,
+      port: Number(proxy.port),
+      method: 'CONNECT',
+      path: `${targetUrl.hostname}:${targetUrl.port || 443}`,
+      headers: {
+        Host: `${targetUrl.hostname}:${targetUrl.port || 443}`,
+        'Proxy-Authorization': proxyAuth,
+      },
+    });
+
+    let settled = false;
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    }
+
+    connectReq.setTimeout(timeoutMs, () => {
+      connectReq.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+    });
+
+    connectReq.on('connect', (res, socket) => {
+      if ((res.statusCode || 0) !== 200) {
+        socket.destroy();
+        finish({
+          success: false,
+          reason: `PROXY_CONNECT_HTTP_${res.statusCode || 'NA'}`,
+          status: res.statusCode || null,
+          finalUrl: targetUrl.toString(),
+          target: targetLabel,
+          body: '',
+        });
+        return;
+      }
+
+      const tlsSocket = tls.connect({
+        socket,
+        servername: targetUrl.hostname,
+        rejectUnauthorized: false,
+      }, () => {
+        const req = https.request({
+          host: targetUrl.hostname,
+          port: Number(targetUrl.port || 443),
+          path: `${targetUrl.pathname || '/'}${targetUrl.search || ''}`,
+          method,
+          createConnection: () => tlsSocket,
+          agent: false,
+          headers: {
+            Host: targetUrl.host,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            Accept: '*/*',
+            Connection: 'close',
+          },
+        }, (response) => {
+          let raw = '';
+          response.setEncoding('utf8');
+          response.on('data', (chunk) => {
+            raw += chunk;
+          });
+          response.on('end', () => {
+            tlsSocket.end();
+            finish({
+              success: true,
+              reason: 'OK',
+              status: response.statusCode || 0,
+              finalUrl: targetUrl.toString(),
+              target: targetLabel,
+              body: raw,
+            });
+          });
+        });
+
+        req.setTimeout(timeoutMs, () => {
+          req.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+        });
+
+        req.on('error', (error) => {
+          tlsSocket.destroy();
+          finish({
+            success: false,
+            reason: error.message || 'HTTPS_REQUEST_ERROR',
+            status: null,
+            finalUrl: targetUrl.toString(),
+            target: targetLabel,
+            body: '',
+          });
+        });
+
+        req.end();
+      });
+
+      tlsSocket.setTimeout(timeoutMs, () => {
+        tlsSocket.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+      });
+
+      tlsSocket.on('error', (error) => {
+        finish({
+          success: false,
+          reason: error.message || 'TLS_CONNECT_ERROR',
+          status: null,
+          finalUrl: targetUrl.toString(),
+          target: targetLabel,
+          body: '',
+        });
+      });
+    });
+
+    connectReq.on('error', (error) => {
+      finish({
+        success: false,
+        reason: error.message || 'PROXY_CONNECT_ERROR',
+        status: null,
+        finalUrl: targetUrl.toString(),
+        target: targetLabel,
+        body: '',
+      });
+    });
+
+    connectReq.end();
+  });
+}
+
+async function fetchProxyExitIp(proxy, config = {}) {
+  const target = getProxyPrecheckConfig(config);
+  const response = await requestViaHttpProxy(proxy, target.exitIpUrl, target.exitIpMethod, target.timeoutMs);
+  const ip = response.success ? extractIpFromResponseBody(response.body) : '';
+  return {
+    success: Boolean(response.success && ip),
+    ip,
+    response,
+    reason: response.success ? (ip ? 'OK' : 'EXIT_IP_PARSE_FAILED') : response.reason,
+  };
+}
+
+async function precheckProxy(proxy, config = {}) {
+  const target = getProxyPrecheckConfig(config);
+  const primaryResponse = await requestViaHttpProxy(proxy, target.url, target.method, target.timeoutMs);
+  const primarySuccess = Boolean(primaryResponse.success && primaryResponse.status >= target.okMinStatus && primaryResponse.status <= target.okMaxStatus);
+  const exitIp = await fetchProxyExitIp(proxy, config);
+
+  return {
+    success: primarySuccess,
+    level: primarySuccess ? 'OK' : (exitIp.success ? 'WEAK' : 'BAD'),
+    reason: primarySuccess ? 'OK' : (primaryResponse.success ? `HTTP_${primaryResponse.status}` : primaryResponse.reason),
+    status: primaryResponse.status,
+    finalUrl: primaryResponse.finalUrl,
+    title: '',
+    target: primaryResponse.target,
+    exitIp,
+  };
 }
 
 function buildRunSummary({
@@ -148,6 +377,7 @@ function buildRunSummary({
   resultsDir,
 }) {
   const estimatedMailWaitSeconds = Math.round((Number(config.waitMailAttempts || 0) * Number(config.waitMailIntervalMs || 0)) / 1000);
+  const proxyPrecheck = getProxyPrecheckConfig(config);
   const lines = [
     '=== 本次运行摘要 ===',
     `账号文件：${accountsPath}`,
@@ -163,6 +393,8 @@ function buildRunSummary({
     `浏览器可见：${formatBooleanLabel(!Boolean(config.headless))}`,
     `SlowMo：${Number(config.slowMo || 0)}ms`,
     `每账号最大代理重试：${Number(config.maxProxyRetriesPerAccount || 0)} 次`,
+    `代理预检：${proxyPrecheck.method} ${proxyPrecheck.url} | 通过状态=${proxyPrecheck.okMinStatus}-${proxyPrecheck.okMaxStatus} | timeout=${proxyPrecheck.timeoutMs}ms`,
+    `出口IP获取：${proxyPrecheck.exitIpMethod} ${proxyPrecheck.exitIpUrl}`,
     `验证码最大等待：约 ${estimatedMailWaitSeconds} 秒（${Number(config.waitMailAttempts || 0)} 次 × ${Number(config.waitMailIntervalMs || 0)}ms）`,
     `Dreamina 恢复上限：${Number(config.dreaminaMaxRecoveries || 0)} 次`,
     `恢复后顺延等待：${Number(config.dreaminaRecoveryBonusMs || 0)}ms`,
@@ -178,98 +410,6 @@ function removeProxyFromList(filePath, targetRaw) {
   const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
   const nextLines = lines.filter(line => line.trim() !== targetRaw.trim());
   fs.writeFileSync(filePath, nextLines.join('\n'), 'utf8');
-}
-
-async function fetchProxyExitIp(proxy) {
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
-      },
-    });
-
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      ignoreHTTPSErrors: true,
-    });
-
-    const page = await context.newPage();
-    await page.goto('https://api.ipify.org?format=json', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-
-    const raw = await page.locator('body').innerText().catch(() => '');
-    const match = raw.match(/"ip"\s*:\s*"([^"]+)"/i);
-    return match ? match[1] : raw.trim();
-  } catch (error) {
-    return `获取失败: ${error.message || 'EXIT_IP_UNKNOWN'}`;
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
-}
-
-async function precheckProxy(proxy) {
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
-      },
-    });
-
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'Asia/Shanghai',
-      ignoreHTTPSErrors: true,
-    });
-
-    const page = await context.newPage();
-    const response = await page.goto('https://firstmail.ltd/webmail/login/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-
-    await page.waitForTimeout(2500).catch(() => {});
-    const html = await page.content().catch(() => '');
-    const text = await page.locator('body').innerText().catch(() => '');
-    const title = await page.title().catch(() => '');
-    const ok = /Email address|Log in webmail|Password|Webmail/i.test(html)
-      || /Email address|Log in webmail|Password|Webmail/i.test(text)
-      || /Webmail/i.test(title);
-
-    if (!ok) {
-      return {
-        success: false,
-        reason: 'FIRSTMAIL_PAGE_UNEXPECTED',
-        status: response ? response.status() : null,
-        finalUrl: page.url(),
-        title,
-      };
-    }
-
-    return {
-      success: true,
-      reason: 'OK',
-      status: response ? response.status() : null,
-      finalUrl: page.url(),
-      title,
-    };
-  } catch (error) {
-    return { success: false, reason: error.message || 'PRECHECK_EXCEPTION', status: null, finalUrl: '', title: '' };
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
 }
 
 (async () => {
@@ -291,6 +431,7 @@ async function precheckProxy(proxy) {
   const runLogFile = path.join(resultsDir, 'run-log.txt');
   const precheckFile = path.join(resultsDir, 'runner-precheck.txt');
   const sessionFile = path.join(resultsDir, 'sessions.txt');
+  const sessionWithCountryFile = path.join(resultsDir, 'sessions-with-country.txt');
   const storageFile = path.join(resultsDir, 'storage-paths.txt');
 
   const state = {
@@ -435,76 +576,28 @@ async function precheckProxy(proxy) {
         logProxy(`[线程${workerId}] 第 ${attempt} 次尝试，选中代理：${proxy.server}（索引 ${index}）`);
         logProxy(`当前账号：${account.email}`);
 
-        const exitIp = await fetchProxyExitIp(proxy);
-        logProxy(`代理出口 IP：${exitIp}`);
-        await appendLineSafe(precheckFile, `[EXIT_IP] proxy=${proxy.server} | exitIp=${exitIp} | account=${account.email} | worker=${workerId}`);
+        const precheck = await precheckProxy(proxy, config);
+        const exitIpText = precheck.exitIp.ip || precheck.exitIp.reason;
+        logProxy(`代理出口 IP：${exitIpText}`);
+        await appendLineSafe(precheckFile, `[EXIT_IP] proxy=${proxy.server} | exitIp=${exitIpText} | exitIpReason=${precheck.exitIp.reason} | account=${account.email} | worker=${workerId}`);
 
-        logProxy(`正在预检代理：${proxy.server}`);
-        const precheck = await precheckProxy(proxy);
-        await appendLineSafe(precheckFile, `[PRECHECK] proxy=${proxy.server} -> ${precheck.success ? 'OK' : 'FAIL'} | ${precheck.reason} | status=${precheck.status || 'NA'} | finalUrl=${precheck.finalUrl || ''} | title=${JSON.stringify(precheck.title || '')} | account=${account.email} | worker=${workerId}`);
+        const precheckTarget = getProxyPrecheckConfig(config);
+        logProxy(`正在预检代理（${precheckTarget.method} ${precheckTarget.url}）：${proxy.server}`);
+        await appendLineSafe(precheckFile, `[PRECHECK] proxy=${proxy.server} -> ${precheck.level} | ${precheck.reason} | status=${precheck.status || 'NA'} | finalUrl=${precheck.finalUrl || ''} | target=${precheck.target} | account=${account.email} | worker=${workerId}`);
 
-        if (precheck.success) {
-          logSuccess(`代理预检通过：${proxy.server} | 出口IP：${exitIp}`);
+        if (precheck.level === 'OK') {
+          logSuccess(`代理预检通过：${proxy.server} | 出口IP：${exitIpText} | 目标=${precheck.target}`);
+        } else if (precheck.level === 'WEAK') {
+          logWarn(`代理预检为 WEAK：${proxy.server} | 出口IP：${exitIpText} | 原因：${precheck.reason}`);
+          logInfo(`预检落点：status=${precheck.status || 'NA'} | finalUrl=${precheck.finalUrl || 'NA'} | target=${precheck.target}`);
         } else {
-          logFail(`代理预检失败：${proxy.server} | 出口IP：${exitIp} | 原因：${precheck.reason}`);
-          logInfo(`预检落点：status=${precheck.status || 'NA'} | finalUrl=${precheck.finalUrl || 'NA'} | title=${precheck.title || 'NA'}`);
+          logFail(`代理预检失败：${proxy.server} | 出口IP：${exitIpText} | 原因：${precheck.reason}`);
+          logInfo(`预检落点：status=${precheck.status || 'NA'} | finalUrl=${precheck.finalUrl || 'NA'} | target=${precheck.target}`);
         }
 
-        if (!precheck.success) {
+        if (precheck.level === 'BAD') {
           lastReason = `PROXY_PRECHECK_FAILED:${precheck.reason}`;
-          await appendLineSafe(runLogFile, `[SKIP] account=${account.email} proxy=${proxy.server} worker=${workerId} reason=${lastReason}`);
-
-          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
-          if (currentFail >= 2) {
-            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
-            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(weakProxyPath, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
-          }
-          continue;
-        }
-
-        try {
-          logStage(`真实注册开始 | 账号=${account.email} | 代理=${proxy.server} | 出口IP=${exitIp} | 浏览器模式=有头 | 工作线程=${workerId}`);
-          logAccount(`[线程${workerId}] 已进入真实注册阶段，浏览器即将弹出：${account.email}`);
-          const result = await runRegisterTask({
-            account,
-            proxy,
-            config,
-            attempt,
-            workerId,
-            windowBounds,
-          });
-
-          if (result.success) {
-            await appendLineSafe(successFile, `${account.email}:${account.password} | proxy=${proxy.raw} | status=success | worker=${workerId}`);
-            await appendLineSafe(doneAccountsFile, account.raw);
-            await appendLineSafe(storageFile, `${account.email} | storage=${result.storagePath || ''}`);
-            await appendLineSafe(sessionFile, `${account.email} | sessionid=${result.sessionId || ''}`);
-            await appendLineSafe(runLogFile, `[SUCCESS] account=${account.email} worker=${workerId} proxy=${proxy.server} storage=${result.storagePath || ''} sessionid=${result.sessionId || ''}`);
-            logSuccess(`账号注册成功：${account.email}`);
-            logInfo(`登录态文件：${result.storagePath || ''}`);
-            logInfo(`SessionID：${result.sessionId || ''}`);
-            await updateProxyFailure(proxy.raw, () => 0);
-            success = true;
-            break;
-          }
-
-          lastReason = result.reason || 'UNKNOWN_FAIL';
-          await appendLineSafe(runLogFile, `[FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason}`);
-          logFail(`账号注册失败：${account.email} | 原因：${lastReason}`);
-
-          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
-          if (currentFail >= 2) {
-            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
-            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(weakProxyPath, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
-          }
-        } catch (error) {
-          lastReason = error.message || 'EXCEPTION';
-          await appendLineSafe(runLogFile, `[ERROR] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason}`);
-          logFail(`任务异常：账号=${account.email} | 原因=${lastReason}`);
+          await appendLineSafe(runLogFile, `[SKIP] account=${account.email} proxy=${proxy.server} worker=${workerId} level=${precheck.level} reason=${lastReason}`);
 
           const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
           if (currentFail >= 2) {
@@ -512,6 +605,93 @@ async function precheckProxy(proxy) {
             logWarn(`代理连续失败 ${currentFail} 次，打入坏代理池：${proxy.server}`);
             await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
             await appendLineSafe(badProxyPath, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+          }
+          continue;
+        }
+
+        try {
+          logStage(`真实注册流程开始 | 账号=${account.email} | 代理=${proxy.server} | 出口IP=${exitIpText} | 浏览器模式=有头 | 工作线程=${workerId} | 验证码来源=Firstmail API | 预检等级=${precheck.level}`);
+          logAccount(`[线程${workerId}] 已进入真实注册流程：${account.email}`);
+          const result = await runRegisterTask({
+            account,
+            proxy,
+            config,
+            attempt,
+            workerId,
+            windowBounds,
+            resolvedExitIp: exitIpText,
+          });
+
+          if (result.success) {
+            const sessionFormats = buildSessionFormats(proxy, result.sessionId || '');
+            const sessionName = extractSessionName(result.sessionId || '');
+            const accountSessionId = sessionFormats.cookieSessionValue || normalizeCookieSessionValue(result.sessionId || '');
+            const accountSessionIdWithCountry = sessionFormats.countryCode && accountSessionId
+              ? `${sessionFormats.countryCode}-${accountSessionId}`
+              : accountSessionId;
+
+            await appendLineSafe(successFile, `${account.email}:${account.password} | proxy=${proxy.raw} | status=success | worker=${workerId} | precheck=${precheck.level}`);
+            await appendLineSafe(doneAccountsFile, account.raw);
+            await appendLineSafe(storageFile, `${account.email} | storage=${result.storagePath || ''}`);
+            if (accountSessionId) {
+              await appendLineSafe(sessionFile, accountSessionId);
+            }
+            if (accountSessionIdWithCountry) {
+              await appendLineSafe(sessionWithCountryFile, accountSessionIdWithCountry);
+            }
+            await appendLineSafe(runLogFile, `[SUCCESS] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} storage=${result.storagePath || ''} session_name=${sessionName || ''} sessionid=${accountSessionId || ''} sessionid_with_country=${accountSessionIdWithCountry || ''}`);
+            logSuccess(`账号注册成功：${account.email}`);
+            logInfo(`登录态文件：${result.storagePath || ''}`);
+            logInfo(`Session字段：${sessionName || ''}`);
+            logInfo(`SessionID：${accountSessionId || ''}`);
+            logInfo(`国家+SessionID：${accountSessionIdWithCountry || ''}`);
+            await updateProxyFailure(proxy.raw, () => 0);
+            success = true;
+            break;
+          }
+
+          lastReason = result.reason || 'UNKNOWN_FAIL';
+          await appendLineSafe(runLogFile, `[FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
+          logFail(`真实注册流程失败：${account.email} | 原因：${lastReason}`);
+
+          if (isHardProxyFailureReason(lastReason)) {
+            await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
+            logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
+            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | reason=${lastReason}`);
+            await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
+            continue;
+          }
+
+          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
+          if (currentFail >= 2) {
+            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
+            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
+            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+            const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+            await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+          }
+        } catch (error) {
+          lastReason = error.message || 'EXCEPTION';
+          await appendLineSafe(runLogFile, `[ERROR] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
+          logFail(`真实注册流程异常：账号=${account.email} | 原因=${lastReason}`);
+
+          if (isHardProxyFailureReason(lastReason)) {
+            await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
+            logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
+            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | reason=${lastReason}`);
+            await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
+            continue;
+          }
+
+          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
+          if (currentFail >= 2) {
+            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
+            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
+            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+            const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+            await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
           }
         }
       } finally {
@@ -521,7 +701,7 @@ async function precheckProxy(proxy) {
 
     if (!success) {
       await appendLineSafe(failedFile, `${account.email}:${account.password} | status=failed | reason=${lastReason} | worker=${workerId}`);
-      await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_FAIL reason=${lastReason}`);
+      await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_FAIL stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
       logFail(`账号最终失败：${account.email} | 原因：${lastReason}`);
     }
   }

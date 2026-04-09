@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+const { waitForDreaminaCodeViaApi } = require('./firstmail-api');
 const { logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
@@ -115,22 +116,6 @@ async function runPowerShellWindowLayout(browser, windowBounds, workerId, accoun
   });
 }
 
-async function fetchContextExitIp(context) {
-  try {
-    const page = await context.newPage();
-    await page.goto('https://api.ipify.org?format=json', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-    const raw = await page.locator('body').innerText().catch(() => '');
-    await page.close().catch(() => {});
-    const match = raw.match(/"ip"\s*:\s*"([^"]+)"/i);
-    return match ? match[1] : raw.trim();
-  } catch (error) {
-    return `获取失败: ${error.message || 'EXIT_IP_UNKNOWN'}`;
-  }
-}
-
 function logTaskStage(stageNo, account, proxy, current, extra = '') {
   const suffix = extra ? ` | ${extra}` : '';
   logStage(`阶段${stageNo} | 账号=${account.email} | 代理=${proxy?.server || 'NO_PROXY'} | 当前=${current}${suffix}`);
@@ -151,27 +136,16 @@ async function visible(locator) {
   return await locator.isVisible().catch(() => false);
 }
 
-async function extractVerificationCode(firstmailPage, account, proxy) {
-  logTaskStage(3, account, proxy, '提取验证码');
-  await firstmailPage.waitForTimeout(5000);
-  const bodyText = await firstmailPage.locator('body').innerText().catch(() => '');
-
-  const contextualPatterns = [
-    /verification code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /your code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /confirm[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-  ];
-
-  for (const pattern of contextualPatterns) {
-    const match = bodyText.match(pattern);
-    if (match) return match[1];
-  }
-
-  const fallbackMatch = bodyText.match(/\b([A-Z0-9]{6})\b/);
-  if (fallbackMatch) return fallbackMatch[1];
-
-  throw new Error('验证码提取失败');
+async function fetchVerificationCodeViaApi(account, proxy, config, log) {
+  logTaskStage(3, account, proxy, '通过 Firstmail API 拉验证码');
+  const result = await waitForDreaminaCodeViaApi({
+    account,
+    config,
+    log,
+    accountLabel: account.email,
+    proxyLabel: proxy?.server || 'NO_PROXY',
+  });
+  return result.code;
 }
 
 async function preprocessDreaminaOverlays(page, log, prefix) {
@@ -355,6 +329,9 @@ async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, 
       }
 
       await capture(page, `dreamina-open-${attempt}`, prefix);
+      if (await detectDreaminaWhiteScreen(page, account, proxy, prefix)) {
+        throw new Error('DREAMINA_WHITE_SCREEN');
+      }
       await preprocessDreaminaOverlays(page, log, prefix);
 
       const signal = await waitForDreaminaLoginSignals(page, log, prefix, account, proxy, {
@@ -429,39 +406,6 @@ async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
   throw new Error('未找到 Dreamina 登录/注册入口');
 }
 
-async function findLatestDreaminaMail(firstmailPage) {
-  const candidates = firstmailPage.locator('div').filter({ hasText: /Dreamina|dreamina@mail\./i });
-  const count = await candidates.count().catch(() => 0);
-
-  for (let i = 0; i < count; i++) {
-    const item = candidates.nth(i);
-    const text = await item.innerText().catch(() => '');
-    if (/Dreamina/i.test(text) || /dreamina@mail\./i.test(text)) {
-      return item;
-    }
-  }
-
-  return null;
-}
-
-async function waitForDreaminaMail(firstmailPage, log, account, proxy, maxAttempts, intervalMs) {
-  logTaskStage(3, account, proxy, '等待验证码邮件');
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    log(`等待邮件第 ${attempt}/${maxAttempts} 轮`);
-    logInfo(`阶段 3.${attempt}：轮询邮箱列表，等待验证码邮件`);
-    const item = await findLatestDreaminaMail(firstmailPage);
-    if (item) {
-      logSuccess('Dreamina 验证邮件已到达');
-      return item;
-    }
-
-    await firstmailPage.reload({ waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
-    await firstmailPage.waitForTimeout(intervalMs);
-  }
-
-  throw new Error('等待 Dreamina 邮件超时');
-}
-
 async function detectSignupFailure(page, log, prefix) {
   const failureTexts = [
     page.getByText("Couldn't sign up. Try again later."),
@@ -482,10 +426,59 @@ async function detectSignupFailure(page, log, prefix) {
   return false;
 }
 
+async function detectDreaminaWhiteScreen(page, account, proxy, prefix) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  const trimmedText = String(bodyText || '').replace(/\s+/g, ' ').trim();
+  const html = await page.content().catch(() => '');
+  const loginSignals = await hasDreaminaLoginSignals(page);
+  const hasCanvas = await page.locator('canvas').count().catch(() => 0);
+  const hasIframe = await page.locator('iframe').count().catch(() => 0);
+
+  const bodySeemsBlank = !trimmedText || trimmedText.length < 20;
+  const domSeemsThin = String(html || '').length < 1200;
+  const hasVisibleAppSignals = loginSignals.found || hasCanvas > 0 || hasIframe > 0;
+
+  if (bodySeemsBlank && domSeemsThin && !hasVisibleAppSignals) {
+    logTaskStage(1, account, proxy, 'Dreamina 白屏检测命中', `bodyLen=${trimmedText.length} | htmlLen=${String(html || '').length}`);
+    logWarn('Dreamina 页面疑似白屏/空白加载，判定为强失败');
+    await capture(page, 'dreamina-white-screen', prefix);
+    return true;
+  }
+
+  return false;
+}
+
+async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeoutMs = 20000) {
+  const yearInput = page.getByRole('textbox', { name: 'Year' });
+  const monthDropdown = page.getByText('Month');
+  const dayDropdown = page.getByText('Day', { exact: true });
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    if (await visible(yearInput) && await visible(monthDropdown) && await visible(dayDropdown)) {
+      return {
+        yearInput,
+        monthDropdown,
+        dayDropdown,
+      };
+    }
+    await page.waitForTimeout(500);
+  }
+
+  logTaskStage(4, account, proxy, '生日页未就绪', `等待超时=${timeoutMs}ms`);
+  logWarn('验证码提交后未能进入生日输入阶段，判定当前代理/链路不可用');
+  await capture(page, 'dreamina-birthday-unreachable', prefix);
+  throw new Error('DREAMINA_BIRTHDAY_STAGE_UNREACHABLE');
+}
+
 async function extractSessionId(context) {
   const cookies = await context.cookies().catch(() => []);
-  const sessionCookie = cookies.find(cookie => /session/i.test(cookie.name));
-  return sessionCookie ? `${sessionCookie.name}=${sessionCookie.value}` : '';
+  const hit = cookies.find(cookie => {
+    const name = String(cookie?.name || '').toLowerCase();
+    const domain = String(cookie?.domain || '').toLowerCase();
+    return name === 'sessionid' && domain.includes('dreamina.capcut.com') && cookie.value;
+  });
+  return hit ? `${hit.name}=${hit.value}` : '';
 }
 
 async function saveStorageState(context, account, attempt) {
@@ -495,12 +488,34 @@ async function saveStorageState(context, account, attempt) {
   return filePath;
 }
 
-async function runRegisterTask({ account, proxy, config, attempt, workerId, windowBounds }) {
+async function waitForVerificationCountdown(page, account, proxy, prefix, timeoutMs = 30000) {
+  const countdownLocators = [
+    page.locator('text=/Resend code in\\s*\\d+s/i').first(),
+    page.locator('[class*="count"][class*="down"]').first(),
+    page.locator('[class*="code-count"]').first(),
+  ];
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    for (const locator of countdownLocators) {
+      if (await visible(locator)) {
+        const text = (await locator.textContent().catch(() => '') || '').trim();
+        logTaskStage(3, account, proxy, '检测到验证码倒计时', text || 'Resend code in ...');
+        await capture(page, 'verification-countdown-detected', prefix);
+        return text || 'COUNTDOWN_VISIBLE';
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error('VERIFICATION_COUNTDOWN_NOT_FOUND');
+}
+
+async function runRegisterTask({ account, proxy, config, attempt, workerId, windowBounds, resolvedExitIp }) {
   const prefix = `${sanitizeName(account.email)}-attempt${attempt}`;
   const log = makeLogger(prefix);
 
   let browser;
-  let firstmailPage;
   let dreaminaPage;
   let context;
 
@@ -543,7 +558,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       ignoreHTTPSErrors: true,
     });
 
-    const exitIp = await fetchContextExitIp(context);
+    const exitIp = String(resolvedExitIp || 'UNKNOWN_EXIT_IP');
     logInfo(`当前浏览器模式：有头（headless=${Boolean(config.headless)}）`);
     logInfo(`当前线程：${workerId || 'NA'}`);
     logInfo(`当前账号：${account.email}`);
@@ -555,38 +570,13 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
 
     const birth = randomBirthDate(1980, 2008);
 
-    logTaskStage(1, account, proxy, '登录 Firstmail', `出口IP=${exitIp}`);
-    log('开始登录 Firstmail');
-    firstmailPage = await context.newPage();
-    await firstmailPage.goto('https://firstmail.ltd/webmail/login/', { waitUntil: 'domcontentloaded', timeout: 120000 });
-
-    const acceptButton = firstmailPage.getByRole('button', { name: 'To accept' });
-    if (await visible(acceptButton)) {
-      await humanPause(firstmailPage);
-      await acceptButton.click();
-    }
-
-    const emailInput = firstmailPage.getByRole('textbox', { name: 'Email address' });
-    await emailInput.waitFor({ state: 'visible', timeout: 30000 });
-    await emailInput.fill(account.email);
-
-    const passwordInput = firstmailPage.getByRole('textbox', { name: 'Password' });
-    await passwordInput.waitFor({ state: 'visible', timeout: 30000 });
-    await passwordInput.fill(account.password);
-
-    const loginButton = firstmailPage.getByRole('button', { name: 'Log in webmail' });
-    await loginButton.waitFor({ state: 'visible', timeout: 30000 });
-    await humanPause(firstmailPage, 1200, 2200);
-    await loginButton.click();
-    await firstmailPage.waitForLoadState('domcontentloaded');
-    await firstmailPage.waitForTimeout(4000);
-    logSuccess('Firstmail 登录完成');
-
+    logTaskStage(1, account, proxy, '打开 Dreamina', `出口IP=${exitIp}`);
     log('开始打开 Dreamina');
     dreaminaPage = await context.newPage();
     await openDreaminaWithRetry(dreaminaPage, log, prefix, account, proxy, config, 3);
     await ensureDreaminaEmailLoginForm(dreaminaPage, log, prefix, account, proxy);
 
+    logTaskStage(2, account, proxy, '填写邮箱密码并提交');
     const dreaminaEmailInput = dreaminaPage.getByRole('textbox', { name: 'Enter email' });
     await dreaminaEmailInput.waitFor({ state: 'visible', timeout: 30000 });
     await dreaminaEmailInput.fill(account.email);
@@ -613,42 +603,34 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       return { success: false, reason: 'SIGNUP_REJECTED' };
     }
 
-    logTaskStage(3, account, proxy, '回邮箱等验证码');
-    log('回 Firstmail 等验证码');
-    await firstmailPage.bringToFront();
-    await firstmailPage.goto('https://firstmail.ltd/webmail/', { waitUntil: 'domcontentloaded', timeout: 120000 });
-    await firstmailPage.waitForTimeout(4000);
-
-    const mailItem = await waitForDreaminaMail(
-      firstmailPage,
-      log,
-      account,
-      proxy,
-      Number(config.waitMailAttempts || 12),
-      Number(config.waitMailIntervalMs || 5000)
-    );
-    await mailItem.click();
-
-    const code = await extractVerificationCode(firstmailPage, account, proxy);
+    const countdownText = await waitForVerificationCountdown(dreaminaPage, account, proxy, prefix, Number(config.verificationCountdownWaitMs || 30000));
+    log(`检测到验证码倒计时，开始通过 Firstmail API 拉验证码：${countdownText}`);
+    logTaskStage(3, account, proxy, '通过 Firstmail API 拉验证码', countdownText);
+    const code = await fetchVerificationCodeViaApi(account, proxy, config, log);
     logSuccess(`验证码提取成功：${code}`);
 
-    logTaskStage(4, account, proxy, '填写验证码和生日');
+    logTaskStage(4, account, proxy, '回填验证码和生日');
     await dreaminaPage.bringToFront();
     const codeInput = dreaminaPage.getByRole('textbox').filter({ hasText: /^$/ }).first();
     await codeInput.waitFor({ state: 'visible', timeout: 30000 });
     await codeInput.fill(code);
 
-    const yearInput = dreaminaPage.getByRole('textbox', { name: 'Year' });
-    await yearInput.waitFor({ state: 'visible', timeout: 30000 });
+    const birthdayFields = await ensureBirthdayInputsReachable(
+      dreaminaPage,
+      account,
+      proxy,
+      prefix,
+      Number(config.birthdayStageTimeoutMs || 20000),
+    );
+
+    const yearInput = birthdayFields.yearInput;
     await yearInput.fill(birth.year);
 
-    const monthDropdown = dreaminaPage.getByText('Month');
-    await monthDropdown.waitFor({ state: 'visible', timeout: 30000 });
+    const monthDropdown = birthdayFields.monthDropdown;
     await monthDropdown.click();
     await dreaminaPage.getByRole('option', { name: birth.month }).click();
 
-    const dayDropdown = dreaminaPage.getByText('Day', { exact: true });
-    await dayDropdown.waitFor({ state: 'visible', timeout: 30000 });
+    const dayDropdown = birthdayFields.dayDropdown;
     await dayDropdown.click();
     await dreaminaPage.getByRole('option', { name: birth.day, exact: true }).click();
 
@@ -658,7 +640,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
 
     const storagePath = await saveStorageState(context, account, attempt);
     const sessionId = await extractSessionId(context);
-    logTaskStage(5, account, proxy, '注册成功');
+    logTaskStage(5, account, proxy, '保存登录态');
     logSuccess('账号注册流程执行成功，已保存登录态');
     logInfo(`登录态文件：${storagePath}`);
     logInfo(`SessionID：${sessionId || '未提取到'}`);
@@ -672,7 +654,6 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
   } catch (error) {
     logTaskStage(9, account, proxy, '任务异常');
     logFail(`任务异常：${error.message}`);
-    if (firstmailPage) await capture(firstmailPage, 'failure-firstmail', prefix);
     if (dreaminaPage) await capture(dreaminaPage, 'failure-dreamina', prefix);
     return { success: false, reason: error.message || 'TASK_EXCEPTION' };
   } finally {
