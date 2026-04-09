@@ -511,6 +511,32 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
   throw new Error('VERIFICATION_COUNTDOWN_NOT_FOUND');
 }
 
+async function waitForDreaminaPostRegisterReady(page, account, proxy, prefix, timeoutMs = 45000) {
+  const readyLocators = [
+    page.locator('[class*="credit-display-container"]').first(),
+    page.getByText("You haven't subscribed yet", { exact: false }).first(),
+    page.getByText('Subscribe', { exact: false }).first(),
+    page.getByText('Start Creating With AI Agent', { exact: false }).first(),
+    page.getByText('Canvas', { exact: true }).first(),
+    page.getByText('AI Image', { exact: false }).first(),
+  ];
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    for (const locator of readyLocators) {
+      if (await visible(locator)) {
+        const text = (await locator.textContent().catch(() => '') || '').trim();
+        logTaskStage(5, account, proxy, '检测到注册完成后的主页就绪信号', text || 'Dreamina home ready');
+        await capture(page, 'dreamina-post-register-ready', prefix);
+        return text || 'DREAMINA_HOME_READY';
+      }
+    }
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error('DREAMINA_POST_REGISTER_READY_NOT_FOUND');
+}
+
 async function runRegisterTask({ account, proxy, config, attempt, workerId, windowBounds, resolvedExitIp }) {
   const prefix = `${sanitizeName(account.email)}-attempt${attempt}`;
   const log = makeLogger(prefix);
@@ -638,13 +664,21 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     await nextButton.waitFor({ state: 'visible', timeout: 30000 });
     await nextButton.click();
 
+    const readyText = await waitForDreaminaPostRegisterReady(
+      dreaminaPage,
+      account,
+      proxy,
+      prefix,
+      Number(config.postRegisterReadyTimeoutMs || 45000),
+    );
+
     const finalStoragePath = path.join(__dirname, 'user.json');
     await context.storageState({ path: finalStoragePath });
     const userStorageState = JSON.parse(await fs.promises.readFile(finalStoragePath, 'utf8'));
 
     const storagePath = await saveStorageState(context, account, attempt);
     const sessionId = await extractSessionIdFromStorageState(userStorageState);
-    logTaskStage(5, account, proxy, '保存登录态');
+    logTaskStage(5, account, proxy, '保存登录态', readyText);
     logSuccess('账号注册流程执行成功，已保存登录态');
     logInfo(`登录态文件：${storagePath}`);
     logInfo(`SessionID：${sessionId || '未提取到'}`);
