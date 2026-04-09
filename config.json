@@ -21,7 +21,7 @@
   "verificationCountdownWaitMs": 30000,
   "birthdayStageTimeoutMs": 20000,
   "firstmailApiBaseUrl": "https://firstmail.ltd",
-  "firstmailApiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
+  "firstmailApiKey": "",
   "firstmailApiTimeoutMs": 30000,
   "firstmailApiMaxPollAttempts": 18,
   "windowLayout": "grid",

@@ -111,6 +111,7 @@ host:port:username:password
 - 调用 `runRegisterTask(...)` 进入真实注册
 - 记录成功、失败、预检结果、登录态路径和 session 结果文件
 - 统计代理失败次数，并把弱代理/坏代理降级写入结果池
+- 对 Dreamina 白屏、验证码后生日页不可达这类明确代理强失败场景，立即剔除当前代理并切换新代理
 
 ### `runner.js` 的关键职责分层
 
@@ -158,6 +159,7 @@ host:port:username:password
 - 自动处理常见弹层
 - 自动检测 `Sign in / Log in / Sign up / Continue with email`
 - 自动进入邮箱注册表单
+- 若页面疑似白屏 / 空白加载，会返回明确失败原因并在调度层将当前代理直接判为强失败
 
 #### 阶段 2：填写邮箱密码并提交
 
@@ -176,8 +178,10 @@ host:port:username:password
 #### 阶段 4：回填验证码和生日
 
 - 输入验证码
+- 等待生日输入区（Year / Month / Day）真正出现
 - 选择年 / 月 / 日
 - 点击 Next
+- 若验证码提交后始终到不了生日页，会返回明确失败原因并在调度层将当前代理直接判为强失败
 
 #### 阶段 5：保存登录态
 
@@ -359,6 +363,7 @@ npm run reset:all
   "dreaminaRecoveryBonusMs": 15000,
   "waitMailIntervalMs": 5000,
   "verificationCountdownWaitMs": 30000,
+  "birthdayStageTimeoutMs": 20000,
   "firstmailApiBaseUrl": "https://firstmail.ltd",
   "firstmailApiKey": "",
   "firstmailApiTimeoutMs": 30000,
@@ -422,6 +427,9 @@ Dreamina 页面异常恢复最大次数。
 
 #### `verificationCountdownWaitMs`
 提交邮箱密码后，等待验证码页倒计时元素出现的最长毫秒数；只有倒计时元素出现后才会启动 Firstmail API 轮询。
+
+#### `birthdayStageTimeoutMs`
+验证码提交后，等待生日输入区真正出现的最长毫秒数；若超时仍不可达，会判定为 `DREAMINA_BIRTHDAY_STAGE_UNREACHABLE` 并触发代理强失败处理。
 
 #### `firstmailApiBaseUrl`
 Firstmail API 基础地址。
@@ -532,6 +540,7 @@ Firstmail API 单次请求超时。
 3. `sessions.txt` 与 `sessions-with-country.txt` 只存最终结果，不混代理 sessid，账号 session 只认 `dreamina.capcut.com` 下 cookie 名 `sessionid`。
 4. `messages/latest` 返回 `404 No messages found` 时不会直接失败，而是继续轮询。
 5. Firstmail API 拉码时机会与验证码页倒计时联动，默认先等 `Resend code in XXs` 再启动轮询。
+6. Dreamina 白屏和验证码后生日页不可达都属于代理强失败，调度层会立即剔除当前代理并换新代理。
 
 ---
 
