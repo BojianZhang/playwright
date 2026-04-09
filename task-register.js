@@ -471,12 +471,12 @@ async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeo
   throw new Error('DREAMINA_BIRTHDAY_STAGE_UNREACHABLE');
 }
 
-async function extractSessionId(context) {
-  const cookies = await context.cookies().catch(() => []);
+async function extractSessionIdFromStorageState(storageState) {
+  const cookies = Array.isArray(storageState?.cookies) ? storageState.cookies : [];
   const hit = cookies.find(cookie => {
     const name = String(cookie?.name || '').toLowerCase();
     const domain = String(cookie?.domain || '').toLowerCase();
-    return name === 'sessionid' && domain.includes('dreamina.capcut.com') && cookie.value;
+    return name === 'sessionid' && domain.includes('capcut.com') && cookie.value;
   });
   return hit ? `${hit.name}=${hit.value}` : '';
 }
@@ -638,8 +638,12 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     await nextButton.waitFor({ state: 'visible', timeout: 30000 });
     await nextButton.click();
 
+    const finalStoragePath = path.join(__dirname, 'user.json');
+    await context.storageState({ path: finalStoragePath });
+    const userStorageState = JSON.parse(await fs.promises.readFile(finalStoragePath, 'utf8'));
+
     const storagePath = await saveStorageState(context, account, attempt);
-    const sessionId = await extractSessionId(context);
+    const sessionId = await extractSessionIdFromStorageState(userStorageState);
     logTaskStage(5, account, proxy, '保存登录态');
     logSuccess('账号注册流程执行成功，已保存登录态');
     logInfo(`登录态文件：${storagePath}`);

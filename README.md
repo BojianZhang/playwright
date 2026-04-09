@@ -185,9 +185,10 @@ host:port:username:password
 
 #### 阶段 5：保存登录态
 
-- `storageState` 写入 `storage/`
-- 只从 `dreamina.capcut.com` 域下、cookie 名严格等于 `sessionid` 的条目提取账号真正的 session
-- 不再回退混用 `msToken`、`sid_guard`、代理 `sessid` 等其他字段
+- 注册成功后先额外写一份根目录 `user.json`
+- 账号 session 提取以 `user.json` 内 cookies 中、cookie 名严格等于 `sessionid` 的条目为准
+- 当前兼容匹配 `.capcut.com` / `dreamina.capcut.com` 相关域，不再回退混用 `msToken`、`sid_guard`、代理 `sessid` 等其他字段
+- 同时仍保留 `storage/` 下分账号 `storageState` 文件用于排障
 - 返回成功结果给 `runner.js`
 
 ### 执行层的重要辅助能力
