@@ -482,10 +482,15 @@ async function extractSessionIdFromStorageState(storageState) {
   return hit ? `${hit.name}=${hit.value}` : '';
 }
 
-async function waitForSessionIdCookie(context, account, proxy, timeoutMs = 30000) {
+async function waitForSessionIdCookie(context, account, proxy, prefix, timeoutMs = 60000) {
   const start = Date.now();
+  let lastCookieSnapshot = [];
+  let lastHintText = '';
+
   while (Date.now() - start < timeoutMs) {
     const cookies = await context.cookies().catch(() => []);
+    lastCookieSnapshot = cookies;
+
     const hit = cookies.find(cookie => {
       const name = String(cookie?.name || '').toLowerCase();
       const domain = String(cookie?.domain || '').toLowerCase();
@@ -496,10 +501,29 @@ async function waitForSessionIdCookie(context, account, proxy, timeoutMs = 30000
       logTaskStage(5, account, proxy, '检测到 sessionid cookie', `${hit.domain} | ${hit.name}`);
       return `${hit.name}=${hit.value}`;
     }
+
+    const interestingCookies = cookies
+      .filter(cookie => /sessionid|sid_|sid$|ttwid|passport|msToken/i.test(String(cookie?.name || '')))
+      .map(cookie => `${cookie.name}@${cookie.domain}`);
+    const hintText = interestingCookies.join(', ') || 'NO_INTERESTING_COOKIES';
+
+    if (hintText !== lastHintText) {
+      lastHintText = hintText;
+      logTaskStage(5, account, proxy, '等待 sessionid cookie', hintText);
+    }
+
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  throw new Error('SESSIONID_COOKIE_NOT_FOUND');
+  const debugPath = path.join(STORAGE_DIR, `${sanitizeName(account.email)}-${prefix}-session-cookie-timeout.json`);
+  await fs.promises.writeFile(debugPath, JSON.stringify({
+    account: account.email,
+    proxy: proxy?.server || 'NO_PROXY',
+    reason: 'SESSIONID_COOKIE_NOT_FOUND',
+    cookies: lastCookieSnapshot,
+  }, null, 2), 'utf8').catch(() => {});
+
+  throw new Error(`SESSIONID_COOKIE_NOT_FOUND|debug=${path.basename(debugPath)}|seen=${lastHintText || 'NO_INTERESTING_COOKIES'}`);
 }
 
 async function saveStorageState(context, account, attempt) {
@@ -697,7 +721,8 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       context,
       account,
       proxy,
-      Number(config.sessionIdCookieTimeoutMs || 30000),
+      prefix,
+      Number(config.sessionIdCookieTimeoutMs || 60000),
     );
 
     const finalStoragePath = path.join(STORAGE_DIR, `${sanitizeName(account.email)}-attempt${attempt}-user.json`);

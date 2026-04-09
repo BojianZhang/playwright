@@ -186,9 +186,11 @@ host:port:username:password
 #### 阶段 5：保存登录态
 
 - 出生年月日填写完并点击 `Next` 后，不会立刻保存登录态；会先等待 Dreamina 主页真正出现登录后就绪信号（如你截图中的底部订阅 / credits 区域、主页入口元素等）
-- 检测到该主页就绪信号后，还会继续显式等待 `sessionid` cookie 真正出现在浏览器上下文里
+- 检测到该主页就绪信号后，还会继续显式等待 `sessionid` cookie 真正出现在浏览器上下文里；默认等待窗口已提高到 60 秒
+- 等待过程中会打印当前已出现的关键 cookies 诊断信息（如 `ttwid`、`passport_csrf_token`、`sid_*`、`sessionid`）
 - 只有等到 `sessionid` cookie 出现后，才写入当前账号独立的 user 文件：`storage/<账号>-attemptN-user.json`，避免并发 worker 互相覆盖同一个 `user.json`
 - 账号 session 提取以该账号自己的 user json 内 cookies 中、cookie 名严格等于 `sessionid` 的条目为准
+- 若等待超时，会额外落一份 `storage/<账号>-<prefix>-session-cookie-timeout.json` 诊断快照，便于复盘当时实际有哪些 cookies 已经出现
 - 当前兼容匹配 `.capcut.com` / `dreamina.capcut.com` 相关域，不再回退混用 `msToken`、`sid_guard`、代理 `sessid` 等其他字段
 - 同时仍保留 `storage/` 下分账号 `storageState` 文件用于排障
 - 返回成功结果给 `runner.js`

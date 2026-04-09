@@ -21,7 +21,7 @@
   "verificationCountdownWaitMs": 30000,
   "birthdayStageTimeoutMs": 20000,
   "postRegisterReadyTimeoutMs": 45000,
-  "sessionIdCookieTimeoutMs": 30000,
+  "sessionIdCookieTimeoutMs": 60000,
   "firstmailApiBaseUrl": "https://firstmail.ltd",
   "firstmailApiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
   "firstmailApiTimeoutMs": 30000,
