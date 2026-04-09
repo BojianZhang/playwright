@@ -1,0 +1,24 @@
+{
+  "name": "playwright",
+  "version": "1.0.0",
+  "description": "Dreamina / Firstmail batch runner based on Playwright",
+  "main": "runner.js",
+  "scripts": {
+    "start": "node runner.js",
+    "run": "node runner.js",
+    "precheck": "node proxy-precheck.js",
+    "reset": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1",
+    "reset:all": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1 -IncludeReports",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.5.2"
+  }
+}

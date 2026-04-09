@@ -1,0 +1,16 @@
+{
+  "proxyPolicy": "roundRobin",
+  "maxProxyRetriesPerAccount": 3,
+  "concurrency": 2,
+  "proxyPrecheckConcurrency": 40,
+  "headless": false,
+  "slowMo": 120,
+  "waitMailAttempts": 18,
+  "waitMailIntervalMs": 5000,
+  "dreaminaMaxRecoveries": 3,
+  "dreaminaRecoveryBonusMs": 15000,
+  "windowLayout": "grid",
+  "windowGap": 12,
+  "windowMargin": 8,
+  "resultsDir": "results"
+}

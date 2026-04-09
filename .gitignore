@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Playwright reports / caches
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# Runner outputs
+/results/
+/screenshots/
+/storage/
+
+# Runtime local data
+user.json
+
+# Local IDE / OS
+/.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary debug images
+dreamina-*.png
+
+# Sensitive inputs
+accounts.txt
+proxies.txt
