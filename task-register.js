@@ -4,7 +4,7 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const { waitForDreaminaCodeViaApi } = require('./firstmail-api');
 const { loadDreaminaRegisterProfile, summarizeProfile } = require('./dreamina-register-profile-loader');
-const { resolveDreaminaHomeUrl, detectDreaminaWhiteScreen, detectDreaminaFirstLoadDeadPage } = require('./dreamina-health');
+const { resolveDreaminaHomeUrl, openDreaminaWithHealthRetry } = require('./dreamina-health');
 const { logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
@@ -618,80 +618,28 @@ async function dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, re
   return filePath;
 }
 
-function shouldRecreateDreaminaPage(error) {
-  const message = String(error?.message || error || '');
-  return /frame was detached|Target page, context or browser has been closed|page\.reload: Target page|page\.goto: net::ERR_ABORTED/i.test(message);
-}
-
 async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, maxAttempts = 3, diagnostics = null) {
-  const targetUrl = getDreaminaHomeUrl(config);
-  let lastOpenError = '';
-  logTaskStage(2, account, proxy, '打开 Dreamina', targetUrl);
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const attemptStartedAt = Date.now();
-    try {
-      log(`Dreamina 打开尝试 ${attempt}/${maxAttempts}`);
-      logInfo(`阶段 2.${attempt}：尝试进入 Dreamina 首页：${targetUrl}`);
-
-      const navStartedAt = Date.now();
-      if (attempt === 1) await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-      else await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
-      logInfo(`openDreamina.navDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - navStartedAt}ms | mode=${attempt === 1 ? 'goto' : 'reload'} | url=${page.url()}`);
-
-      const captureStartedAt = Date.now();
-      await capture(page, `dreamina-open-${attempt}`, prefix, config);
-      logInfo(`openDreamina.captureDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - captureStartedAt}ms`);
-
-      const whiteScreenCheckStartedAt = Date.now();
-      if (await detectDreaminaWhiteScreen(page, account, proxy, prefix, config)) {
-        const diagnosticsPath = await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_WHITE_SCREEN');
-        if (diagnosticsPath) logWarn(`白屏诊断已写出：${path.basename(diagnosticsPath)}`);
-        throw new Error('DREAMINA_WHITE_SCREEN');
-      }
-      logInfo(`openDreamina.whiteScreenCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - whiteScreenCheckStartedAt}ms`);
-
-      const deadPageCheckStartedAt = Date.now();
-      if (await detectDreaminaFirstLoadDeadPage(page, prefix, config, diagnostics)) {
-        const diagnosticsPath = await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_FIRST_LOAD_DEAD_PAGE');
-        logWarn('Dreamina 首轮加载后仍无任何正常页面元素，且伴随资源/脚本失败证据，判定当前代理/页面死链');
-        if (diagnosticsPath) {
-          const diagName = path.basename(diagnosticsPath);
-          logWarn(`死页诊断已写出：${diagName}`);
-          throw new Error(`DREAMINA_FIRST_LOAD_DEAD_PAGE|debug=${diagName}`);
-        }
-        throw new Error('DREAMINA_FIRST_LOAD_DEAD_PAGE');
-      }
-      logInfo(`openDreamina.deadPageCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - deadPageCheckStartedAt}ms`);
-
-      const overlayStartedAt = Date.now();
-      await preprocessDreaminaOverlays(page, log, prefix, config);
-      logInfo(`openDreamina.overlayDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - overlayStartedAt}ms`);
-
-      const recoveryConfig = resolveDreaminaRecoveryConfig(config);
-      const loginSignalStages = resolveLoginSignalStages(config);
-      logInfo(`openDreamina.loginSignalStages | mode=${resolveRunMode(config)} | stages=${JSON.stringify(loginSignalStages)}`);
-      const waitSignalStartedAt = Date.now();
-      const signal = await waitForDreaminaLoginSignals(page, log, prefix, account, proxy, {
-        stages: loginSignalStages,
-        maxRecoveries: recoveryConfig.maxRecoveries,
-        recoveryBonusMs: recoveryConfig.recoveryBonusMs,
-        config,
-      });
-      logInfo(`openDreamina.loginSignalDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - waitSignalStartedAt}ms | found=${signal.found ? 'Y' : 'N'} | label=${signal.label || 'NA'}`);
-
-      if (signal.found) {
-        log(`Dreamina 登录信号出现：${signal.label}`);
-        logInfo(`openDreamina.attemptReady | attempt=${attempt}/${maxAttempts} | totalElapsed=${Date.now() - attemptStartedAt}ms`);
-        logSuccess('Dreamina 首页已进入可操作状态');
-        return;
-      }
-    } catch (error) {
-      lastOpenError = String(error?.message || 'UNKNOWN');
-      log(`Dreamina 打开失败: ${error.message}`);
-      logWarn(`Dreamina 打开异常，准备重试：${error.message} | attemptElapsed=${Date.now() - attemptStartedAt}ms`);
-    }
-  }
-  throw new Error(`DREAMINA_OPEN_RETRY_EXHAUSTED|last=${lastOpenError || 'UNKNOWN'}`);
+  return openDreaminaWithHealthRetry({
+    page,
+    log,
+    prefix,
+    account,
+    proxy,
+    config,
+    maxAttempts,
+    diagnostics,
+    capture,
+    dumpPageDiagnostics,
+    preprocessDreaminaOverlays,
+    waitForDreaminaLoginSignals,
+    resolveDreaminaRecoveryConfig,
+    resolveLoginSignalStages,
+    logInfo,
+    logWarn,
+    logSuccess,
+    logTaskStage,
+    resolveRunMode,
+  });
 }
 
 async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy, config) {
