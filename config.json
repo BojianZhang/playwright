@@ -148,5 +148,8 @@
   "testDreaminaFirstLoadGraceWaitMs": 12000,
   "runPrecheckDreaminaFirstLoadGraceWaitMs": 2500,
   "testPrecheckDreaminaFirstLoadGraceWaitMs": 5000,
-  "precheckDreaminaFirstLoadMaxGraceWaitMs": 12000
+  "precheckDreaminaFirstLoadMaxGraceWaitMs": 12000,
+  "testAllowWeakWhitescreenProxies": true,
+  "runAllowWeakWhitescreenProxies": false,
+  "runUseWeakPoolWhenNoOkAvailable": true
 }

@@ -78,20 +78,37 @@ function extractProxyHomeHealth(rawLine = '') {
   return match ? String(match[1]).trim().toUpperCase() : '';
 }
 
-function shouldAllowProxyLineByHealth(rawLine = '', config = {}) {
-  if (isTestMode(config)) return true;
-  const homeHealth = extractProxyHomeHealth(rawLine);
-  if (!homeHealth) return true;
-  return homeHealth === 'OK';
+function resolveProxyPoolPolicy(config = {}) {
+  const runMode = resolveRunMode(config);
+  const allowWeakForTest = Boolean(config.testAllowWeakWhitescreenProxies ?? true);
+  const allowWeakForRun = Boolean(config.runAllowWeakWhitescreenProxies ?? false);
+  const useWeakWhenNoOk = Boolean(config.runUseWeakPoolWhenNoOkAvailable ?? true);
+  if (runMode === 'test') {
+    return { mode: 'TEST_RUN', allowOk: true, allowWeakWhitescreen: allowWeakForTest, degraded: false };
+  }
+  return { mode: 'STANDARD_RUN', allowOk: true, allowWeakWhitescreen: allowWeakForRun, useWeakWhenNoOk };
 }
 
-function filterProxyLinesBySpeed(lines, config = {}) {
+function isWeakWhitescreenLine(rawLine = '') {
+  const homeHealth = extractProxyHomeHealth(rawLine);
+  return homeHealth === 'DREAMINA_WHITE_SCREEN';
+}
+
+function shouldAllowProxyLineByHealth(rawLine = '', config = {}, runtimeMode = 'STANDARD_RUN') {
+  const homeHealth = extractProxyHomeHealth(rawLine);
+  if (!homeHealth) return true;
+  if (homeHealth === 'OK') return true;
+  if ((runtimeMode === 'TEST_RUN' || runtimeMode === 'DEGRADED_RUN') && homeHealth === 'DREAMINA_WHITE_SCREEN') return true;
+  return false;
+}
+
+function filterProxyLinesBySpeed(lines, config = {}, runtimeMode = 'STANDARD_RUN') {
   const allowed = new Set(resolveAllowedProxySpeedTiers(config));
   return lines.filter(line => {
     const speed = extractProxySpeedTier(line);
     if (!speed) return false;
     if (!allowed.has(speed)) return false;
-    return shouldAllowProxyLineByHealth(line, config);
+    return shouldAllowProxyLineByHealth(line, config, runtimeMode);
   });
 }
 
@@ -485,7 +502,7 @@ async function precheckProxy(proxy, config = {}) {
   };
 }
 
-function buildRunSummary({ config, allAccounts, accounts, proxies, proxySourcePath, requestedConcurrency, concurrency, doneAccountRawSet, resultsDir, allowedProxySpeedTiers, proxyPenaltyConfig }) {
+function buildRunSummary({ config, allAccounts, accounts, proxies, proxySourcePath, requestedConcurrency, concurrency, doneAccountRawSet, resultsDir, allowedProxySpeedTiers, proxyPenaltyConfig, runtimeMode }) {
   const estimatedMailWaitSeconds = Math.round((Number(config.firstmailApiMaxPollAttempts || config.waitMailAttempts || 0) * Number(config.waitMailIntervalMs || 0)) / 1000);
   const proxyPrecheck = getProxyPrecheckConfig(config);
   const runMode = resolveRunMode(config);
@@ -545,7 +562,19 @@ function removeProxyFromList(filePath, targetRaw) {
   const accounts = allAccounts.filter(account => !doneAccountRawSet.has(account.raw) && !verificationRateLimitedAccounts.has(`${account.email}:${account.password}`));
   const rawProxySourcePath = fs.existsSync(healthyProxyPath) ? healthyProxyPath : proxiesPath;
   const rawProxyLines = readLines(rawProxySourcePath);
-  const filteredProxyLines = rawProxySourcePath === healthyProxyPath ? filterProxyLinesBySpeed(rawProxyLines, config) : rawProxyLines;
+  const proxyPoolPolicy = resolveProxyPoolPolicy(config);
+  let runtimeMode = proxyPoolPolicy.mode;
+  let filteredProxyLines = rawProxySourcePath === healthyProxyPath ? filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode) : rawProxyLines;
+  if (!filteredProxyLines.length && rawProxySourcePath === healthyProxyPath && proxyPoolPolicy.mode === 'STANDARD_RUN' && proxyPoolPolicy.useWeakWhenNoOk) {
+    const weakCandidateLines = rawProxyLines.filter(line => {
+      const speed = extractProxySpeedTier(line);
+      return speed && resolveAllowedProxySpeedTiers(config).includes(speed) && isWeakWhitescreenLine(line);
+    });
+    if (weakCandidateLines.length) {
+      runtimeMode = 'DEGRADED_RUN';
+      filteredProxyLines = filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode);
+    }
+  }
   const proxies = filteredProxyLines.map(parseProxy);
   const allowedProxySpeedTiers = resolveAllowedProxySpeedTiers(config);
   const proxyPenaltyConfig = getProxyPenaltyConfig(config);
@@ -573,9 +602,9 @@ function removeProxyFromList(filePath, targetRaw) {
   const limitedByAccounts = Math.max(1, Math.min(requestedConcurrency, accounts.length || 1));
   const concurrency = Math.max(1, Math.min(limitedByAccounts, proxies.length || 1));
 
-  const runSummaryLines = buildRunSummary({ config, allAccounts, accounts, proxies, proxySourcePath, requestedConcurrency, concurrency, doneAccountRawSet, resultsDir, allowedProxySpeedTiers, proxyPenaltyConfig });
+  const runSummaryLines = buildRunSummary({ config, allAccounts, accounts, proxies, proxySourcePath, requestedConcurrency, concurrency, doneAccountRawSet, resultsDir, allowedProxySpeedTiers, proxyPenaltyConfig, runtimeMode });
   appendLine(runLogFile, `=== RUN START ${new Date().toISOString()} ===`);
-  appendLine(runLogFile, `accounts_total=${allAccounts.length}, accounts_pending=${accounts.length}, raw_proxies=${rawProxyLines.length}, filtered_proxies=${proxies.length}, policy=${config.proxyPolicy}, source=${proxySourcePath}, concurrency=${concurrency}, requestedConcurrency=${requestedConcurrency}, runMode=${resolveRunMode(config)}, actualSlowMo=${resolveSlowMo(config)}, screenshots=${shouldCaptureScreenshots(config)}, allowedProxySpeedTiers=${allowedProxySpeedTiers.join(',')}`);
+  appendLine(runLogFile, `accounts_total=${allAccounts.length}, accounts_pending=${accounts.length}, raw_proxies=${rawProxyLines.length}, filtered_proxies=${proxies.length}, policy=${config.proxyPolicy}, source=${proxySourcePath}, concurrency=${concurrency}, requestedConcurrency=${requestedConcurrency}, runMode=${resolveRunMode(config)}, runtimeMode=${runtimeMode}, actualSlowMo=${resolveSlowMo(config)}, screenshots=${shouldCaptureScreenshots(config)}, allowedProxySpeedTiers=${allowedProxySpeedTiers.join(',')}`);
   for (const line of runSummaryLines) appendLine(runLogFile, line);
   for (const line of runSummaryLines) logSystem(line);
   if (rawProxySourcePath === healthyProxyPath) logInfo(`代理速度档过滤：源=${rawProxyLines.length} 条 -> 命中允许档位 ${allowedProxySpeedTiers.join(', ')} 后剩余 ${proxies.length} 条`);
