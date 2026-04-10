@@ -61,6 +61,27 @@ function hasConsoleFailureEvidence(diagnostics = null) {
   return diagnostics.consoleMessages.some(item => /chunk|failed|refused|blocked|cors|load|error/i.test(String(item || '')));
 }
 
+async function hasDreaminaHomePositiveSignals(page, config = {}, stage = 'precheck') {
+  const healthConfig = getDreaminaHealthConfig(config, { stage });
+  for (const text of healthConfig.validTextSignals) {
+    const locator = page.getByText(text, { exact: false }).first();
+    if (await locator.isVisible().catch(() => false)) {
+      return { ok: true, source: 'text', value: text };
+    }
+  }
+  for (const selector of healthConfig.validSelectors) {
+    const locator = page.locator(selector).first();
+    if (await locator.isVisible().catch(() => false)) {
+      return { ok: true, source: 'selector', value: selector };
+    }
+  }
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').trim();
+  if (/dreamina|capcut|create realistic talk|sign in|continue with email/i.test(bodyText)) {
+    return { ok: true, source: 'bodyText', value: 'BODY_TEXT_SIGNAL' };
+  }
+  return { ok: false, source: '', value: '' };
+}
+
 async function detectDreaminaWhiteScreen(page, options = {}) {
   const {
     account = null,
@@ -271,6 +292,19 @@ async function checkDreaminaHomeHealth(page, options = {}) {
       };
     }
 
+    const positiveSignal = await hasDreaminaHomePositiveSignals(page, config, stage);
+    if (!positiveSignal.ok && stage === 'precheck') {
+      return {
+        success: false,
+        reason: 'DREAMINA_HOME_SIGNAL_MISSING',
+        finalUrl: page.url(),
+        elapsedMs: Date.now() - startedAt,
+        whiteScreen,
+        deadPage,
+        positiveSignal,
+      };
+    }
+
     return {
       success: true,
       reason: 'OK',
@@ -278,6 +312,7 @@ async function checkDreaminaHomeHealth(page, options = {}) {
       elapsedMs: Date.now() - startedAt,
       whiteScreen,
       deadPage,
+      positiveSignal,
     };
   } catch (error) {
     const message = String(error?.message || 'DREAMINA_NAV_ERROR');
