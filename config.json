@@ -42,7 +42,7 @@
   "verificationCodeRetryMaxAttempts": 3,
   "dreaminaHomeUrl": "https://dreamina.capcut.com/ai-tool/home",
   "proxyPolicy": "roundRobin",
-  "maxProxyRetriesPerAccount": 3,
+  "maxProxyRetriesPerAccount": 2,
   "proxyFailureDowngradeThreshold": 2,
   "noIdleProxyRetryWaitMs": 1000,
   "hardProxyFailureReasons": [
@@ -69,7 +69,8 @@
   "proxyPrecheckFastThresholdMs": 2500,
   "proxyPrecheckSlowThresholdMs": 6000,
   "runProxySpeedTiers": [
-    "FAST"
+    "FAST",
+    "NORMAL"
   ],
   "testProxySpeedTiers": [
     "FAST",
