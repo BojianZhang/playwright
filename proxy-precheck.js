@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+const http = require('http');
+const https = require('https');
+const tls = require('tls');
 
 function createMutex() {
   let current = Promise.resolve();
@@ -35,7 +37,8 @@ function readLines(filePath) {
 }
 
 function parseProxy(line) {
-  const parts = line.split(':');
+  const cleanLine = line.split(' | ')[0].trim();
+  const parts = cleanLine.split(':');
   if (parts.length < 4) throw new Error(`无法解析代理格式: ${line}`);
 
   const host = parts[0].trim();
@@ -49,131 +52,224 @@ function parseProxy(line) {
     username,
     password,
     server: `http://${host}:${port}`,
-    raw: line,
+    raw: cleanLine,
   };
 }
 
-async function fetchProxyExitIp(proxy) {
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
-      },
-    });
-
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'Asia/Shanghai',
-      ignoreHTTPSErrors: true,
-    });
-
-    const page = await context.newPage();
-    await page.goto('https://api.ipify.org?format=json', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-
-    const raw = await page.locator('body').innerText().catch(() => '');
-    const match = raw.match(/"ip"\s*:\s*"([^"]+)"/i);
-    return match ? match[1] : raw.trim();
-  } catch (error) {
-    return `获取失败: ${error.message || 'EXIT_IP_UNKNOWN'}`;
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+function buildBasicAuthHeader(username, password) {
+  const raw = `${username}:${password}`;
+  return `Basic ${Buffer.from(raw, 'utf8').toString('base64')}`;
 }
 
-async function checkPage(proxy, url, okPattern, timeout = 30000) {
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      proxy: {
-        server: proxy.server,
-        username: proxy.username,
-        password: proxy.password,
+function getProxyPrecheckConfig(config = {}) {
+  const url = String(config.proxyPrecheckUrl || 'https://www.google.com/').trim();
+  const method = String(config.proxyPrecheckMethod || 'GET').trim().toUpperCase();
+  const okMinStatus = Number(config.proxyPrecheckOkMinStatus || 200);
+  const okMaxStatus = Number(config.proxyPrecheckOkMaxStatus || 399);
+  const timeoutMs = Number(config.proxyConnectivityTimeoutMs || 15000);
+  const exitIpUrl = String(config.proxyExitIpUrl || 'https://api.ipify.org?format=json').trim();
+  const exitIpMethod = String(config.proxyExitIpMethod || 'GET').trim().toUpperCase();
+  return {
+    url,
+    method,
+    okMinStatus,
+    okMaxStatus,
+    timeoutMs,
+    exitIpUrl,
+    exitIpMethod,
+  };
+}
+
+function requestViaHttpProxy(proxy, url, method, timeoutMs) {
+  const targetUrl = new URL(url);
+  const targetLabel = `${method} ${targetUrl.toString()}`;
+  const proxyAuth = buildBasicAuthHeader(proxy.username, proxy.password);
+
+  return new Promise((resolve) => {
+    const connectReq = http.request({
+      host: proxy.host,
+      port: Number(proxy.port),
+      method: 'CONNECT',
+      path: `${targetUrl.hostname}:${targetUrl.port || 443}`,
+      headers: {
+        Host: `${targetUrl.hostname}:${targetUrl.port || 443}`,
+        'Proxy-Authorization': proxyAuth,
       },
     });
 
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'Asia/Shanghai',
-      ignoreHTTPSErrors: true,
-    });
-
-    const page = await context.newPage();
-    let finalUrl = '';
-    let status = null;
-
-    const response = await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout,
-    });
-
-    finalUrl = page.url();
-    status = response ? response.status() : null;
-
-    await page.waitForTimeout(2500).catch(() => {});
-
-    const title = await page.title().catch(() => '');
-    const html = await page.content().catch(() => '');
-    const text = await page.locator('body').innerText().catch(() => '');
-    const sample = `${title}\n${text}`.slice(0, 800);
-    const ok = okPattern.test(html) || okPattern.test(text) || okPattern.test(title);
-
-    if (ok) {
-      return { success: true, reason: 'OK', status, finalUrl, title, sample };
+    let settled = false;
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      resolve(result);
     }
 
-    return {
-      success: false,
-      reason: `PAGE_UNEXPECTED status=${status || 'NA'} finalUrl=${finalUrl || 'NA'} title=${JSON.stringify(title).slice(0, 120)}`,
-      status,
-      finalUrl,
-      title,
-      sample,
-    };
-  } catch (error) {
-    return { success: false, reason: error.message || 'CHECK_EXCEPTION', status: null, finalUrl: '', title: '', sample: '' };
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+    connectReq.setTimeout(timeoutMs, () => {
+      connectReq.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+    });
+
+    connectReq.on('connect', (res, socket) => {
+      if ((res.statusCode || 0) !== 200) {
+        socket.destroy();
+        finish({
+          success: false,
+          reason: `PROXY_CONNECT_HTTP_${res.statusCode || 'NA'}`,
+          status: res.statusCode || null,
+          finalUrl: targetUrl.toString(),
+          target: targetLabel,
+          body: '',
+        });
+        return;
+      }
+
+      const tlsSocket = tls.connect({
+        socket,
+        servername: targetUrl.hostname,
+        rejectUnauthorized: false,
+      }, () => {
+        const req = https.request({
+          host: targetUrl.hostname,
+          port: Number(targetUrl.port || 443),
+          path: `${targetUrl.pathname || '/'}${targetUrl.search || ''}`,
+          method,
+          createConnection: () => tlsSocket,
+          agent: false,
+          headers: {
+            Host: targetUrl.host,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            Accept: '*/*',
+            Connection: 'close',
+          },
+        }, (response) => {
+          let raw = '';
+          response.setEncoding('utf8');
+          response.on('data', (chunk) => {
+            raw += chunk;
+          });
+          response.on('end', () => {
+            tlsSocket.end();
+            finish({
+              success: true,
+              reason: 'OK',
+              status: response.statusCode || 0,
+              finalUrl: targetUrl.toString(),
+              target: targetLabel,
+              body: raw,
+            });
+          });
+        });
+
+        req.setTimeout(timeoutMs, () => {
+          req.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+        });
+
+        req.on('error', (error) => {
+          tlsSocket.destroy();
+          finish({
+            success: false,
+            reason: error.message || 'HTTPS_REQUEST_ERROR',
+            status: null,
+            finalUrl: targetUrl.toString(),
+            target: targetLabel,
+            body: '',
+          });
+        });
+
+        req.end();
+      });
+
+      tlsSocket.setTimeout(timeoutMs, () => {
+        tlsSocket.destroy(new Error(`PRECHECK_TIMEOUT_${timeoutMs}ms`));
+      });
+
+      tlsSocket.on('error', (error) => {
+        finish({
+          success: false,
+          reason: error.message || 'TLS_CONNECT_ERROR',
+          status: null,
+          finalUrl: targetUrl.toString(),
+          target: targetLabel,
+          body: '',
+        });
+      });
+    });
+
+    connectReq.on('error', (error) => {
+      finish({
+        success: false,
+        reason: error.message || 'PROXY_CONNECT_ERROR',
+        status: null,
+        finalUrl: targetUrl.toString(),
+        target: targetLabel,
+        body: '',
+      });
+    });
+
+    connectReq.end();
+  });
 }
 
-async function classifyProxy(proxy) {
-  const exitIp = await fetchProxyExitIp(proxy);
+function extractIpFromResponseBody(body) {
+  const text = String(body || '').trim();
+  if (!text) return '';
 
-  const firstmail = await checkPage(
-    proxy,
-    'https://firstmail.ltd/webmail/login/',
-    /Email address|Log in webmail|Password|Webmail/i,
-    30000
-  );
+  const jsonMatch = text.match(/"ip"\s*:\s*"([^"]+)"/i);
+  if (jsonMatch) return jsonMatch[1].trim();
 
-  const dreamina = await checkPage(
-    proxy,
-    'https://dreamina.capcut.com/ai-tool/home',
-    /Sign in|Sign up|Continue with email|Enter email|CapCut|Dreamina|ByteDance/i,
-    45000
-  );
+  const plainIpMatch = text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  if (plainIpMatch) return plainIpMatch[0].trim();
 
-  if (firstmail.success && dreamina.success) {
-    return { level: 'OK', exitIp, firstmail, dreamina };
+  return '';
+}
+
+async function fetchProxyExitIp(proxy, config = {}) {
+  const target = getProxyPrecheckConfig(config);
+  const response = await requestViaHttpProxy(proxy, target.exitIpUrl, target.exitIpMethod, target.timeoutMs);
+  const ip = response.success ? extractIpFromResponseBody(response.body) : '';
+  return {
+    success: Boolean(response.success && ip),
+    ip,
+    response,
+    reason: response.success ? (ip ? 'OK' : 'EXIT_IP_PARSE_FAILED') : response.reason,
+  };
+}
+
+async function checkPrimaryConnectivity(proxy, config = {}) {
+  const target = getProxyPrecheckConfig(config);
+  const response = await requestViaHttpProxy(proxy, target.url, target.method, target.timeoutMs);
+  const ok = Boolean(response.success && response.status >= target.okMinStatus && response.status <= target.okMaxStatus);
+  return {
+    success: ok,
+    response,
+    reason: ok ? 'OK' : (response.success ? `HTTP_${response.status}` : response.reason),
+  };
+}
+
+async function classifyProxy(proxy, config) {
+  const exitIp = await fetchProxyExitIp(proxy, config);
+  const primary = await checkPrimaryConnectivity(proxy, config);
+
+  if (primary.success) {
+    return {
+      level: 'OK',
+      exitIp,
+      primary,
+    };
   }
 
-  if (firstmail.success && !dreamina.success) {
-    return { level: 'WEAK', exitIp, firstmail, dreamina };
+  if (exitIp.success) {
+    return {
+      level: 'WEAK',
+      exitIp,
+      primary,
+    };
   }
 
-  return { level: 'BAD', exitIp, firstmail, dreamina };
+  return {
+    level: 'BAD',
+    exitIp,
+    primary,
+  };
 }
 
 (async () => {
@@ -186,15 +282,18 @@ async function classifyProxy(proxy) {
   const withFileLock = createMutex();
   let proxyCursor = 0;
   const cursorLock = createMutex();
+  const precheckTarget = getProxyPrecheckConfig(config);
 
   fs.writeFileSync(okFile, '', 'utf8');
   fs.writeFileSync(weakFile, '', 'utf8');
   fs.writeFileSync(badFile, '', 'utf8');
   appendLine(logFile, `=== PRECHECK START ${new Date().toISOString()} ===`);
-  appendLine(logFile, `[SYSTEM] proxies=${proxies.length} requestedConcurrency=${requestedConcurrency} actualConcurrency=${concurrency}`);
+  appendLine(logFile, `[SYSTEM] proxies=${proxies.length} requestedConcurrency=${requestedConcurrency} actualConcurrency=${concurrency} primary=${precheckTarget.method} ${precheckTarget.url} okStatus=${precheckTarget.okMinStatus}-${precheckTarget.okMaxStatus} exitIp=${precheckTarget.exitIpMethod} ${precheckTarget.exitIpUrl} timeout=${precheckTarget.timeoutMs}`);
   console.log(`【系统】代理总数：${proxies.length}`);
   console.log(`【系统】预检请求并发数：${requestedConcurrency}`);
   console.log(`【系统】预检实际并发数：${concurrency}`);
+  console.log(`【系统】主预检目标：${precheckTarget.method} ${precheckTarget.url} | 通过状态=${precheckTarget.okMinStatus}-${precheckTarget.okMaxStatus} | timeout=${precheckTarget.timeoutMs}ms`);
+  console.log(`【系统】出口IP获取：${precheckTarget.exitIpMethod} ${precheckTarget.exitIpUrl}`);
   if (concurrency < requestedConcurrency) {
     console.log(`【警告】预检并发已自动收缩到 ${concurrency}`);
   }
@@ -221,25 +320,22 @@ async function classifyProxy(proxy) {
 
       const { proxy, index } = next;
       console.log(`【代理预检】[线程${workerId}] 开始检查：${proxy.server}（索引 ${index}）`);
-      const result = await classifyProxy(proxy);
-      console.log(`【代理预检】[线程${workerId}] 出口IP：${result.exitIp}`);
+      const result = await classifyProxy(proxy, config);
+      console.log(`【代理预检】[线程${workerId}] 出口IP：${result.exitIp.ip || result.exitIp.reason}`);
       await appendLineSafe(
         logFile,
-        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level} | exitIp=${result.exitIp} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`
+        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level} | exitIp=${result.exitIp.ip || 'NA'} | exitIpReason=${result.exitIp.reason} | exitIpTarget=${result.exitIp.response.target} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason} | primaryStatus=${result.primary.response.status || 'NA'} | primaryFinalUrl=${result.primary.response.finalUrl || ''}`
       );
-      await appendLineSafe(logFile, `[DETAIL] worker=${workerId} ${proxy.server} | exitIp=${result.exitIp} | firstmail_final=${result.firstmail.finalUrl || ''} | dreamina_final=${result.dreamina.finalUrl || ''}`);
-      await appendLineSafe(logFile, `[DETAIL] worker=${workerId} ${proxy.server} | firstmail_title=${JSON.stringify(result.firstmail.title || '')} | dreamina_title=${JSON.stringify(result.dreamina.title || '')}`);
-      await appendLineSafe(logFile, `[DETAIL] worker=${workerId} ${proxy.server} | firstmail_sample=${JSON.stringify(result.firstmail.sample || '').slice(0, 500)} | dreamina_sample=${JSON.stringify(result.dreamina.sample || '').slice(0, 500)}`);
 
       if (result.level === 'OK') {
         await appendLineSafe(okFile, proxy.raw);
-        console.log(`【OK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`);
+        console.log(`【OK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.ip || 'NA'} | primary=${result.primary.response.target} | reason=${result.primary.reason}`);
       } else if (result.level === 'WEAK') {
-        await appendLineSafe(weakFile, `${proxy.raw} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`);
-        console.log(`【WEAK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`);
+        await appendLineSafe(weakFile, `${proxy.raw} | exitIp=${result.exitIp.ip} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
+        console.log(`【WEAK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.ip} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
       } else {
-        await appendLineSafe(badFile, `${proxy.raw} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`);
-        console.log(`【BAD】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp} | firstmail=${result.firstmail.reason} | dreamina=${result.dreamina.reason}`);
+        await appendLineSafe(badFile, `${proxy.raw} | exitIpReason=${result.exitIp.reason} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
+        console.log(`【BAD】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.reason} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
       }
     }
   }

@@ -1,7 +1,7 @@
 {
   "proxyPolicy": "roundRobin",
   "maxProxyRetriesPerAccount": 3,
-  "concurrency": 2,
+  "concurrency": 12,
   "proxyPrecheckConcurrency": 40,
   "proxyPrecheckUrl": "https://www.google.com/",
   "proxyPrecheckMethod": "GET",
