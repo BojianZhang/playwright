@@ -13,6 +13,7 @@ function getDreaminaHealthConfig(config = {}) {
   const firstLoadHealth = profile?.firstLoadHealth || {};
 
   return {
+    homeUrl: String(profile?.homeUrl || config.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home/'),
     firstLoadGraceWaitMs: isTestMode(config)
       ? Number(firstLoadHealth.testGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 12000)
       : Number(firstLoadHealth.runGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 6000),
@@ -154,8 +155,98 @@ async function detectDreaminaFirstLoadDeadPage(page, options = {}) {
   };
 }
 
+async function checkDreaminaHomeHealth(page, options = {}) {
+  const {
+    account = null,
+    proxy = null,
+    prefix = '',
+    config = {},
+    diagnostics = null,
+    capture = null,
+    log = null,
+  } = options;
+
+  const healthConfig = getDreaminaHealthConfig(config);
+  const startedAt = Date.now();
+
+  try {
+    await page.goto(healthConfig.homeUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: Number(config.dreaminaNavigationTimeoutMs || 120000),
+    });
+    await safeCapture(capture, page, 'dreamina-home-health-open', prefix, config);
+
+    const whiteScreen = await detectDreaminaWhiteScreen(page, {
+      account,
+      proxy,
+      prefix,
+      config,
+      capture,
+    });
+    if (whiteScreen.hit) {
+      if (typeof log === 'function') log(`Dreamina 首页健康检查失败：${whiteScreen.reason}`);
+      return {
+        success: false,
+        reason: whiteScreen.reason,
+        finalUrl: page.url(),
+        elapsedMs: Date.now() - startedAt,
+        whiteScreen,
+        deadPage: null,
+      };
+    }
+
+    const deadPage = await detectDreaminaFirstLoadDeadPage(page, {
+      prefix,
+      config,
+      diagnostics,
+      capture,
+    });
+    if (deadPage.hit) {
+      if (typeof log === 'function') log(`Dreamina 首页健康检查失败：${deadPage.reason}`);
+      return {
+        success: false,
+        reason: deadPage.reason,
+        finalUrl: page.url(),
+        elapsedMs: Date.now() - startedAt,
+        whiteScreen,
+        deadPage,
+      };
+    }
+
+    return {
+      success: true,
+      reason: 'OK',
+      finalUrl: page.url(),
+      elapsedMs: Date.now() - startedAt,
+      whiteScreen,
+      deadPage,
+    };
+  } catch (error) {
+    const message = String(error?.message || 'DREAMINA_NAV_ERROR');
+    return {
+      success: false,
+      reason: /timeout/i.test(message) ? 'DREAMINA_OPEN_TIMEOUT' : 'DREAMINA_NAV_ERROR',
+      finalUrl: typeof page?.url === 'function' ? page.url() : '',
+      elapsedMs: Date.now() - startedAt,
+      whiteScreen: null,
+      deadPage: null,
+      error: message,
+    };
+  }
+}
+
+function isDreaminaHomeHardFailure(reason = '') {
+  const text = String(reason || '').trim();
+  return text === 'DREAMINA_WHITE_SCREEN'
+    || text.startsWith('DREAMINA_WHITE_SCREEN|')
+    || text === 'DREAMINA_FIRST_LOAD_DEAD_PAGE'
+    || text.startsWith('DREAMINA_FIRST_LOAD_DEAD_PAGE|');
+}
+
 module.exports = {
   getDreaminaHealthConfig,
   detectDreaminaWhiteScreen,
   detectDreaminaFirstLoadDeadPage,
+  checkDreaminaHomeHealth,
+  isDreaminaHomeHardFailure,
 };

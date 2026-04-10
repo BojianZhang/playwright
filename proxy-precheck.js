@@ -3,6 +3,8 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const tls = require('tls');
+const { chromium } = require('playwright');
+const { checkDreaminaHomeHealth, isDreaminaHomeHardFailure } = require('./dreamina-health');
 
 function createMutex() {
   let current = Promise.resolve();
@@ -69,6 +71,12 @@ function getProxyPrecheckConfig(config = {}) {
   const timeoutMs = Number(config.proxyConnectivityTimeoutMs || 15000);
   const exitIpUrl = String(config.proxyExitIpUrl || 'https://api.ipify.org?format=json').trim();
   const exitIpMethod = String(config.proxyExitIpMethod || 'GET').trim().toUpperCase();
+  const secondaryUrl = String(config.proxyPrecheckSecondaryUrl || 'https://www.capcut.com/').trim();
+  const secondaryMethod = String(config.proxyPrecheckSecondaryMethod || 'GET').trim().toUpperCase();
+  const secondaryOkMinStatus = Number(config.proxyPrecheckSecondaryOkMinStatus || 200);
+  const secondaryOkMaxStatus = Number(config.proxyPrecheckSecondaryOkMaxStatus || 399);
+  const fastThresholdMs = Number(config.proxyPrecheckFastThresholdMs || 2500);
+  const slowThresholdMs = Number(config.proxyPrecheckSlowThresholdMs || 6000);
   return {
     url,
     method,
@@ -77,6 +85,12 @@ function getProxyPrecheckConfig(config = {}) {
     timeoutMs,
     exitIpUrl,
     exitIpMethod,
+    secondaryUrl,
+    secondaryMethod,
+    secondaryOkMinStatus,
+    secondaryOkMaxStatus,
+    fastThresholdMs,
+    slowThresholdMs,
   };
 }
 
@@ -84,6 +98,7 @@ function requestViaHttpProxy(proxy, url, method, timeoutMs) {
   const targetUrl = new URL(url);
   const targetLabel = `${method} ${targetUrl.toString()}`;
   const proxyAuth = buildBasicAuthHeader(proxy.username, proxy.password);
+  const startedAt = Date.now();
 
   return new Promise((resolve) => {
     const connectReq = http.request({
@@ -101,7 +116,10 @@ function requestViaHttpProxy(proxy, url, method, timeoutMs) {
     function finish(result) {
       if (settled) return;
       settled = true;
-      resolve(result);
+      resolve({
+        ...result,
+        durationMs: Date.now() - startedAt,
+      });
     }
 
     connectReq.setTimeout(timeoutMs, () => {
@@ -234,10 +252,9 @@ async function fetchProxyExitIp(proxy, config = {}) {
   };
 }
 
-async function checkPrimaryConnectivity(proxy, config = {}) {
-  const target = getProxyPrecheckConfig(config);
-  const response = await requestViaHttpProxy(proxy, target.url, target.method, target.timeoutMs);
-  const ok = Boolean(response.success && response.status >= target.okMinStatus && response.status <= target.okMaxStatus);
+async function checkConnectivityTarget(proxy, url, method, okMinStatus, okMaxStatus, timeoutMs) {
+  const response = await requestViaHttpProxy(proxy, url, method, timeoutMs);
+  const ok = Boolean(response.success && response.status >= okMinStatus && response.status <= okMaxStatus);
   return {
     success: ok,
     response,
@@ -245,30 +262,115 @@ async function checkPrimaryConnectivity(proxy, config = {}) {
   };
 }
 
-async function classifyProxy(proxy, config) {
-  const exitIp = await fetchProxyExitIp(proxy, config);
-  const primary = await checkPrimaryConnectivity(proxy, config);
+function classifySpeedTier(durationMs, fastThresholdMs, slowThresholdMs) {
+  const value = Number(durationMs || 0);
+  if (!value) return 'UNKNOWN';
+  if (value <= fastThresholdMs) return 'FAST';
+  if (value >= slowThresholdMs) return 'SLOW';
+  return 'NORMAL';
+}
 
-  if (primary.success) {
+async function runDreaminaHomeHealthCheck(proxy, config = {}) {
+  let browser;
+  let context;
+  let page;
+  const startedAt = Date.now();
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      proxy: {
+        server: proxy.server,
+        username: proxy.username,
+        password: proxy.password,
+      },
+    });
+
+    context = await browser.newContext();
+    page = await context.newPage();
+    const result = await checkDreaminaHomeHealth(page, {
+      proxy,
+      config,
+      prefix: `proxy-health-${proxy.host}-${proxy.port}`.replace(/[^\w.-]+/g, '_'),
+    });
+    return {
+      ...result,
+      elapsedMs: Number(result.elapsedMs || (Date.now() - startedAt)),
+    };
+  } catch (error) {
+    const message = String(error?.message || 'DREAMINA_HOME_HEALTH_CHECK_ERROR');
+    return {
+      success: false,
+      reason: /timeout/i.test(message) ? 'DREAMINA_OPEN_TIMEOUT' : 'DREAMINA_HOME_HEALTH_CHECK_ERROR',
+      finalUrl: '',
+      elapsedMs: Date.now() - startedAt,
+      whiteScreen: null,
+      deadPage: null,
+      error: message,
+    };
+  } finally {
+    if (page) await page.close().catch(() => {});
+    if (context) await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+async function classifyProxy(proxy, config) {
+  const target = getProxyPrecheckConfig(config);
+  const primary = await checkConnectivityTarget(proxy, target.url, target.method, target.okMinStatus, target.okMaxStatus, target.timeoutMs);
+  const secondary = await checkConnectivityTarget(proxy, target.secondaryUrl, target.secondaryMethod, target.secondaryOkMinStatus, target.secondaryOkMaxStatus, target.timeoutMs);
+  const exitIp = await fetchProxyExitIp(proxy, config);
+
+  const overallSuccess = primary.success && secondary.success;
+  const connectivityPartial = primary.success || secondary.success || exitIp.success;
+  const secondarySpeedTier = classifySpeedTier(secondary.response.durationMs, target.fastThresholdMs, target.slowThresholdMs);
+  const primarySpeedTier = classifySpeedTier(primary.response.durationMs, target.fastThresholdMs, target.slowThresholdMs);
+
+  let homeHealth = null;
+  if (connectivityPartial) {
+    homeHealth = await runDreaminaHomeHealthCheck(proxy, config);
+  }
+
+  if (overallSuccess && homeHealth?.success) {
     return {
       level: 'OK',
+      speedTier: secondarySpeedTier,
       exitIp,
       primary,
+      secondary,
+      homeHealth,
     };
   }
 
-  if (exitIp.success) {
+  if (homeHealth && isDreaminaHomeHardFailure(homeHealth.reason)) {
     return {
-      level: 'WEAK',
+      level: 'BAD',
+      speedTier: secondary.success ? secondarySpeedTier : primarySpeedTier,
       exitIp,
       primary,
+      secondary,
+      homeHealth,
+    };
+  }
+
+  if (connectivityPartial) {
+    return {
+      level: 'WEAK',
+      speedTier: secondary.success ? secondarySpeedTier : primarySpeedTier,
+      exitIp,
+      primary,
+      secondary,
+      homeHealth,
     };
   }
 
   return {
     level: 'BAD',
+    speedTier: 'UNREACHABLE',
     exitIp,
     primary,
+    secondary,
+    homeHealth,
   };
 }
 
@@ -288,11 +390,13 @@ async function classifyProxy(proxy, config) {
   fs.writeFileSync(weakFile, '', 'utf8');
   fs.writeFileSync(badFile, '', 'utf8');
   appendLine(logFile, `=== PRECHECK START ${new Date().toISOString()} ===`);
-  appendLine(logFile, `[SYSTEM] proxies=${proxies.length} requestedConcurrency=${requestedConcurrency} actualConcurrency=${concurrency} primary=${precheckTarget.method} ${precheckTarget.url} okStatus=${precheckTarget.okMinStatus}-${precheckTarget.okMaxStatus} exitIp=${precheckTarget.exitIpMethod} ${precheckTarget.exitIpUrl} timeout=${precheckTarget.timeoutMs}`);
+  appendLine(logFile, `[SYSTEM] proxies=${proxies.length} requestedConcurrency=${requestedConcurrency} actualConcurrency=${concurrency} primary=${precheckTarget.method} ${precheckTarget.url} okStatus=${precheckTarget.okMinStatus}-${precheckTarget.okMaxStatus} secondary=${precheckTarget.secondaryMethod} ${precheckTarget.secondaryUrl} secondaryOkStatus=${precheckTarget.secondaryOkMinStatus}-${precheckTarget.secondaryOkMaxStatus} fastThresholdMs=${precheckTarget.fastThresholdMs} slowThresholdMs=${precheckTarget.slowThresholdMs} exitIp=${precheckTarget.exitIpMethod} ${precheckTarget.exitIpUrl} timeout=${precheckTarget.timeoutMs}`);
   console.log(`【系统】代理总数：${proxies.length}`);
   console.log(`【系统】预检请求并发数：${requestedConcurrency}`);
   console.log(`【系统】预检实际并发数：${concurrency}`);
   console.log(`【系统】主预检目标：${precheckTarget.method} ${precheckTarget.url} | 通过状态=${precheckTarget.okMinStatus}-${precheckTarget.okMaxStatus} | timeout=${precheckTarget.timeoutMs}ms`);
+  console.log(`【系统】副预检目标：${precheckTarget.secondaryMethod} ${precheckTarget.secondaryUrl} | 通过状态=${precheckTarget.secondaryOkMinStatus}-${precheckTarget.secondaryOkMaxStatus}`);
+  console.log(`【系统】速度分层：FAST<=${precheckTarget.fastThresholdMs}ms | SLOW>=${precheckTarget.slowThresholdMs}ms`);
   console.log(`【系统】出口IP获取：${precheckTarget.exitIpMethod} ${precheckTarget.exitIpUrl}`);
   if (concurrency < requestedConcurrency) {
     console.log(`【警告】预检并发已自动收缩到 ${concurrency}`);
@@ -324,18 +428,18 @@ async function classifyProxy(proxy, config) {
       console.log(`【代理预检】[线程${workerId}] 出口IP：${result.exitIp.ip || result.exitIp.reason}`);
       await appendLineSafe(
         logFile,
-        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level} | exitIp=${result.exitIp.ip || 'NA'} | exitIpReason=${result.exitIp.reason} | exitIpTarget=${result.exitIp.response.target} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason} | primaryStatus=${result.primary.response.status || 'NA'} | primaryFinalUrl=${result.primary.response.finalUrl || ''}`
+        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level}/${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | exitIpReason=${result.exitIp.reason} | exitIpDurationMs=${result.exitIp.response.durationMs || 'NA'} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason} | primaryStatus=${result.primary.response.status || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondary=${result.secondary.response.target} | secondaryReason=${result.secondary.reason} | secondaryStatus=${result.secondary.response.status || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`
       );
 
       if (result.level === 'OK') {
-        await appendLineSafe(okFile, proxy.raw);
-        console.log(`【OK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.ip || 'NA'} | primary=${result.primary.response.target} | reason=${result.primary.reason}`);
+        await appendLineSafe(okFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        console.log(`【OK】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       } else if (result.level === 'WEAK') {
-        await appendLineSafe(weakFile, `${proxy.raw} | exitIp=${result.exitIp.ip} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
-        console.log(`【WEAK】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.ip} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
+        await appendLineSafe(weakFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        console.log(`【WEAK】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | primaryReason=${result.primary.reason} | secondaryReason=${result.secondary.reason} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       } else {
-        await appendLineSafe(badFile, `${proxy.raw} | exitIpReason=${result.exitIp.reason} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
-        console.log(`【BAD】[线程${workerId}] ${proxy.server} | 出口IP=${result.exitIp.reason} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason}`);
+        await appendLineSafe(badFile, `${proxy.raw} | speed=${result.speedTier} | exitIpReason=${result.exitIp.reason} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        console.log(`【BAD】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | primaryReason=${result.primary.reason} | secondaryReason=${result.secondary.reason} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       }
     }
   }
