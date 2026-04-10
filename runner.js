@@ -32,6 +32,41 @@ function getScreenSize() {
   };
 }
 
+function resolveRunMode(config = {}) {
+  return String(config.runMode || 'run').trim().toLowerCase();
+}
+
+function isTestMode(config = {}) {
+  return resolveRunMode(config) === 'test';
+}
+
+function shouldCaptureScreenshots(config = {}) {
+  if (typeof config.enableScreenshots === 'boolean') {
+    return config.enableScreenshots;
+  }
+  return isTestMode(config);
+}
+
+function resolveSlowMo(config = {}) {
+  if (isTestMode(config)) {
+    return Number(config.testSlowMo ?? config.slowMo ?? 120);
+  }
+  return Number(config.runSlowMo ?? 0);
+}
+
+function resolveHumanPauseRange(config = {}) {
+  if (isTestMode(config)) {
+    return {
+      min: Number(config.testHumanPauseMinMs ?? 800),
+      max: Number(config.testHumanPauseMaxMs ?? 1800),
+    };
+  }
+  return {
+    min: Number(config.runHumanPauseMinMs ?? 0),
+    max: Number(config.runHumanPauseMaxMs ?? 0),
+  };
+}
+
 function buildTieredWindowSlots(concurrency, screen, config) {
   const margin = Number(config.windowMargin || 8);
   const gap = Number(config.windowGap || 12);
@@ -283,6 +318,22 @@ function isHardProxyFailureReason(reason) {
   return text === 'DREAMINA_WHITE_SCREEN' || text === 'DREAMINA_BIRTHDAY_STAGE_UNREACHABLE';
 }
 
+function isBusinessFailureReason(reason) {
+  const text = String(reason || '').trim();
+  return text === 'ACCOUNT_ALREADY_EXISTS'
+    || text.startsWith('WRONG_VERIFICATION_CODE')
+    || text === 'SIGNUP_REJECTED';
+}
+
+function classifyFailureReason(reason) {
+  const text = String(reason || '').trim();
+  if (text === 'ACCOUNT_ALREADY_EXISTS') return 'ACCOUNT_EXISTS';
+  if (text.startsWith('WRONG_VERIFICATION_CODE')) return 'WRONG_CODE';
+  if (text === 'SIGNUP_REJECTED') return 'SIGNUP_REJECTED';
+  if (isHardProxyFailureReason(text)) return 'HARD_PROXY';
+  return 'GENERAL_FAIL';
+}
+
 function requestViaHttpProxy(proxy, url, method, timeoutMs) {
   const targetUrl = new URL(url);
   const targetLabel = `${method} ${targetUrl.toString()}`;
@@ -453,8 +504,12 @@ function buildRunSummary({
   doneAccountRawSet,
   resultsDir,
 }) {
-  const estimatedMailWaitSeconds = Math.round((Number(config.waitMailAttempts || 0) * Number(config.waitMailIntervalMs || 0)) / 1000);
+  const estimatedMailWaitSeconds = Math.round((Number(config.firstmailApiMaxPollAttempts || config.waitMailAttempts || 0) * Number(config.waitMailIntervalMs || 0)) / 1000);
   const proxyPrecheck = getProxyPrecheckConfig(config);
+  const runMode = resolveRunMode(config);
+  const actualSlowMo = resolveSlowMo(config);
+  const pauseRange = resolveHumanPauseRange(config);
+  const screenshotEnabled = shouldCaptureScreenshots(config);
   const lines = [
     '=== 本次运行摘要 ===',
     `账号文件：${accountsPath}`,
@@ -464,15 +519,18 @@ function buildRunSummary({
     `待跑账号数：${accounts.length}`,
     `已跳过成功账号数：${doneAccountRawSet.size}`,
     `可用代理数：${proxies.length}`,
+    `运行模式：${runMode}`,
+    `截图开关：${formatBooleanLabel(screenshotEnabled)}`,
+    `实际 SlowMo：${actualSlowMo}ms`,
+    `实际 HumanPause：${pauseRange.min}-${pauseRange.max}ms`,
     `代理策略：${config.proxyPolicy}`,
     `请求并发数：${requestedConcurrency}`,
     `实际并发数：${concurrency}`,
     `浏览器可见：${formatBooleanLabel(!Boolean(config.headless))}`,
-    `SlowMo：${Number(config.slowMo || 0)}ms`,
     `每账号最大代理重试：${Number(config.maxProxyRetriesPerAccount || 0)} 次`,
     `代理预检：${proxyPrecheck.method} ${proxyPrecheck.url} | 通过状态=${proxyPrecheck.okMinStatus}-${proxyPrecheck.okMaxStatus} | timeout=${proxyPrecheck.timeoutMs}ms`,
     `出口IP获取：${proxyPrecheck.exitIpMethod} ${proxyPrecheck.exitIpUrl}`,
-    `验证码最大等待：约 ${estimatedMailWaitSeconds} 秒（${Number(config.waitMailAttempts || 0)} 次 × ${Number(config.waitMailIntervalMs || 0)}ms）`,
+    `验证码最大等待：约 ${estimatedMailWaitSeconds} 秒（${Number(config.firstmailApiMaxPollAttempts || config.waitMailAttempts || 0)} 次 × ${Number(config.waitMailIntervalMs || 0)}ms）`,
     `Dreamina 恢复上限：${Number(config.dreaminaMaxRecoveries || 0)} 次`,
     `恢复后顺延等待：${Number(config.dreaminaRecoveryBonusMs || 0)}ms`,
     `窗口布局：${config.windowLayout || 'grid'} | gap=${Number(config.windowGap || 0)} | margin=${Number(config.windowMargin || 0)}`,
@@ -505,6 +563,9 @@ function removeProxyFromList(filePath, targetRaw) {
 
   const successFile = path.join(resultsDir, 'success.txt');
   const failedFile = path.join(resultsDir, 'failed.txt');
+  const alreadyExistsFile = path.join(resultsDir, 'already-exists.txt');
+  const wrongCodeFile = path.join(resultsDir, 'wrong-code.txt');
+  const signupRejectedFile = path.join(resultsDir, 'signup-rejected.txt');
   const runLogFile = path.join(resultsDir, 'run-log.txt');
   const precheckFile = path.join(resultsDir, 'runner-precheck.txt');
   const sessionFile = path.join(resultsDir, 'sessions.txt');
@@ -537,7 +598,7 @@ function removeProxyFromList(filePath, targetRaw) {
   });
 
   appendLine(runLogFile, `=== RUN START ${new Date().toISOString()} ===`);
-  appendLine(runLogFile, `accounts_total=${allAccounts.length}, accounts_pending=${accounts.length}, proxies=${proxies.length}, policy=${config.proxyPolicy}, source=${proxySourcePath}, concurrency=${concurrency}, requestedConcurrency=${requestedConcurrency}`);
+  appendLine(runLogFile, `accounts_total=${allAccounts.length}, accounts_pending=${accounts.length}, proxies=${proxies.length}, policy=${config.proxyPolicy}, source=${proxySourcePath}, concurrency=${concurrency}, requestedConcurrency=${requestedConcurrency}, runMode=${resolveRunMode(config)}, actualSlowMo=${resolveSlowMo(config)}, screenshots=${shouldCaptureScreenshots(config)}`);
   for (const line of runSummaryLines) {
     appendLine(runLogFile, line);
   }
@@ -728,8 +789,24 @@ function removeProxyFromList(filePath, targetRaw) {
           }
 
           lastReason = result.reason || 'UNKNOWN_FAIL';
-          await appendLineSafe(runLogFile, `[FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
+          const failureKind = classifyFailureReason(lastReason);
+          await appendLineSafe(runLogFile, `[FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} failureKind=${failureKind} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
           logFail(`真实注册流程失败：${account.email} | 原因：${lastReason}`);
+
+          if (failureKind === 'ACCOUNT_EXISTS') {
+            await appendLineSafe(alreadyExistsFile, `${account.email}:${account.password} | status=exists | worker=${workerId} | proxy=${proxy.raw}`);
+            break;
+          }
+
+          if (failureKind === 'WRONG_CODE') {
+            await appendLineSafe(wrongCodeFile, `${account.email}:${account.password} | status=wrong_code | worker=${workerId} | proxy=${proxy.raw} | reason=${lastReason}`);
+            break;
+          }
+
+          if (failureKind === 'SIGNUP_REJECTED') {
+            await appendLineSafe(signupRejectedFile, `${account.email}:${account.password} | status=signup_rejected | worker=${workerId} | proxy=${proxy.raw} | reason=${lastReason}`);
+            break;
+          }
 
           if (isHardProxyFailureReason(lastReason)) {
             await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
@@ -740,17 +817,22 @@ function removeProxyFromList(filePath, targetRaw) {
             continue;
           }
 
-          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
-          if (currentFail >= 2) {
-            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
-            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
-            await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+          if (!isBusinessFailureReason(lastReason)) {
+            const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
+            if (currentFail >= 2) {
+              await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
+              logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
+              await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+              const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+              await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+            }
+          } else {
+            await appendLineSafe(runLogFile, `[BUSINESS_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason} | skip_proxy_penalty=true`);
           }
         } catch (error) {
           lastReason = error.message || 'EXCEPTION';
-          await appendLineSafe(runLogFile, `[ERROR] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
+          const failureKind = classifyFailureReason(lastReason);
+          await appendLineSafe(runLogFile, `[ERROR] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} failureKind=${failureKind} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
           logFail(`真实注册流程异常：账号=${account.email} | 原因=${lastReason}`);
 
           if (isHardProxyFailureReason(lastReason)) {
@@ -762,13 +844,18 @@ function removeProxyFromList(filePath, targetRaw) {
             continue;
           }
 
-          const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
-          if (currentFail >= 2) {
-            await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
-            logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
-            await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+          if (!isBusinessFailureReason(lastReason)) {
+            const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
+            if (currentFail >= 2) {
+              await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
+              logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
+              await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
+              const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+              await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+            }
+          } else {
+            await appendLineSafe(runLogFile, `[BUSINESS_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason} | skip_proxy_penalty=true`);
+            break;
           }
         }
       } finally {
@@ -777,6 +864,23 @@ function removeProxyFromList(filePath, targetRaw) {
     }
 
     if (!success) {
+      const failureKind = classifyFailureReason(lastReason);
+      if (failureKind === 'ACCOUNT_EXISTS') {
+        logWarn(`账号已存在：${account.email}`);
+        await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_EXISTS reason=${lastReason}`);
+        return;
+      }
+      if (failureKind === 'WRONG_CODE') {
+        logWarn(`验证码错误：${account.email}`);
+        await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_WRONG_CODE reason=${lastReason}`);
+        return;
+      }
+      if (failureKind === 'SIGNUP_REJECTED') {
+        logWarn(`注册被拒：${account.email}`);
+        await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_SIGNUP_REJECTED reason=${lastReason}`);
+        return;
+      }
+
       await appendLineSafe(failedFile, `${account.email}:${account.password} | status=failed | reason=${lastReason} | worker=${workerId}`);
       await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_FAIL stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
       logFail(`账号最终失败：${account.email} | 原因：${lastReason}`);

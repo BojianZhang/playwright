@@ -71,6 +71,41 @@ function makeLogger(prefix) {
   return (message) => console.log(`[${prefix}] ${message}`);
 }
 
+function resolveRunMode(config = {}) {
+  return String(config.runMode || 'run').trim().toLowerCase();
+}
+
+function isTestMode(config = {}) {
+  return resolveRunMode(config) === 'test';
+}
+
+function shouldCaptureScreenshots(config = {}) {
+  if (typeof config.enableScreenshots === 'boolean') {
+    return config.enableScreenshots;
+  }
+  return isTestMode(config);
+}
+
+function resolveSlowMo(config = {}) {
+  if (isTestMode(config)) {
+    return Number(config.testSlowMo ?? config.slowMo ?? 120);
+  }
+  return Number(config.runSlowMo ?? 0);
+}
+
+function resolveHumanPauseRange(config = {}) {
+  if (isTestMode(config)) {
+    return {
+      min: Number(config.testHumanPauseMinMs ?? 800),
+      max: Number(config.testHumanPauseMaxMs ?? 1800),
+    };
+  }
+  return {
+    min: Number(config.runHumanPauseMinMs ?? 0),
+    max: Number(config.runHumanPauseMaxMs ?? 0),
+  };
+}
+
 async function runPowerShellWindowLayout(browser, windowBounds, workerId, account) {
   if (!browser || !windowBounds || !fs.existsSync(WINDOW_LAYOUT_SCRIPT)) return;
 
@@ -121,14 +156,21 @@ function logTaskStage(stageNo, account, proxy, current, extra = '') {
   logStage(`阶段${stageNo} | 账号=${account.email} | 代理=${proxy?.server || 'NO_PROXY'} | 当前=${current}${suffix}`);
 }
 
-async function capture(page, name, prefix) {
+async function capture(page, name, prefix, config = {}) {
+  if (!shouldCaptureScreenshots(config)) return '';
   const filePath = path.join(SCREENSHOT_DIR, `${prefix}-${name}.png`);
   await page.screenshot({ path: filePath, fullPage: true }).catch(() => {});
   return filePath;
 }
 
-async function humanPause(page, min = 800, max = 1800) {
-  const delay = Math.floor(min + Math.random() * (max - min));
+async function humanPause(page, config = {}, min, max) {
+  const range = resolveHumanPauseRange(config);
+  const finalMin = Number(min ?? range.min ?? 0);
+  const finalMax = Number(max ?? range.max ?? finalMin);
+  const safeMin = Math.max(0, finalMin);
+  const safeMax = Math.max(safeMin, finalMax);
+  const delay = safeMax === safeMin ? safeMin : Math.floor(safeMin + Math.random() * (safeMax - safeMin));
+  if (delay <= 0) return;
   await page.waitForTimeout(delay);
 }
 
@@ -147,7 +189,7 @@ async function fetchVerificationCodeViaApi(account, proxy, config, log) {
   });
 }
 
-async function preprocessDreaminaOverlays(page, log, prefix) {
+async function preprocessDreaminaOverlays(page, log, prefix, config) {
   const overlayCandidates = [
     page.getByRole('button', { name: 'Accept all' }),
     page.getByRole('button', { name: 'Accept' }),
@@ -169,11 +211,11 @@ async function preprocessDreaminaOverlays(page, log, prefix) {
     if (await visible(candidate)) {
       log(`处理 Dreamina 前置弹层候选 ${i + 1}`);
       logWarn(`检测到前置弹层，准备处理第 ${i + 1} 个候选`);
-      await capture(page, `overlay-visible-${i + 1}`, prefix);
-      await humanPause(page, 900, 1800);
+      await capture(page, `overlay-visible-${i + 1}`, prefix, config);
+      await humanPause(page, config, 900, 1800);
       await candidate.click().catch(() => {});
       await page.waitForTimeout(1500);
-      await capture(page, `overlay-dismissed-${i + 1}`, prefix);
+      await capture(page, `overlay-dismissed-${i + 1}`, prefix, config);
       handled = true;
     }
   }
@@ -203,7 +245,7 @@ async function hasDreaminaLoginSignals(page) {
   return { found: false, label: '' };
 }
 
-async function recoverDreaminaErrorModal(page, log, prefix, account, proxy) {
+async function recoverDreaminaErrorModal(page, log, prefix, account, proxy, config) {
   const refreshButton = page.getByRole('button', { name: /refresh/i }).first();
   const errorText = page.getByText(/something went wrong/i).first();
   const retryText = page.getByText(/refresh the page and try again/i).first();
@@ -213,10 +255,10 @@ async function recoverDreaminaErrorModal(page, log, prefix, account, proxy) {
 
   logTaskStage(2, account, proxy, '检测到异常弹窗', '准备刷新页面恢复');
   logWarn('Dreamina 页面出现 Something went wrong / Refresh 弹窗，准备自动恢复');
-  await capture(page, 'dreamina-error-modal', prefix);
+  await capture(page, 'dreamina-error-modal', prefix, config);
 
   if (await visible(refreshButton)) {
-    await humanPause(page, 800, 1500);
+    await humanPause(page, config, 800, 1500);
     await refreshButton.click().catch(() => {});
     await page.waitForTimeout(4000);
   } else {
@@ -224,7 +266,7 @@ async function recoverDreaminaErrorModal(page, log, prefix, account, proxy) {
     await page.waitForTimeout(4000);
   }
 
-  await capture(page, 'dreamina-error-modal-recovered', prefix);
+  await capture(page, 'dreamina-error-modal-recovered', prefix, config);
   return true;
 }
 
@@ -251,8 +293,8 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
     const intervalMs = Number(stage.intervalMs || 1000);
     for (let i = 0; i < seconds; i++) {
       round += 1;
-      await preprocessDreaminaOverlays(page, log, prefix);
-      const recovered = await recoverDreaminaErrorModal(page, log, prefix, account, proxy);
+      await preprocessDreaminaOverlays(page, log, prefix, options.config);
+      const recovered = await recoverDreaminaErrorModal(page, log, prefix, account, proxy, options.config);
       if (recovered) {
         recoveryCount += 1;
         recoveryBonusLeftMs += recoveryBonusMs;
@@ -260,7 +302,7 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
         if (recoveryCount > maxRecoveries) {
           throw new Error(`Dreamina 异常恢复次数超限：${recoveryCount}/${maxRecoveries}`);
         }
-        await preprocessDreaminaOverlays(page, log, prefix);
+        await preprocessDreaminaOverlays(page, log, prefix, options.config);
       }
 
       const signal = await hasDreaminaLoginSignals(page);
@@ -271,7 +313,7 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
 
       if (round % 5 === 0) {
         logInfo(`Dreamina 登录入口仍未出现：已等待 ${Math.round(elapsedMs / 1000)} 秒，当前间隔=${intervalMs}ms，恢复次数=${recoveryCount}/${maxRecoveries}，剩余顺延=${Math.round(recoveryBonusLeftMs / 1000)}秒`);
-        await capture(page, `dreamina-wait-login-${round}`, prefix);
+        await capture(page, `dreamina-wait-login-${round}`, prefix, options.config);
       }
 
       await page.waitForTimeout(intervalMs);
@@ -281,8 +323,8 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
 
   while (recoveryBonusLeftMs > 0) {
     round += 1;
-    await preprocessDreaminaOverlays(page, log, prefix);
-    const recovered = await recoverDreaminaErrorModal(page, log, prefix, account, proxy);
+    await preprocessDreaminaOverlays(page, log, prefix, options.config);
+    const recovered = await recoverDreaminaErrorModal(page, log, prefix, account, proxy, options.config);
     if (recovered) {
       recoveryCount += 1;
       recoveryBonusLeftMs += recoveryBonusMs;
@@ -290,7 +332,7 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
       if (recoveryCount > maxRecoveries) {
         throw new Error(`Dreamina 异常恢复次数超限：${recoveryCount}/${maxRecoveries}`);
       }
-      await preprocessDreaminaOverlays(page, log, prefix);
+      await preprocessDreaminaOverlays(page, log, prefix, options.config);
     }
 
     const signal = await hasDreaminaLoginSignals(page);
@@ -306,7 +348,7 @@ async function waitForDreaminaLoginSignals(page, log, prefix, account, proxy, op
 
     if (round % 5 === 0 || recoveryBonusLeftMs <= 0) {
       logInfo(`Dreamina 顺延等待中：已等待 ${Math.round(elapsedMs / 1000)} 秒，恢复次数=${recoveryCount}/${maxRecoveries}，剩余顺延=${Math.round(recoveryBonusLeftMs / 1000)}秒`);
-      await capture(page, `dreamina-wait-login-bonus-${round}`, prefix);
+      await capture(page, `dreamina-wait-login-bonus-${round}`, prefix, options.config);
     }
   }
 
@@ -327,11 +369,11 @@ async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, 
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
       }
 
-      await capture(page, `dreamina-open-${attempt}`, prefix);
-      if (await detectDreaminaWhiteScreen(page, account, proxy, prefix)) {
+      await capture(page, `dreamina-open-${attempt}`, prefix, config);
+      if (await detectDreaminaWhiteScreen(page, account, proxy, prefix, config)) {
         throw new Error('DREAMINA_WHITE_SCREEN');
       }
-      await preprocessDreaminaOverlays(page, log, prefix);
+      await preprocessDreaminaOverlays(page, log, prefix, config);
 
       const signal = await waitForDreaminaLoginSignals(page, log, prefix, account, proxy, {
         stages: [
@@ -341,6 +383,7 @@ async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, 
         ],
         maxRecoveries: Number(config.dreaminaMaxRecoveries || 3),
         recoveryBonusMs: Number(config.dreaminaRecoveryBonusMs || 15000),
+        config,
       });
       if (signal.found) {
         log(`Dreamina 登录信号出现：${signal.label}`);
@@ -356,9 +399,9 @@ async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, 
   throw new Error('Dreamina 首页多次重试后仍不可用');
 }
 
-async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
+async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy, config) {
   logTaskStage(2, account, proxy, '进入邮箱注册表单');
-  await preprocessDreaminaOverlays(page, log, prefix);
+  await preprocessDreaminaOverlays(page, log, prefix, config);
 
   const emailInput = page.getByRole('textbox', { name: 'Enter email' });
   if (await visible(emailInput)) return;
@@ -366,7 +409,7 @@ async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
   const continueWithEmailButton = page.locator('div').filter({ hasText: /^Continue with email$/ }).nth(1);
   if (await visible(continueWithEmailButton)) {
     logInfo('检测到 Continue with email，准备点击进入邮箱注册');
-    await humanPause(page, 1000, 2000);
+    await humanPause(page, config, 1000, 2000);
     await continueWithEmailButton.click();
     await emailInput.waitFor({ state: 'visible', timeout: 45000 });
     return;
@@ -386,14 +429,14 @@ async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
     const target = candidate.first();
     if (await visible(target)) {
       logInfo('检测到 Sign in / Log in / Sign up，准备点击进入注册入口');
-      await humanPause(page, 1000, 2000);
+      await humanPause(page, config, 1000, 2000);
       await target.click();
       await page.waitForTimeout(4000);
-      await preprocessDreaminaOverlays(page, log, prefix);
+      await preprocessDreaminaOverlays(page, log, prefix, config);
 
       if (await visible(continueWithEmailButton)) {
         logInfo('点击后出现 Continue with email，继续进入邮箱注册');
-        await humanPause(page, 1000, 2000);
+        await humanPause(page, config, 1000, 2000);
         await continueWithEmailButton.click();
       }
 
@@ -405,7 +448,7 @@ async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
   throw new Error('未找到 Dreamina 登录/注册入口');
 }
 
-async function detectSignupFailure(page, log, prefix) {
+async function detectSignupFailure(page, log, prefix, config) {
   const explicitFailureRules = [
     {
       reason: 'ACCOUNT_ALREADY_EXISTS',
@@ -436,7 +479,7 @@ async function detectSignupFailure(page, log, prefix) {
 
   for (const rule of explicitFailureRules) {
     if (await visible(rule.locator)) {
-      await capture(page, `dreamina-signup-failed-${rule.reason.toLowerCase()}`, prefix);
+      await capture(page, `dreamina-signup-failed-${rule.reason.toLowerCase()}`, prefix, config);
       log(`检测到 Dreamina 注册失败提示：${rule.label}`);
       logFail(`注册页面出现失败提示：${rule.label}`);
       return rule.reason;
@@ -446,7 +489,7 @@ async function detectSignupFailure(page, log, prefix) {
   return '';
 }
 
-async function detectDreaminaWhiteScreen(page, account, proxy, prefix) {
+async function detectDreaminaWhiteScreen(page, account, proxy, prefix, config) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
   const trimmedText = String(bodyText || '').replace(/\s+/g, ' ').trim();
   const html = await page.content().catch(() => '');
@@ -461,14 +504,14 @@ async function detectDreaminaWhiteScreen(page, account, proxy, prefix) {
   if (bodySeemsBlank && domSeemsThin && !hasVisibleAppSignals) {
     logTaskStage(1, account, proxy, 'Dreamina 白屏检测命中', `bodyLen=${trimmedText.length} | htmlLen=${String(html || '').length}`);
     logWarn('Dreamina 页面疑似白屏/空白加载，判定为强失败');
-    await capture(page, 'dreamina-white-screen', prefix);
+    await capture(page, 'dreamina-white-screen', prefix, config);
     return true;
   }
 
   return false;
 }
 
-async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeoutMs = 20000) {
+async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeoutMs = 20000, config = {}) {
   const yearInput = page.getByRole('textbox', { name: 'Year' });
   const monthDropdown = page.getByText('Month').last();
   const dayDropdown = page.getByText('Day', { exact: true }).last();
@@ -494,7 +537,7 @@ async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeo
 
   logTaskStage(4, account, proxy, '生日页未就绪', `等待超时=${timeoutMs}ms`);
   logWarn('验证码提交后未能进入生日输入阶段，判定当前代理/链路不可用');
-  await capture(page, 'dreamina-birthday-unreachable', prefix);
+  await capture(page, 'dreamina-birthday-unreachable', prefix, config);
   throw new Error('DREAMINA_BIRTHDAY_STAGE_UNREACHABLE');
 }
 
@@ -560,7 +603,7 @@ async function saveStorageState(context, account, attempt) {
   return filePath;
 }
 
-async function waitForVerificationCountdown(page, account, proxy, prefix, timeoutMs = 30000) {
+async function waitForVerificationCountdown(page, account, proxy, prefix, timeoutMs = 30000, config = {}) {
   const countdownLocators = [
     page.locator('text=/Resend code in\\s*\\d+s/i').first(),
     page.locator('text=/resend code/i').first(),
@@ -575,7 +618,7 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const signupFailureReason = await detectSignupFailure(page, logInfo, prefix);
+    const signupFailureReason = await detectSignupFailure(page, logInfo, prefix, config);
     if (signupFailureReason) {
       throw new Error(signupFailureReason);
     }
@@ -584,7 +627,7 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
       if (await visible(locator)) {
         const text = (await locator.textContent().catch(() => '') || '').trim();
         logTaskStage(3, account, proxy, '检测到验证码倒计时', text || 'Resend code in ...');
-        await capture(page, 'verification-countdown-detected', prefix);
+        await capture(page, 'verification-countdown-detected', prefix, config);
         return text || 'COUNTDOWN_VISIBLE';
       }
     }
@@ -593,7 +636,7 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
       if (await visible(locator)) {
         const placeholder = await locator.getAttribute('placeholder').catch(() => '');
         logTaskStage(3, account, proxy, '检测到验证码输入框', placeholder || 'verification input visible');
-        await capture(page, 'verification-input-detected', prefix);
+        await capture(page, 'verification-input-detected', prefix, config);
         return 'VERIFICATION_INPUT_VISIBLE';
       }
     }
@@ -604,7 +647,7 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
   throw new Error('VERIFICATION_COUNTDOWN_NOT_FOUND');
 }
 
-async function waitForDreaminaPostRegisterReady(page, account, proxy, prefix, timeoutMs = 45000) {
+async function waitForDreaminaPostRegisterReady(page, account, proxy, prefix, timeoutMs = 45000, config = {}) {
   const readyLocators = [
     page.locator('[class*="credit-display-container"]').first(),
     page.getByText("You haven't subscribed yet", { exact: false }).first(),
@@ -620,7 +663,7 @@ async function waitForDreaminaPostRegisterReady(page, account, proxy, prefix, ti
       if (await visible(locator)) {
         const text = (await locator.textContent().catch(() => '') || '').trim();
         logTaskStage(5, account, proxy, '检测到注册完成后的主页就绪信号', text || 'Dreamina home ready');
-        await capture(page, 'dreamina-post-register-ready', prefix);
+        await capture(page, 'dreamina-post-register-ready', prefix, config);
         return text || 'DREAMINA_HOME_READY';
       }
     }
@@ -641,7 +684,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
   try {
     const launchOptions = {
       headless: Boolean(config.headless),
-      slowMo: Number(config.slowMo || 120),
+      slowMo: resolveSlowMo(config),
     };
 
     if (!launchOptions.headless && windowBounds) {
@@ -663,6 +706,10 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     if (!Boolean(config.headless) && windowBounds) {
       await runPowerShellWindowLayout(browser, windowBounds, workerId, account);
     }
+
+    const screenshotEnabled = shouldCaptureScreenshots(config);
+    const pauseRange = resolveHumanPauseRange(config);
+    logInfo(`运行模式：${resolveRunMode(config)} | 截图开关：${screenshotEnabled ? 'ON' : 'OFF'} | slowMo=${launchOptions.slowMo} | humanPause=${pauseRange.min}-${pauseRange.max}ms`);
 
     const fingerprint = getRandomFingerprint();
     logInfo(`随机指纹：UA=${fingerprint.userAgent} | viewport=${fingerprint.viewport.width}x${fingerprint.viewport.height} | locale=${fingerprint.locale} | tz=${fingerprint.timezoneId} | color=${fingerprint.colorScheme} | scale=${fingerprint.deviceScaleFactor}`);
@@ -693,7 +740,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     log('开始打开 Dreamina');
     dreaminaPage = await context.newPage();
     await openDreaminaWithRetry(dreaminaPage, log, prefix, account, proxy, config, 3);
-    await ensureDreaminaEmailLoginForm(dreaminaPage, log, prefix, account, proxy);
+    await ensureDreaminaEmailLoginForm(dreaminaPage, log, prefix, account, proxy, config);
 
     logTaskStage(2, account, proxy, '填写邮箱密码并提交');
     const dreaminaEmailInput = dreaminaPage.getByRole('textbox', { name: 'Enter email' });
@@ -706,7 +753,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
 
     const signUpText = dreaminaPage.getByText('Sign up');
     if (await visible(signUpText)) {
-      await humanPause(dreaminaPage, 1000, 2200);
+      await humanPause(dreaminaPage, config, 1000, 2200);
       await signUpText.click();
       await dreaminaPasswordInput.waitFor({ state: 'visible', timeout: 30000 });
       await dreaminaPasswordInput.fill(account.password);
@@ -714,16 +761,16 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
 
     const continueButton = dreaminaPage.getByRole('button', { name: 'Continue' });
     await continueButton.waitFor({ state: 'visible', timeout: 30000 });
-    await humanPause(dreaminaPage, 1200, 2200);
+    await humanPause(dreaminaPage, config, 1200, 2200);
     await continueButton.click();
     await dreaminaPage.waitForTimeout(3000);
 
-    const signupFailureReason = await detectSignupFailure(dreaminaPage, log, prefix);
+    const signupFailureReason = await detectSignupFailure(dreaminaPage, log, prefix, config);
     if (signupFailureReason) {
       return { success: false, reason: signupFailureReason };
     }
 
-    const countdownText = await waitForVerificationCountdown(dreaminaPage, account, proxy, prefix, Number(config.verificationCountdownWaitMs || 30000));
+    const countdownText = await waitForVerificationCountdown(dreaminaPage, account, proxy, prefix, Number(config.verificationCountdownWaitMs || 30000), config);
     log(`检测到验证码阶段信号，开始通过 Firstmail API 拉验证码：${countdownText}`);
     logTaskStage(3, account, proxy, '通过 Firstmail API 拉验证码', countdownText);
     const codeResult = await fetchVerificationCodeViaApi(account, proxy, config, log);
@@ -764,10 +811,11 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       proxy,
       prefix,
       Number(config.birthdayStageTimeoutMs || 20000),
+      config,
     ).catch(async (error) => {
       const wrongCodeText = dreaminaPage.getByText(/Wrong verification code\. Try again\./i).first();
       if (await visible(wrongCodeText)) {
-        await capture(dreaminaPage, 'wrong-verification-code', prefix);
+        await capture(dreaminaPage, 'wrong-verification-code', prefix, config);
         throw new Error(`WRONG_VERIFICATION_CODE|code=${code}|attempt=${codeResult.attempt || 'NA'}`);
       }
       throw error;
@@ -794,6 +842,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       proxy,
       prefix,
       Number(config.postRegisterReadyTimeoutMs || 45000),
+      config,
     );
 
     const detectedSessionId = await waitForSessionIdCookie(
@@ -824,7 +873,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
   } catch (error) {
     logTaskStage(9, account, proxy, '任务异常');
     logFail(`任务异常：${error.message}`);
-    if (dreaminaPage) await capture(dreaminaPage, 'failure-dreamina', prefix);
+    if (dreaminaPage) await capture(dreaminaPage, 'failure-dreamina', prefix, config);
     return { success: false, reason: error.message || 'TASK_EXCEPTION' };
   } finally {
     if (browser) {
