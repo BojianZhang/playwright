@@ -649,6 +649,22 @@ function removeProxyFromList(filePath, targetRaw) {
     await withFileLock(async () => removeProxyFromList(filePath, targetRaw));
   }
 
+  async function removeProxyFromRuntimePool(proxyRaw) {
+    await withStateLock(async () => {
+      const index = proxies.findIndex(item => item.raw === proxyRaw);
+      if (index >= 0) proxies.splice(index, 1);
+      proxyInUseSet.delete(proxyRaw);
+      proxyFailureMap.delete(proxyRaw);
+    });
+  }
+
+  async function removeProxyEverywhere(proxyRaw, reason, phase) {
+    const targetSourcePath = (proxySourcePath === healthyProxyPath || proxySourcePath === weakProxyPath) ? proxySourcePath : healthyProxyPath;
+    await removeProxyFromListSafe(targetSourcePath, proxyRaw);
+    await appendLineSafe(badProxyPath, `${proxyRaw} | hard-failed by runner | phase=${phase} | reason=${reason}`);
+    await removeProxyFromRuntimePool(proxyRaw);
+  }
+
   async function appendFailureEventSafe(event) {
     await withFileLock(async () => appendLine(failureEventsFile, JSON.stringify(event)));
   }
@@ -813,16 +829,14 @@ function removeProxyFromList(filePath, targetRaw) {
             await appendLineSafe(signupRejectedFile, `${account.email}:${account.password} | status=signup_rejected_ip_banned | worker=${workerId} | proxy=${proxy.raw} | reason=${lastReason}`);
             await appendLineSafe(runLogFile, `[IP_BANNED] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
             logWarn(`命中 IP/代理被拉黑信号，立即剔除当前代理：${proxy.server}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(badProxyPath, `${proxy.raw} | ip-banned by runner | reason=${lastReason}`);
+            await removeProxyEverywhere(proxy.raw, lastReason, 'runtime_ip_banned');
             await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
             continue;
           }
           if (isHardProxyFailureReason(lastReason, config)) {
             await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
             logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | phase=runtime_open_dreamina | reason=${lastReason}`);
+            await removeProxyEverywhere(proxy.raw, lastReason, 'runtime_open_dreamina');
             await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
             continue;
           }
@@ -831,9 +845,10 @@ function removeProxyFromList(filePath, targetRaw) {
             if (currentFail >= proxyPenaltyConfig.proxyFailureDowngradeThreshold) {
               await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
               logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-              await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
               const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+              await removeProxyFromListSafe(proxySourcePath === weakProxyPath ? weakProxyPath : healthyProxyPath, proxy.raw);
               await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+              await removeProxyFromRuntimePool(proxy.raw);
             }
           } else {
             await appendLineSafe(runLogFile, `[BUSINESS_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason} | skip_proxy_penalty=true`);
@@ -848,8 +863,7 @@ function removeProxyFromList(filePath, targetRaw) {
           if (isHardProxyFailureReason(lastReason, config)) {
             await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
             logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
-            await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | phase=runtime_open_dreamina | reason=${lastReason}`);
+            await removeProxyEverywhere(proxy.raw, lastReason, 'runtime_open_dreamina');
             await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
             continue;
           }
@@ -858,9 +872,10 @@ function removeProxyFromList(filePath, targetRaw) {
             if (currentFail >= proxyPenaltyConfig.proxyFailureDowngradeThreshold) {
               await appendLineSafe(runLogFile, `[DOWNGRADE] proxy=${proxy.server} failCount=${currentFail} worker=${workerId} -> move to weak/bad pool`);
               logWarn(`代理连续失败 ${currentFail} 次，降级处理：${proxy.server}`);
-              await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
               const targetFile = precheck.level === 'WEAK' ? weakProxyPath : badProxyPath;
+              await removeProxyFromListSafe(proxySourcePath === weakProxyPath ? weakProxyPath : healthyProxyPath, proxy.raw);
               await appendLineSafe(targetFile, `${proxy.raw} | auto-downgraded by runner | reason=${lastReason}`);
+              await removeProxyFromRuntimePool(proxy.raw);
             }
           } else {
             await appendLineSafe(runLogFile, `[BUSINESS_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} reason=${lastReason} | skip_proxy_penalty=true`);
