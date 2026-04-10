@@ -560,21 +560,35 @@ function removeProxyFromList(filePath, targetRaw) {
   const verificationRateLimitedFile = path.join(resultsDir, 'verification-rate-limited.txt');
   const verificationRateLimitedAccounts = new Set(readLines(verificationRateLimitedFile).map(line => line.split(' | ')[0].trim()));
   const accounts = allAccounts.filter(account => !doneAccountRawSet.has(account.raw) && !verificationRateLimitedAccounts.has(`${account.email}:${account.password}`));
-  const rawProxySourcePath = fs.existsSync(healthyProxyPath) ? healthyProxyPath : proxiesPath;
-  const rawProxyLines = readLines(rawProxySourcePath);
   const proxyPoolPolicy = resolveProxyPoolPolicy(config);
   let runtimeMode = proxyPoolPolicy.mode;
-  let filteredProxyLines = rawProxySourcePath === healthyProxyPath ? filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode) : rawProxyLines;
-  if (!filteredProxyLines.length && rawProxySourcePath === healthyProxyPath && proxyPoolPolicy.mode === 'STANDARD_RUN' && proxyPoolPolicy.useWeakWhenNoOk) {
-    const weakCandidateLines = rawProxyLines.filter(line => {
-      const speed = extractProxySpeedTier(line);
-      return speed && resolveAllowedProxySpeedTiers(config).includes(speed) && isWeakWhitescreenLine(line);
-    });
-    if (weakCandidateLines.length) {
-      runtimeMode = 'DEGRADED_RUN';
-      filteredProxyLines = filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode);
-    }
+  const okSourceExists = fs.existsSync(healthyProxyPath);
+  const okSourceLines = okSourceExists ? readLines(healthyProxyPath) : [];
+  const weakSourceExists = fs.existsSync(weakProxyPath);
+  const weakSourceLines = weakSourceExists ? readLines(weakProxyPath) : [];
+  let rawProxySourcePath = proxiesPath;
+  let rawProxyLines = readLines(proxiesPath);
+
+  if (okSourceLines.length) {
+    rawProxySourcePath = healthyProxyPath;
+    rawProxyLines = okSourceLines;
+  } else if (proxyPoolPolicy.mode === 'STANDARD_RUN' && proxyPoolPolicy.useWeakWhenNoOk && weakSourceLines.length) {
+    rawProxySourcePath = weakProxyPath;
+    rawProxyLines = weakSourceLines;
+    runtimeMode = 'DEGRADED_RUN';
   }
+
+  let filteredProxyLines = (rawProxySourcePath === healthyProxyPath || rawProxySourcePath === weakProxyPath)
+    ? filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode)
+    : rawProxyLines;
+
+  if (!filteredProxyLines.length && rawProxySourcePath === healthyProxyPath && proxyPoolPolicy.mode === 'STANDARD_RUN' && proxyPoolPolicy.useWeakWhenNoOk && weakSourceLines.length) {
+    rawProxySourcePath = weakProxyPath;
+    rawProxyLines = weakSourceLines;
+    runtimeMode = 'DEGRADED_RUN';
+    filteredProxyLines = filterProxyLinesBySpeed(rawProxyLines, config, runtimeMode);
+  }
+
   const proxies = filteredProxyLines.map(parseProxy);
   const allowedProxySpeedTiers = resolveAllowedProxySpeedTiers(config);
   const proxyPenaltyConfig = getProxyPenaltyConfig(config);
