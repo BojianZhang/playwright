@@ -366,7 +366,7 @@ function buildSessionFormats(proxy, sessionId) {
 }
 
 function getProxyPenaltyConfig(config = {}) {
-  const hardProxyFailureReasons = Array.isArray(config.hardProxyFailureReasons) ? config.hardProxyFailureReasons.map(item => String(item || '').trim()).filter(Boolean) : ['DREAMINA_WHITE_SCREEN', 'DREAMINA_FIRST_LOAD_DEAD_PAGE', 'DREAMINA_BIRTHDAY_STAGE_UNREACHABLE'];
+  const hardProxyFailureReasons = Array.isArray(config.hardProxyFailureReasons) ? config.hardProxyFailureReasons.map(item => String(item || '').trim()).filter(Boolean) : ['DREAMINA_WHITE_SCREEN', 'DREAMINA_OPEN_RETRY_EXHAUSTED|last=DREAMINA_WHITE_SCREEN', 'DREAMINA_FIRST_LOAD_DEAD_PAGE', 'DREAMINA_BIRTHDAY_STAGE_UNREACHABLE'];
   const businessFailureReasons = Array.isArray(config.businessFailureReasons) ? config.businessFailureReasons.map(item => String(item || '').trim()).filter(Boolean) : ['ACCOUNT_ALREADY_EXISTS', 'WRONG_VERIFICATION_CODE', 'SIGNUP_REJECTED'];
   return {
     hardProxyFailureReasons,
@@ -822,7 +822,7 @@ function removeProxyFromList(filePath, targetRaw) {
             await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
             logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
             await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | reason=${lastReason}`);
+            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | phase=runtime_open_dreamina | reason=${lastReason}`);
             await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
             continue;
           }
@@ -849,7 +849,7 @@ function removeProxyFromList(filePath, targetRaw) {
             await appendLineSafe(runLogFile, `[HARD_PROXY_FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} reason=${lastReason}`);
             logWarn(`命中代理强失败，立即剔除当前代理：${proxy.server} | 原因=${lastReason}`);
             await removeProxyFromListSafe(healthyProxyPath, proxy.raw);
-            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | reason=${lastReason}`);
+            await appendLineSafe(badProxyPath, `${proxy.raw} | hard-failed by runner | phase=runtime_open_dreamina | reason=${lastReason}`);
             await updateProxyFailure(proxy.raw, () => Number(config.maxProxyRetriesPerAccount || 3));
             continue;
           }
