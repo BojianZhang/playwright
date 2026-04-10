@@ -2,11 +2,7 @@
   "runMode": "run",
   "runEnableScreenshots": false,
   "testEnableScreenshots": true,
-  "runBlockResourceTypes": [
-    "image",
-    "media",
-    "font"
-  ],
+  "runBlockResourceTypes": [],
   "testBlockResourceTypes": [],
   "enableScreenshots": false,
   "runSlowMo": 0,
