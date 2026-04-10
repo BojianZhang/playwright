@@ -73,12 +73,25 @@ function extractProxySpeedTier(rawLine = '') {
   return match ? String(match[1]).toUpperCase() : '';
 }
 
+function extractProxyHomeHealth(rawLine = '') {
+  const match = String(rawLine).match(/\bhomeHealth=([^|\r\n]+)/i);
+  return match ? String(match[1]).trim().toUpperCase() : '';
+}
+
+function shouldAllowProxyLineByHealth(rawLine = '', config = {}) {
+  if (isTestMode(config)) return true;
+  const homeHealth = extractProxyHomeHealth(rawLine);
+  if (!homeHealth) return true;
+  return homeHealth === 'OK';
+}
+
 function filterProxyLinesBySpeed(lines, config = {}) {
   const allowed = new Set(resolveAllowedProxySpeedTiers(config));
   return lines.filter(line => {
     const speed = extractProxySpeedTier(line);
     if (!speed) return false;
-    return allowed.has(speed);
+    if (!allowed.has(speed)) return false;
+    return shouldAllowProxyLineByHealth(line, config);
   });
 }
 
