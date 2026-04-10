@@ -363,13 +363,34 @@ function isBusinessFailureReason(reason, config = {}) {
   return matchesFailureReason(reason, getProxyPenaltyConfig(config).businessFailureReasons);
 }
 
+function normalizeFailureReason(reason = '') {
+  const raw = String(reason || '').trim();
+  if (!raw) return { raw: '', code: '', detail: '' };
+  const [code, ...rest] = raw.split('|');
+  return { raw, code: String(code || '').trim(), detail: rest.join('|').trim() };
+}
+
 function classifyFailureReason(reason, config = {}) {
-  const text = String(reason || '').trim();
+  const normalized = normalizeFailureReason(reason);
+  const text = normalized.code;
   if (text === 'ACCOUNT_ALREADY_EXISTS') return 'ACCOUNT_EXISTS';
   if (text.startsWith('WRONG_VERIFICATION_CODE')) return 'WRONG_CODE';
-  if (text === 'SIGNUP_REJECTED') return 'SIGNUP_REJECTED';
+  if (text === 'SIGNUP_REJECTED' || text === 'SIGNUP_REJECTED_IP_BANNED') return 'SIGNUP_REJECTED';
+  if (text === 'VERIFICATION_CODE_RATE_LIMITED') return 'VERIFICATION_CODE_RATE_LIMITED';
+  if (text.startsWith('PROXY_PRECHECK_FAILED')) return 'PRECHECK_FAIL';
   if (isHardProxyFailureReason(text, config)) return 'HARD_PROXY';
   return 'GENERAL_FAIL';
+}
+
+function inferFailurePhase(reason = '') {
+  const text = normalizeFailureReason(reason).code;
+  if (!text) return 'unknown';
+  if (text.startsWith('PROXY_PRECHECK_FAILED') || text.startsWith('PRECHECK_') || text.startsWith('PROXY_CONNECT_') || text.startsWith('HTTP_')) return 'precheck_connectivity';
+  if (text === 'DREAMINA_WHITE_SCREEN' || text === 'DREAMINA_FIRST_LOAD_DEAD_PAGE' || text.startsWith('DREAMINA_OPEN_')) return 'register_open_dreamina';
+  if (text.startsWith('WRONG_VERIFICATION_CODE') || text === 'VERIFICATION_CODE_RATE_LIMITED') return 'verification_code';
+  if (text === 'ACCOUNT_ALREADY_EXISTS' || text === 'SIGNUP_REJECTED' || text === 'SIGNUP_REJECTED_IP_BANNED') return 'signup_result';
+  if (text === 'DREAMINA_POST_REGISTER_READY_NOT_FOUND' || text === 'DREAMINA_BIRTHDAY_STAGE_UNREACHABLE') return 'post_register';
+  return 'general';
 }
 
 function requestViaHttpProxy(proxy, url, method, timeoutMs) {
@@ -528,6 +549,7 @@ function removeProxyFromList(filePath, targetRaw) {
   const sessionFile = path.join(resultsDir, 'sessions.txt');
   const sessionWithCountryFile = path.join(resultsDir, 'sessions-with-country.txt');
   const storageFile = path.join(resultsDir, 'storage-paths.txt');
+  const failureEventsFile = path.join(resultsDir, 'failure-events.jsonl');
 
   const state = { roundRobinIndex: 0, accountCursor: 0 };
   const proxyFailureMap = new Map();
@@ -569,6 +591,10 @@ function removeProxyFromList(filePath, targetRaw) {
 
   async function removeProxyFromListSafe(filePath, targetRaw) {
     await withFileLock(async () => removeProxyFromList(filePath, targetRaw));
+  }
+
+  async function appendFailureEventSafe(event) {
+    await withFileLock(async () => appendLine(failureEventsFile, JSON.stringify(event)));
   }
 
   async function acquireNextAccount() {
@@ -615,6 +641,7 @@ function removeProxyFromList(filePath, targetRaw) {
   async function processAccount(account, workerId) {
     let success = false;
     let lastReason = 'UNKNOWN';
+    let lastPhase = 'unknown';
     const windowBounds = computeGridWindowBounds(workerId, concurrency);
     await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} START worker=${workerId} window=${windowBounds.width}x${windowBounds.height}@${windowBounds.x},${windowBounds.y}`);
     logAccount(`[线程${workerId}] 开始处理账号：${account.email}`);
@@ -656,6 +683,8 @@ function removeProxyFromList(filePath, targetRaw) {
 
         if (precheck.level === 'BAD') {
           lastReason = `PROXY_PRECHECK_FAILED:${precheck.reason}`;
+          lastPhase = 'precheck_connectivity';
+          await appendFailureEventSafe({ time: new Date().toISOString(), account: account.email, proxy: proxy.server, proxyRaw: proxy.raw, workerId, phase: lastPhase, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN', failureKind: 'PRECHECK_FAIL', reason: lastReason });
           await appendLineSafe(runLogFile, `[SKIP] account=${account.email} proxy=${proxy.server} worker=${workerId} level=${precheck.level} reason=${lastReason}`);
           const currentFail = await updateProxyFailure(proxy.raw, count => count + 1);
           if (currentFail >= proxyPenaltyConfig.proxyFailureDowngradeThreshold) {
@@ -698,6 +727,8 @@ function removeProxyFromList(filePath, targetRaw) {
 
           lastReason = result.reason || 'UNKNOWN_FAIL';
           const failureKind = classifyFailureReason(lastReason, config);
+          lastPhase = inferFailurePhase(lastReason);
+          await appendFailureEventSafe({ time: new Date().toISOString(), account: account.email, proxy: proxy.server, proxyRaw: proxy.raw, workerId, phase: lastPhase, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN', failureKind, reason: lastReason });
           const failureTimingText = result.timings ? Object.entries(result.timings).map(([key, value]) => `${key}=${Number(value || 0)}ms`).join(' | ') : '';
           await appendLineSafe(runLogFile, `[FAIL] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} proxySpeedTier=${precheck.speedTier || 'UNKNOWN'} failureKind=${failureKind} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}${failureTimingText ? ` | timings=${failureTimingText}` : ''}`);
           logFail(`真实注册流程失败：${account.email} | 原因：${lastReason}`);
@@ -754,6 +785,8 @@ function removeProxyFromList(filePath, targetRaw) {
         } catch (error) {
           lastReason = error.message || 'EXCEPTION';
           const failureKind = classifyFailureReason(lastReason, config);
+          lastPhase = inferFailurePhase(lastReason);
+          await appendFailureEventSafe({ time: new Date().toISOString(), account: account.email, proxy: proxy.server, proxyRaw: proxy.raw, workerId, phase: lastPhase, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN', failureKind, reason: lastReason });
           await appendLineSafe(runLogFile, `[ERROR] account=${account.email} worker=${workerId} proxy=${proxy.server} precheck=${precheck.level} proxySpeedTier=${precheck.speedTier || 'UNKNOWN'} failureKind=${failureKind} stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
           logFail(`真实注册流程异常：账号=${account.email} | 原因=${lastReason}`);
           if (isHardProxyFailureReason(lastReason, config)) {
@@ -805,7 +838,7 @@ function removeProxyFromList(filePath, targetRaw) {
         await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_VERIFICATION_CODE_RATE_LIMITED reason=${lastReason}`);
         return;
       }
-      await appendLineSafe(failedFile, `${account.email}:${account.password} | status=failed | reason=${lastReason} | worker=${workerId}`);
+      await appendLineSafe(failedFile, `${account.email}:${account.password} | status=failed | phase=${lastPhase} | reason=${lastReason} | worker=${workerId}`);
       await appendLineSafe(runLogFile, `[ACCOUNT] ${account.email} worker=${workerId} FINAL_FAIL stageSummary=打开Dreamina/填写邮箱密码并提交/FirstmailAPI拉验证码/回填验证码和生日/保存登录态 reason=${lastReason}`);
       logFail(`账号最终失败：${account.email} | 原因：${lastReason}`);
     }
