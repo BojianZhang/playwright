@@ -138,14 +138,13 @@ async function visible(locator) {
 
 async function fetchVerificationCodeViaApi(account, proxy, config, log) {
   logTaskStage(3, account, proxy, '通过 Firstmail API 拉验证码');
-  const result = await waitForDreaminaCodeViaApi({
+  return waitForDreaminaCodeViaApi({
     account,
     config,
     log,
     accountLabel: account.email,
     proxyLabel: proxy?.server || 'NO_PROXY',
   });
-  return result.code;
 }
 
 async function preprocessDreaminaOverlays(page, log, prefix) {
@@ -407,23 +406,44 @@ async function ensureDreaminaEmailLoginForm(page, log, prefix, account, proxy) {
 }
 
 async function detectSignupFailure(page, log, prefix) {
-  const failureTexts = [
-    page.getByText("Couldn't sign up. Try again later."),
-    page.getByText('Try again later'),
-    page.getByText('Something went wrong'),
-    page.getByText('Too many attempts'),
+  const explicitFailureRules = [
+    {
+      reason: 'ACCOUNT_ALREADY_EXISTS',
+      label: '邮箱已存在',
+      locator: page.getByText(/An account with this email already exists/i).first(),
+    },
+    {
+      reason: 'SIGNUP_REJECTED',
+      label: '注册失败：稍后重试',
+      locator: page.getByText("Couldn't sign up. Try again later.").first(),
+    },
+    {
+      reason: 'SIGNUP_REJECTED',
+      label: '注册失败：请稍后重试',
+      locator: page.getByText('Try again later').first(),
+    },
+    {
+      reason: 'SIGNUP_REJECTED',
+      label: '注册失败：页面异常',
+      locator: page.getByText('Something went wrong').first(),
+    },
+    {
+      reason: 'SIGNUP_REJECTED',
+      label: '注册失败：尝试过多',
+      locator: page.getByText('Too many attempts').first(),
+    },
   ];
 
-  for (const item of failureTexts) {
-    if (await visible(item)) {
-      await capture(page, 'dreamina-signup-failed', prefix);
-      log('检测到 Dreamina 注册失败提示');
-      logFail('注册页面出现失败提示，当前账号本轮失败');
-      return true;
+  for (const rule of explicitFailureRules) {
+    if (await visible(rule.locator)) {
+      await capture(page, `dreamina-signup-failed-${rule.reason.toLowerCase()}`, prefix);
+      log(`检测到 Dreamina 注册失败提示：${rule.label}`);
+      logFail(`注册页面出现失败提示：${rule.label}`);
+      return rule.reason;
     }
   }
 
-  return false;
+  return '';
 }
 
 async function detectDreaminaWhiteScreen(page, account, proxy, prefix) {
@@ -450,16 +470,23 @@ async function detectDreaminaWhiteScreen(page, account, proxy, prefix) {
 
 async function ensureBirthdayInputsReachable(page, account, proxy, prefix, timeoutMs = 20000) {
   const yearInput = page.getByRole('textbox', { name: 'Year' });
-  const monthDropdown = page.getByText('Month');
-  const dayDropdown = page.getByText('Day', { exact: true });
+  const monthDropdown = page.getByText('Month').last();
+  const dayDropdown = page.getByText('Day', { exact: true }).last();
+  const birthdayNextButton = page.locator('button.lv_new_sign_in_panel_wide-birthday-next').first();
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
-    if (await visible(yearInput) && await visible(monthDropdown) && await visible(dayDropdown)) {
+    if (
+      await visible(yearInput) &&
+      await visible(monthDropdown) &&
+      await visible(dayDropdown) &&
+      await visible(birthdayNextButton)
+    ) {
       return {
         yearInput,
         monthDropdown,
         dayDropdown,
+        nextButton: birthdayNextButton,
       };
     }
     await page.waitForTimeout(500);
@@ -536,12 +563,23 @@ async function saveStorageState(context, account, attempt) {
 async function waitForVerificationCountdown(page, account, proxy, prefix, timeoutMs = 30000) {
   const countdownLocators = [
     page.locator('text=/Resend code in\\s*\\d+s/i').first(),
+    page.locator('text=/resend code/i').first(),
     page.locator('[class*="count"][class*="down"]').first(),
     page.locator('[class*="code-count"]').first(),
+  ];
+  const verificationInputCandidates = [
+    page.locator('input[inputmode="numeric"]').first(),
+    page.locator('input[maxlength="6"]').first(),
+    page.getByRole('textbox').first(),
   ];
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    const signupFailureReason = await detectSignupFailure(page, logInfo, prefix);
+    if (signupFailureReason) {
+      throw new Error(signupFailureReason);
+    }
+
     for (const locator of countdownLocators) {
       if (await visible(locator)) {
         const text = (await locator.textContent().catch(() => '') || '').trim();
@@ -550,6 +588,16 @@ async function waitForVerificationCountdown(page, account, proxy, prefix, timeou
         return text || 'COUNTDOWN_VISIBLE';
       }
     }
+
+    for (const locator of verificationInputCandidates) {
+      if (await visible(locator)) {
+        const placeholder = await locator.getAttribute('placeholder').catch(() => '');
+        logTaskStage(3, account, proxy, '检测到验证码输入框', placeholder || 'verification input visible');
+        await capture(page, 'verification-input-detected', prefix);
+        return 'VERIFICATION_INPUT_VISIBLE';
+      }
+    }
+
     await page.waitForTimeout(500);
   }
 
@@ -670,19 +718,43 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     await continueButton.click();
     await dreaminaPage.waitForTimeout(3000);
 
-    if (await detectSignupFailure(dreaminaPage, log, prefix)) {
-      return { success: false, reason: 'SIGNUP_REJECTED' };
+    const signupFailureReason = await detectSignupFailure(dreaminaPage, log, prefix);
+    if (signupFailureReason) {
+      return { success: false, reason: signupFailureReason };
     }
 
     const countdownText = await waitForVerificationCountdown(dreaminaPage, account, proxy, prefix, Number(config.verificationCountdownWaitMs || 30000));
-    log(`检测到验证码倒计时，开始通过 Firstmail API 拉验证码：${countdownText}`);
+    log(`检测到验证码阶段信号，开始通过 Firstmail API 拉验证码：${countdownText}`);
     logTaskStage(3, account, proxy, '通过 Firstmail API 拉验证码', countdownText);
-    const code = await fetchVerificationCodeViaApi(account, proxy, config, log);
+    const codeResult = await fetchVerificationCodeViaApi(account, proxy, config, log);
+    const code = codeResult.code;
+    const messageSummary = [
+      String(codeResult?.message?.subject || '').trim(),
+      String(codeResult?.message?.snippet || codeResult?.message?.text || '').trim(),
+    ].filter(Boolean).join(' | ').slice(0, 200);
     logSuccess(`验证码提取成功：${code}`);
+    if (messageSummary) {
+      logInfo(`验证码来源邮件摘要：${messageSummary}`);
+    }
 
     logTaskStage(4, account, proxy, '回填验证码和生日');
     await dreaminaPage.bringToFront();
-    const codeInput = dreaminaPage.getByRole('textbox').filter({ hasText: /^$/ }).first();
+    const codeInputCandidates = [
+      dreaminaPage.locator('input[inputmode="numeric"]').first(),
+      dreaminaPage.locator('input[maxlength="6"]').first(),
+      dreaminaPage.getByRole('textbox').filter({ hasText: /^$/ }).first(),
+      dreaminaPage.getByRole('textbox').first(),
+    ];
+    let codeInput = null;
+    for (const locator of codeInputCandidates) {
+      if (await visible(locator)) {
+        codeInput = locator;
+        break;
+      }
+    }
+    if (!codeInput) {
+      throw new Error('VERIFICATION_INPUT_NOT_FOUND');
+    }
     await codeInput.waitFor({ state: 'visible', timeout: 30000 });
     await codeInput.fill(code);
 
@@ -692,7 +764,14 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
       proxy,
       prefix,
       Number(config.birthdayStageTimeoutMs || 20000),
-    );
+    ).catch(async (error) => {
+      const wrongCodeText = dreaminaPage.getByText(/Wrong verification code\. Try again\./i).first();
+      if (await visible(wrongCodeText)) {
+        await capture(dreaminaPage, 'wrong-verification-code', prefix);
+        throw new Error(`WRONG_VERIFICATION_CODE|code=${code}|attempt=${codeResult.attempt || 'NA'}`);
+      }
+      throw error;
+    });
 
     const yearInput = birthdayFields.yearInput;
     await yearInput.fill(birth.year);
@@ -705,7 +784,7 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     await dayDropdown.click();
     await dreaminaPage.getByRole('option', { name: birth.day, exact: true }).click();
 
-    const nextButton = dreaminaPage.getByRole('button', { name: 'Next' });
+    const nextButton = birthdayFields.nextButton;
     await nextButton.waitFor({ state: 'visible', timeout: 30000 });
     await nextButton.click();
 
