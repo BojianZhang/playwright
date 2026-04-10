@@ -1,5 +1,13 @@
 {
   "runMode": "run",
+  "runEnableScreenshots": false,
+  "testEnableScreenshots": true,
+  "runBlockResourceTypes": [
+    "image",
+    "media",
+    "font"
+  ],
+  "testBlockResourceTypes": [],
   "enableScreenshots": false,
   "runSlowMo": 0,
   "testSlowMo": 120,
@@ -7,14 +15,66 @@
   "runHumanPauseMaxMs": 0,
   "testHumanPauseMinMs": 800,
   "testHumanPauseMaxMs": 1800,
+  "runPostOverlayWaitMs": 200,
+  "testPostOverlayWaitMs": 1500,
+  "runPostErrorRecoveryWaitMs": 800,
+  "testPostErrorRecoveryWaitMs": 4000,
+  "runPostSignEntryWaitMs": 400,
+  "testPostSignEntryWaitMs": 4000,
+  "runPostContinueWaitMs": 300,
+  "testPostContinueWaitMs": 3000,
+  "firstmailAcceptOlderThanTriggerSkewMs": 15000,
+  "firstmailRecentMessageScanLimit": 5,
+  "firstmailCodeRegex": "\\b([A-Z0-9]{6})\\b",
+  "firstmailSubjectKeywords": [
+    "Dreamina",
+    "CapCut",
+    "verification"
+  ],
+  "firstmailPreferredSenderKeywords": [
+    "dreamina",
+    "capcut"
+  ],
+  "firstmailPollJitterMinMs": 0,
+  "firstmailPollJitterMaxMs": 0,
+  "firstmailFallbackLookbackMs": 180000,
+  "firstmailFallbackEnableFromAttempt": 3,
+  "verificationCodeRetryMaxAttempts": 3,
+  "dreaminaHomeUrl": "https://dreamina.capcut.com/ai-tool/home",
   "proxyPolicy": "roundRobin",
   "maxProxyRetriesPerAccount": 3,
-  "concurrency": 3,
+  "proxyFailureDowngradeThreshold": 2,
+  "noIdleProxyRetryWaitMs": 1000,
+  "hardProxyFailureReasons": [
+    "DREAMINA_WHITE_SCREEN",
+    "DREAMINA_FIRST_LOAD_DEAD_PAGE",
+    "DREAMINA_BIRTHDAY_STAGE_UNREACHABLE",
+    "SIGNUP_REJECTED_IP_BANNED"
+  ],
+  "businessFailureReasons": [
+    "ACCOUNT_ALREADY_EXISTS",
+    "WRONG_VERIFICATION_CODE",
+    "SIGNUP_REJECTED"
+  ],
+  "concurrency": 1,
   "proxyPrecheckConcurrency": 40,
-  "proxyPrecheckUrl": "https://www.google.com/",
+  "proxyPrecheckUrl": "https://dreamina.capcut.com/ai-tool/home",
   "proxyPrecheckMethod": "GET",
   "proxyPrecheckOkMinStatus": 200,
   "proxyPrecheckOkMaxStatus": 399,
+  "proxyPrecheckSecondaryUrl": "https://dreamina.capcut.com/ai-tool/home",
+  "proxyPrecheckSecondaryMethod": "GET",
+  "proxyPrecheckSecondaryOkMinStatus": 200,
+  "proxyPrecheckSecondaryOkMaxStatus": 399,
+  "proxyPrecheckFastThresholdMs": 2500,
+  "proxyPrecheckSlowThresholdMs": 6000,
+  "runProxySpeedTiers": [
+    "FAST"
+  ],
+  "testProxySpeedTiers": [
+    "FAST",
+    "NORMAL"
+  ],
   "proxyPrecheckWeakFallbackEnabled": true,
   "proxyPrecheckWeakFallbackUrl": "https://api.ipify.org/?format=json",
   "proxyPrecheckWeakFallbackMethod": "GET",
@@ -23,21 +83,70 @@
   "proxyConnectivityTimeoutMs": 15000,
   "headless": false,
   "slowMo": 120,
+  "runDreaminaMaxRecoveries": 1,
+  "testDreaminaMaxRecoveries": 3,
+  "runDreaminaRecoveryBonusMs": 5000,
+  "testDreaminaRecoveryBonusMs": 15000,
   "dreaminaMaxRecoveries": 3,
   "dreaminaRecoveryBonusMs": 15000,
-  "waitMailIntervalMs": 5000,
+  "waitMailIntervalMs": 1500,
+  "firstmailApiMaxPollAttempts": 10,
+  "runVerificationCountdownWaitMs": 12000,
+  "testVerificationCountdownWaitMs": 30000,
   "verificationCountdownWaitMs": 30000,
+  "runBirthdayStageTimeoutMs": 10000,
+  "testBirthdayStageTimeoutMs": 20000,
+  "runLoginSignalStages": [
+    {
+      "seconds": 8,
+      "intervalMs": 500
+    },
+    {
+      "seconds": 8,
+      "intervalMs": 800
+    },
+    {
+      "seconds": 8,
+      "intervalMs": 1200
+    }
+  ],
+  "testLoginSignalStages": [
+    {
+      "seconds": 20,
+      "intervalMs": 1000
+    },
+    {
+      "seconds": 20,
+      "intervalMs": 1500
+    },
+    {
+      "seconds": 20,
+      "intervalMs": 2000
+    }
+  ],
   "birthdayStageTimeoutMs": 20000,
+  "runPostRegisterReadyTimeoutMs": 20000,
+  "testPostRegisterReadyTimeoutMs": 45000,
   "postRegisterReadyTimeoutMs": 45000,
+  "runSessionIdCookieTimeoutMs": 15000,
+  "testSessionIdCookieTimeoutMs": 60000,
   "sessionIdCookieTimeoutMs": 60000,
   "firstmailApiBaseUrl": "https://firstmail.ltd",
   "firstmailApiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
   "firstmailApiTimeoutMs": 30000,
-  "firstmailApiMaxPollAttempts": 18,
   "windowLayout": "grid",
   "windowGap": 12,
   "windowMargin": 8,
   "windowTopInset": 8,
   "windowBottomInset": 48,
-  "resultsDir": "results"
+  "resultsDir": "results",
+  "runDreaminaNavigationTimeoutMs": 120000,
+  "testDreaminaNavigationTimeoutMs": 120000,
+  "runPrecheckDreaminaNavigationTimeoutMs": 45000,
+  "testPrecheckDreaminaNavigationTimeoutMs": 60000,
+  "runDreaminaFirstLoadGraceWaitMs": 4000,
+  "testDreaminaFirstLoadGraceWaitMs": 12000,
+  "runPrecheckDreaminaFirstLoadGraceWaitMs": 2500,
+  "testPrecheckDreaminaFirstLoadGraceWaitMs": 5000,
+  "precheckDreaminaFirstLoadMaxGraceWaitMs": 12000
 }

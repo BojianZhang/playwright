@@ -4,7 +4,7 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const { waitForDreaminaCodeViaApi } = require('./firstmail-api');
 const { loadDreaminaRegisterProfile, summarizeProfile } = require('./dreamina-register-profile-loader');
-const { detectDreaminaWhiteScreen, detectDreaminaFirstLoadDeadPage } = require('./dreamina-health');
+const { resolveDreaminaHomeUrl, detectDreaminaWhiteScreen, detectDreaminaFirstLoadDeadPage } = require('./dreamina-health');
 const { logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
@@ -216,8 +216,7 @@ function resolveDreaminaRecoveryConfig(config = {}) {
 }
 
 function getDreaminaHomeUrl(config = {}) {
-  const profile = loadDreaminaRegisterProfile();
-  return String(profile.homeUrl || config.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
+  return resolveDreaminaHomeUrl(config);
 }
 
 async function runPowerShellWindowLayout(browser, windowBounds, workerId, account) {

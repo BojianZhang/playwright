@@ -8,15 +8,39 @@ function isTestMode(config = {}) {
   return resolveRunMode(config) === 'test';
 }
 
-function getDreaminaHealthConfig(config = {}) {
+function resolveDreaminaHomeUrl(config = {}) {
+  const profile = loadDreaminaRegisterProfile();
+  return String(profile?.homeUrl || config.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home/');
+}
+
+function getDreaminaHealthConfig(config = {}, options = {}) {
   const profile = loadDreaminaRegisterProfile();
   const firstLoadHealth = profile?.firstLoadHealth || {};
+  const stage = String(options.stage || 'register').trim().toLowerCase();
+  const mode = isTestMode(config) ? 'test' : 'run';
+
+  const registerGraceWaitMs = mode === 'test'
+    ? Number(config.testDreaminaFirstLoadGraceWaitMs ?? firstLoadHealth.testGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 12000)
+    : Number(config.runDreaminaFirstLoadGraceWaitMs ?? firstLoadHealth.runGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 6000);
+
+  const precheckGraceWaitMs = mode === 'test'
+    ? Number(config.testPrecheckDreaminaFirstLoadGraceWaitMs ?? config.precheckDreaminaFirstLoadGraceWaitMs ?? config.testDreaminaFirstLoadGraceWaitMs ?? registerGraceWaitMs)
+    : Number(config.runPrecheckDreaminaFirstLoadGraceWaitMs ?? config.precheckDreaminaFirstLoadGraceWaitMs ?? config.runDreaminaFirstLoadGraceWaitMs ?? registerGraceWaitMs);
+
+  const registerNavigationTimeoutMs = mode === 'test'
+    ? Number(config.testDreaminaNavigationTimeoutMs ?? config.dreaminaNavigationTimeoutMs ?? 120000)
+    : Number(config.runDreaminaNavigationTimeoutMs ?? config.dreaminaNavigationTimeoutMs ?? 120000);
+
+  const precheckNavigationTimeoutMs = mode === 'test'
+    ? Number(config.testPrecheckDreaminaNavigationTimeoutMs ?? config.precheckDreaminaNavigationTimeoutMs ?? config.testDreaminaNavigationTimeoutMs ?? registerNavigationTimeoutMs)
+    : Number(config.runPrecheckDreaminaNavigationTimeoutMs ?? config.precheckDreaminaNavigationTimeoutMs ?? config.runDreaminaNavigationTimeoutMs ?? registerNavigationTimeoutMs);
 
   return {
-    homeUrl: String(profile?.homeUrl || config.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home/'),
-    firstLoadGraceWaitMs: isTestMode(config)
-      ? Number(firstLoadHealth.testGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 12000)
-      : Number(firstLoadHealth.runGraceWaitMs ?? firstLoadHealth.graceWaitMs ?? 6000),
+    stage,
+    mode,
+    homeUrl: resolveDreaminaHomeUrl(config),
+    firstLoadGraceWaitMs: stage === 'precheck' ? precheckGraceWaitMs : registerGraceWaitMs,
+    navigationTimeoutMs: stage === 'precheck' ? precheckNavigationTimeoutMs : registerNavigationTimeoutMs,
     validTextSignals: Array.isArray(firstLoadHealth.validTextSignals) ? firstLoadHealth.validTextSignals : [],
     validSelectors: Array.isArray(firstLoadHealth.validSelectors) ? firstLoadHealth.validSelectors : [],
     deadPageBodyTextMinLength: Number(firstLoadHealth.deadPageBodyTextMinLength ?? 80),
@@ -92,10 +116,12 @@ async function detectDreaminaFirstLoadDeadPage(page, options = {}) {
     config = {},
     diagnostics = null,
     capture = null,
+    stage = 'register',
+    graceWaitMsOverride = null,
   } = options;
 
-  const healthConfig = getDreaminaHealthConfig(config);
-  const graceWaitMs = Number(healthConfig.firstLoadGraceWaitMs || 0);
+  const healthConfig = getDreaminaHealthConfig(config, { stage });
+  const graceWaitMs = Number(graceWaitMsOverride ?? healthConfig.firstLoadGraceWaitMs || 0);
   if (graceWaitMs > 0) {
     await page.waitForTimeout(graceWaitMs);
   }
@@ -164,15 +190,17 @@ async function checkDreaminaHomeHealth(page, options = {}) {
     diagnostics = null,
     capture = null,
     log = null,
+    stage = 'precheck',
+    dynamicGraceWaitMs = null,
   } = options;
 
-  const healthConfig = getDreaminaHealthConfig(config);
+  const healthConfig = getDreaminaHealthConfig(config, { stage });
   const startedAt = Date.now();
 
   try {
     await page.goto(healthConfig.homeUrl, {
       waitUntil: 'domcontentloaded',
-      timeout: Number(config.dreaminaNavigationTimeoutMs || 120000),
+      timeout: healthConfig.navigationTimeoutMs,
     });
     await safeCapture(capture, page, 'dreamina-home-health-open', prefix, config);
 
@@ -200,6 +228,8 @@ async function checkDreaminaHomeHealth(page, options = {}) {
       config,
       diagnostics,
       capture,
+      stage,
+      graceWaitMsOverride: dynamicGraceWaitMs,
     });
     if (deadPage.hit) {
       if (typeof log === 'function') log(`Dreamina 首页健康检查失败：${deadPage.reason}`);
@@ -244,6 +274,7 @@ function isDreaminaHomeHardFailure(reason = '') {
 }
 
 module.exports = {
+  resolveDreaminaHomeUrl,
   getDreaminaHealthConfig,
   detectDreaminaWhiteScreen,
   detectDreaminaFirstLoadDeadPage,

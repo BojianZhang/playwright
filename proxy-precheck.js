@@ -270,6 +270,17 @@ function classifySpeedTier(durationMs, fastThresholdMs, slowThresholdMs) {
   return 'NORMAL';
 }
 
+function resolveDynamicPrecheckGraceWaitMs(primary, secondary, config = {}) {
+  const base = Number(config.runPrecheckDreaminaFirstLoadGraceWaitMs ?? config.precheckDreaminaFirstLoadGraceWaitMs ?? 4000);
+  const maxWait = Number(config.precheckDreaminaFirstLoadMaxGraceWaitMs ?? 12000);
+  const ref = Math.max(Number(primary?.response?.durationMs || 0), Number(secondary?.response?.durationMs || 0));
+  let bonus = 0;
+  if (ref > 6500) bonus = 5000;
+  else if (ref > 4500) bonus = 3000;
+  else if (ref > 2500) bonus = 1500;
+  return Math.min(maxWait, base + bonus);
+}
+
 async function runDreaminaHomeHealthCheck(proxy, config = {}) {
   let browser;
   let context;
@@ -292,6 +303,8 @@ async function runDreaminaHomeHealthCheck(proxy, config = {}) {
       proxy,
       config,
       prefix: `proxy-health-${proxy.host}-${proxy.port}`.replace(/[^\w.-]+/g, '_'),
+      stage: 'precheck',
+      dynamicGraceWaitMs: Number(config.__dynamicPrecheckGraceWaitMs || 0) || null,
     });
     return {
       ...result,
@@ -328,7 +341,9 @@ async function classifyProxy(proxy, config) {
 
   let homeHealth = null;
   if (connectivityPartial) {
-    homeHealth = await runDreaminaHomeHealthCheck(proxy, config);
+    const dynamicGraceWaitMs = resolveDynamicPrecheckGraceWaitMs(primary, secondary, config);
+    homeHealth = await runDreaminaHomeHealthCheck(proxy, { ...config, __dynamicPrecheckGraceWaitMs: dynamicGraceWaitMs });
+    if (homeHealth) homeHealth.dynamicGraceWaitMs = dynamicGraceWaitMs;
   }
 
   if (overallSuccess && homeHealth?.success) {
@@ -428,17 +443,17 @@ async function classifyProxy(proxy, config) {
       console.log(`【代理预检】[线程${workerId}] 出口IP：${result.exitIp.ip || result.exitIp.reason}`);
       await appendLineSafe(
         logFile,
-        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level}/${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | exitIpReason=${result.exitIp.reason} | exitIpDurationMs=${result.exitIp.response.durationMs || 'NA'} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason} | primaryStatus=${result.primary.response.status || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondary=${result.secondary.response.target} | secondaryReason=${result.secondary.reason} | secondaryStatus=${result.secondary.response.status || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`
+        `[CHECK] worker=${workerId} ${proxy.server} -> ${result.level}/${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | exitIpReason=${result.exitIp.reason} | exitIpDurationMs=${result.exitIp.response.durationMs || 'NA'} | primary=${result.primary.response.target} | primaryReason=${result.primary.reason} | primaryStatus=${result.primary.response.status || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondary=${result.secondary.response.target} | secondaryReason=${result.secondary.reason} | secondaryStatus=${result.secondary.response.status || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'} | dynamicGraceWaitMs=${result.homeHealth?.dynamicGraceWaitMs || 'NA'}`
       );
 
       if (result.level === 'OK') {
-        await appendLineSafe(okFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        await appendLineSafe(okFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'} | dynamicGraceWaitMs=${result.homeHealth?.dynamicGraceWaitMs || 'NA'}`);
         console.log(`【OK】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       } else if (result.level === 'WEAK') {
-        await appendLineSafe(weakFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        await appendLineSafe(weakFile, `${proxy.raw} | speed=${result.speedTier} | exitIp=${result.exitIp.ip || 'NA'} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'} | dynamicGraceWaitMs=${result.homeHealth?.dynamicGraceWaitMs || 'NA'}`);
         console.log(`【WEAK】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | primaryReason=${result.primary.reason} | secondaryReason=${result.secondary.reason} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       } else {
-        await appendLineSafe(badFile, `${proxy.raw} | speed=${result.speedTier} | exitIpReason=${result.exitIp.reason} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'}`);
+        await appendLineSafe(badFile, `${proxy.raw} | speed=${result.speedTier} | exitIpReason=${result.exitIp.reason} | primaryReason=${result.primary.reason} | primaryDurationMs=${result.primary.response.durationMs || 'NA'} | secondaryReason=${result.secondary.reason} | secondaryDurationMs=${result.secondary.response.durationMs || 'NA'} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'} | homeHealthElapsedMs=${result.homeHealth?.elapsedMs || 'NA'} | dynamicGraceWaitMs=${result.homeHealth?.dynamicGraceWaitMs || 'NA'}`);
         console.log(`【BAD】[线程${workerId}] ${proxy.server} | speed=${result.speedTier} | primaryReason=${result.primary.reason} | secondaryReason=${result.secondary.reason} | homeHealth=${result.homeHealth?.reason || 'SKIPPED'}`);
       }
     }
