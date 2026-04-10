@@ -357,6 +357,17 @@ async function classifyProxy(proxy, config) {
     };
   }
 
+  if (homeHealth && homeHealth.reason === 'DREAMINA_WHITE_SCREEN') {
+    return {
+      level: 'WEAK',
+      speedTier: secondary.success ? secondarySpeedTier : primarySpeedTier,
+      exitIp,
+      primary,
+      secondary,
+      homeHealth,
+    };
+  }
+
   if (homeHealth && isDreaminaHomeHardFailure(homeHealth.reason)) {
     return {
       level: 'BAD',

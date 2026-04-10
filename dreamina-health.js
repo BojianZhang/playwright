@@ -70,6 +70,7 @@ async function detectDreaminaWhiteScreen(page, options = {}) {
     capture = null,
     logTaskStage = null,
     logWarn = null,
+    stage = 'register',
   } = options;
 
   const loginSignals = await page.evaluate(() => {
@@ -82,6 +83,7 @@ async function detectDreaminaWhiteScreen(page, options = {}) {
       hit: false,
       reason: 'OK',
       bodyTextLength: null,
+      suspected: false,
     };
   }
 
@@ -89,6 +91,14 @@ async function detectDreaminaWhiteScreen(page, options = {}) {
   const bodyTextLength = bodyText.length;
 
   if (bodyTextLength < 20) {
+    if (stage === 'precheck') {
+      return {
+        hit: false,
+        reason: 'DREAMINA_WHITE_SCREEN_SUSPECTED',
+        bodyTextLength,
+        suspected: true,
+      };
+    }
     if (typeof logTaskStage === 'function') {
       logTaskStage(1, account, proxy, 'Dreamina 页面疑似白屏', `bodyLen=${bodyTextLength}`);
     }
@@ -100,6 +110,7 @@ async function detectDreaminaWhiteScreen(page, options = {}) {
       hit: true,
       reason: 'DREAMINA_WHITE_SCREEN',
       bodyTextLength,
+      suspected: false,
     };
   }
 
@@ -107,6 +118,7 @@ async function detectDreaminaWhiteScreen(page, options = {}) {
     hit: false,
     reason: 'OK',
     bodyTextLength,
+    suspected: false,
   };
 }
 
@@ -121,7 +133,7 @@ async function detectDreaminaFirstLoadDeadPage(page, options = {}) {
   } = options;
 
   const healthConfig = getDreaminaHealthConfig(config, { stage });
-  const graceWaitMs = Number(graceWaitMsOverride ?? healthConfig.firstLoadGraceWaitMs || 0);
+  const graceWaitMs = Number((graceWaitMsOverride ?? healthConfig.firstLoadGraceWaitMs) || 0);
   if (graceWaitMs > 0) {
     await page.waitForTimeout(graceWaitMs);
   }
@@ -204,13 +216,29 @@ async function checkDreaminaHomeHealth(page, options = {}) {
     });
     await safeCapture(capture, page, 'dreamina-home-health-open', prefix, config);
 
-    const whiteScreen = await detectDreaminaWhiteScreen(page, {
+    let whiteScreen = await detectDreaminaWhiteScreen(page, {
       account,
       proxy,
       prefix,
       config,
       capture,
+      stage,
     });
+
+    if (stage === 'precheck' && whiteScreen.suspected) {
+      const recheckWaitMs = Math.min(4000, Math.max(1200, Number(dynamicGraceWaitMs || healthConfig.firstLoadGraceWaitMs || 0)));
+      await page.waitForTimeout(recheckWaitMs);
+      whiteScreen = await detectDreaminaWhiteScreen(page, {
+        account,
+        proxy,
+        prefix,
+        config,
+        capture,
+        stage: 'register',
+      });
+      whiteScreen.recheckWaitMs = recheckWaitMs;
+    }
+
     if (whiteScreen.hit) {
       if (typeof log === 'function') log(`Dreamina 首页健康检查失败：${whiteScreen.reason}`);
       return {
