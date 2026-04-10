@@ -618,6 +618,11 @@ async function dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, re
   return filePath;
 }
 
+function shouldRecreateDreaminaPage(error) {
+  const message = String(error?.message || error || '');
+  return /frame was detached|Target page, context or browser has been closed|page\.reload: Target page|page\.goto: net::ERR_ABORTED/i.test(message);
+}
+
 async function openDreaminaWithRetry(page, log, prefix, account, proxy, config, maxAttempts = 3, diagnostics = null) {
   const targetUrl = getDreaminaHomeUrl(config);
   let lastOpenError = '';
@@ -1009,9 +1014,24 @@ async function runRegisterTask({ account, proxy, config, attempt, workerId, wind
     logTaskStage(1, account, proxy, '打开 Dreamina', `出口IP=${exitIp}`);
     log('开始打开 Dreamina');
     dreaminaPage = await context.newPage();
-    const diagnostics = attachPageDiagnostics(dreaminaPage, createPageDiagnostics(prefix));
+    let diagnostics = attachPageDiagnostics(dreaminaPage, createPageDiagnostics(prefix));
     stageTimer.mark('openDreamina');
-    await openDreaminaWithRetry(dreaminaPage, log, prefix, account, proxy, config, 3, diagnostics);
+    try {
+      await openDreaminaWithRetry(dreaminaPage, log, prefix, account, proxy, config, 3, diagnostics);
+    } catch (openError) {
+      const openMessage = String(openError?.message || '');
+      if (/^DREAMINA_PAGE_CONTEXT_INVALID|last=/.test(openMessage)) {
+        logWarn(`??? Dreamina page/context ??????? page ???????${openMessage}`);
+        if (dreaminaPage && typeof dreaminaPage.close === 'function' && !dreaminaPage.isClosed()) {
+          await dreaminaPage.close().catch(() => {});
+        }
+        dreaminaPage = await context.newPage();
+        diagnostics = attachPageDiagnostics(dreaminaPage, createPageDiagnostics(`${prefix}-recreated`));
+        await openDreaminaWithRetry(dreaminaPage, log, prefix, account, proxy, config, 1, diagnostics);
+      } else {
+        throw openError;
+      }
+    }
     await ensureDreaminaEmailLoginForm(dreaminaPage, log, prefix, account, proxy, config);
     stageTimer.end('openDreamina');
 
