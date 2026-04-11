@@ -1,61 +1,41 @@
-'use strict';
+﻿'use strict';
 
 /**
  * load-site-profile.js
  *
- * 这个文件只负责一件事：
- * 从 shared-entry/profiles 目录里安全读取站点 profile。
+ * 杩欎釜鏂囦欢鍙礋璐ｄ竴浠朵簨锛? * 浠?shared-entry/profiles 鐩綍閲屽畨鍏ㄨ鍙栫珯鐐?profile銆? *
+ * 瀹冪殑鑱岃矗闈炲父鏄庣‘锛? * 1. 鎷?profile 鏂囦欢璺緞
+ * 2. 璇诲彇 JSON 鏂囦欢
+ * 3. 澶勭悊 UTF-8 BOM
+ * 4. 瑙ｆ瀽 JSON
+ * 5. 鍋氭渶鍩虹鐨勭粨鏋勬牎楠? * 6. 杩斿洖 profile 瀵硅薄
  *
- * 它的职责非常明确：
- * 1. 拼 profile 文件路径
- * 2. 读取 JSON 文件
- * 3. 处理 UTF-8 BOM
- * 4. 解析 JSON
- * 5. 做最基础的结构校验
- * 6. 返回 profile 对象
- *
- * 它不负责：
- * - 打开浏览器
- * - 打开页面
- * - 做 ready 判断
- * - 做业务流程
- */
+ * 瀹冧笉璐熻矗锛? * - 鎵撳紑娴忚鍣? * - 鎵撳紑椤甸潰
+ * - 鍋?ready 鍒ゆ柇
+ * - 鍋氫笟鍔℃祦绋? */
 
 const fs = require('fs');
 const path = require('path');
 
 /**
- * profiles 目录绝对路径。
- *
- * 作用：
- * - 保证后续读取 profile 时，不依赖调用方当前 cwd。
- * - 始终以当前文件所在目录为基准定位 profiles 目录。
- */
-const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
+ * profiles 鐩綍缁濆璺緞銆? *
+ * 浣滅敤锛? * - 淇濊瘉鍚庣画璇诲彇 profile 鏃讹紝涓嶄緷璧栬皟鐢ㄦ柟褰撳墠 cwd銆? * - 濮嬬粓浠ュ綋鍓嶆枃浠舵墍鍦ㄧ洰褰曚负鍩哄噯瀹氫綅 profiles 鐩綍銆? */
+const PROFILES_DIR = path.join(__dirname, 'profiles');
 
 /**
- * 移除 UTF-8 BOM。
- *
- * 作用：
- * - 某些编辑器/写文件方式会在 JSON 头部写入 BOM。
- * - 直接 JSON.parse 时会报错。
- * - 所以这里统一先去 BOM，再 parse。
- */
+ * 绉婚櫎 UTF-8 BOM銆? *
+ * 浣滅敤锛? * - 鏌愪簺缂栬緫鍣?鍐欐枃浠舵柟寮忎細鍦?JSON 澶撮儴鍐欏叆 BOM銆? * - 鐩存帴 JSON.parse 鏃朵細鎶ラ敊銆? * - 鎵€浠ヨ繖閲岀粺涓€鍏堝幓 BOM锛屽啀 parse銆? */
 function stripBom(text = '') {
   return String(text || '').replace(/^\uFEFF/, '');
 }
 
 /**
- * 把站点名规范成文件名友好的 slug。
- *
- * 例如：
- * - Dreamina -> dreamina
+ * 鎶婄珯鐐瑰悕瑙勮寖鎴愭枃浠跺悕鍙嬪ソ鐨?slug銆? *
+ * 渚嬪锛? * - Dreamina -> dreamina
  * - OpenAI -> openai
  * - Claude AI -> claude-ai
  *
- * 作用：
- * - 允许调用方传入站点名，而不是手写完整文件路径。
- */
+ * 浣滅敤锛? * - 鍏佽璋冪敤鏂逛紶鍏ョ珯鐐瑰悕锛岃€屼笉鏄墜鍐欏畬鏁存枃浠惰矾寰勩€? */
 function normalizeSiteNameToSlug(siteName = '') {
   return String(siteName || '')
     .trim()
@@ -65,15 +45,11 @@ function normalizeSiteNameToSlug(siteName = '') {
 }
 
 /**
- * 根据站点名推导 profile 文件路径。
+ * 鏍规嵁绔欑偣鍚嶆帹瀵?profile 鏂囦欢璺緞銆? *
+ * 瑙勫垯锛? * - siteName = Dreamina
+ * - 鏂囦欢鍚?=> dreamina-entry-profile.json
  *
- * 规则：
- * - siteName = Dreamina
- * - 文件名 => dreamina-entry-profile.json
- *
- * 作用：
- * - 让上层调用简单，只传站点名即可。
- */
+ * 浣滅敤锛? * - 璁╀笂灞傝皟鐢ㄧ畝鍗曪紝鍙紶绔欑偣鍚嶅嵆鍙€? */
 function resolveSiteProfilePath(siteName = '') {
   const slug = normalizeSiteNameToSlug(siteName);
   if (!slug) {
@@ -83,13 +59,8 @@ function resolveSiteProfilePath(siteName = '') {
 }
 
 /**
- * 对 profile 做最基础的结构校验。
- *
- * 这里只做最小校验，不做复杂 schema 校验。
- * 作用：
- * - 尽早发现 profile 缺失核心字段的问题
- * - 给上层返回更明确的错误
- */
+ * 瀵?profile 鍋氭渶鍩虹鐨勭粨鏋勬牎楠屻€? *
+ * 杩欓噷鍙仛鏈€灏忔牎楠岋紝涓嶅仛澶嶆潅 schema 鏍￠獙銆? * 浣滅敤锛? * - 灏芥棭鍙戠幇 profile 缂哄け鏍稿績瀛楁鐨勯棶棰? * - 缁欎笂灞傝繑鍥炴洿鏄庣‘鐨勯敊璇? */
 function validateSiteProfile(profile = {}, filePath = '') {
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
     throw new Error(`SITE_PROFILE_INVALID_OBJECT|path=${filePath}`);
@@ -111,17 +82,13 @@ function validateSiteProfile(profile = {}, filePath = '') {
 }
 
 /**
- * 从完整文件路径读取 profile。
- *
- * 作用：
- * - 读取文件
- * - 去 BOM
+ * 浠庡畬鏁存枃浠惰矾寰勮鍙?profile銆? *
+ * 浣滅敤锛? * - 璇诲彇鏂囦欢
+ * - 鍘?BOM
  * - parse JSON
- * - 做基础校验
+ * - 鍋氬熀纭€鏍￠獙
  *
- * 使用场景：
- * - 已经知道完整路径时调用
- */
+ * 浣跨敤鍦烘櫙锛? * - 宸茬粡鐭ラ亾瀹屾暣璺緞鏃惰皟鐢? */
 function loadSiteProfileFromPath(filePath) {
   const resolvedPath = path.resolve(String(filePath || ''));
 
@@ -147,17 +114,14 @@ function loadSiteProfileFromPath(filePath) {
 }
 
 /**
- * 按站点名读取 profile。
- *
- * 使用方式：
- * - loadSiteProfile('Dreamina')
+ * 鎸夌珯鐐瑰悕璇诲彇 profile銆? *
+ * 浣跨敤鏂瑰紡锛? * - loadSiteProfile('Dreamina')
  * - loadSiteProfile('OpenAI')
  * - loadSiteProfile('Claude AI')
  *
- * 内部流程：
- * 1. 站点名转 slug
- * 2. 推导 profile 路径
- * 3. 调用 loadSiteProfileFromPath
+ * 鍐呴儴娴佺▼锛? * 1. 绔欑偣鍚嶈浆 slug
+ * 2. 鎺ㄥ profile 璺緞
+ * 3. 璋冪敤 loadSiteProfileFromPath
  */
 function loadSiteProfile(siteName = '') {
   const filePath = resolveSiteProfilePath(siteName);
@@ -173,3 +137,4 @@ module.exports = {
   loadSiteProfileFromPath,
   loadSiteProfile,
 };
+
