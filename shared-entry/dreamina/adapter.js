@@ -47,6 +47,61 @@ const SAFE_OVERLAY_TEXT_PATTERNS = [
 ];
 
 /**
+ * Dreamina 首页更高置信的 ready 文本。
+ *
+ * 设计原则：
+ * - 优先放 Dreamina 首页/登录入口更稳定的文案
+ * - 这些信号的优先级高于 profile 里那些更泛化的兜底信号
+ */
+const DREAMINA_STRONG_READY_TEXTS = [
+  'Continue with email',
+  'Sign in',
+  'Log in',
+  'Login',
+  'Sign up',
+  'Create realistic talk',
+  'Start Creating With AI Agent',
+  'AI Image',
+  'Canvas',
+];
+
+/**
+ * Dreamina 首页更高置信的 ready selector。
+ *
+ * 设计原则：
+ * - 优先放更像首页主区域/登录入口的结构信号
+ * - 避免直接把 button / a 这种全站过泛 selector 当成强 ready
+ */
+const DREAMINA_STRONG_READY_SELECTORS = [
+  '[class*="credit-display-container"]',
+  '[class*="login"] button',
+  '[class*="signin"] button',
+  '[class*="sign-in"] button',
+  '[class*="signup"] button',
+  '[class*="sign-up"] button',
+  'input[role="textbox"]',
+  'input[type="email"]',
+  'button[data-testid*="login"]',
+  'button[data-testid*="sign"]',
+];
+
+/**
+ * 一些明显过泛的 selector，不适合直接当强 ready 信号。
+ *
+ * 例如：
+ * - button
+ * - a
+ *
+ * 这些元素在错误页、空壳页、弹层里也很常见，容易造成假阳性。
+ */
+const OVER_GENERIC_READY_SELECTORS = new Set([
+  'button',
+  'a',
+  'div',
+  'span',
+]);
+
+/**
  * 判断元素是不是可见且可交互。
  *
  * 作用：
@@ -200,45 +255,24 @@ async function preprocessOverlays(page, context = {}) {
 }
 
 /**
- * 等待 Dreamina 首页进入真正可操作状态。
+ * 从 selector 列表里过滤掉过泛 selector。
  *
  * 作用：
- * - 公共层只能做通用 ready signal 判断。
- * - 如果 Dreamina 有“只有它自己才知道的 ready 条件”，就应该放这里。
- *
- * 典型场景：
- * - 某个主容器出现才算 ready
- * - 某个按钮可点击才算 ready
- * - 某个 loading skeleton 消失才算 ready
- * - 关闭弹层后需要做二次 ready 检查
- *
- * 当前状态：
- * - 先复用外部 profile 提供的通用 readySignals
- * - 真正的 Dreamina 特殊逻辑后续再补
+ * - 避免把 button / a 这种全站常见元素直接当成强 ready 信号
+ * - 让 ready 判定更保守、更像首页真实可用状态
  */
-async function waitForDreaminaReady(page, runtime = {}, context = {}) {
-  const { logInfo = null } = context;
+function filterStrongReadySelectors(selectors = []) {
+  return selectors.filter(selector => !OVER_GENERIC_READY_SELECTORS.has(String(selector || '').trim().toLowerCase()));
+}
 
-  for (const selector of runtime.readySelectors || []) {
-    const visible = await page.locator(selector).first().isVisible().catch(() => false);
+/**
+ * 检查是否命中某个文本 ready 信号。
+ */
+async function findVisibleReadyText(page, texts = []) {
+  for (const text of texts) {
+    const locator = page.getByText(text, { exact: false }).first();
+    const visible = await locator.isVisible().catch(() => false);
     if (visible) {
-      if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中 selector ready 信号: ${selector}`);
-      }
-      return {
-        ok: true,
-        source: 'selector',
-        value: selector,
-      };
-    }
-  }
-
-  for (const text of runtime.readyTextSignals || []) {
-    const visible = await page.getByText(text, { exact: false }).first().isVisible().catch(() => false);
-    if (visible) {
-      if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中文本 ready 信号: ${text}`);
-      }
       return {
         ok: true,
         source: 'text',
@@ -247,8 +281,118 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     }
   }
 
+  return {
+    ok: false,
+    source: '',
+    value: '',
+  };
+}
+
+/**
+ * 检查是否命中某个 selector ready 信号。
+ */
+async function findVisibleReadySelector(page, selectors = []) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    const visible = await locator.isVisible().catch(() => false);
+    if (visible) {
+      return {
+        ok: true,
+        source: 'selector',
+        value: selector,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    source: '',
+    value: '',
+  };
+}
+
+/**
+ * 检查 body 文本是否命中兜底 ready pattern。
+ *
+ * 这层优先级最低，只作为兜底。
+ */
+async function findBodyPatternReady(page, patterns = []) {
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').trim();
+  for (const pattern of patterns) {
+    const regex = new RegExp(String(pattern || ''), 'i');
+    if (regex.test(bodyText)) {
+      return {
+        ok: true,
+        source: 'bodyText',
+        value: pattern,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    source: '',
+    value: '',
+  };
+}
+
+/**
+ * 等待 Dreamina 首页进入真正可操作状态。
+ *
+ * 第一版更像样的判定逻辑：
+ * 1. 先做一轮 Dreamina 强 ready selector 检查
+ * 2. 再做一轮 Dreamina 强 ready 文本检查
+ * 3. 再看 profile 里过滤后的 selector
+ * 4. 再看 profile 里的文本 ready signal
+ * 5. 最后才退到 body pattern 兜底
+ *
+ * 设计目标：
+ * - 优先命中高置信首页主信号
+ * - 避免 button / a 这类过泛元素直接把错误页判成 ready
+ * - 保留轻量等待，给首页首屏一点时间起来
+ */
+async function waitForDreaminaReady(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+
+  const filteredRuntimeSelectors = filterStrongReadySelectors(runtime.readySelectors || []);
+  const strongSelectors = [...new Set([...(DREAMINA_STRONG_READY_SELECTORS || []), ...filteredRuntimeSelectors])];
+  const strongTexts = [...new Set([...(DREAMINA_STRONG_READY_TEXTS || []), ...((runtime.readyTextSignals || []).filter(Boolean))])];
+  const start = Date.now();
+  const maxWaitMs = Number(runtime.firstLoadGraceWaitMs || 0);
+  const steps = maxWaitMs > 0 ? [0, Math.min(800, maxWaitMs), maxWaitMs] : [0];
+
+  for (const waitMs of [...new Set(steps)]) {
+    if (waitMs > 0) {
+      await page.waitForTimeout(waitMs);
+    }
+
+    const strongSelectorHit = await findVisibleReadySelector(page, strongSelectors);
+    if (strongSelectorHit.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强 selector ready 信号: ${strongSelectorHit.value} | elapsed=${Date.now() - start}ms`);
+      }
+      return strongSelectorHit;
+    }
+
+    const strongTextHit = await findVisibleReadyText(page, strongTexts);
+    if (strongTextHit.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强文本 ready 信号: ${strongTextHit.value} | elapsed=${Date.now() - start}ms`);
+      }
+      return strongTextHit;
+    }
+
+    const bodyPatternHit = await findBodyPatternReady(page, runtime.readyBodyPatterns || []);
+    if (bodyPatternHit.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中 body pattern 兜底信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms`);
+      }
+      return bodyPatternHit;
+    }
+  }
+
   if (typeof logInfo === 'function') {
-    logInfo('dreamina.adapter.waitForDreaminaReady | 当前未命中 Dreamina 专属 ready 信号');
+    logInfo(`dreamina.adapter.waitForDreaminaReady | 未命中 Dreamina ready 信号 | elapsed=${Date.now() - start}ms`);
   }
 
   return {
@@ -318,11 +462,18 @@ async function recoverDreaminaEntry(page, input = {}, context = {}) {
 
 module.exports = {
   SAFE_OVERLAY_TEXT_PATTERNS,
+  DREAMINA_STRONG_READY_TEXTS,
+  DREAMINA_STRONG_READY_SELECTORS,
+  OVER_GENERIC_READY_SELECTORS,
   isVisibleAndEnabled,
   tryClickLocator,
   dismissOverlayBySafeTexts,
   dismissOverlayByCloseSelectors,
   preprocessOverlays,
+  filterStrongReadySelectors,
+  findVisibleReadyText,
+  findVisibleReadySelector,
+  findBodyPatternReady,
   waitForDreaminaReady,
   classifyDreaminaEntryFailure,
   recoverDreaminaEntry,
