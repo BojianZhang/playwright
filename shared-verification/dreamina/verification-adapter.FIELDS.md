@@ -10,6 +10,13 @@
 
 # 一、`waitForDreaminaVerificationStageReady(...)` 返回字段
 
+这个方法的执行步骤现在可以理解为：
+1. 读取 verification ready 规则
+2. 先看强 selector
+3. 再看弱文本 / countdown
+4. 如果本轮没命中，就进入下一等待步
+5. 所有等待步都没命中，才返回 not-ready
+
 ## `ok`
 - 类型：`boolean`
 - 含义：是否确认进入 verification 阶段

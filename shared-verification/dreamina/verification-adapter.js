@@ -101,6 +101,89 @@ async function findFirstVisibleByTexts(page, texts = []) {
 }
 
 /**
+ * 检测 Dreamina verification 阶段的强 selector ready 信号。
+ *
+ * 作用：
+ * - 这一层优先看结构信号，而不是文本
+ * - 结构信号通常比文本更像“真的已经进入可输入验证码状态”
+ */
+async function detectDreaminaVerificationReadyBySelector(page, profile) {
+  // 读取 profile 中定义的 verification ready selector 列表。
+  const selectorHit = await findFirstVisibleBySelectors(page, profile?.verificationReady?.selectors || []);
+  // 如果没有命中任何 selector，就返回统一未命中结构。
+  if (!selectorHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中 selector，就按强信号返回。
+  return {
+    ok: true,
+    source: 'selector',
+    value: selectorHit.selector,
+    strength: 'strong',
+  };
+}
+
+/**
+ * 检测 Dreamina verification 阶段的文本 ready 信号。
+ *
+ * 作用：
+ * - 这一层主要承接 Resend code / countdown 之类的页面文本线索
+ * - 文本信号通常弱于 selector，但仍然是有效的 ready 补充判断
+ */
+async function detectDreaminaVerificationReadyByText(page, profile) {
+  // 读取 profile 中定义的 verification ready 文本列表。
+  const textHit = await findFirstVisibleByTexts(page, profile?.verificationReady?.texts || []);
+  // 如果没有命中任何文本，就返回统一未命中结构。
+  if (!textHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中文本，则按弱一些的信号返回。
+  return {
+    ok: true,
+    source: 'text',
+    value: textHit.text,
+    strength: 'weak',
+  };
+}
+
+/**
+ * 在单个等待步内执行一次 verification ready 探测。
+ *
+ * 作用：
+ * - 把“先查 selector，再查 text”收口成一个步骤级检测单元
+ * - 让 waitForDreaminaVerificationStageReady 主函数更清楚地表达每一步在做什么
+ */
+async function detectDreaminaVerificationStageReadyOnce(page, profile, context = {}) {
+  // 先做 selector 级 ready 探测，因为结构信号比文本更强。
+  const selectorReady = await detectDreaminaVerificationReadyBySelector(page, profile);
+  // 如果 selector 已命中，直接返回 selector 结果，不再继续跑文本探测。
+  if (selectorReady.ok) return selectorReady;
+
+  // selector 没命中时，再补一轮文本级 ready 探测。
+  const textReady = await detectDreaminaVerificationReadyByText(page, profile);
+  // 如果文本命中，就返回文本 ready 结果。
+  if (textReady.ok) return textReady;
+
+  // selector 和 text 都没有命中时，返回统一未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
  * 等待 Dreamina verification 阶段 ready。
  *
  * 设计目标：
@@ -108,54 +191,65 @@ async function findFirstVisibleByTexts(page, texts = []) {
  * - 不负责获取验证码
  * - 不负责输入验证码
  *
- * 当前策略：
- * - 立即检查一次
- * - 按 primary / secondary 等待步再检查
- * - 优先命中 selector，再命中文本
+ * 当前补强后的步骤：
+ * 1. 读取阶段 3 profile
+ * 2. 构造 ready 检测等待步
+ * 3. 每个等待步内先查强 selector 信号
+ * 4. 如果强 selector 没命中，再查文本 / countdown 信号
+ * 5. 一旦任意一步确认 ready，就立即返回
+ * 6. 所有等待步都没命中时，再统一返回 not-ready
  */
 async function waitForDreaminaVerificationStageReady(page, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
   const { logInfo = null } = context;
-  // 读取 Dreamina 第三阶段 profile。
+  // 第一步：读取 Dreamina 第三阶段 profile，用来拿 ready selector/text 规则。
   const profile = loadDreaminaVerificationProfile();
-  // 构造 ready 检测的等待步列表：
-  // - 先立即检查
-  // - 再 primary wait
-  // - 再 secondary wait
+  // 第二步：构造 ready 检测等待步列表。
+  // 这里的含义是：
+  // - 先立即检查一次
+  // - 再给页面一段 primary 等待
+  // - 最后再给页面一段 secondary 等待
   const steps = [...new Set([0, Number(runtime?.verificationReadyPrimaryWaitMs || 300), Number(runtime?.verificationReadySecondaryWaitMs || 900)].filter(ms => Number(ms) >= 0))];
 
-  // 记录最后一次执行到的等待步，用于失败返回时保留现场信息。
+  // 记录最后一次执行到的等待步，用于最终失败返回时保留现场信息。
   let lastWaitStepMs = 0;
-  // 依次执行每个等待步。
+  // 第三步：依次执行每个等待步。
   for (const waitStepMs of steps) {
     // 更新当前等待步记录。
     lastWaitStepMs = waitStepMs;
-    // 如果当前等待步大于 0，先等待对应毫秒数。
+    // 如果当前等待步大于 0，先等待对应毫秒数，让页面有机会从过渡态进入验证码态。
     if (waitStepMs > 0) await page.waitForTimeout(waitStepMs);
 
-    // 优先尝试通过 selector 检测 verification ready。
-    const selectorHit = await findFirstVisibleBySelectors(page, profile?.verificationReady?.selectors || []);
-    // 如果 selector 已命中，就按强信号返回成功。
-    if (selectorHit.ok) {
-      // 如果存在日志函数，记录当前 selector 命中情况。
-      if (typeof logInfo === 'function') logInfo(`dreamina.verification.waitForStageReady | selector=${selectorHit.selector} | waitStepMs=${waitStepMs}`);
-      // 返回 ready 成功结果。
-      return { ok: true, state: 'VERIFICATION_STAGE_READY', source: 'selector', value: selectorHit.selector, strength: 'strong', waitStepMs };
+    // 第四步：在当前等待步内执行一次完整 ready 探测。
+    const readyResult = await detectDreaminaVerificationStageReadyOnce(page, profile, context);
+    // 如果当前等待步已经确认 ready，就直接返回成功结构。
+    if (readyResult.ok) {
+      // 如果存在日志函数，记录当前 ready 命中来源、值和等待步。
+      if (typeof logInfo === 'function') logInfo(`dreamina.verification.waitForStageReady | source=${readyResult.source} | value=${readyResult.value} | strength=${readyResult.strength} | waitStepMs=${waitStepMs}`);
+      // 返回统一 ready 结果。
+      return {
+        ok: true,
+        state: 'VERIFICATION_STAGE_READY',
+        source: readyResult.source,
+        value: readyResult.value,
+        strength: readyResult.strength,
+        waitStepMs,
+      };
     }
 
-    // 如果 selector 没命中，再尝试通过文本检测 verification ready。
-    const textHit = await findFirstVisibleByTexts(page, profile?.verificationReady?.texts || []);
-    // 如果文本命中，就按弱一些的信号返回成功。
-    if (textHit.ok) {
-      // 如果存在日志函数，记录当前文本命中情况。
-      if (typeof logInfo === 'function') logInfo(`dreamina.verification.waitForStageReady | text=${textHit.text} | waitStepMs=${waitStepMs}`);
-      // 返回 ready 成功结果。
-      return { ok: true, state: 'VERIFICATION_STAGE_READY', source: 'text', value: textHit.text, strength: 'weak', waitStepMs };
-    }
+    // 如果当前等待步没有命中任何 ready 信号，也写一条日志，方便后面判断是“完全没进来”还是“慢一拍”。
+    if (typeof logInfo === 'function') logInfo(`dreamina.verification.waitForStageReady | miss | waitStepMs=${waitStepMs}`);
   }
 
-  // 所有等待步都没有命中 ready，则返回统一失败结构。
-  return { ok: false, state: 'VERIFICATION_STAGE_NOT_READY', source: '', value: '', strength: '', waitStepMs: lastWaitStepMs };
+  // 第五步：所有等待步都没有命中 ready 时，统一按 not-ready 返回。
+  return {
+    ok: false,
+    state: 'VERIFICATION_STAGE_NOT_READY',
+    source: '',
+    value: '',
+    strength: '',
+    waitStepMs: lastWaitStepMs,
+  };
 }
 
 /**
