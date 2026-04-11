@@ -98,6 +98,12 @@
 
 ## 3. `inspectPostAuthSession(page, runtime = {}, context = {})`
 - 作用：读取 cookie / localStorage / sessionStorage 的轻量摘要，确认用户态基础信号是否建立
+- 第一轮落地后当前分步骤：
+  1. 读取 cookie key 摘要
+  2. 读取 localStorage key 摘要
+  3. 读取 sessionStorage key 摘要
+  4. 按 profile 中 expectedKeys 构造三类 summary
+  5. 按 cookie → localStorage → sessionStorage 顺序收口第一条可用态信号
 - 返回值示例：
 ```js
 {

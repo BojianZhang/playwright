@@ -63,6 +63,10 @@
   - `SESSION_SIGNAL_DETECTED`
   - `SESSION_SIGNAL_NOT_FOUND`
   - `SESSION_INSPECTION_UNKNOWN`
+- 当前第一轮落地后口径：
+  - `SESSION_SIGNAL_DETECTED` = 三类存储侧摘要中至少一类命中 expectedKeys
+  - `SESSION_SIGNAL_NOT_FOUND` = 三类存储侧摘要都未命中 expectedKeys
+  - `SESSION_INSPECTION_UNKNOWN` = 保留给后续更复杂异常场景或中断场景
 
 ## `source`
 - 类型：`string`
@@ -71,14 +75,23 @@
   - `cookie`
   - `local-storage`
   - `session-storage`
+- 当前口径：
+  - 优先返回第一条命中的存储侧来源
+  - 命中优先级为：`cookie` > `local-storage` > `session-storage`
 
 ## `value`
 - 类型：`string`
 - 含义：命中的 cookie key / storage key / 辅助摘要
+- 当前第一轮落地后口径：
+  - 这里记录当前命中的第一条代表 key（即 `matchedRule`）
 
 ## `strength`
 - 类型：`string`
 - 含义：当前 session 信号强度
+- 当前第一轮落地后口径：
+  - `medium` = cookie 或 localStorage 命中
+  - `weak` = sessionStorage 命中
+  - `''` = 当前未命中可用态信号
 
 ## `stateChanged`
 - 类型：`boolean | null`
@@ -87,6 +100,8 @@
 ## `cookieSummary`
 - 类型：`object | null`
 - 含义：cookie 侧摘要
+- 当前第一轮落地后：
+  - 真实来自浏览器上下文 cookie key 列表与 profile.expectedKeys 的交集结果
 
 ### `cookieSummary.presentKeys`
 - 类型：`array<string>`
@@ -99,6 +114,8 @@
 ## `localStorageSummary`
 - 类型：`object | null`
 - 含义：localStorage 侧摘要
+- 当前第一轮落地后：
+  - 真实来自页面 localStorage key 列表与 profile.expectedKeys 的交集结果
 
 ### `localStorageSummary.presentKeys`
 - 类型：`array<string>`
@@ -111,6 +128,8 @@
 ## `sessionStorageSummary`
 - 类型：`object | null`
 - 含义：sessionStorage 侧摘要
+- 当前第一轮落地后：
+  - 真实来自页面 sessionStorage key 列表与 profile.expectedKeys 的交集结果
 
 ### `sessionStorageSummary.presentKeys`
 - 类型：`array<string>`

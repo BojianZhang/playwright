@@ -301,41 +301,168 @@ async function waitForPostAuthReady(page, runtime = {}, context = {}) {
 }
 
 /**
+ * 读取当前页面 cookie 名称列表。
+ *
+ * 作用：
+ * - 只读取 cookie key 摘要，不触碰敏感值内容
+ * - 给第五阶段 session readiness 提供最轻量的存储侧观察能力
+ */
+async function readDreaminaCookieKeys(page, context = {}) {
+  // 尝试从 page.context() 里读取浏览器上下文对象。
+  const browserContext = typeof page?.context === 'function' ? page.context() : null;
+  // 如果拿不到 context 或 context 不支持 cookies 方法，就回退空数组。
+  if (!browserContext || typeof browserContext.cookies !== 'function') return [];
+  // 读取当前上下文可见 cookie 列表，只保留 name。
+  const cookies = await browserContext.cookies().catch(() => []);
+  // 返回去重后的 cookie key 列表。
+  return [...new Set((cookies || []).map(item => String(item?.name || '').trim()).filter(Boolean))];
+}
+
+/**
+ * 读取当前页面 localStorage key 列表。
+ *
+ * 作用：
+ * - 只读取 key 摘要，不读取值
+ * - 减少敏感数据暴露与无意义大对象扫描
+ */
+async function readDreaminaLocalStorageKeys(page) {
+  // 在页面上下文中读取 localStorage 的所有 key。
+  const keys = await page.evaluate(() => Object.keys(window.localStorage || {})).catch(() => []);
+  // 返回去重后的 key 列表。
+  return [...new Set((keys || []).map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+/**
+ * 读取当前页面 sessionStorage key 列表。
+ *
+ * 作用：
+ * - 只读取 key 摘要，不读取值
+ * - 给第五阶段 session readiness 提供 sessionStorage 侧观察能力
+ */
+async function readDreaminaSessionStorageKeys(page) {
+  // 在页面上下文中读取 sessionStorage 的所有 key。
+  const keys = await page.evaluate(() => Object.keys(window.sessionStorage || {})).catch(() => []);
+  // 返回去重后的 key 列表。
+  return [...new Set((keys || []).map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+/**
+ * 根据 expectedKeys 与 actualKeys 构造统一存储摘要。
+ */
+function buildDreaminaStorageSummary(expectedKeys = [], actualKeys = []) {
+  // 规范化 expectedKeys。
+  const normalizedExpectedKeys = [...new Set((expectedKeys || []).map(item => String(item || '').trim()).filter(Boolean))];
+  // 规范化 actualKeys。
+  const normalizedActualKeys = [...new Set((actualKeys || []).map(item => String(item || '').trim()).filter(Boolean))];
+  // 取出当前存在的交集 key。
+  const presentKeys = normalizedExpectedKeys.filter(key => normalizedActualKeys.includes(key));
+  // 命中的第一个 key 可以先当第一版 matchedRule。
+  const matchedRule = presentKeys[0] || '';
+  // 返回统一摘要结构。
+  return {
+    expectedKeys: normalizedExpectedKeys,
+    presentKeys,
+    matchedRule,
+  };
+}
+
+/**
  * 检查第五阶段 session / storage 可用态。
  *
- * 当前草案实现只先给出统一结构：
- * - 先读 profile 里的 cookie/localStorage/sessionStorage 规则
- * - 再给出空实现下的稳定返回结构
+ * 第一轮落地目标：
+ * - 真实读取 cookie/localStorage/sessionStorage 的 key 摘要
+ * - 按 profile 中定义的 expectedKeys 做命中判断
+ * - 给出统一的 session inspection 返回结构
  *
  * 注意：
- * - 这一版先把字段和注释写清，不急着在没有真实信号前硬编码逻辑
+ * - 当前仍然只读 key，不读 value
+ * - 这样既能给运维足够信号，也尽量避免把敏感值带进日志与结构体
  */
 async function inspectPostAuthSession(page, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
   // 读取 Dreamina 第五阶段 profile。
   const profile = loadDreaminaPostAuthReadyProfile();
-  // 返回统一草案结构；后续接真实 session 信号时，在这个结构上补齐即可。
+
+  // 读取当前 cookie key 列表。
+  const cookieKeys = await readDreaminaCookieKeys(page, context);
+  // 读取当前 localStorage key 列表。
+  const localStorageKeys = await readDreaminaLocalStorageKeys(page);
+  // 读取当前 sessionStorage key 列表。
+  const sessionStorageKeys = await readDreaminaSessionStorageKeys(page);
+
+  // 根据 profile 规则构造 cookie 摘要。
+  const cookieSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.cookieKeys || [], cookieKeys);
+  // 根据 profile 规则构造 localStorage 摘要。
+  const localStorageSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.localStorageKeys || [], localStorageKeys);
+  // 根据 profile 规则构造 sessionStorage 摘要。
+  const sessionStorageSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.sessionStorageKeys || [], sessionStorageKeys);
+
+  // 优先以 cookie 命中作为 session 基础信号。
+  if (cookieSummary.presentKeys.length > 0) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.postAuth.session | source=cookie | value=${cookieSummary.matchedRule} | strength=medium`);
+    }
+    return {
+      ok: true,
+      state: 'SESSION_SIGNAL_DETECTED',
+      source: 'cookie',
+      value: cookieSummary.matchedRule,
+      strength: 'medium',
+      stateChanged: null,
+      cookieSummary,
+      localStorageSummary,
+      sessionStorageSummary,
+    };
+  }
+
+  // 再以 localStorage 命中作为 session 基础信号。
+  if (localStorageSummary.presentKeys.length > 0) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.postAuth.session | source=local-storage | value=${localStorageSummary.matchedRule} | strength=medium`);
+    }
+    return {
+      ok: true,
+      state: 'SESSION_SIGNAL_DETECTED',
+      source: 'local-storage',
+      value: localStorageSummary.matchedRule,
+      strength: 'medium',
+      stateChanged: null,
+      cookieSummary,
+      localStorageSummary,
+      sessionStorageSummary,
+    };
+  }
+
+  // 最后以 sessionStorage 命中作为较弱 session 基础信号。
+  if (sessionStorageSummary.presentKeys.length > 0) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.postAuth.session | source=session-storage | value=${sessionStorageSummary.matchedRule} | strength=weak`);
+    }
+    return {
+      ok: true,
+      state: 'SESSION_SIGNAL_DETECTED',
+      source: 'session-storage',
+      value: sessionStorageSummary.matchedRule,
+      strength: 'weak',
+      stateChanged: null,
+      cookieSummary,
+      localStorageSummary,
+      sessionStorageSummary,
+    };
+  }
+
+  // 如果三类存储侧信号都没命中，按 not-found 返回。
   return {
     ok: false,
-    state: 'SESSION_INSPECTION_UNKNOWN',
+    state: 'SESSION_SIGNAL_NOT_FOUND',
     source: '',
     value: '',
     strength: '',
     stateChanged: null,
-    cookieSummary: {
-      presentKeys: [],
-      matchedRule: '',
-      expectedKeys: profile?.sessionSignals?.cookieKeys || [],
-    },
-    localStorageSummary: {
-      presentKeys: [],
-      matchedRule: '',
-      expectedKeys: profile?.sessionSignals?.localStorageKeys || [],
-    },
-    sessionStorageSummary: {
-      presentKeys: [],
-      matchedRule: '',
-      expectedKeys: profile?.sessionSignals?.sessionStorageKeys || [],
-    },
+    cookieSummary,
+    localStorageSummary,
+    sessionStorageSummary,
   };
 }
 
