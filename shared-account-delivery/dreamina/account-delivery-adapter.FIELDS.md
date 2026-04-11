@@ -19,6 +19,11 @@
 - 常见值：
   - `ACCOUNT_DELIVERY_READY`
   - `ACCOUNT_DELIVERY_NOT_READY`
+- 当前 `ACCOUNT_DELIVERY_READY` 可能来源：
+  - 强 selector ready
+  - account context 辅助 ready
+  - text ready
+  - url ready
 
 ## `source`
 - 类型：`string`
