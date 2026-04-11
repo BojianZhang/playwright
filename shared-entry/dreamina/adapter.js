@@ -536,33 +536,89 @@ function classifyDreaminaEntryFailure(input = {}) {
 }
 
 /**
- * 尝试对 Dreamina 首页做一次站点专属恢复动作。
+ * 判断某类站点失败是否值得做“轻量恢复”。
+ *
+ * 第一版策略：
+ * - 只恢复 READY_MISSING 类
+ * - 不恢复 challenge / blocked / 明确网络失败 / 明确资源硬失败
+ * - 不恢复 WHITE_SCREEN / DEAD_PAGE 这类已经很重的失败
+ */
+function isRecoverableDreaminaEntryFailure(input = {}) {
+  const siteReason = String(input.siteReason || input.reason || 'UNKNOWN').trim().toUpperCase();
+
+  if (!siteReason) return false;
+  if (siteReason.includes('CHALLENGE')) return false;
+  if (siteReason.includes('NETWORK_FAILURE')) return false;
+  if (siteReason.includes('ASSET_FAILURE')) return false;
+  if (siteReason.includes('WHITE_SCREEN')) return false;
+  if (siteReason.includes('DEAD_PAGE')) return false;
+
+  return siteReason.includes('READY');
+}
+
+/**
+ * 对可恢复的 ready-missing 类失败做一次轻量恢复等待。
  *
  * 作用：
- * - 某些失败不一定要立刻交给公共层重试。
- * - Dreamina 如果存在轻量恢复动作，可以先在这里做一次站点内恢复。
- *
- * 典型场景：
- * - 关闭一个已知挡板后重试 ready 检查
- * - 对某个已知 loading 状态额外 wait 一次
- * - 对某种可恢复的首页状态做轻量 click / dismiss
- *
- * 当前状态：
- * - 先提供空骨架，不做实际恢复
+ * - 不做重操作，不乱 reload，不碰外层 page recreate
+ * - 只给页面一次额外的喘息机会
  */
-async function recoverDreaminaEntry(page, input = {}, context = {}) {
-  const { logInfo = null } = context;
-  const reason = String(input.reason || 'UNKNOWN');
+async function waitBrieflyForRecovery(page, context = {}) {
+  const { logInfo = null, runtime = {} } = context;
+  const waitMs = Math.min(Math.max(Number(runtime.firstLoadGraceWaitMs || 800), 800), 2500);
 
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.adapter.recoverDreaminaEntry | 当前为骨架实现，未执行恢复动作 | reason=${reason}`);
+    logInfo(`dreamina.adapter.recoverDreaminaEntry | 执行轻量恢复等待 ${waitMs}ms`);
   }
+
+  await page.waitForTimeout(waitMs);
 
   return {
     recovered: false,
-    action: 'noop',
-    reason,
+    action: 'wait-briefly',
+    reason: `WAITED_${waitMs}MS`,
   };
+}
+
+/**
+ * 尝试对 Dreamina 首页做一次站点专属恢复动作。
+ *
+ * 第一版轻量恢复策略：
+ * 1. 对 challenge / blocked / 明确网络失败 / 明确资源失败：直接放弃恢复
+ * 2. 对 READY_MISSING 类：
+ *    - 先再跑一轮保守 overlay 清理
+ *    - 再做一次轻量等待
+ * 3. 整体不做 reload，不碰 browser/context，不抢外层 orchestrator 的职责
+ */
+async function recoverDreaminaEntry(page, input = {}, context = {}) {
+  const { logInfo = null } = context;
+  const reason = String(input.siteReason || input.reason || 'UNKNOWN');
+
+  if (!isRecoverableDreaminaEntryFailure(input)) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.recoverDreaminaEntry | 当前失败不适合做轻量恢复 | reason=${reason}`);
+    }
+    return {
+      recovered: false,
+      action: 'skip-recovery',
+      reason,
+    };
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.adapter.recoverDreaminaEntry | 对可恢复失败尝试轻量恢复 | reason=${reason}`);
+  }
+
+  const overlayResult = await preprocessOverlays(page, context);
+  if (overlayResult?.handled) {
+    return {
+      recovered: false,
+      action: 'overlay-preprocessed',
+      reason: overlayResult.reason || reason,
+    };
+  }
+
+  return waitBrieflyForRecovery(page, context);
 }
 
 module.exports = {
@@ -585,5 +641,7 @@ module.exports = {
   hasNetworkFailureEvidence,
   hasBlockedOrChallengeEvidence,
   classifyDreaminaEntryFailure,
+  isRecoverableDreaminaEntryFailure,
+  waitBrieflyForRecovery,
   recoverDreaminaEntry,
 };
