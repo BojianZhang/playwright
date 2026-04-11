@@ -95,6 +95,11 @@
 
 ## 3. `buildDreaminaProfileCompletionPlan(page, account, runtime = {}, context = {})`
 - 作用：生成本轮资料填写计划
+- 当前补强后会分步骤执行：
+  1. 规范化 birthday year 范围
+  2. 获取 month 候选集合
+  3. 在安全区间内生成 day
+  4. 组装 birthdayPlan 并返回
 - 返回值示例：
 ```js
 {

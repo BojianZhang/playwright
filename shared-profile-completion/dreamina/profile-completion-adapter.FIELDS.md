@@ -65,14 +65,22 @@
 ### `birthdayPlan.year`
 - 类型：`string`
 - 含义：本轮要填写的 year
+- 当前生成规则：
+  - 来自规范化后的 `birthdayMinYear ~ birthdayMaxYear`
 
 ### `birthdayPlan.month`
 - 类型：`string`
 - 含义：本轮要填写的 month
+- 当前生成规则：
+  - 优先使用 `runtime.birthdayMonthCandidates`
+  - 否则回退到默认英文月份集合
 
 ### `birthdayPlan.day`
 - 类型：`string`
 - 含义：本轮要填写的 day
+- 当前生成规则：
+  - 默认在 1~28 的安全范围内生成
+  - 避免月长和闰年的复杂性
 
 ---
 

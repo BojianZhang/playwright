@@ -263,29 +263,143 @@ async function waitForDreaminaProfileCompletionReady(page, runtime = {}, context
 }
 
 /**
+ * 规范化 birthday 年份范围。
+ *
+ * 作用：
+ * - 避免 runtime 传入的 min/max year 非法或倒置
+ * - 给第四阶段 plan 生成提供稳定边界
+ */
+function normalizeBirthdayYearRange(runtime = {}) {
+  // 读取最小年份；默认给 1980。
+  let minYear = Number(runtime?.birthdayMinYear || 1980);
+  // 读取最大年份；默认给 2008。
+  let maxYear = Number(runtime?.birthdayMaxYear || 2008);
+  // 如果 minYear 不是有效数字，就回退默认值。
+  if (!Number.isFinite(minYear)) minYear = 1980;
+  // 如果 maxYear 不是有效数字，就回退默认值。
+  if (!Number.isFinite(maxYear)) maxYear = 2008;
+  // 把年份取整，避免传小数。
+  minYear = Math.floor(minYear);
+  maxYear = Math.floor(maxYear);
+  // 如果年份顺序写反了，就交换，保证 min <= max。
+  if (minYear > maxYear) {
+    const temp = minYear;
+    minYear = maxYear;
+    maxYear = temp;
+  }
+  // 返回规范化后的年份范围。
+  return { minYear, maxYear };
+}
+
+/**
+ * 获取 birthday 月份候选集合。
+ *
+ * 作用：
+ * - 统一第四阶段 month plan 的来源
+ * - 允许后续通过 runtime 自定义 month 值集合
+ */
+function getBirthdayMonthCandidates(runtime = {}) {
+  // 优先从 runtime 读取自定义 month 候选数组。
+  const customMonths = Array.isArray(runtime?.birthdayMonthCandidates)
+    ? runtime.birthdayMonthCandidates.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  // 如果 runtime 里给了合法 month 候选，就优先使用自定义集合。
+  if (customMonths.length > 0) return customMonths;
+  // 否则回退到默认英文月份集合。
+  return ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+}
+
+/**
+ * 随机生成 birthday day。
+ *
+ * 第一版先固定在 1~28 的安全区间，避免月长/闰年复杂性。
+ */
+function buildSafeBirthdayDay(runtime = {}) {
+  // 读取最小 day；默认值为 1。
+  let minDay = Number(runtime?.birthdayMinDay || 1);
+  // 读取最大 day；默认值为 28。
+  let maxDay = Number(runtime?.birthdayMaxDay || 28);
+  // 如果 minDay 不是有效数字，就回退到 1。
+  if (!Number.isFinite(minDay)) minDay = 1;
+  // 如果 maxDay 不是有效数字，就回退到 28。
+  if (!Number.isFinite(maxDay)) maxDay = 28;
+  // 取整，避免小数。
+  minDay = Math.floor(minDay);
+  maxDay = Math.floor(maxDay);
+  // 对 day 做安全夹取，保证在 1~28 内。
+  minDay = Math.max(1, Math.min(28, minDay));
+  maxDay = Math.max(1, Math.min(28, maxDay));
+  // 如果顺序反了，就交换。
+  if (minDay > maxDay) {
+    const temp = minDay;
+    minDay = maxDay;
+    maxDay = temp;
+  }
+  // 在安全区间内随机取一个 day。
+  return String(minDay + Math.floor(Math.random() * Math.max(1, maxDay - minDay + 1)));
+}
+
+/**
  * 生成 Dreamina 第四阶段资料填写计划。
  *
- * 第一版先复用随机 birthday 生成思路，后续再按站点需求精修。
+ * 当前补强后的目标：
+ * - 不只是“随便随机一个 birthday”
+ * - 而是先把第四阶段资料计划的边界、来源、字段结构稳定下来
  */
 async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, context = {}) {
-  // 读取 year 起始范围。
-  const minYear = Number(runtime?.birthdayMinYear || 1980);
-  // 读取 year 结束范围。
-  const maxYear = Number(runtime?.birthdayMaxYear || 2008);
-  // 计算一个随机 year。
-  const year = String(Math.floor(minYear + Math.random() * Math.max(1, maxYear - minYear + 1)));
-  // 定义 month 候选。
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  // 随机选一个 month。
-  const month = months[Math.floor(Math.random() * months.length)];
-  // 随机 day，先按 1-28 做安全范围。
-  const day = String(1 + Math.floor(Math.random() * 28));
+  // 从上下文中读取日志函数；没有则保持 null。
+  const { logInfo = null, profileReady = null } = context;
+  // 规范化 year 范围。
+  const { minYear, maxYear } = normalizeBirthdayYearRange(runtime);
+  // 读取 month 候选集合。
+  const months = getBirthdayMonthCandidates(runtime);
+  // 如果 month 候选集合为空，就直接返回失败，避免生成无效 plan。
+  if (!Array.isArray(months) || months.length === 0) {
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_PLAN_FAILED',
+      birthdayPlan: null,
+      source: 'runtime-random-plan',
+    };
+  }
+
+  // 按规范化后的 year 范围生成一个随机年份。
+  const year = String(minYear + Math.floor(Math.random() * Math.max(1, maxYear - minYear + 1)));
+  // 从 month 候选集合里随机选一个 month。
+  const month = String(months[Math.floor(Math.random() * months.length)] || '').trim();
+  // 在安全 day 区间里生成一个随机 day。
+  const day = buildSafeBirthdayDay(runtime);
+
+  // 如果 year / month / day 中任意一个为空，就按 plan 失败返回。
+  if (!year || !month || !day) {
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_PLAN_FAILED',
+      birthdayPlan: null,
+      source: 'runtime-random-plan',
+    };
+  }
+
+  // 构造第四阶段统一 birthday plan。
+  const birthdayPlan = {
+    // 本轮要填写的 year。
+    year,
+    // 本轮要填写的 month。
+    month,
+    // 本轮要填写的 day。
+    day,
+  };
+
+  // 如果存在日志函数，记录当前生成的 birthday plan，便于后续排查“填了什么”。
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.profileCompletion.plan | readyState=${profileReady?.state || 'NA'} | year=${birthdayPlan.year} | month=${birthdayPlan.month} | day=${birthdayPlan.day} | yearRange=${minYear}-${maxYear}`);
+  }
 
   // 返回统一计划结构。
   return {
     ok: true,
     state: 'PROFILE_COMPLETION_PLAN_READY',
-    birthdayPlan: { year, month, day },
+    birthdayPlan,
     source: 'runtime-random-plan',
   };
 }
