@@ -27,14 +27,23 @@
   - `selector`
   - `text`
   - `url`
+  - `user-panel`
+  - `dashboard`
+- 口径：
+  - `user-panel` / `dashboard` 只表示“第五阶段入口辅助 ready”，不代表最终 registration-complete
 
 ## `value`
 - 类型：`string`
 - 含义：命中的 selector / text / url 摘要
+- 当 `source=user-panel` / `dashboard` 时，这里记录的是命中的登录后 UI selector 或 text
 
 ## `strength`
 - 类型：`string`
 - 含义：当前 ready 信号强度
+- 当前 ready 层口径：
+  - `strong` = 结构性 selector 命中
+  - `medium` = UI 登录后容器辅助命中
+  - `weak` = text / url 辅助命中
 
 ## `waitStepMs`
 - 类型：`number`
@@ -416,6 +425,11 @@
 
 ## `POST_AUTH_READY`
 - 含义：已确认页面进入第五阶段上下文
+- 当前可能来源：
+  - 强 selector ready
+  - 登录后 UI 辅助 ready
+  - text ready
+  - url ready
 
 ## `POST_AUTH_NOT_READY`
 - 含义：当前还未确认页面进入第五阶段上下文

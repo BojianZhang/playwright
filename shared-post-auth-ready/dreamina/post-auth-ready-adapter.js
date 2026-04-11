@@ -79,16 +79,177 @@ async function findFirstVisibleByTexts(page, texts = []) {
 }
 
 /**
+ * 检测 Dreamina 第五阶段的 selector ready 信号。
+ *
+ * 作用：
+ * - 优先依赖结构信号，而不是只看文本或 URL
+ * - selector 命中时，一般更接近真实进入登录后区域
+ */
+async function detectDreaminaPostAuthReadyBySelector(page, profile) {
+  // 从 profile 中读取第五阶段入口 selector 列表。
+  const selectorHit = await findFirstVisibleBySelectors(page, profile?.postAuthReady?.selectors || []);
+  // 如果没有命中 selector，就返回统一未命中结构。
+  if (!selectorHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+
+  // selector 命中时，按强信号返回。
+  return {
+    ok: true,
+    source: 'selector',
+    value: selectorHit.selector,
+    strength: 'strong',
+  };
+}
+
+/**
+ * 检测 Dreamina 第五阶段的 UI ready 辅助信号。
+ *
+ * 作用：
+ * - 这一层不是最终 UI 确认，而是“第五阶段入口已经像是登录后页面”的弱辅助信号
+ * - 优先利用 uiSignals 里已经存在的工作台/用户面板规则
+ */
+async function detectDreaminaPostAuthReadyByUiSignals(page, profile) {
+  // 优先检查 UI selector。
+  const uiSelectorHit = await findFirstVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
+  // 如果 UI selector 命中，按中强辅助信号返回。
+  if (uiSelectorHit.ok) {
+    return {
+      ok: true,
+      source: 'user-panel',
+      value: uiSelectorHit.selector,
+      strength: 'medium',
+    };
+  }
+
+  // 再检查 UI text。
+  const uiTextHit = await findFirstVisibleByTexts(page, profile?.uiSignals?.texts || []);
+  // 如果 UI text 命中，按弱辅助信号返回。
+  if (uiTextHit.ok) {
+    return {
+      ok: true,
+      source: 'dashboard',
+      value: uiTextHit.text,
+      strength: 'weak',
+    };
+  }
+
+  // 都没命中时，返回统一未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 第五阶段的文本 ready 信号。
+ *
+ * 作用：
+ * - 作为 selector 之后的补充判断
+ * - 当登录后页面缺少稳定 selector 时，文本信号可以作为辅助入口判断
+ */
+async function detectDreaminaPostAuthReadyByText(page, profile) {
+  // 从 profile 中读取第五阶段入口文本列表。
+  const textHit = await findFirstVisibleByTexts(page, profile?.postAuthReady?.texts || []);
+  // 如果没有命中文本，就返回统一未命中结构。
+  if (!textHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+
+  // 文本命中时，按弱信号返回。
+  return {
+    ok: true,
+    source: 'text',
+    value: textHit.text,
+    strength: 'weak',
+  };
+}
+
+/**
+ * 检测 Dreamina 第五阶段的 URL ready 信号。
+ *
+ * 作用：
+ * - 在页面已经明显离开注册流、进入登录后路径时，URL 片段是一个很实用的辅助信号
+ * - 但 URL 只能做辅助判断，不能单独代表最终 registration-complete
+ */
+async function detectDreaminaPostAuthReadyByUrl(page, profile) {
+  // 读取当前页面 URL。
+  const currentUrl = String(page.url ? page.url() : '').trim();
+  // 从 profile 的 urlIncludes 里找第一个命中项。
+  const urlHit = (profile?.postAuthReady?.urlIncludes || []).find(fragment => currentUrl.includes(String(fragment || '')));
+  // 如果没有命中 URL 片段，则返回统一未命中结构。
+  if (!urlHit) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+
+  // URL 命中时，按弱辅助信号返回。
+  return {
+    ok: true,
+    source: 'url',
+    value: urlHit,
+    strength: 'weak',
+  };
+}
+
+/**
+ * 在单个等待步内执行一次第五阶段入口 ready 探测。
+ *
+ * 当前顺序：
+ * 1. selector ready
+ * 2. UI signals ready
+ * 3. text ready
+ * 4. URL ready
+ */
+async function detectDreaminaPostAuthReadyOnce(page, profile) {
+  // 第一层：优先查 selector ready。
+  const selectorReady = await detectDreaminaPostAuthReadyBySelector(page, profile);
+  if (selectorReady.ok) return selectorReady;
+
+  // 第二层：再查 UI ready 辅助信号。
+  const uiReady = await detectDreaminaPostAuthReadyByUiSignals(page, profile);
+  if (uiReady.ok) return uiReady;
+
+  // 第三层：再查文本 ready。
+  const textReady = await detectDreaminaPostAuthReadyByText(page, profile);
+  if (textReady.ok) return textReady;
+
+  // 第四层：最后查 URL ready。
+  const urlReady = await detectDreaminaPostAuthReadyByUrl(page, profile);
+  if (urlReady.ok) return urlReady;
+
+  // 都没有命中时，返回统一未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
  * 等待并确认 Dreamina 是否已经进入第五阶段上下文。
  *
- * 当前草案实现先只做最小能力：
- * - selector ready
- * - text ready
- * - url includes ready
- *
- * 注意：
- * - 这里只确认“第五阶段可以开始”
- * - 不在这里宣布 registration-complete
+ * 第一轮补强后：
+ * - 不再只看 selector / text / url 三层
+ * - 补进 UI login-after signals 作为第五阶段入口辅助信号
+ * - 仍然只负责“第五阶段可以开始”，不在这里宣布 registration-complete
  */
 async function waitForPostAuthReady(page, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
@@ -107,27 +268,25 @@ async function waitForPostAuthReady(page, runtime = {}, context = {}) {
     // 如果当前等待步大于 0，则等待对应毫秒数。
     if (waitStepMs > 0) await page.waitForTimeout(waitStepMs).catch(() => {});
 
-    // 第一层：优先查 selector ready。
-    const selectorHit = await findFirstVisibleBySelectors(page, profile?.postAuthReady?.selectors || []);
-    if (selectorHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.postAuth.ready | source=selector | value=${selectorHit.selector} | strength=strong | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'POST_AUTH_READY', source: 'selector', value: selectorHit.selector, strength: 'strong', waitStepMs };
+    // 在当前等待步内执行一次完整 ready 探测。
+    const readyResult = await detectDreaminaPostAuthReadyOnce(page, profile);
+    // 如果当前等待步已确认进入第五阶段，就直接返回成功结构。
+    if (readyResult.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.postAuth.ready | source=${readyResult.source} | value=${readyResult.value} | strength=${readyResult.strength} | waitStepMs=${waitStepMs}`);
+      }
+      return {
+        ok: true,
+        state: 'POST_AUTH_READY',
+        source: readyResult.source,
+        value: readyResult.value,
+        strength: readyResult.strength,
+        waitStepMs,
+      };
     }
 
-    // 第二层：再查文本 ready。
-    const textHit = await findFirstVisibleByTexts(page, profile?.postAuthReady?.texts || []);
-    if (textHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.postAuth.ready | source=text | value=${textHit.text} | strength=weak | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'POST_AUTH_READY', source: 'text', value: textHit.text, strength: 'weak', waitStepMs };
-    }
-
-    // 第三层：最后查 URL 片段。
-    const currentUrl = String(page.url ? page.url() : '').trim();
-    const urlHit = (profile?.postAuthReady?.urlIncludes || []).find(fragment => currentUrl.includes(String(fragment || '')));
-    if (urlHit) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.postAuth.ready | source=url | value=${urlHit} | strength=weak | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'POST_AUTH_READY', source: 'url', value: urlHit, strength: 'weak', waitStepMs };
-    }
+    // 当前等待步未命中时，记一条 miss，便于后续看是慢一拍还是根本没进第五阶段。
+    if (typeof logInfo === 'function') logInfo(`dreamina.postAuth.ready | miss | waitStepMs=${waitStepMs}`);
   }
 
   // 所有等待步都未命中时，返回 not-ready。

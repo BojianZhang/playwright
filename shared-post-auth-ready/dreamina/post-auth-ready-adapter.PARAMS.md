@@ -79,10 +79,11 @@
 
 ## 2. `waitForPostAuthReady(page, runtime = {}, context = {})`
 - 作用：等待并确认当前页面已经进入第五阶段上下文
-- 当前建议分步骤：
+- 第一轮补强后当前分步骤：
   1. 查 post-auth selector ready
-  2. 查 post-auth text ready
-  3. 查登录后 URL/路由线索
+  2. 查登录后 UI signals 辅助 ready
+  3. 查 post-auth text ready
+  4. 查登录后 URL/路由线索
 - 返回值示例：
 ```js
 {
