@@ -405,18 +405,127 @@ async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, c
 }
 
 /**
+ * 读取当前 birthday year 输入值。
+ *
+ * 作用：
+ * - 在填写前后读取 year 输入框当前值
+ * - 避免只看 fill/type 是否报错，而不看页面真实值
+ */
+async function readDreaminaBirthdayYearValue(page, profile) {
+  // 遍历 profile 中定义的 yearSelectors，找到第一个当前可见 year 输入。
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  // 如果当前没有可见 year 输入，就返回统一未命中结构。
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      value: '',
+    };
+  }
+
+  // 读取当前 year 输入值；若读取失败，则回退空字符串。
+  const currentValue = await hit.locator.inputValue().catch(() => '');
+  // 返回统一 year 读取结构。
+  return {
+    ok: true,
+    selector: hit.selector,
+    value: String(currentValue || '').trim(),
+    locator: hit.locator,
+  };
+}
+
+/**
  * 填写 birthday year。
  *
- * 第一版先返回骨架占位结构，后续再接真实 Dreamina 行为。
+ * 第一版真实能力目标：
+ * - 找到 year 输入控件
+ * - 清空旧值
+ * - 写入本轮 birthdayPlan.year
+ * - 读回 year 值确认是否真正写入成功
  */
 async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) {
-  return {
-    ok: false,
-    state: 'BIRTHDAY_YEAR_FILL_NOT_IMPLEMENTED',
-    source: 'profile-input',
-    value: String(plan?.birthdayPlan?.year || ''),
-    stateChanged: null,
-  };
+  // 从上下文中读取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 读取 Dreamina 第四阶段 profile。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 取出本轮 plan 里要填写的 year，并统一 trim。
+  const yearValue = String(plan?.birthdayPlan?.year || '').trim();
+
+  // 如果 year 本身为空，就直接失败，不做无意义输入动作。
+  if (!yearValue) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: 'EMPTY_YEAR_PLAN',
+      stateChanged: null,
+    };
+  }
+
+  // 先读取填写前的 year 输入状态。
+  const beforeState = await readDreaminaBirthdayYearValue(page, profile);
+  // 如果当前找不到 year 输入控件，就直接失败。
+  if (!beforeState.ok || !beforeState.locator) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: 'YEAR_INPUT_NOT_FOUND',
+      stateChanged: null,
+    };
+  }
+
+  try {
+    // 先点击 year 输入控件，尽量确保焦点落在正确输入框上。
+    await beforeState.locator.click({ force: true }).catch(() => {});
+    // 再显式 focus，降低只 click 不聚焦的概率。
+    await beforeState.locator.focus().catch(() => {});
+    // 尝试全选旧值。
+    await beforeState.locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+    // 删除旧值，避免新旧年份拼接。
+    await beforeState.locator.press('Backspace').catch(() => {});
+    // 优先尝试用 fill 直接写入 year。
+    await beforeState.locator.fill(yearValue).catch(async () => {
+      // 如果 fill 失败，再回退到 type。
+      await beforeState.locator.type(yearValue, { delay: 40 }).catch(() => {});
+    });
+    // 给页面一小段时间消化输入事件。
+    await page.waitForTimeout(120).catch(() => {});
+
+    // 读取填写后的 year 输入状态。
+    const afterState = await readDreaminaBirthdayYearValue(page, profile);
+    // 取出填写前的值。
+    const beforeValue = String(beforeState?.value || '').trim();
+    // 取出填写后的值。
+    const afterValue = String(afterState?.value || '').trim();
+    // 判断 year 是否已经被正确写入。
+    const ok = afterValue === yearValue;
+    // 判断页面/输入值是否发生了变化。
+    const stateChanged = afterValue !== beforeValue;
+
+    // 如果有日志函数，记录本轮 year 填写情况。
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.fillYear | selector=${beforeState.selector || ''} | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${yearValue}`);
+    }
+
+    // 返回统一 year 填写结果。
+    return {
+      ok,
+      state: ok ? 'BIRTHDAY_YEAR_FILLED' : 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: afterValue,
+      stateChanged,
+    };
+  } catch (error) {
+    // 如果整个填写过程抛异常，就按统一失败结构返回。
+    return {
+      ok: false,
+      state: 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+    };
+  }
 }
 
 /**
