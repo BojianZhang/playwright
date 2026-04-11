@@ -4,6 +4,8 @@
 // Dreamina 主链编排层：阶段公共 runner 引入
 // ==============================
 
+// 阶段 0：proxy-precheck 公共骨架。
+const { runProxyPrecheckChain } = require('../shared-proxy-precheck/stages/proxy-precheck');
 // 阶段 1：entry 公共骨架。
 const { runEntryStage } = require('../shared-entry/stages/entry');
 
@@ -22,6 +24,8 @@ const { runAccountDeliveryStage } = require('../shared-account-delivery/stages/a
 // Dreamina 主链编排层：各阶段 Dreamina adapter 引入
 // ==============================
 
+// 阶段 0：Dreamina proxy-precheck adapter。
+const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/proxy-precheck-adapter');
 // 阶段 1：Dreamina entry adapter。
 const dreaminaEntryAdapter = require('../shared-entry/dreamina/entry-adapter');
 // 阶段 2：Dreamina credential adapter。
@@ -45,6 +49,15 @@ const dreaminaAccountDeliveryAdapter = require('../shared-account-delivery/dream
  */
 function buildDreaminaStageRegistry() {
   return {
+    // 阶段 0：proxy-precheck
+    proxyPrecheck: {
+      // 当前注册表项所属阶段名。
+      stage: 'proxy-precheck',
+      // 代理预检公共 runner。
+      run: runProxyPrecheckChain,
+      // Dreamina 代理预检 adapter。
+      adapter: dreaminaProxyPrecheckAdapter,
+    },
     // 阶段 1：entry
     entry: {
       // 当前注册表项所属阶段名。
@@ -135,6 +148,7 @@ function buildDreaminaRegisterContext(options = {}) {
     stageRegistry,
     // 各阶段结果容器；初始都为 null。
     stageResults: {
+      proxyPrecheck: null,
       entry: null,
       credential: null,
       verification: null,
@@ -173,7 +187,20 @@ function buildProxyPrecheckSummary(proxyPrecheckResult) {
 }
 
 function checkDreaminaRegisterPreconditions(registerContext = {}) {
+  const proxy = registerContext?.proxy || null;
   const proxyPrecheckResult = registerContext?.proxyPrecheckResult || null;
+
+  if (!proxy || typeof proxy !== 'object') {
+    return {
+      ok: false,
+      state: 'DREAMINA_REGISTER_PROXY_MISSING',
+      reason: 'DREAMINA_REGISTER_PROXY_MISSING',
+      source: 'preconditions',
+    };
+  }
+
+  // 这里保留外部硬拒绝兜底能力：如果外部已经明确传入失败的 precheckResult，
+  // 主链可在真正进入 proxyPrecheck 阶段前直接拒绝启动。
   if (proxyPrecheckResult && proxyPrecheckResult.success === false) {
     return {
       ok: false,
@@ -182,6 +209,7 @@ function checkDreaminaRegisterPreconditions(registerContext = {}) {
       source: 'proxy-precheck',
     };
   }
+
   return {
     ok: true,
     state: 'DREAMINA_REGISTER_PRECONDITIONS_OK',
@@ -260,13 +288,21 @@ async function runDreaminaStage(stageKey, registerContext) {
   };
 
   // 执行阶段公共 runner。
-  const result = await stageRunner({
-    page: registerContext.page,
-    account: registerContext.account,
-    adapter: stageEntry.adapter,
-    runtime: registerContext.runtime,
-    context: stageContext,
-  });
+  // 注意：proxyPrecheck 阶段的主输入是 proxy，不是 page/account 业务表单上下文。
+  const result = stageKey === 'proxyPrecheck'
+    ? await stageRunner({
+        proxy: registerContext.proxy,
+        adapter: stageEntry.adapter,
+        runtime: registerContext.runtime,
+        context: stageContext,
+      })
+    : await stageRunner({
+        page: registerContext.page,
+        account: registerContext.account,
+        adapter: stageEntry.adapter,
+        runtime: registerContext.runtime,
+        context: stageContext,
+      });
 
   // 把阶段结果写回 stageResults。
   registerContext.stageResults[stageKey] = result;
@@ -366,8 +402,9 @@ async function runDreaminaRegisterFlow(options = {}) {
   }
 
   // 定义 Dreamina 当前主链顺序。
-  // 现在阶段 1 entry 也已经具备公共 runner 形态，因此按完整 1~6 顺序执行。
+  // 当前总链已经升级为 7 阶段：先做 proxyPrecheck，再进入后续 6 个正式业务阶段。
   const stageOrder = [
+    'proxyPrecheck',
     'entry',
     'credential',
     'verification',
@@ -406,7 +443,7 @@ async function runDreaminaRegisterFlow(options = {}) {
         proxy: registerContext.proxy,
         deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
         stageResults: registerContext.stageResults,
-        proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.proxyPrecheckResult),
+        proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.stageResults?.proxyPrecheck || registerContext.proxyPrecheckResult),
         meta: registerContext.meta,
       });
     }
