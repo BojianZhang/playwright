@@ -4,9 +4,8 @@
 // Dreamina 主链编排层：阶段公共 runner 引入
 // ==============================
 
-// 阶段 1：shared-entry 当前主要以健康检查/入口编排能力为主。
-// 注意：shared-entry 当前还不是完全统一成 stage runner 形态，所以这里先保留占位适配位。
-const entryStageRunner = null;
+// 阶段 1：entry 公共骨架。
+const { runEntryStage } = require('../shared-entry/stages/entry');
 
 // 阶段 2：credential submit 公共骨架。
 const { runCredentialSubmitStage } = require('../shared-credential/stages/credential-submit');
@@ -23,6 +22,8 @@ const { runAccountDeliveryStage } = require('../shared-account-delivery/stages/a
 // Dreamina 主链编排层：各阶段 Dreamina adapter 引入
 // ==============================
 
+// 阶段 1：Dreamina entry adapter。
+const dreaminaEntryAdapter = require('../shared-entry/dreamina/entry-adapter');
 // 阶段 2：Dreamina credential adapter。
 const dreaminaCredentialAdapter = require('../shared-credential/dreamina/credential-adapter');
 // 阶段 3：Dreamina verification adapter。
@@ -48,10 +49,10 @@ function buildDreaminaStageRegistry() {
     entry: {
       // 当前注册表项所属阶段名。
       stage: 'entry',
-      // 阶段 1 公共 runner；当前暂为 null，占位等待 shared-entry 统一 stage runner 化。
-      run: entryStageRunner,
-      // Dreamina 阶段 1 adapter；当前先保留 null，占位等待后续统一接入。
-      adapter: null,
+      // 阶段 1 公共 runner。
+      run: runEntryStage,
+      // Dreamina 阶段 1 adapter。
+      adapter: dreaminaEntryAdapter,
     },
     // 阶段 2：credential-submit
     credential: {
@@ -298,8 +299,9 @@ async function runDreaminaRegisterFlow(options = {}) {
   const { logInfo = null } = registerContext;
 
   // 定义 Dreamina 当前主链顺序。
-  // 注意：阶段 1 entry 目前 shared-entry 还没完全统一成 stage runner 形态，所以暂时跳过硬执行。
+  // 现在阶段 1 entry 也已经具备公共 runner 形态，因此按完整 1~6 顺序执行。
   const stageOrder = [
+    'entry',
     'credential',
     'verification',
     'profileCompletion',
