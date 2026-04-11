@@ -1,0 +1,17 @@
+{
+  "site": "dreamina",
+  "chain": "proxy-precheck",
+  "entryUrl": "https://www.dreamina.com/",
+  "siteReady": {
+    "selectors": [],
+    "texts": [],
+    "urlIncludes": ["dreamina.com"]
+  },
+  "businessReady": {
+    "selectors": [],
+    "texts": []
+  },
+  "failureSignals": {
+    "texts": ["Try again", "Something went wrong"]
+  }
+}
