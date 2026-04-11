@@ -55,6 +55,31 @@ function getFirstmailApiConfig(config = {}) {
   };
 }
 
+function getFirstmailScanConfig(config = {}) {
+  const subjectKeywords = Array.isArray(config.firstmailSubjectKeywords)
+    ? config.firstmailSubjectKeywords.map(item => String(item || '').trim()).filter(Boolean)
+    : ['Dreamina', 'CapCut', 'verification'];
+  const senderKeywords = Array.isArray(config.firstmailPreferredSenderKeywords)
+    ? config.firstmailPreferredSenderKeywords.map(item => String(item || '').trim()).filter(Boolean)
+    : ['dreamina', 'capcut'];
+  const recentMessageScanLimit = Math.max(1, Number(config.firstmailRecentMessageScanLimit || 5));
+  const pollJitterMinMs = Math.max(0, Number(config.firstmailPollJitterMinMs || 0));
+  const pollJitterMaxMs = Math.max(pollJitterMinMs, Number(config.firstmailPollJitterMaxMs || 0));
+  const codeRegex = String(config.firstmailCodeRegex || '\\b([A-Z0-9]{6})\\b').trim();
+  const fallbackLookbackMs = Math.max(0, Number(config.firstmailFallbackLookbackMs || 180000));
+  const fallbackEnableFromAttempt = Math.max(1, Number(config.firstmailFallbackEnableFromAttempt || 3));
+  return {
+    subjectKeywords,
+    senderKeywords,
+    recentMessageScanLimit,
+    pollJitterMinMs,
+    pollJitterMaxMs,
+    codeRegex,
+    fallbackLookbackMs,
+    fallbackEnableFromAttempt,
+  };
+}
+
 function buildLatestMessagePayload(account) {
   return JSON.stringify({
     email: account.email,
@@ -63,14 +88,18 @@ function buildLatestMessagePayload(account) {
   });
 }
 
+function extractMessageList(responseData) {
+  if (!responseData) return [];
+  if (Array.isArray(responseData?.messages)) return responseData.messages;
+  if (Array.isArray(responseData?.data)) return responseData.data;
+  if (responseData?.message && typeof responseData.message === 'object') return [responseData.message];
+  if (responseData?.data && typeof responseData.data === 'object' && !Array.isArray(responseData.data)) return [responseData.data];
+  if (typeof responseData === 'object' && !Array.isArray(responseData)) return [responseData];
+  return [];
+}
+
 function extractLatestMessage(responseData) {
-  if (!responseData) return null;
-  if (Array.isArray(responseData?.messages) && responseData.messages.length) return responseData.messages[0];
-  if (Array.isArray(responseData?.data) && responseData.data.length) return responseData.data[0];
-  if (responseData?.message && typeof responseData.message === 'object') return responseData.message;
-  if (responseData?.data && typeof responseData.data === 'object' && !Array.isArray(responseData.data)) return responseData.data;
-  if (typeof responseData === 'object' && !Array.isArray(responseData)) return responseData;
-  return null;
+  return extractMessageList(responseData)[0] || null;
 }
 
 async function fetchLatestMessage({ account, config }) {
@@ -98,6 +127,7 @@ async function fetchLatestMessage({ account, config }) {
       return {
         response,
         message: null,
+        messages: [],
         noMessages: true,
       };
     }
@@ -108,21 +138,27 @@ async function fetchLatestMessage({ account, config }) {
     throw new Error(`FIRSTMAIL_API_HTTP_${response.status}:${errorText}`);
   }
 
-  const message = extractLatestMessage(response.data);
+  const messages = extractMessageList(response.data);
+  const scanConfig = getFirstmailScanConfig(config);
   return {
     response,
-    message,
+    message: messages[0] || null,
+    messages: messages.slice(0, scanConfig.recentMessageScanLimit),
     noMessages: false,
   };
 }
 
-function extractCodeFromText(text) {
-  const bodyText = String(text || '');
+function extractCodeFromText(text, config = {}) {
+  const bodyText = String(text || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+  const scanConfig = getFirstmailScanConfig(config);
   const contextualPatterns = [
-    /verification code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /your code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /code[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
-    /confirm[^A-Z0-9]{0,20}([A-Z0-9]{6})/i,
+    /verification code[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /your code[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /confirmation code[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /one[- ]time code[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /enter code[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /confirm[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
+    /\bcode\b[^A-Z0-9]{0,40}([A-Z0-9]{4,8})/i,
   ];
 
   for (const pattern of contextualPatterns) {
@@ -130,11 +166,27 @@ function extractCodeFromText(text) {
     if (match) return match[1];
   }
 
-  const fallbackMatch = bodyText.match(/\b([A-Z0-9]{6})\b/);
-  return fallbackMatch ? fallbackMatch[1] : '';
+  try {
+    const customPattern = new RegExp(scanConfig.codeRegex, 'i');
+    const customMatch = bodyText.match(customPattern);
+    if (customMatch) return customMatch[1] || customMatch[0] || '';
+  } catch (error) {
+  }
+
+  const allCandidates = [...bodyText.matchAll(/\b([A-Z0-9]{4,8})\b/g)].map(match => String(match[1] || '').trim()).filter(Boolean);
+  const filteredCandidates = allCandidates.filter(token => !/dreamina|capcut|verify|login|email/i.test(token));
+  if (filteredCandidates.length === 1) return filteredCandidates[0];
+  if (filteredCandidates.length > 1) {
+    const digitHeavy = filteredCandidates.filter(token => /\d/.test(token));
+    if (digitHeavy.length === 1) return digitHeavy[0];
+    if (digitHeavy.length > 1) return digitHeavy[0];
+    return filteredCandidates[0];
+  }
+
+  return '';
 }
 
-function isDreaminaMessage(message) {
+function isDreaminaMessage(message, config = {}) {
   const joined = [
     message?.from,
     message?.from_name,
@@ -147,7 +199,11 @@ function isDreaminaMessage(message) {
     message?.content,
   ].filter(Boolean).join('\n');
 
-  return /Dreamina|dreamina@mail\./i.test(joined);
+  const lowerJoined = joined.toLowerCase();
+  const scanConfig = getFirstmailScanConfig(config);
+  const senderHit = scanConfig.senderKeywords.some(keyword => lowerJoined.includes(keyword.toLowerCase()));
+  const subjectHit = scanConfig.subjectKeywords.some(keyword => lowerJoined.includes(keyword.toLowerCase()));
+  return senderHit || subjectHit || /dreamina|dreamina@mail\.|capcut/i.test(joined);
 }
 
 function summarizeMessage(message) {
@@ -158,10 +214,98 @@ function summarizeMessage(message) {
   };
 }
 
-async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = '', proxyLabel = '' }) {
+function extractMessageTimestampMs(message) {
+  const candidates = [
+    message?.date,
+    message?.created_at,
+    message?.createdAt,
+    message?.received_at,
+    message?.receivedAt,
+    message?.timestamp,
+    message?.time,
+    message?.internalDate,
+  ];
+
+  for (const value of candidates) {
+    if (value == null || value === '') continue;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value > 1e12 ? value : value * 1000;
+    }
+    const text = String(value).trim();
+    if (!text) continue;
+    if (/^\d+$/.test(text)) {
+      const numeric = Number(text);
+      if (Number.isFinite(numeric)) {
+        return numeric > 1e12 ? numeric : numeric * 1000;
+      }
+    }
+    const parsed = Date.parse(text);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+function buildCandidateFromMessage(message, config = {}) {
+  const parts = [
+    message?.subject,
+    message?.snippet,
+    message?.text,
+    message?.html,
+    message?.body,
+    message?.content,
+  ].filter(Boolean);
+  const code = extractCodeFromText(parts.join('\n'), config);
+  if (!code) return null;
+  return {
+    message,
+    messageTs: extractMessageTimestampMs(message),
+    code,
+    sourcePreview: parts.join(' | ').replace(/\s+/g, ' ').slice(0, 260),
+  };
+}
+
+function pickRecentCandidateMessage(messages, { config = {}, seenCodes = new Set() } = {}) {
+  const scanConfig = getFirstmailScanConfig(config);
+  const limited = Array.isArray(messages) ? messages.slice(0, scanConfig.recentMessageScanLimit) : [];
+  const latestMessage = limited[0] || null;
+
+  if (latestMessage && isDreaminaMessage(latestMessage, config)) {
+    const latestCandidate = buildCandidateFromMessage(latestMessage, config);
+    if (latestCandidate && !seenCodes.has(latestCandidate.code)) {
+      return { ...latestCandidate, matchMode: 'latest-direct' };
+    }
+  }
+
+  for (const message of limited.slice(1)) {
+    if (!isDreaminaMessage(message, config)) continue;
+    const candidate = buildCandidateFromMessage(message, config);
+    if (!candidate) continue;
+    if (seenCodes.has(candidate.code)) continue;
+    return { ...candidate, matchMode: 'recent-fallback' };
+  }
+
+  return null;
+}
+
+function resolvePollJitterMs(config = {}) {
+  const scanConfig = getFirstmailScanConfig(config);
+  if (scanConfig.pollJitterMaxMs <= scanConfig.pollJitterMinMs) {
+    return scanConfig.pollJitterMinMs;
+  }
+  return scanConfig.pollJitterMinMs + Math.floor(Math.random() * (scanConfig.pollJitterMaxMs - scanConfig.pollJitterMinMs + 1));
+}
+
+async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = '', proxyLabel = '', triggeredAtMs, seenCodes: externalSeenCodes }) {
   const maxAttempts = Number(config.firstmailApiMaxPollAttempts || config.waitMailAttempts || 18);
   const intervalMs = Number(config.waitMailIntervalMs || 5000);
   const totalBudgetMs = Math.max(0, (maxAttempts - 1) * intervalMs);
+  const minAcceptMessageTs = Number(triggeredAtMs || 0);
+  const acceptedSkewMs = Number(config.firstmailAcceptOlderThanTriggerSkewMs || 15000);
+  const scanConfig = getFirstmailScanConfig(config);
+  const seenCodes = externalSeenCodes instanceof Set ? externalSeenCodes : new Set();
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const remainingAttempts = Math.max(0, maxAttempts - attempt);
@@ -169,49 +313,57 @@ async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = 
     const remainingMs = Math.max(0, totalBudgetMs - elapsedMs);
 
     if (typeof log === 'function') {
-      log(`Firstmail API 轮询进度 | 当前=${attempt}/${maxAttempts} | 剩余轮次=${remainingAttempts} | 已等待=${Math.round(elapsedMs / 1000)}秒 | 剩余预算=${Math.round(remainingMs / 1000)}秒 | 总预算=${Math.round(totalBudgetMs / 1000)}秒 | 账号=${accountLabel || account.email} | 代理=${proxyLabel || 'NO_PROXY'}`);
+      log(`Firstmail API 轮询进度 | 当前=${attempt}/${maxAttempts} | 剩余轮次=${remainingAttempts} | 已等待=${Math.round(elapsedMs / 1000)}秒 | 剩余预算=${Math.round(remainingMs / 1000)}秒 | 总预算=${Math.round(totalBudgetMs / 1000)}秒 | 账号=${accountLabel || account.email} | 代理=${proxyLabel || 'NO_PROXY'} | triggeredAtMs=${minAcceptMessageTs || 0} | scanLimit=${scanConfig.recentMessageScanLimit}`);
     }
 
-    const { response, message, noMessages } = await fetchLatestMessage({ account, config });
+    const { response, message, messages, noMessages } = await fetchLatestMessage({ account, config });
+    const latestMessageTs = extractMessageTimestampMs(message);
     if (typeof log === 'function') {
       const summary = summarizeMessage(message || {});
-      log(`Firstmail API 返回摘要 | status=${response.status} | from=${summary.from || 'NA'} | subject=${summary.subject || 'NA'} | snippet=${summary.snippet || 'NA'} | noMessages=${noMessages ? 'true' : 'false'}`);
+      log(`Firstmail API 返回摘要 | status=${response.status} | from=${summary.from || 'NA'} | subject=${summary.subject || 'NA'} | snippet=${summary.snippet || 'NA'} | noMessages=${noMessages ? 'true' : 'false'} | messageTs=${latestMessageTs || 0} | scanned=${Array.isArray(messages) ? messages.length : 0}`);
     }
 
     if (noMessages) {
       if (typeof log === 'function') {
         log(`Firstmail API latest 当前没有邮件，继续下一轮轮询 | 下一轮前等待=${attempt < maxAttempts ? Math.round(intervalMs / 1000) : 0}秒`);
       }
-    } else if (message && isDreaminaMessage(message)) {
-      const code = extractCodeFromText([
-        message?.subject,
-        message?.snippet,
-        message?.text,
-        message?.html,
-        message?.body,
-        message?.content,
-      ].filter(Boolean).join('\n'));
+    } else {
+      const candidate = pickRecentCandidateMessage(messages, {
+        config,
+        seenCodes,
+      });
 
-      if (code) {
+      if (candidate) {
+        seenCodes.add(candidate.code);
         if (typeof log === 'function') {
-          log(`Firstmail API 命中 Dreamina 最新邮件并提取到验证码 | code=${code} | 命中轮次=${attempt}/${maxAttempts} | 累计等待=${Math.round(elapsedMs / 1000)}秒`);
+          log(`Firstmail API 在最近 ${scanConfig.recentMessageScanLimit} 封邮件中命中验证码 | code=${candidate.code} | mode=${candidate.matchMode || 'strict'} | 命中轮次=${attempt}/${maxAttempts} | 累计等待=${Math.round(elapsedMs / 1000)}秒 | messageTs=${candidate.messageTs || 0} | preview=${String(candidate.sourcePreview || '').slice(0, 180)}`);
         }
         return {
-          code,
-          message,
+          code: candidate.code,
+          message: candidate.message,
           attempt,
+          messageTs: candidate.messageTs,
+          matchMode: candidate.matchMode || 'strict',
         };
       }
 
-      if (typeof log === 'function') {
-        log(`Firstmail API 命中 Dreamina 最新邮件，但当前正文里未提取到验证码 | 当前=${attempt}/${maxAttempts}`);
+      if (typeof log === 'function' && seenCodes.size > 0) {
+        log(`Firstmail API 当前轮未找到未使用的新验证码候选 | seenCodes=${seenCodes.size} | 当前=${attempt}/${maxAttempts}`);
       }
-    } else if (typeof log === 'function') {
-      log(`Firstmail API 最新邮件不是 Dreamina 邮件，继续等待下一轮 | 当前=${attempt}/${maxAttempts}`);
+
+      const latestIsDreamina = message && isDreaminaMessage(message, config);
+      if (latestIsDreamina) {
+        if (typeof log === 'function') {
+          log(`Firstmail API latest 为 Dreamina 邮件，但本轮未提取到可用验证码，继续等待 | 当前=${attempt}/${maxAttempts}`);
+        }
+      } else if (typeof log === 'function') {
+        log(`Firstmail API latest 不是目标邮件，继续等待下一轮 | 当前=${attempt}/${maxAttempts}`);
+      }
     }
 
     if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const jitterMs = resolvePollJitterMs(config);
+      await new Promise((resolve) => setTimeout(resolve, intervalMs + jitterMs));
     }
   }
 
@@ -220,9 +372,12 @@ async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = 
 
 module.exports = {
   getFirstmailApiConfig,
+  getFirstmailScanConfig,
   fetchLatestMessage,
   waitForDreaminaCodeViaApi,
   extractCodeFromText,
   isDreaminaMessage,
   summarizeMessage,
+  extractMessageTimestampMs,
+  pickRecentCandidateMessage,
 };

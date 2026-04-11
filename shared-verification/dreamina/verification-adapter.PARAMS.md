@@ -132,6 +132,8 @@
 ### 作用
 - 从验证码提供方拉取当前验证码
 - 当前第一版已接入现有 Firstmail provider 真实能力
+- adapter 会把第三阶段 `usedCodes` 透传给 provider
+- provider 会优先跳过旧验证码，并继续在 recent candidates 中寻找未使用的新验证码
 - adapter 只负责把 provider 返回值压平到第三阶段统一结构
 
 ### 返回值

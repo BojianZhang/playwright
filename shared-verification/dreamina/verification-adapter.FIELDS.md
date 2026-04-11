@@ -56,10 +56,11 @@
 
 这个方法当前的执行步骤可以理解为：
 1. 读取 provider 与 usedCodes
-2. 调 Firstmail provider 拿当前候选验证码
-3. 如果 provider 没返回 code，则按不可用返回
-4. 如果 provider 返回的 code 已经存在于 usedCodes，则按“旧验证码已跳过”返回
-5. 只有命中新验证码时，才真正返回 `VERIFICATION_CODE_FETCHED`
+2. 把 usedCodes 透传给 Firstmail provider
+3. provider 先尝试 latest，再在 recent candidates 中跳过旧验证码继续找新码
+4. 如果 provider 最终没返回 code，则按不可用返回
+5. adapter 保留一层 duplicate guard，防止旧验证码再次漏回
+6. 只有命中新验证码时，才真正返回 `VERIFICATION_CODE_FETCHED`
 
 ## `ok`
 - 类型：`boolean`
