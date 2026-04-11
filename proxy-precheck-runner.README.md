@@ -4,14 +4,18 @@
 - `D:\playwright\proxy-precheck-runner.js`
 
 这个文件是：
-**包外运行入口**。
+**包外纯网络预检运行入口**。
 
 它负责：
 - 从 `shared-proxy-precheck/local-proxies.txt` 读取代理
 - 选择一个本地代理
-- 启动带代理的 Playwright 浏览器
 - 调用 `shared-proxy-precheck/stages/proxy-precheck.js`
 - 输出统一预检结果
+
+它不负责：
+- Playwright 启动浏览器
+- 打开即梦页面
+- 页面 UI ready 判断
 
 ---
 
@@ -65,6 +69,7 @@ host:port:username:password
 - `success`
 - `state`
 - `reason`
+- `proxyGrade`
 - `proxySummary`
 - `detail`
 
@@ -85,8 +90,8 @@ host:port:username:password
 
 这个 runner 当前只做：
 - 本地代理读取
-- 单代理预检
-- Dreamina 站点预检
+- 单代理纯网络预检
+- Dreamina 相关目标测速
 
 它当前不做：
 - 自动切换下一个代理
