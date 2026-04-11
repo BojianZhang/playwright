@@ -165,11 +165,11 @@
 
 ## 6. `classifyAccountDeliveryFailure(input = {})`
 - 作用：把第六阶段失败 reason 收敛成 Dreamina 专属语义
-- 当前建议分步骤：
+- 第一轮补强后当前分步骤：
   1. 提取原始 `reason/state`
-  2. 必要时结合 `source/value` 细化失败语义
+  2. 结合 `source/value` 区分入口失败、摘要失败、payload 失败、明确失败、unknown
   3. 生成更贴近 Dreamina 场景的 `siteReason`
-  4. 对极少数非常明确的失败再考虑标记 `hardFailure`
+  4. 对少数非常明确的失败标记 `hardFailure`
 - 返回值示例：
 ```js
 {

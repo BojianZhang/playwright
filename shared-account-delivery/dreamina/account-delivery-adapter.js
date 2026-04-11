@@ -717,19 +717,60 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
 
 /**
  * 将第六阶段原始失败状态收敛成 Dreamina 专属 reason。
+ *
+ * 第一轮补强目标：
+ * - 不再只按 reason 粗映射
+ * - 开始结合 source / value 做更细的 delivery 失败语义收口
  */
 function classifyAccountDeliveryFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
+  // 提取 source，后续用于细化同一 state 下的分支。
+  const source = String(input.source || '').trim().toLowerCase();
+  // 提取 value，后续用于细化辅助语义。
+  const value = String(input.value || '').trim();
   // 默认情况下，siteReason 先等于原始 reason。
   let siteReason = reason;
+  // 默认先不把失败提升为强失败。
+  let hardFailure = false;
 
-  // 先覆盖第六阶段当前最常见的草案映射。
-  if (reason === 'ACCOUNT_DELIVERY_NOT_READY') siteReason = 'DREAMINA_ACCOUNT_DELIVERY_NOT_READY';
-  else if (reason === 'ACCOUNT_SUMMARY_INCOMPLETE') siteReason = 'DREAMINA_ACCOUNT_SUMMARY_INCOMPLETE';
-  else if (reason === 'DELIVERY_PAYLOAD_INCOMPLETE') siteReason = 'DREAMINA_DELIVERY_PAYLOAD_INCOMPLETE';
-  else if (reason === 'ACCOUNT_DELIVERY_FAILED') siteReason = 'DREAMINA_ACCOUNT_DELIVERY_FAILED';
-  else if (reason === 'ACCOUNT_DELIVERY_RESULT_UNKNOWN') siteReason = 'DREAMINA_ACCOUNT_DELIVERY_RESULT_UNKNOWN';
+  // 先收口第六阶段入口失败。
+  if (reason === 'ACCOUNT_DELIVERY_NOT_READY') {
+    siteReason = source === 'account'
+      ? 'DREAMINA_ACCOUNT_DELIVERY_CONTEXT_NOT_READY'
+      : 'DREAMINA_ACCOUNT_DELIVERY_NOT_READY';
+  }
+  // 再收口摘要整理失败。
+  else if (reason === 'ACCOUNT_SUMMARY_INCOMPLETE') {
+    siteReason = source === 'account'
+      ? 'DREAMINA_ACCOUNT_SUMMARY_ACCOUNT_FIELDS_INCOMPLETE'
+      : source === 'session'
+        ? 'DREAMINA_ACCOUNT_SUMMARY_SESSION_INCOMPLETE'
+        : source === 'ui'
+          ? 'DREAMINA_ACCOUNT_SUMMARY_UI_INCOMPLETE'
+          : 'DREAMINA_ACCOUNT_SUMMARY_INCOMPLETE';
+  }
+  // 再收口 payload 失败。
+  else if (reason === 'DELIVERY_PAYLOAD_INCOMPLETE') {
+    siteReason = /required-fields-missing/i.test(value)
+      ? 'DREAMINA_DELIVERY_PAYLOAD_REQUIRED_FIELDS_MISSING'
+      : 'DREAMINA_DELIVERY_PAYLOAD_INCOMPLETE';
+  }
+  // 再收口第六阶段明确失败信号。
+  else if (reason === 'ACCOUNT_DELIVERY_FAILED') {
+    siteReason = source === 'selector'
+      ? 'DREAMINA_ACCOUNT_DELIVERY_FAILURE_SELECTOR_DETECTED'
+      : source === 'text'
+        ? 'DREAMINA_ACCOUNT_DELIVERY_FAILURE_TEXT_DETECTED'
+        : 'DREAMINA_ACCOUNT_DELIVERY_FAILED';
+    hardFailure = source === 'selector';
+  }
+  // 最后收口 unknown。
+  else if (reason === 'ACCOUNT_DELIVERY_RESULT_UNKNOWN') {
+    siteReason = source === 'payload'
+      ? 'DREAMINA_ACCOUNT_DELIVERY_PAYLOAD_UNSETTLED'
+      : 'DREAMINA_ACCOUNT_DELIVERY_RESULT_UNKNOWN';
+  }
 
   // 返回统一分类结果。
   return {
@@ -737,8 +778,8 @@ function classifyAccountDeliveryFailure(input = {}) {
     reason,
     // Dreamina 站点语义下收敛后的失败原因。
     siteReason,
-    // 当前第一版默认不把第六阶段失败直接提升为强失败。
-    hardFailure: false,
+    // 是否应视为强失败。
+    hardFailure,
   };
 }
 
