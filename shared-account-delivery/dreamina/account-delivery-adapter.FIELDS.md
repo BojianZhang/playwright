@@ -143,14 +143,28 @@
 ## `value`
 - 类型：`string`
 - 含义：payload 侧最主要的辅助值
+- 当前第一轮补强后口径：
+  - `required-fields-ready` = requiredFields 已全部具备值
+  - `required-fields-missing` = requiredFields 仍有缺口
 
 ## `strength`
 - 类型：`string`
 - 含义：payload 结果强度
+- 当前第一轮补强后口径：
+  - `strong` = requiredFields 全部具备值
+  - `weak` = 至少已有部分 requiredFields
+  - `''` = 当前一个 requiredField 都没具备
 
 ## `payload`
 - 类型：`object | null`
 - 含义：当前账号可交付对象草案
+- 当前第一轮补强后通常包含：
+  - requiredFields 对应字段
+  - optionalFields 对应字段
+  - `currentUrl`
+  - `accountSummary`
+  - `sessionSummary`
+  - `uiSummary`
 
 ---
 

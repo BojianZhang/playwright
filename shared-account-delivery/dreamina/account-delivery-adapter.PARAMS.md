@@ -123,6 +123,12 @@
 
 ## 4. `buildAccountDeliveryPayload(page, account, runtime = {}, context = {})`
 - 作用：组装当前账号的最终交付对象草案
+- 第一轮补强后当前分步骤：
+  1. 读取 payload 的 required / optional 规则
+  2. 规范化 account 字段值
+  3. 把 accountSummary / sessionSummary / uiSummary 挂入 payload
+  4. 判断 requiredFields 是否完整
+  5. 输出统一 payload 结果结构
 - 返回值示例：
 ```js
 {

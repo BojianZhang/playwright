@@ -408,32 +408,74 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
 }
 
 /**
+ * 规范化交付字段值。
+ *
+ * 作用：
+ * - 统一把 undefined / null / 非字符串值整理成稳定可交付形式
+ * - 避免 payload 里混入不可控类型
+ */
+function normalizeDeliveryFieldValue(value) {
+  // null / undefined 统一回退为空字符串。
+  if (value === null || value === undefined) return '';
+  // 字符串直接 trim 后返回。
+  if (typeof value === 'string') return value.trim();
+  // 布尔值转成字符串，避免丢失显式 true/false。
+  if (typeof value === 'boolean') return String(value);
+  // 数字直接转字符串，避免后续 JSON/日志出现类型分歧。
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+  // 对象/数组先保守转 JSON；失败则回退空字符串。
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
  * 组装当前账号的最终交付对象草案。
  *
- * 当前草案实现：
- * - 以 accountSummary 为基础组装 payload
- * - 只保证结构和字段边界，不做外部写入
+ * 第一轮补强目标：
+ * - 不再只是机械塞 required/optional 字段
+ * - 开始把 accountSummary 里的结构化摘要真正吸进 payload
+ * - 仍然只负责“组装交付对象草案”，不做外部写入
  */
 async function buildAccountDeliveryPayload(page, account, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null, accountSummary = null } = context;
   // 读取第六阶段 profile。
   const profile = loadDreaminaAccountDeliveryProfile();
-  // 解构 accountSummary。
-  const { accountSummary = null } = context;
   // 读取 required / optional 规则。
   const requiredFields = profile?.payloadRules?.requiredFields || [];
   const optionalFields = profile?.payloadRules?.optionalFields || [];
 
-  // 组装 payload 初始对象。
+  // 先准备 payload 初始对象。
   const payload = {};
-  for (const field of requiredFields) payload[field] = account?.[field] ?? '';
-  for (const field of optionalFields) payload[field] = account?.[field] ?? '';
 
-  // 挂上可安全暴露的辅助摘要。
+  // 第一层：把 required 字段先按规范化方式写入 payload。
+  for (const field of requiredFields) {
+    payload[field] = normalizeDeliveryFieldValue(account?.[field]);
+  }
+
+  // 第二层：把 optional 字段也按规范化方式写入 payload。
+  for (const field of optionalFields) {
+    payload[field] = normalizeDeliveryFieldValue(account?.[field]);
+  }
+
+  // 第三层：补充第六阶段允许携带的轻量辅助摘要。
   payload.currentUrl = String(page.url ? page.url() : '').trim();
   payload.accountSummary = accountSummary?.accountSnapshot || null;
+  payload.sessionSummary = accountSummary?.sessionSnapshot || null;
+  payload.uiSummary = accountSummary?.uiSnapshot || null;
 
-  // 判断 requiredFields 是否都具备值。
+  // 计算当前哪些 requiredFields 已经具备值。
+  const presentRequiredFields = requiredFields.filter(field => String(payload?.[field] ?? '').trim());
+  // 判断 requiredFields 是否全部具备值。
   const requiredReady = requiredFields.every(field => String(payload?.[field] ?? '').trim());
+
+  // 如果有日志函数，记录当前 payload 组装情况。
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.accountDelivery.payload | value=${requiredReady ? 'required-fields-ready' : 'required-fields-missing'} | presentRequired=${presentRequiredFields.join('|') || '[NONE]'} | requiredTotal=${requiredFields.length}`);
+  }
 
   return {
     // 当前是否已经成功组装出满足最低要求的交付对象。
@@ -445,7 +487,7 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
     // 当前 payload 侧的辅助摘要值。
     value: requiredReady ? 'required-fields-ready' : 'required-fields-missing',
     // 当前 payload 信号强度。
-    strength: requiredReady ? 'strong' : 'weak',
+    strength: requiredReady ? 'strong' : (presentRequiredFields.length > 0 ? 'weak' : ''),
     // 当前账号可交付对象草案本体。
     payload,
   };
