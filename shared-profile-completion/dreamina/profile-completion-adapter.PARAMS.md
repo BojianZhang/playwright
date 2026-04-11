@@ -150,6 +150,12 @@
 
 ## 6. `fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {})`
 - 作用：填写 day
+- 当前补强后会分步骤执行：
+  1. 读取填写前的 day 输入状态
+  2. 定位并聚焦 day 输入控件
+  3. 清空旧值并写入目标 day
+  4. 读回填写后的值
+  5. 判断是否真正写入成功
 - 返回值示例：
 ```js
 {
