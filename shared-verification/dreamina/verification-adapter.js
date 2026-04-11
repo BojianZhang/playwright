@@ -4,6 +4,8 @@
 const fs = require('fs');
 // 引入 path 模块，用来安全拼接当前目录下的 profile 文件路径。
 const path = require('path');
+// 引入现有 Firstmail provider 能力，用来在第三阶段接入真实拉码逻辑。
+const { waitForDreaminaCodeViaApi } = require('../../firstmail-api');
 
 // 当前 Dreamina 第三阶段 profile 的固定文件路径。
 // 这个文件里只放静态规则，例如：
@@ -159,30 +161,130 @@ async function waitForDreaminaVerificationStageReady(page, runtime = {}, context
 /**
  * 获取 Dreamina 当前验证码。
  *
- * 当前状态说明：
- * - 这是第三阶段第一批真实能力迁移里最重要的缺口之一
- * - 目前还是占位实现
- * - 返回结构已经按第三阶段契约固定
- * - 后续会在这个函数里接入真实 provider 能力
+ * 当前设计：
+ * - 第三阶段本身只定义“需要一个验证码”这件事
+ * - 真正的 provider 调用仍复用现有 firstmail-api 能力
+ * - adapter 在这里把 provider 返回结果压平到第三阶段统一契约
+ *
+ * 当前边界：
+ * - 这里只负责获取验证码
+ * - 不负责 verification 阶段内重试闭环
+ * - 不负责 wrong code 后重新轮询 latest
  */
 async function fetchDreaminaVerificationCode(page, account, runtime = {}, context = {}) {
-  // 当前直接返回“验证码不可用”的占位结构。
-  return {
-    // 表示当前没有成功拿到验证码。
-    ok: false,
-    // 当前阶段内的状态码：验证码不可用。
-    state: 'VERIFICATION_CODE_NOT_AVAILABLE',
-    // 实际验证码为空字符串。
-    code: '',
-    // 来源先占位为 mail-provider，表示未来这里会接邮件提供方。
-    source: 'mail-provider',
-    // 当前没有额外说明值。
-    value: '',
-    // provider 名称从 runtime 读；若没有配置，则记为 unconfigured。
-    provider: String(runtime?.verificationCodeProvider || 'unconfigured'),
-    // 当前 provider 尝试次数先固定为 0。
-    attempt: 0,
-  };
+  // 从上下文中读取日志函数；没有就保持为 null。
+  const { logInfo = null, log = null, verificationReady = null } = context;
+  // 读取 provider 名称；当前默认使用 firstmail。
+  const provider = String(runtime?.verificationCodeProvider || 'firstmail').trim().toLowerCase();
+
+  // 如果当前 provider 不是 firstmail，先按未配置处理，避免 silently 使用错误 provider。
+  if (provider !== 'firstmail') {
+    return {
+      // 表示当前没有成功拿到验证码。
+      ok: false,
+      // 当前阶段状态码：provider 当前不支持。
+      state: 'VERIFICATION_CODE_NOT_AVAILABLE',
+      // 验证码为空字符串。
+      code: '',
+      // 来源仍标记为 mail-provider。
+      source: 'mail-provider',
+      // 辅助值记录不支持的 provider 名称。
+      value: `UNSUPPORTED_PROVIDER:${provider}`,
+      // 返回当前 provider 名称。
+      provider,
+      // 当前 provider 尝试序号记为 0。
+      attempt: 0,
+    };
+  }
+
+  try {
+    // 如果存在日志函数，先记一条第三阶段拉码开始日志。
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'}`);
+    }
+
+    // 调用现有 firstmail provider 能力，复用已经稳定的 latest 轮询与验证码提取逻辑。
+    const result = await waitForDreaminaCodeViaApi({
+      // 传入当前账号上下文，provider 依赖邮箱账号拉取验证码。
+      account,
+      // 直接复用 runtime 作为 provider 配置来源，保证第三阶段不重复发明配置结构。
+      config: runtime,
+      // 传入 log 函数，兼容旧 provider 的日志接口。
+      log,
+      // 传入当前账号标签，用于 provider 内部日志定位。
+      accountLabel: account?.email || '',
+      // 当前第三阶段没有单独代理标签概念，先写固定标记。
+      proxyLabel: 'STAGE3_VERIFICATION',
+      // 如果上层有传触发时间，就继续透传；没有就按 0 处理。
+      triggeredAtMs: Number(runtime?.verificationTriggeredAtMs || context?.verificationTriggeredAtMs || 0),
+    });
+
+    // 取出 provider 返回的验证码文本，并统一 trim。
+    const code = String(result?.code || '').trim();
+    // 如果 provider 返回结构里没有有效验证码，按获取失败处理。
+    if (!code) {
+      return {
+        // 当前没有成功拿到验证码。
+        ok: false,
+        // 当前阶段状态码：验证码不可用。
+        state: 'VERIFICATION_CODE_NOT_AVAILABLE',
+        // 验证码为空字符串。
+        code: '',
+        // 当前来源为邮件提供方。
+        source: 'mail-provider',
+        // 辅助值记录为空码语义。
+        value: 'EMPTY_CODE',
+        // 当前 provider 名称。
+        provider,
+        // 返回 provider 的尝试次数；没有则记 0。
+        attempt: Number(result?.attempt || 0),
+        // 保留 provider 命中的消息时间戳。
+        messageTs: result?.messageTs,
+        // 保留 provider 的命中模式。
+        matchMode: result?.matchMode,
+      };
+    }
+
+    // provider 成功命中验证码后，返回第三阶段统一成功结构。
+    return {
+      // 表示本轮成功获取到了验证码。
+      ok: true,
+      // 当前阶段状态码：验证码已获取。
+      state: 'VERIFICATION_CODE_FETCHED',
+      // 返回实际验证码。
+      code,
+      // 当前来源为邮件提供方。
+      source: 'mail-provider',
+      // 辅助值记录 provider 命中模式。
+      value: String(result?.matchMode || 'provider-success'),
+      // 返回 provider 名称。
+      provider,
+      // 返回 provider 的命中尝试序号。
+      attempt: Number(result?.attempt || 0),
+      // 返回消息时间戳，供调试和后续比对使用。
+      messageTs: result?.messageTs,
+      // 返回验证码命中模式。
+      matchMode: result?.matchMode,
+    };
+  } catch (error) {
+    // 如果 provider 调用过程中抛异常，则按统一失败结构返回，而不是把异常直接抛给公共层。
+    return {
+      // 当前没有成功获取到验证码。
+      ok: false,
+      // 当前阶段状态码：验证码获取失败。
+      state: 'VERIFICATION_CODE_FETCH_FAILED',
+      // 验证码为空字符串。
+      code: '',
+      // 当前来源为邮件提供方。
+      source: 'mail-provider',
+      // 辅助值写入异常消息，便于排查。
+      value: error?.message || 'UNKNOWN',
+      // 返回 provider 名称。
+      provider,
+      // 失败时尝试次数先记 0，避免制造不真实的次数语义。
+      attempt: 0,
+    };
+  }
 }
 
 /**
