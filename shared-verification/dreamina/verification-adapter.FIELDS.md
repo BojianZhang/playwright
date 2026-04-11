@@ -54,6 +54,13 @@
 
 # 二、`fetchDreaminaVerificationCode(...)` 返回字段
 
+这个方法当前的执行步骤可以理解为：
+1. 读取 provider 与 usedCodes
+2. 调 Firstmail provider 拿当前候选验证码
+3. 如果 provider 没返回 code，则按不可用返回
+4. 如果 provider 返回的 code 已经存在于 usedCodes，则按“旧验证码已跳过”返回
+5. 只有命中新验证码时，才真正返回 `VERIFICATION_CODE_FETCHED`
+
 ## `ok`
 - 类型：`boolean`
 - 含义：是否成功获取验证码
@@ -79,6 +86,12 @@
 ## `value`
 - 类型：`string`
 - 含义：辅助说明值
+- 当前常见语义：
+  - `provider-success`
+  - `latest-direct`
+  - `recent-fallback`
+  - `EMPTY_CODE`
+  - `DUPLICATE_CODE_SKIPPED:<code>`
 
 ## `provider`
 - 类型：`string`

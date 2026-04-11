@@ -259,17 +259,21 @@ async function waitForDreaminaVerificationStageReady(page, runtime = {}, context
  * - 第三阶段本身只定义“需要一个验证码”这件事
  * - 真正的 provider 调用仍复用现有 firstmail-api 能力
  * - adapter 在这里把 provider 返回结果压平到第三阶段统一契约
+ * - 当前第二批增强会额外消费 usedCodes，避免 verification 内重试时重复使用旧验证码
  *
  * 当前边界：
- * - 这里只负责获取验证码
- * - 不负责 verification 阶段内重试闭环
- * - 不负责 wrong code 后重新轮询 latest
+ * - 这里只负责获取“当前这轮可用的新验证码”
+ * - 允许过滤掉本阶段已经尝试过的旧验证码
+ * - 不负责 verification 阶段内重试循环本身
+ * - 不负责 wrong code 后决定是否进入下一轮
  */
 async function fetchDreaminaVerificationCode(page, account, runtime = {}, context = {}) {
   // 从上下文中读取日志函数；没有就保持为 null。
-  const { logInfo = null, log = null, verificationReady = null } = context;
+  const { logInfo = null, log = null, verificationReady = null, usedCodes = new Set(), attemptIndex = 1 } = context;
   // 读取 provider 名称；当前默认使用 firstmail。
   const provider = String(runtime?.verificationCodeProvider || 'firstmail').trim().toLowerCase();
+  // 把 usedCodes 统一转成 Set，保证后续 has 判断稳定可用。
+  const usedCodeSet = usedCodes instanceof Set ? usedCodes : new Set(Array.isArray(usedCodes) ? usedCodes : []);
 
   // 如果当前 provider 不是 firstmail，先按未配置处理，避免 silently 使用错误 provider。
   if (provider !== 'firstmail') {
@@ -292,9 +296,9 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
   }
 
   try {
-    // 如果存在日志函数，先记一条第三阶段拉码开始日志。
+    // 如果存在日志函数，先记一条第三阶段拉码开始日志，同时把 usedCodes 数量也记录出来。
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'}`);
+      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'} | attemptIndex=${attemptIndex} | usedCodes=${usedCodeSet.size}`);
     }
 
     // 调用现有 firstmail provider 能力，复用已经稳定的 latest 轮询与验证码提取逻辑。
@@ -339,9 +343,38 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       };
     }
 
-    // provider 成功命中验证码后，返回第三阶段统一成功结构。
+    // 如果当前 provider 命中的验证码已经在 usedCodes 里，说明这是本阶段已经尝试过的旧验证码。
+    if (usedCodeSet.has(code)) {
+      // 如果存在日志函数，记录本轮命中的是旧验证码，避免误以为“已经拿到新码”。
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.verification.fetchCode | duplicate-code-skipped | code=${code} | attemptIndex=${attemptIndex} | providerAttempt=${Number(result?.attempt || 0)}`);
+      }
+      // 返回“当前没有可用新验证码”的统一结构，而不是把旧验证码继续交给下游重填。
+      return {
+        // 当前没有拿到可用于本轮的新验证码。
+        ok: false,
+        // 状态仍归类到验证码不可用，因为“可用新验证码”当前为空。
+        state: 'VERIFICATION_CODE_NOT_AVAILABLE',
+        // 不再把旧验证码交给下游。
+        code: '',
+        // 来源仍然记为 mail-provider。
+        source: 'mail-provider',
+        // 辅助值明确说明这是重复验证码被过滤。
+        value: `DUPLICATE_CODE_SKIPPED:${code}`,
+        // 返回 provider 名称。
+        provider,
+        // 返回 provider 的尝试序号。
+        attempt: Number(result?.attempt || 0),
+        // 保留消息时间戳，便于后续排查为什么命中旧验证码。
+        messageTs: result?.messageTs,
+        // 保留 provider 命中模式。
+        matchMode: result?.matchMode,
+      };
+    }
+
+    // provider 成功命中新验证码后，返回第三阶段统一成功结构。
     return {
-      // 表示本轮成功获取到了验证码。
+      // 表示本轮成功获取到了可用的新验证码。
       ok: true,
       // 当前阶段状态码：验证码已获取。
       state: 'VERIFICATION_CODE_FETCHED',

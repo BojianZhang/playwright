@@ -215,6 +215,18 @@
   - `classified`
   - `retrySummary`
 
+### `detail.retrySummary`
+- 类型：`array`
+- 含义：verification 阶段内部每一轮尝试的摘要
+- 当前常见字段：
+  - `attemptIndex`
+  - `fetchState`
+  - `code`
+  - `provider`
+  - `matchMode`
+  - `confirmState`
+  - `action`
+
 ---
 
 # 五、成功与失败的最小判定口径
