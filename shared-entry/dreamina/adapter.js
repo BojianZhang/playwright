@@ -26,6 +26,139 @@
  */
 
 /**
+ * 允许尝试点击的高置信 overlay 文案。
+ *
+ * 设计原则：
+ * - 只放“明显是关闭/确认/跳过挡板”的词
+ * - 不放 Continue / Sign in / Sign up 这类业务主按钮
+ * - 目的不是穷举全站按钮，而是保守地清理常见挡板
+ */
+const SAFE_OVERLAY_TEXT_PATTERNS = [
+  'Accept',
+  'I agree',
+  'Agree',
+  'Got it',
+  'Close',
+  'Skip',
+  'Dismiss',
+  'Maybe later',
+  'Not now',
+  'OK',
+];
+
+/**
+ * 判断元素是不是可见且可交互。
+ *
+ * 作用：
+ * - 减少盲点、误点和异常点击
+ * - 只对当前确实可见的候选元素执行点击
+ */
+async function isVisibleAndEnabled(locator) {
+  const visible = await locator.isVisible().catch(() => false);
+  if (!visible) return false;
+
+  const enabled = await locator.isEnabled().catch(() => true);
+  return Boolean(enabled);
+}
+
+/**
+ * 尝试点击单个 locator。
+ *
+ * 作用：
+ * - 统一点击行为与日志格式
+ * - 尽量使用短超时，避免挡板点击本身拖慢首页流程
+ */
+async function tryClickLocator(locator, label, context = {}) {
+  const { logInfo = null, logWarn = null } = context;
+
+  try {
+    await locator.click({ timeout: 1200 });
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.preprocessOverlays | 已点击 overlay 候选: ${label}`);
+    }
+    return true;
+  } catch (error) {
+    if (typeof logWarn === 'function') {
+      logWarn(`dreamina.adapter.preprocessOverlays | overlay 候选点击失败: ${label} | ${error.message}`);
+    }
+    return false;
+  }
+}
+
+/**
+ * 尝试通过按钮文本清理常见挡板。
+ *
+ * 作用：
+ * - 用一组高置信按钮文案，保守地清理 cookie/tips/onboarding 这类挡板
+ * - 每次命中一个后就先返回，避免一次性乱点多个按钮
+ */
+async function dismissOverlayBySafeTexts(page, context = {}) {
+  for (const text of SAFE_OVERLAY_TEXT_PATTERNS) {
+    const locator = page.getByRole('button', { name: text, exact: false }).first();
+    const clickable = await isVisibleAndEnabled(locator);
+    if (!clickable) continue;
+
+    const clicked = await tryClickLocator(locator, `button:${text}`, context);
+    if (clicked) {
+      await page.waitForTimeout(400);
+      return {
+        handled: true,
+        action: 'click-safe-text-button',
+        reason: `SAFE_TEXT:${text}`,
+      };
+    }
+  }
+
+  return {
+    handled: false,
+    action: 'noop',
+    reason: 'NO_SAFE_TEXT_BUTTON_FOUND',
+  };
+}
+
+/**
+ * 尝试通过常见关闭控件清理挡板。
+ *
+ * 作用：
+ * - 有些弹层没有明确按钮文案，只给一个 close icon / aria-label
+ * - 这里补一层高置信 selector 级清理
+ */
+async function dismissOverlayByCloseSelectors(page, context = {}) {
+  const selectorCandidates = [
+    '[aria-label="Close"]',
+    '[aria-label="close"]',
+    'button[aria-label="Close"]',
+    'button[aria-label="close"]',
+    '[data-testid*="close"]',
+    '[class*="close"] button',
+    'button[class*="close"]',
+    '[role="dialog"] button[aria-label="Close"]',
+  ];
+
+  for (const selector of selectorCandidates) {
+    const locator = page.locator(selector).first();
+    const clickable = await isVisibleAndEnabled(locator);
+    if (!clickable) continue;
+
+    const clicked = await tryClickLocator(locator, `selector:${selector}`, context);
+    if (clicked) {
+      await page.waitForTimeout(400);
+      return {
+        handled: true,
+        action: 'click-close-selector',
+        reason: `CLOSE_SELECTOR:${selector}`,
+      };
+    }
+  }
+
+  return {
+    handled: false,
+    action: 'noop',
+    reason: 'NO_CLOSE_SELECTOR_FOUND',
+  };
+}
+
+/**
  * 预处理首页 overlay / 遮罩 / 弹层。
  *
  * 作用：
@@ -33,21 +166,36 @@
  * - 这里是 Dreamina 站点专属入口，后续如果发现某些弹层只在 Dreamina 出现，
  *   就应该优先收在这里，而不是把逻辑写脏到公共层。
  *
- * 当前状态：
- * - 先保留空骨架
- * - 后续可在这里补 cookie banner、tips dialog、onboarding mask 等处理
+ * 当前这版实现策略：
+ * 1. 先尝试点击高置信的“关闭/同意/跳过”按钮
+ * 2. 再尝试点击常见 close selector
+ * 3. 整体保持保守，不去碰 Continue / Sign in / Sign up 等业务主按钮
  */
 async function preprocessOverlays(page, context = {}) {
-  const { log = null, logInfo = null } = context;
+  const { logInfo = null } = context;
 
   if (typeof logInfo === 'function') {
-    logInfo('dreamina.adapter.preprocessOverlays | 当前为骨架实现，尚未注入 Dreamina 专属 overlay 处理');
+    logInfo('dreamina.adapter.preprocessOverlays | 开始执行第一版 overlay 清理');
+  }
+
+  const byText = await dismissOverlayBySafeTexts(page, context);
+  if (byText.handled) {
+    return byText;
+  }
+
+  const bySelector = await dismissOverlayByCloseSelectors(page, context);
+  if (bySelector.handled) {
+    return bySelector;
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo('dreamina.adapter.preprocessOverlays | 未发现可安全处理的 overlay');
   }
 
   return {
     handled: false,
     action: 'noop',
-    reason: 'NOT_IMPLEMENTED',
+    reason: 'NO_SAFE_OVERLAY_ACTION_MATCHED',
   };
 }
 
@@ -169,6 +317,11 @@ async function recoverDreaminaEntry(page, input = {}, context = {}) {
 }
 
 module.exports = {
+  SAFE_OVERLAY_TEXT_PATTERNS,
+  isVisibleAndEnabled,
+  tryClickLocator,
+  dismissOverlayBySafeTexts,
+  dismissOverlayByCloseSelectors,
   preprocessOverlays,
   waitForDreaminaReady,
   classifyDreaminaEntryFailure,
