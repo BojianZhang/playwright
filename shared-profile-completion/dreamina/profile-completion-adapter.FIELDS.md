@@ -373,23 +373,30 @@
 
 ---
 
-# 六、`classifyDreaminaProfileCompletionFailure(...)` 返回字段
+# 八、`classifyDreaminaProfileCompletionFailure(...)` 返回字段
 
 ## `reason`
 - 类型：`string`
-- 含义：原始 reason/state
+- 含义：输入侧原始失败状态
 
 ## `siteReason`
 - 类型：`string`
-- 含义：Dreamina 专属失败语义
-- 示例：
-  - `DREAMINA_PROFILE_COMPLETION_NOT_READY`
-  - `DREAMINA_BIRTHDAY_INPUT_NOT_FOUND`
-  - `DREAMINA_PROFILE_COMPLETION_SUBMIT_FAILED`
-  - `DREAMINA_PROFILE_COMPLETION_RESULT_UNKNOWN`
+- 含义：Dreamina 语义下收敛后的失败原因
+- 当前会结合：
+  - 原始 `reason/state`
+  - `source`
+  - `value`
+- 常见结果示例：
+  - `DREAMINA_BIRTHDAY_YEAR_INPUT_MISSING`
+  - `DREAMINA_BIRTHDAY_MONTH_PLAN_EMPTY`
+  - `DREAMINA_PROFILE_COMPLETION_SUBMIT_BUTTON_MISSING`
+  - `DREAMINA_PROFILE_COMPLETION_FORM_STILL_VISIBLE_AFTER_SUBMIT`
+  - `DREAMINA_PROFILE_COMPLETION_INPUT_INVALID`
+  - `DREAMINA_PROFILE_COMPLETION_NO_OBSERVABLE_CHANGE`
 
 ## `hardFailure`
 - 类型：`boolean`
-- 含义：该失败是否应视作强失败
-- 作用：
-  - 给外层后续策略提供更稳定的失败等级语义
+- 含义：是否应视为强失败
+- 当前只有少数非常明确的失败会提升为 `true`
+- 目前主要是：
+  - `PROFILE_COMPLETION_INPUT_INVALID` → `true`
