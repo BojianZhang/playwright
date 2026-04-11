@@ -221,7 +221,224 @@
 
 ---
 
-# 六、同名字段统一口径补充
+# 六、`detail` 内部字段压实说明
+
+## `detail.deliveryReady`
+- 类型：`object | null`
+- 含义：第六阶段入口 ready 判断结果原文
+
+### `detail.deliveryReady.ok`
+- 类型：`boolean`
+- 含义：第六阶段入口是否已确认可开始
+
+### `detail.deliveryReady.state`
+- 类型：`string`
+- 含义：第六阶段入口判断的原始状态码
+
+### `detail.deliveryReady.source`
+- 类型：`string`
+- 含义：入口 ready 信号来源
+
+### `detail.deliveryReady.value`
+- 类型：`string`
+- 含义：命中的 ready selector / text / url / account fields 摘要
+
+### `detail.deliveryReady.strength`
+- 类型：`string`
+- 含义：入口 ready 信号强度
+
+### `detail.deliveryReady.waitStepMs`
+- 类型：`number`
+- 含义：入口 ready 在第几个等待步收敛
+
+## `detail.accountSummary`
+- 类型：`object | null`
+- 含义：账号最终交付摘要原文
+
+### `detail.accountSummary.ok`
+- 类型：`boolean`
+- 含义：是否已经整理出可用交付摘要
+
+### `detail.accountSummary.state`
+- 类型：`string`
+- 含义：摘要整理原始状态码
+
+### `detail.accountSummary.source`
+- 类型：`string`
+- 含义：摘要当前主要来源
+
+### `detail.accountSummary.value`
+- 类型：`string`
+- 含义：摘要当前主要代表值
+
+### `detail.accountSummary.strength`
+- 类型：`string`
+- 含义：摘要信号强度
+
+### `detail.accountSummary.accountSnapshot`
+- 类型：`object | null`
+- 含义：账号基础字段摘要对象
+
+### `detail.accountSummary.sessionSnapshot`
+- 类型：`object | null`
+- 含义：session / storage 侧摘要对象
+
+### `detail.accountSummary.uiSnapshot`
+- 类型：`object | null`
+- 含义：UI / URL / 文本预览侧摘要对象
+
+## `detail.deliveryPayload`
+- 类型：`object | null`
+- 含义：交付对象草案原文
+
+### `detail.deliveryPayload.ok`
+- 类型：`boolean`
+- 含义：是否成功组装出可交付对象草案
+
+### `detail.deliveryPayload.state`
+- 类型：`string`
+- 含义：payload 组装原始状态码
+
+### `detail.deliveryPayload.source`
+- 类型：`string`
+- 含义：payload 当前主要来源
+
+### `detail.deliveryPayload.value`
+- 类型：`string`
+- 含义：payload 当前主要辅助值
+
+### `detail.deliveryPayload.strength`
+- 类型：`string`
+- 含义：payload 信号强度
+
+### `detail.deliveryPayload.payload`
+- 类型：`object | null`
+- 含义：当前账号可交付对象草案本体
+
+## `detail.resultConfirmation`
+- 类型：`object | null`
+- 含义：第六阶段最终收口结果原文
+
+### `detail.resultConfirmation.ok`
+- 类型：`boolean`
+- 含义：最终是否已经确认 delivery-complete
+
+### `detail.resultConfirmation.state`
+- 类型：`string`
+- 含义：最终结果原始状态码
+
+### `detail.resultConfirmation.nextStage`
+- 类型：`string`
+- 含义：成功后应推进到哪个最终阶段
+
+### `detail.resultConfirmation.source`
+- 类型：`string`
+- 含义：最终结果主要来源
+
+### `detail.resultConfirmation.value`
+- 类型：`string`
+- 含义：最终成功/失败信号值或辅助摘要
+
+### `detail.resultConfirmation.strength`
+- 类型：`string`
+- 含义：最终结果信号强度
+
+### `detail.resultConfirmation.settleStage`
+- 类型：`string`
+- 含义：最终结果是在第几层确认里收敛出来的
+
+### `detail.resultConfirmation.stateChanged`
+- 类型：`boolean | null`
+- 含义：最终结果确认过程中账号对象或页面是否发生了有意义变化
+
+### `detail.resultConfirmation.retryCount`
+- 类型：`number`
+- 含义：第六阶段内部轻量重试次数
+
+## `detail.classified`
+- 类型：`object | null`
+- 含义：第六阶段失败分类结果原文
+
+### `detail.classified.reason`
+- 类型：`string`
+- 含义：输入侧原始 reason/state
+
+### `detail.classified.siteReason`
+- 类型：`string`
+- 含义：Dreamina 收敛后的站点语义失败原因
+
+### `detail.classified.hardFailure`
+- 类型：`boolean`
+- 含义：该失败在站点语义下是否应视作强失败
+
+---
+
+# 七、state 字典（当前草案）
+
+## `ACCOUNT_DELIVERY_READY`
+- 含义：已确认页面进入第六阶段上下文
+
+## `ACCOUNT_DELIVERY_NOT_READY`
+- 含义：当前还未确认页面进入第六阶段上下文
+
+## `ACCOUNT_SUMMARY_COLLECTED`
+- 含义：已整理出当前账号的可用交付摘要
+
+## `ACCOUNT_SUMMARY_INCOMPLETE`
+- 含义：摘要已开始整理，但还不够支撑交付
+
+## `ACCOUNT_SUMMARY_UNKNOWN`
+- 含义：摘要整理当前没有足够信息收敛
+
+## `DELIVERY_PAYLOAD_READY`
+- 含义：已组装出满足最低要求的交付对象草案
+
+## `DELIVERY_PAYLOAD_INCOMPLETE`
+- 含义：交付对象草案已开始组装，但 required fields 仍不完整
+
+## `DELIVERY_COMPLETE`
+- 含义：已确认当前账号达到 delivery-complete
+
+## `ACCOUNT_DELIVERY_FAILED`
+- 含义：已命中第六阶段明确失败信号
+
+## `ACCOUNT_DELIVERY_RESULT_UNKNOWN`
+- 含义：当前尚未收敛到成功或明确失败
+
+## `ACCOUNT_DELIVERY_ADAPTER_METHOD_MISSING`
+- 含义：第六阶段必需 adapter 方法缺失，导致公共骨架无法继续
+
+---
+
+# 八、source 字典（当前草案）
+
+## `selector`
+- 含义：基于 DOM selector 直接命中的信号
+
+## `text`
+- 含义：基于页面文本直接命中的信号
+
+## `url`
+- 含义：基于页面 URL / 路由片段的信号
+
+## `account`
+- 含义：基于 account 基础字段得出的信号
+
+## `session`
+- 含义：基于 session / storage 摘要得出的信号
+
+## `ui`
+- 含义：基于页面 UI / 文本预览得出的信号
+
+## `payload`
+- 含义：基于交付对象结构本身得出的信号
+
+## `''`
+- 含义：当前没有足够信息确认主要来源
+
+---
+
+# 九、同名字段统一口径补充
 
 ## `value`
 - `waitForAccountDeliveryReady.value`
@@ -256,3 +473,22 @@
   - 辅助判断信号
 - `''`
   - 当前没有明确强度
+
+---
+
+# 十、`reason / siteReason / hardFailure` 关系说明
+
+## `reason`
+- 表示输入侧原始失败状态
+- 往往更接近阶段公共层输出的 `state`
+
+## `siteReason`
+- 表示 Dreamina 站点语义下收敛后的失败原因
+- 用途：
+  - 给运维看
+  - 给日志聚类看
+  - 给后续策略层消费
+
+## `hardFailure`
+- 表示这个失败在站点语义下是否已经足够明确到不值得继续轻量等待
+- 这不是 runner 全局决策，只是站点适配层给出的失败强度标签

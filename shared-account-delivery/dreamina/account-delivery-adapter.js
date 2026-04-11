@@ -388,13 +388,21 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
   }
 
   return {
+    // 当前摘要是否已经整理到“可用交付摘要”级别。
     ok,
+    // 当前摘要整理阶段的原始状态码。
     state: ok ? 'ACCOUNT_SUMMARY_COLLECTED' : 'ACCOUNT_SUMMARY_INCOMPLETE',
+    // 当前摘要最主要的收敛来源。
     source,
+    // 当前摘要最主要的代表值或辅助值。
     value,
+    // 当前摘要信号强度。
     strength,
+    // 账号基础字段摘要对象。
     accountSnapshot,
+    // session / storage 侧摘要对象。
     sessionSnapshot,
+    // UI / URL / 文本预览侧摘要对象。
     uiSnapshot,
   };
 }
@@ -428,11 +436,17 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
   const requiredReady = requiredFields.every(field => String(payload?.[field] ?? '').trim());
 
   return {
+    // 当前是否已经成功组装出满足最低要求的交付对象。
     ok: requiredReady,
+    // 当前 payload 组装阶段的原始状态码。
     state: requiredReady ? 'DELIVERY_PAYLOAD_READY' : 'DELIVERY_PAYLOAD_INCOMPLETE',
+    // 当前结果主要来自 payload 结构本身。
     source: 'payload',
+    // 当前 payload 侧的辅助摘要值。
     value: requiredReady ? 'required-fields-ready' : 'required-fields-missing',
+    // 当前 payload 信号强度。
     strength: requiredReady ? 'strong' : 'weak',
+    // 当前账号可交付对象草案本体。
     payload,
   };
 }
@@ -563,8 +577,11 @@ function classifyAccountDeliveryFailure(input = {}) {
 
   // 返回统一分类结果。
   return {
+    // 输入侧原始失败状态。
     reason,
+    // Dreamina 站点语义下收敛后的失败原因。
     siteReason,
+    // 当前第一版默认不把第六阶段失败直接提升为强失败。
     hardFailure: false,
   };
 }
