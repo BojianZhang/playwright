@@ -460,9 +460,13 @@ async function attemptOpenSiteEntry(options = {}) {
     await preprocessOverlays(page, { log, logInfo, logWarn, logSuccess, logTaskStage, account, proxy, prefix, config, runtime });
   }
 
-  const readySignal = typeof waitForReadySignals === 'function'
-    ? await waitForReadySignals(page, runtime, { log, logInfo, logWarn, logSuccess, account, proxy, prefix, config })
-    : await detectPositiveReadySignals(page, runtime);
+  const runReadyCheck = async () => {
+    return typeof waitForReadySignals === 'function'
+      ? await waitForReadySignals(page, runtime, { log, logInfo, logWarn, logSuccess, account, proxy, prefix, config })
+      : await detectPositiveReadySignals(page, runtime);
+  };
+
+  const readySignal = await runReadyCheck();
 
   if (readySignal?.ok) {
     if (typeof logSuccess === 'function') {
@@ -492,8 +496,38 @@ async function attemptOpenSiteEntry(options = {}) {
     ? classifyFailure(failureInput)
     : { reason: failureInput.reason, siteReason: failureInput.reason, hardFailure: false, diagnostics };
 
+  let recoveryResult = null;
   if (typeof recoverEntry === 'function') {
-    await recoverEntry(page, classifiedFailure, { log, logInfo, logWarn, logSuccess, logTaskStage, account, proxy, prefix, config, runtime });
+    recoveryResult = await recoverEntry(page, classifiedFailure, { log, logInfo, logWarn, logSuccess, logTaskStage, account, proxy, prefix, config, runtime });
+  }
+
+  const shouldRecheckReady = Boolean(
+    recoveryResult
+    && recoveryResult.action
+    && recoveryResult.action !== 'skip-recovery'
+  );
+
+  if (shouldRecheckReady) {
+    if (typeof logInfo === 'function') {
+      logInfo(`openSiteEntry.recheckReadyAfterRecovery | site=${runtime.siteName} | action=${recoveryResult.action} | reason=${recoveryResult.reason || ''}`);
+    }
+
+    const recoveredReadySignal = await runReadyCheck();
+    if (recoveredReadySignal?.ok) {
+      if (typeof logSuccess === 'function') {
+        logSuccess(`${runtime.siteName} 首页在恢复后进入可操作状态`);
+      }
+      return {
+        success: true,
+        reason: 'OK_AFTER_RECOVERY',
+        whiteScreen,
+        deadPage,
+        readySignal: recoveredReadySignal,
+        diagnosticsPath: null,
+        elapsedMs: Date.now() - attemptStartedAt,
+        recoveryResult,
+      };
+    }
   }
 
   return {
@@ -505,6 +539,7 @@ async function attemptOpenSiteEntry(options = {}) {
     diagnosticsPath: null,
     elapsedMs: Date.now() - attemptStartedAt,
     classifiedFailure,
+    recoveryResult,
   };
 }
 
