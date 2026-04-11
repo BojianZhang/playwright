@@ -64,6 +64,7 @@
 当前已在包内提供本地联调入口：
 - `local-proxies.txt`
 - `local-proxy-loader.js`
+- `index.js`
 
 当前建议格式：
 
@@ -90,6 +91,10 @@ host:port:username:password
 - 具体代理账号密码放在 `local-proxies.txt`
 - 站点规则仍只放在 Dreamina profile 里
 - 不要把具体代理账号密码写进 profile JSON
+
+当前包内统一入口：
+- `index.js`
+- 入口方法：`runDreaminaProxyPrecheckFromLocal(options = {})`
 
 ---
 
