@@ -1,182 +1,303 @@
-# dreamina-entry-profile.json 字段说明
+# Dreamina Entry Profile 说明
 
-这个文件描述的是：
-**Dreamina 首页从“打开”到“ready”的站点入口配置**。
+这个文档解释：
+- `dreamina-entry-profile.json` 里每个字段管什么
+- 哪些字段控制“打开节奏”
+- 哪些字段控制“页面判定口径”
+- 哪些字段控制“入口弹层处理”
 
-它只服务于首页入口阶段，不负责：
-- 浏览器启动
-- 代理池调度
-- 邮箱/验证码/生日等注册后续流程
-
----
-
-## 顶层字段
-
-### `name`
-- **类型**：`string`
-- **作用**：站点名称。
-- **用途**：
-  - 日志输出
-  - 错误信息标识
-  - 通用模块里区分当前站点
-- **当前值**：`Dreamina`
-
-### `homeUrl`
-- **类型**：`string`
-- **作用**：站点首页/入口页 URL。
-- **用途**：
-  - `site-entry-health.js` 打开页面时使用的目标地址
-- **当前值**：`https://dreamina.capcut.com/ai-tool/home/`
-
-### `entry`
-- **类型**：`object`
-- **作用**：首页入口阶段的全部运行规则。
-- **用途**：
-  - 把首页打开、白屏判断、死页判断、ready 信号判断等统一收口
+> 这个 profile 的边界只负责 **首页入口页 ready 判断**。
+> 不负责浏览器创建、代理池调度、验证码、生日、session 等后续业务。
 
 ---
 
-# `entry` 下的字段
+# 1. 顶层字段
 
-## 1. `entry.navigation`
-控制首页打开阶段的导航与重试策略。
+## `name`
+### 作用
+站点名称。
 
-### `entry.navigation.runTimeoutMs`
-- **类型**：`number`
-- **作用**：正式运行（run 模式）时，单次 `goto/reload` 的超时时间。
-- **建议**：
-  - 站点偏重时可适度加大
-  - 不要无限拉高，避免坏代理拖死流程
+### 它控制什么
+- 日志里显示当前站点名
+- 失败 reason、调试输出里的站点名称
+- 通用首页模块识别当前在跑哪个站点
 
-### `entry.navigation.testTimeoutMs`
-- **类型**：`number`
-- **作用**：测试（test 模式）时，单次 `goto/reload` 的超时时间。
-- **建议**：
-  - test 模式通常可以比 run 宽一点，方便观察边界行为
-
-### `entry.navigation.retryAttempts`
-- **类型**：`number`
-- **作用**：首页打开最多允许重试几次。
-- **说明**：
-  - 第 1 次通常是 `goto`
-  - 后续通常是 `reload` 或 page recreate 后重试
+### 你什么时候改它
+- 接新站点时改
+- Dreamina 自己一般不用动
 
 ---
 
-## 2. `entry.firstLoad`
-控制首页首轮加载后的缓冲等待与死页判断基础阈值。
+## `homeUrl`
+### 作用
+首页入口 URL。
 
-### `entry.firstLoad.runGraceWaitMs`
-- **类型**：`number`
-- **作用**：run 模式下，首页打开后，在做死页/ready 深判断前额外等待多久。
-- **用途**：
-  - 给前端脚本、接口返回、组件渲染一点缓冲时间
+### 它控制什么
+- `goto` 打开的目标地址
+- retry / reload 主流程的入口页面
 
-### `entry.firstLoad.testGraceWaitMs`
-- **类型**：`number`
-- **作用**：test 模式下的首轮加载缓冲等待。
-- **用途**：
-  - 用来观察“慢一点但可能能活”的边界页面
-
-### `entry.firstLoad.deadPageBodyTextMinLength`
-- **类型**：`number`
-- **作用**：死页判定时，body 文本长度的基础阈值。
-- **说明**：
-  - 页面内容太少，又没有 ready signal，又伴随错误证据时，更容易判为 dead page
+### 你什么时候改它
+- 首页 URL 变了
+- 你想把入口从 A 页换到 B 页
 
 ---
 
-## 3. `entry.readySignals`
-定义“这个首页已经准备好可以进入下一步”的正向信号。
+## `entry`
+### 作用
+首页入口阶段的总配置容器。
 
-### `entry.readySignals.text`
-- **类型**：`string[]`
-- **作用**：页面可见文本级 ready 信号。
-- **用途**：
-  - 如登录入口、Continue with email、站点核心 CTA 等
-- **建议**：
-  - 放真正稳定、站点入口页常出现的文本
-  - 不要放太泛、太容易误判的词
-
-### `entry.readySignals.selectors`
-- **类型**：`string[]`
-- **作用**：CSS selector 级 ready 信号。
-- **用途**：
-  - 用来识别页面主要交互元素是否已经出现
-- **建议**：
-  - 选稳定元素
-  - 避免过于泛化的 selector 导致假阳性
-
-### `entry.readySignals.bodyPatterns`
-- **类型**：`string[]`
-- **作用**：body 文本里的兜底正向模式。
-- **用途**：
-  - 在 text/selector 没命中时，仍可通过 body 中的关键文本判断首页活性
-- **建议**：
-  - 放站点名称、入口页特有文案、登录文案等
+### 它控制什么
+把首页阶段的所有规则收在一起：
+- 导航超时
+- 重试次数
+- 白屏口径
+- 死页口径
+- ready 信号
+- overlay 处理
 
 ---
 
-## 4. `entry.whiteScreen`
-控制白屏判断规则。
+# 2. `entry.navigation`
 
-### `entry.whiteScreen.bodyTextMinLength`
-- **类型**：`number`
-- **作用**：白屏判断时，body 文本最小长度阈值。
-- **含义**：
-  - 如果 body 文本太短，且没有 ready signal，就更像白屏
+这一组字段控制：
+**首页如何打开、允许打开多久、失败最多重试几次**。
 
-### `entry.whiteScreen.recheckOnSuspected`
-- **类型**：`boolean`
-- **作用**：在 precheck 阶段，如果只是“疑似白屏”，是否再给一次复查机会。
-- **用途**：
-  - 降低误杀慢页面的概率
+## `entry.navigation.runTimeoutMs`
+### 作用
+run 模式下单次 `goto/reload` 的超时时间。
 
-### `entry.whiteScreen.precheckRecheckWaitMinMs`
-- **类型**：`number`
-- **作用**：precheck 阶段白屏疑似时，二次确认等待的最小值。
+### 它控制什么
+- 正式运行时页面打开最长等待多久
+- 太短：慢页面容易被提前打死
+- 太长：坏代理会拖慢整体流程
 
-### `entry.whiteScreen.precheckRecheckWaitMaxMs`
-- **类型**：`number`
-- **作用**：precheck 阶段白屏疑似时，二次确认等待的最大值。
-- **说明**：
-  - 实际等待可由动态等待逻辑夹在 min/max 之间
+### 常见调优场景
+- 如果页面偶尔慢，但最后能出来，可以适当加大
+- 如果大量坏代理拖时间，不要无限增大
 
 ---
 
-## 5. `entry.deadPage`
-控制死页判断规则。
+## `entry.navigation.testTimeoutMs`
+### 作用
+test 模式下单次 `goto/reload` 的超时时间。
 
-### `entry.deadPage.bodyTextMinLength`
-- **类型**：`number`
-- **作用**：死页判定时，body 文本的最小阈值。
-- **区别于 whiteScreen**：
-  - whiteScreen 更偏“页面几乎没起来”
-  - deadPage 更偏“页面已经尝试加载，但没有进入正常状态，且伴随失败证据”
+### 它控制什么
+- 测试阶段容忍页面更慢一些
+- 便于观察边界代理/边界页面行为
 
----
-
-## 6. `entry.overlays`
-控制首页入口阶段的弹层/遮罩处理策略。
-
-### `entry.overlays.enabled`
-- **类型**：`boolean`
-- **作用**：是否启用入口页 overlay 预处理。
-
-### `entry.overlays.patterns`
-- **类型**：`string[]`
-- **作用**：常见入口弹层按钮/文字模式。
-- **用途**：
-  - 在首页 ready 之前先清掉阻挡交互的弹层
-- **建议**：
-  - 放常见的 Accept / Agree / Close / Skip / Got it 等
-  - 真正复杂的 overlay 逻辑更适合后续放 adapter
+### 常见调优场景
+- test 想更宽松就调大
+- run 不建议盲目跟着一起调
 
 ---
 
-# 配置时的原则
+## `entry.navigation.retryAttempts`
+### 作用
+首页打开最多允许重试几次。
 
-## 哪些字段你可以经常调
+### 它控制什么
+- 第一次通常 `goto`
+- 后续通常 `reload`
+- 超过次数后直接判定入口阶段失败
+
+### 常见调优场景
+- 页面经常第一次失败、第二次成功时保留 3 次
+- 如果失败非常稳定，增加次数收益很低
+
+---
+
+# 3. `entry.firstLoad`
+
+这一组字段控制：
+**首页刚打开后，给页面一点“缓冲加载时间”，再去判断是不是死页**。
+
+## `entry.firstLoad.runGraceWaitMs`
+### 作用
+run 模式下，首页打开后，在深判断之前额外等待多久。
+
+### 它控制什么
+- 给前端 JS、接口、组件渲染一点时间
+- 避免页面刚到 domcontentloaded 就被过早判死
+
+### 常见调优场景
+- 页面不是白屏，但 ready signal 常常迟一点出现时
+
+---
+
+## `entry.firstLoad.testGraceWaitMs`
+### 作用
+test 模式下的首轮缓冲等待。
+
+### 它控制什么
+- test 时可以比 run 稍宽，观察慢页面
+
+---
+
+## `entry.firstLoad.deadPageBodyTextMinLength`
+### 作用
+死页判定时，body 文本长度的基础阈值。
+
+### 它控制什么
+- 页面文本太少，又没有 ready signal，又伴随错误证据时，更容易判死页
+
+### 注意
+这是“判定口径”字段，不建议频繁乱改。
+
+---
+
+# 4. `entry.readySignals`
+
+这一组字段控制：
+**什么叫这个首页真的 ready，可以进入下一步**。
+
+这是整个 profile 里最核心的一组。
+
+## `entry.readySignals.text`
+### 作用
+文本级 ready 信号。
+
+### 它控制什么
+- 页面上出现这些文案时，可以认为首页已经真正活了
+- 比如：登录入口、Continue with email、Sign up 等
+
+### 适合放什么
+- 稳定、明确、站点入口页常见的文字
+
+### 不适合放什么
+- 太泛的词
+- 容易在错误页/空页里也出现的词
+
+---
+
+## `entry.readySignals.selectors`
+### 作用
+DOM selector 级 ready 信号。
+
+### 它控制什么
+- 页面结构元素出现时，也可以认为首页 ready
+- 对一些文案不稳定但结构稳定的页面很有用
+
+### 适合放什么
+- 稳定输入框
+- 稳定按钮
+- 稳定入口容器
+
+### 不适合放什么
+- 太泛化 selector，例如页面上任何地方都有的通用元素
+
+---
+
+## `entry.readySignals.bodyPatterns`
+### 作用
+body 文本里的兜底 ready pattern。
+
+### 它控制什么
+- 当 text/selector 没命中时，仍然可以通过 body 中的关键词判断首页活性
+
+### 适合放什么
+- 站点名
+- 登录文案
+- 站点特有 CTA
+
+### 注意
+这更适合兜底，不建议作为最主要 ready 判断来源。
+
+---
+
+# 5. `entry.whiteScreen`
+
+这一组字段控制：
+**什么叫白屏，以及 precheck 阶段疑似白屏要不要复查。**
+
+## `entry.whiteScreen.bodyTextMinLength`
+### 作用
+白屏判定时 body 文本最小阈值。
+
+### 它控制什么
+- body 文本太短且没有 ready signal 时，会更像白屏
+
+### 注意
+改太松会放进假阳性，改太紧会误杀边界页面。
+
+---
+
+## `entry.whiteScreen.recheckOnSuspected`
+### 作用
+precheck 阶段疑似白屏时，是否再给一次复查。
+
+### 它控制什么
+- `true`：降低误杀慢页面概率
+- `false`：更快，但更激进
+
+---
+
+## `entry.whiteScreen.precheckRecheckWaitMinMs`
+### 作用
+白屏疑似复查时的最小等待时间。
+
+### 它控制什么
+- 保证不是“马上又判一次”，给页面一个最基本的缓冲
+
+---
+
+## `entry.whiteScreen.precheckRecheckWaitMaxMs`
+### 作用
+白屏疑似复查时的最大等待时间。
+
+### 它控制什么
+- 限制复查成本，防止一个代理把预检拖太久
+
+---
+
+# 6. `entry.deadPage`
+
+这一组字段控制：
+**什么叫死页**。
+
+## `entry.deadPage.bodyTextMinLength`
+### 作用
+死页判定时，body 文本长度阈值。
+
+### 它控制什么
+- 页面不是立刻白屏，但长时间没 ready signal，又伴随失败证据时，更容易被判死页
+
+### 和 whiteScreen 的区别
+- `whiteScreen`：更像页面几乎没起来
+- `deadPage`：页面尝试起来了，但最终没有进入正常 ready 状态
+
+---
+
+# 7. `entry.overlays`
+
+这一组字段控制：
+**首页入口阶段是否处理遮罩/弹层，以及如何识别它们**。
+
+## `entry.overlays.enabled`
+### 作用
+是否启用入口页 overlay 处理。
+
+### 它控制什么
+- 开：会尝试清理入口页挡板
+- 关：完全不处理 overlay
+
+---
+
+## `entry.overlays.patterns`
+### 作用
+常见 overlay 按钮/文案模式。
+
+### 它控制什么
+- 让通用模块知道哪些文案可能是“关闭挡板”的按钮
+- 如：Accept / Agree / Got it / Close / Skip
+
+### 注意
+如果这里配得太泛，可能误点正常按钮。
+
+---
+
+# 8. 调整时的建议
+
+## 可以经常调的字段（运行策略）
 - `entry.navigation.runTimeoutMs`
 - `entry.navigation.testTimeoutMs`
 - `entry.navigation.retryAttempts`
@@ -185,21 +306,24 @@
 - `entry.whiteScreen.precheckRecheckWaitMinMs`
 - `entry.whiteScreen.precheckRecheckWaitMaxMs`
 
-这些更偏运行策略调优。
+这些更偏“节奏”和“容忍度”。
 
-## 哪些字段要谨慎调
+## 要谨慎调的字段（判定口径）
 - `entry.readySignals.text`
 - `entry.readySignals.selectors`
 - `entry.readySignals.bodyPatterns`
 - `entry.whiteScreen.bodyTextMinLength`
 - `entry.deadPage.bodyTextMinLength`
 
-这些直接影响“什么叫首页 ready / 什么叫白屏 / 什么叫死页”。
-如果改得太松，容易放入假阳性；改得太紧，容易误杀。
+这些更偏“什么叫 ready / 什么叫白屏 / 什么叫死页”。
+如果改错，容易放进假阳性或误杀真可用页面。
 
 ---
 
-# 一句话总结
+# 9. 一句话总结
 
-这个 profile 的作用就是：
-**告诉通用首页模块，Dreamina 首页长什么样、什么算 ready、什么算白屏、什么算死页、以及首页打开该怎么等、怎么重试。**
+这个 profile 本质上回答四个问题：
+1. 打开哪个首页
+2. 最多等多久
+3. 什么算首页 ready
+4. 什么算首页坏了（白屏 / 死页）
