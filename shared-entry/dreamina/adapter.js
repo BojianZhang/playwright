@@ -12,17 +12,18 @@
  * - dreamina-entry-profile.json = 静态配置
  * - adapter.js = Dreamina 专属动态处理
  *
- * 这个文件适合承接：
- * 1. Dreamina 专属 overlay 处理
- * 2. Dreamina 专属 ready 信号补充判断
- * 3. Dreamina 专属首页恢复动作
- * 4. Dreamina 专属失败原因补充归类
+ * 当前文件的边界：
+ * 1. 负责 Dreamina 首页入口阶段的专属适配
+ * 2. 负责 Dreamina 从首页进入“登录入口态”的第一阶段切换适配
+ * 3. 负责 Dreamina 首页失败分类与轻量恢复动作
  *
- * 这个文件不适合承接：
+ * 当前文件不负责：
  * - browser/context 创建
  * - 代理池调度
  * - runner 层流程
- * - 邮箱 / 验证码 / 生日 / 注册后半段业务
+ * - 邮箱填写
+ * - 验证码获取与填写
+ * - 生日/注册提交/账号创建后续流程
  */
 
 /**
@@ -83,6 +84,59 @@ const DREAMINA_STRONG_READY_SELECTORS = [
   'input[type="email"]',
   'button[data-testid*="login"]',
   'button[data-testid*="sign"]',
+];
+
+/**
+ * Dreamina 第一阶段登录入口候选配置。
+ *
+ * 作用：
+ * - 定义首页到登录入口切换时，优先检查哪些入口
+ * - 每个候选都带 type / 文本 / selector，方便后续点击与日志输出
+ *
+ * 注意：
+ * - 这只是第一版骨架候选集，不代表已经完成最终定型
+ * - 后续应根据真实页面命中情况继续收敛优先级
+ */
+const DREAMINA_LOGIN_ENTRY_CANDIDATES = [
+  {
+    type: 'continue-with-email',
+    text: 'Continue with email',
+    selector: null,
+  },
+  {
+    type: 'sign-in-text',
+    text: 'Sign in',
+    selector: null,
+  },
+  {
+    type: 'login-text',
+    text: 'Login',
+    selector: null,
+  },
+  {
+    type: 'log-in-text',
+    text: 'Log in',
+    selector: null,
+  },
+  {
+    type: 'sign-in-selector',
+    text: null,
+    selector: '[class*="login"] button, [class*="signin"] button, [class*="sign-in"] button',
+  },
+];
+
+/**
+ * 登录门确认用 selector。
+ *
+ * 作用：
+ * - 用来判断点击登录入口后，页面是否已经进入“登录前表单态”
+ * - 第一版先放输入框/邮件输入类信号
+ */
+const DREAMINA_LOGIN_GATE_SELECTORS = [
+  'input[type="email"]',
+  'input[role="textbox"]',
+  '[type="email"]',
+  '[class*="email"] input',
 ];
 
 /**
@@ -267,6 +321,10 @@ function filterStrongReadySelectors(selectors = []) {
 
 /**
  * 检查是否命中某个文本 ready 信号。
+ *
+ * 作用：
+ * - 统一文本级 ready 检查返回结构
+ * - 给 waitForDreaminaReady / 登录入口检测复用
  */
 async function findVisibleReadyText(page, texts = []) {
   for (const text of texts) {
@@ -290,6 +348,10 @@ async function findVisibleReadyText(page, texts = []) {
 
 /**
  * 检查是否命中某个 selector ready 信号。
+ *
+ * 作用：
+ * - 统一 selector 级 ready 检查返回结构
+ * - 给 waitForDreaminaReady / 登录门确认复用
  */
 async function findVisibleReadySelector(page, selectors = []) {
   for (const selector of selectors) {
@@ -420,6 +482,10 @@ function collectFailureEvidence(diagnostics = null) {
 
 /**
  * 判断 diagnostics 里是否存在前端资源/脚本加载失败证据。
+ *
+ * 作用：
+ * - 把资源未加载、chunk 错误、脚本错误归成“前端资源失败”类
+ * - 便于首页失败分类更贴近真实问题类型
  */
 function hasFrontendLoadFailureEvidence(evidence = {}) {
   const lines = [
@@ -434,6 +500,9 @@ function hasFrontendLoadFailureEvidence(evidence = {}) {
 
 /**
  * 判断 diagnostics 里是否存在网络/连接层失败证据。
+ *
+ * 作用：
+ * - 把 timeout / net::ERR / proxy / dns 这类问题归成“连接失败”类
  */
 function hasNetworkFailureEvidence(evidence = {}) {
   const lines = [
@@ -448,6 +517,9 @@ function hasNetworkFailureEvidence(evidence = {}) {
 
 /**
  * 判断 diagnostics 里是否存在疑似风控/拦截信号。
+ *
+ * 作用：
+ * - 把 captcha / challenge / 403 / 429 / access denied 归成“风控/拦截”类
  */
 function hasBlockedOrChallengeEvidence(evidence = {}) {
   const lines = [
@@ -621,10 +693,220 @@ async function recoverDreaminaEntry(page, input = {}, context = {}) {
   return waitBrieflyForRecovery(page, context);
 }
 
+/**
+ * 查找 Dreamina 第一阶段登录入口。
+ *
+ * 作用：
+ * - 在首页 ready 之后，按既定优先级扫描登录入口候选
+ * - 返回“哪个入口被命中、用什么方式命中、后续应该点哪个 locator”
+ *
+ * 这个方法只负责“找入口”，不负责点击，不负责确认登录门是否真的打开。
+ */
+async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+
+  for (const candidate of DREAMINA_LOGIN_ENTRY_CANDIDATES) {
+    if (candidate.text) {
+      const locator = page.getByText(candidate.text, { exact: false }).first();
+      const visible = await locator.isVisible().catch(() => false);
+      if (visible) {
+        if (typeof logInfo === 'function') {
+          logInfo(`dreamina.adapter.findDreaminaLoginEntry | 命中登录入口文本候选: ${candidate.type} | text=${candidate.text}`);
+        }
+        return {
+          found: true,
+          type: candidate.type,
+          matchType: 'text',
+          text: candidate.text,
+          selector: null,
+          locator,
+        };
+      }
+    }
+
+    if (candidate.selector) {
+      const selectors = String(candidate.selector).split(',').map(item => item.trim()).filter(Boolean);
+      for (const selector of selectors) {
+        const locator = page.locator(selector).first();
+        const visible = await locator.isVisible().catch(() => false);
+        if (visible) {
+          if (typeof logInfo === 'function') {
+            logInfo(`dreamina.adapter.findDreaminaLoginEntry | 命中登录入口 selector 候选: ${candidate.type} | selector=${selector}`);
+          }
+          return {
+            found: true,
+            type: candidate.type,
+            matchType: 'selector',
+            text: null,
+            selector,
+            locator,
+          };
+        }
+      }
+    }
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo('dreamina.adapter.findDreaminaLoginEntry | 当前未找到 Dreamina 登录入口候选');
+  }
+
+  return {
+    found: false,
+    type: '',
+    matchType: '',
+    text: null,
+    selector: null,
+    locator: null,
+  };
+}
+
+/**
+ * 打开 Dreamina 第一阶段登录入口。
+ *
+ * 作用：
+ * - 先调用 findDreaminaLoginEntry 找到最优入口
+ * - 再尝试点击该入口
+ * - 返回点击结果给上层做下一步确认
+ *
+ * 这个方法只负责“点击入口”，不负责判断点击后是否真的进入登录门。
+ */
+async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
+  const { logInfo = null, logWarn = null } = context;
+  const entry = await findDreaminaLoginEntry(page, runtime, context);
+
+  if (!entry.found || !entry.locator) {
+    if (typeof logWarn === 'function') {
+      logWarn('dreamina.adapter.openDreaminaLoginEntry | 未找到可用登录入口');
+    }
+    return {
+      success: false,
+      reason: 'LOGIN_ENTRY_NOT_FOUND',
+      entry,
+    };
+  }
+
+  const clickable = await isVisibleAndEnabled(entry.locator);
+  if (!clickable) {
+    if (typeof logWarn === 'function') {
+      logWarn(`dreamina.adapter.openDreaminaLoginEntry | 登录入口不可点击: ${entry.type}`);
+    }
+    return {
+      success: false,
+      reason: 'LOGIN_ENTRY_NOT_CLICKABLE',
+      entry,
+    };
+  }
+
+  try {
+    await entry.locator.click({ timeout: 1500 });
+    await page.waitForTimeout(500);
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.openDreaminaLoginEntry | 已点击登录入口: ${entry.type}`);
+    }
+    return {
+      success: true,
+      reason: 'LOGIN_ENTRY_CLICKED',
+      entry,
+    };
+  } catch (error) {
+    if (typeof logWarn === 'function') {
+      logWarn(`dreamina.adapter.openDreaminaLoginEntry | 点击登录入口失败: ${entry.type} | ${error.message}`);
+    }
+    return {
+      success: false,
+      reason: 'LOGIN_ENTRY_CLICK_FAILED',
+      entry,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * 确认 Dreamina 是否已经进入“登录门/登录前表单态”。
+ *
+ * 作用：
+ * - 在点击登录入口后，确认页面是否真的出现登录前必要信号
+ * - 第一版先用 email/input 类 selector 做确认
+ *
+ * 这个方法不负责填写邮箱，也不负责点击发送验证码。
+ * 它只回答一个问题：
+ * “现在是不是已经进入登录门了？”
+ */
+async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+
+  const selectorHit = await findVisibleReadySelector(page, DREAMINA_LOGIN_GATE_SELECTORS);
+  if (selectorHit.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中登录门 selector: ${selectorHit.value}`);
+    }
+    return {
+      ok: true,
+      source: selectorHit.source,
+      value: selectorHit.value,
+    };
+  }
+
+  const textHit = await findVisibleReadyText(page, ['Continue with email', 'Sign in', 'Login', 'Log in']);
+  if (textHit.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中登录门文本信号: ${textHit.value}`);
+    }
+    return {
+      ok: true,
+      source: textHit.source,
+      value: textHit.value,
+    };
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo('dreamina.adapter.confirmDreaminaLoginGate | 当前未确认进入登录门');
+  }
+
+  return {
+    ok: false,
+    source: '',
+    value: '',
+  };
+}
+
+/**
+ * 对第一阶段登录入口失败做专属分类。
+ *
+ * 作用：
+ * - 把“首页 ready 之后进入登录入口”这一段失败独立分类
+ * - 让日志和后续策略能区分：是没找到入口、点不了、还是点了没状态变化
+ *
+ * 这类分类只服务“首页 -> 登录门”这一段，
+ * 不用于验证码、生日、注册提交等后续阶段。
+ */
+function classifyDreaminaLoginGateFailure(input = {}) {
+  const reason = String(input.reason || 'UNKNOWN').trim().toUpperCase();
+
+  let siteReason = reason;
+  if (reason === 'LOGIN_ENTRY_NOT_FOUND') {
+    siteReason = 'DREAMINA_LOGIN_ENTRY_NOT_FOUND';
+  } else if (reason === 'LOGIN_ENTRY_NOT_CLICKABLE') {
+    siteReason = 'DREAMINA_LOGIN_ENTRY_NOT_CLICKABLE';
+  } else if (reason === 'LOGIN_ENTRY_CLICK_FAILED') {
+    siteReason = 'DREAMINA_LOGIN_ENTRY_CLICK_FAILED';
+  } else if (reason === 'LOGIN_GATE_NOT_CONFIRMED') {
+    siteReason = 'DREAMINA_LOGIN_GATE_NOT_CONFIRMED';
+  }
+
+  return {
+    reason,
+    siteReason,
+    hardFailure: false,
+  };
+}
+
 module.exports = {
   SAFE_OVERLAY_TEXT_PATTERNS,
   DREAMINA_STRONG_READY_TEXTS,
   DREAMINA_STRONG_READY_SELECTORS,
+  DREAMINA_LOGIN_ENTRY_CANDIDATES,
+  DREAMINA_LOGIN_GATE_SELECTORS,
   OVER_GENERIC_READY_SELECTORS,
   isVisibleAndEnabled,
   tryClickLocator,
@@ -644,4 +926,8 @@ module.exports = {
   isRecoverableDreaminaEntryFailure,
   waitBrieflyForRecovery,
   recoverDreaminaEntry,
+  findDreaminaLoginEntry,
+  openDreaminaLoginEntry,
+  confirmDreaminaLoginGate,
+  classifyDreaminaLoginGateFailure,
 };
