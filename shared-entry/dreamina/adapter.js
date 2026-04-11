@@ -403,30 +403,135 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
 }
 
 /**
- * 对 Dreamina 首页失败做站点专属补充归类。
+ * 汇总 diagnostics 中的失败证据。
  *
  * 作用：
- * - 公共层只能给出通用 reason，例如 WHITE_SCREEN / DEAD_PAGE / READY_SIGNAL_MISSING。
- * - 如果 Dreamina 有更细的失败口径，就应该在这里补分类。
+ * - 把 requestFailures / responseErrors / pageErrors / consoleMessages 统一拉平
+ * - 方便后面做 Dreamina 站点级失败分类
+ */
+function collectFailureEvidence(diagnostics = null) {
+  return {
+    requestFailures: Array.isArray(diagnostics?.requestFailures) ? diagnostics.requestFailures : [],
+    responseErrors: Array.isArray(diagnostics?.responseErrors) ? diagnostics.responseErrors : [],
+    pageErrors: Array.isArray(diagnostics?.pageErrors) ? diagnostics.pageErrors : [],
+    consoleMessages: Array.isArray(diagnostics?.consoleMessages) ? diagnostics.consoleMessages : [],
+  };
+}
+
+/**
+ * 判断 diagnostics 里是否存在前端资源/脚本加载失败证据。
+ */
+function hasFrontendLoadFailureEvidence(evidence = {}) {
+  const lines = [
+    ...evidence.requestFailures,
+    ...evidence.responseErrors,
+    ...evidence.pageErrors,
+    ...evidence.consoleMessages,
+  ].map(item => String(item || ''));
+
+  return lines.some(line => /chunk|script|stylesheet|module|failed to load resource|load failed|refused|blocked|cors/i.test(line));
+}
+
+/**
+ * 判断 diagnostics 里是否存在网络/连接层失败证据。
+ */
+function hasNetworkFailureEvidence(evidence = {}) {
+  const lines = [
+    ...evidence.requestFailures,
+    ...evidence.responseErrors,
+    ...evidence.pageErrors,
+    ...evidence.consoleMessages,
+  ].map(item => String(item || ''));
+
+  return lines.some(line => /timeout|timed out|net::|err_|connection|proxy|dns|tunnel|ssl|econn|socket/i.test(line));
+}
+
+/**
+ * 判断 diagnostics 里是否存在疑似风控/拦截信号。
+ */
+function hasBlockedOrChallengeEvidence(evidence = {}) {
+  const lines = [
+    ...evidence.requestFailures,
+    ...evidence.responseErrors,
+    ...evidence.pageErrors,
+    ...evidence.consoleMessages,
+  ].map(item => String(item || ''));
+
+  return lines.some(line => /captcha|challenge|forbidden|403|429|too many requests|access denied|blocked/i.test(line));
+}
+
+/**
+ * 对 Dreamina 首页失败做站点专属补充归类。
  *
- * 典型场景：
- * - Dreamina 特有 DOM 命中某个状态时，直接归类为专属失败
- * - Dreamina 控制台错误模式可归成更细粒度错误
- * - 首页结构存在，但主入口容器缺失时，转成 Dreamina 专属 reason
- *
- * 当前状态：
- * - 先把公共 reason 原样返回
- * - 后续根据真实日志和 diagnostics 再细化
+ * 第一版分类目标：
+ * - 保留公共层的 WHITE_SCREEN / DEAD_PAGE / READY_SIGNAL_MISSING 主 reason
+ * - 再补一个更像 Dreamina 自己问题语义的 siteReason
+ * - 方便 runner / 日志后续区分“网络坏”“资源坏”“挑战页”“只是没 ready”
  */
 function classifyDreaminaEntryFailure(input = {}) {
-  const reason = String(input.reason || 'UNKNOWN');
+  const reason = String(input.reason || 'UNKNOWN').trim().toUpperCase();
   const diagnostics = input.diagnostics || null;
+  const whiteScreen = input.whiteScreen || null;
+  const deadPage = input.deadPage || null;
+  const readySignal = input.readySignal || null;
+  const evidence = collectFailureEvidence(diagnostics);
+
+  let siteReason = reason || 'UNKNOWN';
+  let hardFailure = reason === 'WHITE_SCREEN' || reason === 'DEAD_PAGE';
+
+  if (reason === 'WHITE_SCREEN') {
+    if (hasBlockedOrChallengeEvidence(evidence)) {
+      siteReason = 'DREAMINA_WHITE_SCREEN_CHALLENGE';
+    } else if (hasFrontendLoadFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_WHITE_SCREEN_ASSET_FAILURE';
+    } else if (hasNetworkFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_WHITE_SCREEN_NETWORK_FAILURE';
+    } else {
+      siteReason = 'DREAMINA_WHITE_SCREEN';
+    }
+  } else if (reason === 'DEAD_PAGE') {
+    if (hasBlockedOrChallengeEvidence(evidence)) {
+      siteReason = 'DREAMINA_DEAD_PAGE_CHALLENGE';
+    } else if (hasFrontendLoadFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_DEAD_PAGE_ASSET_FAILURE';
+    } else if (hasNetworkFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_DEAD_PAGE_NETWORK_FAILURE';
+    } else {
+      siteReason = 'DREAMINA_DEAD_PAGE';
+    }
+  } else if (reason === 'READY_SIGNAL_MISSING') {
+    if (readySignal?.ok) {
+      siteReason = 'DREAMINA_READY_SIGNAL_CONFLICT';
+    } else if (hasBlockedOrChallengeEvidence(evidence)) {
+      siteReason = 'DREAMINA_ENTRY_CHALLENGE';
+      hardFailure = true;
+    } else if (hasFrontendLoadFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_READY_MISSING_ASSET_FAILURE';
+    } else if (hasNetworkFailureEvidence(evidence)) {
+      siteReason = 'DREAMINA_READY_MISSING_NETWORK_FAILURE';
+    } else if (whiteScreen?.suspected) {
+      siteReason = 'DREAMINA_READY_MISSING_AFTER_WHITE_SCREEN_SUSPECT';
+    } else if (deadPage?.hasStrongFailureEvidence) {
+      siteReason = 'DREAMINA_READY_MISSING_WITH_FAILURE_EVIDENCE';
+    } else {
+      siteReason = 'DREAMINA_READY_SIGNAL_MISSING';
+    }
+  }
 
   return {
     reason,
-    siteReason: reason,
-    hardFailure: reason === 'WHITE_SCREEN' || reason === 'DEAD_PAGE',
+    siteReason,
+    hardFailure,
     diagnostics,
+    evidenceSummary: {
+      requestFailures: evidence.requestFailures.length,
+      responseErrors: evidence.responseErrors.length,
+      pageErrors: evidence.pageErrors.length,
+      consoleMessages: evidence.consoleMessages.length,
+      hasFrontendLoadFailureEvidence: hasFrontendLoadFailureEvidence(evidence),
+      hasNetworkFailureEvidence: hasNetworkFailureEvidence(evidence),
+      hasBlockedOrChallengeEvidence: hasBlockedOrChallengeEvidence(evidence),
+    },
   };
 }
 
@@ -475,6 +580,10 @@ module.exports = {
   findVisibleReadySelector,
   findBodyPatternReady,
   waitForDreaminaReady,
+  collectFailureEvidence,
+  hasFrontendLoadFailureEvidence,
+  hasNetworkFailureEvidence,
+  hasBlockedOrChallengeEvidence,
   classifyDreaminaEntryFailure,
   recoverDreaminaEntry,
 };
