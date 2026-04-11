@@ -8,9 +8,10 @@
 
 它负责：
 - 从 `shared-proxy-precheck/local-proxies.txt` 读取代理
-- 选择一个本地代理
+- 选择一个或多个本地代理
 - 调用 `shared-proxy-precheck/stages/proxy-precheck.js`
-- 输出统一预检结果
+- 先输出“出口IP + 测速 + 等级”的人话摘要
+- 再输出完整 JSON 结果
 
 它不负责：
 - Playwright 启动浏览器
@@ -20,6 +21,8 @@
 ---
 
 # 一、如何运行
+
+## 1. 单代理预检
 
 在 `D:\playwright` 目录下执行：
 
@@ -36,18 +39,42 @@ node .\proxy-precheck-runner.js
 node .\proxy-precheck-runner.js 0
 node .\proxy-precheck-runner.js 1
 node .\proxy-precheck-runner.js 2
-node .\proxy-precheck-runner.js 3
-node .\proxy-precheck-runner.js 4
 ```
-
-这里的数字就是：
-- `preferredIndex`
-
-也就是从 `local-proxies.txt` 里按 0 开始取第几个代理。
 
 ---
 
-# 二、代理信息填在哪里
+## 2. 全部代理并发预检
+
+```powershell
+node .\proxy-precheck-runner.js --all
+```
+
+默认并发数：
+- `3`
+
+如果要指定并发数：
+
+```powershell
+node .\proxy-precheck-runner.js --all 5
+```
+
+---
+
+# 二、运行输出
+
+## 人话摘要
+每条代理都会先输出一行摘要，例如：
+
+```text
+[Proxy Precheck] #1 local-proxy-1 | Grade=OK | ExitIP=129.227.139.156 | Connectivity=1390ms | Primary=925ms | Secondary=977ms
+```
+
+## 完整 JSON
+摘要后会继续输出完整 JSON，便于进一步排查。
+
+---
+
+# 三、代理信息填在哪里
 
 当前本地联调代理入口：
 - `D:\playwright\shared-proxy-precheck\local-proxies.txt`
@@ -62,27 +89,10 @@ host:port:username:password
 
 ---
 
-# 三、运行成功后会输出什么
-
-运行后会直接在终端打印 JSON 结果。
-其中会包含：
-- `success`
-- `state`
-- `reason`
-- `proxyGrade`
-- `proxySummary`
-- `detail`
-
-说明：
-- `proxySummary` 是脱敏摘要
-- 不会直接把明文密码打到摘要里
-
----
-
 # 四、退出码
 
-- 预检成功：退出码 `0`
-- 预检失败：退出码 `1`
+- 全部成功：退出码 `0`
+- 任一失败：退出码 `1`
 
 ---
 
@@ -90,11 +100,10 @@ host:port:username:password
 
 这个 runner 当前只做：
 - 本地代理读取
-- 单代理纯网络预检
+- 单代理 / 多代理并发纯网络预检
 - Dreamina 相关目标测速
 
 它当前不做：
-- 自动切换下一个代理
-- 批量轮询所有代理
+- 打开页面
+- 自动切换注册主链
 - runner 全链接入
-- 正式注册链调用
