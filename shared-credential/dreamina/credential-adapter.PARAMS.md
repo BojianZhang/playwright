@@ -55,10 +55,16 @@
 - 类型：object
 - 作用：阶段运行时上下文
 - 当前用途：
+  - form ready 等待节奏
+  - submit 后 settlement 等待节奏
   - 预留给后续 run/test 差异
-  - 预留给超时、等待节奏、模式差异
+- 当前常见字段：
+  - `credentialFormPrimaryWaitMs`
+  - `credentialFormSecondaryWaitMs`
+  - `credentialSubmitPrimaryWaitMs`
+  - `credentialSubmitSecondaryWaitMs`
 - 当前状态：
-  - 这版里使用不多，但保留参数位是对的
+  - 已开始承接阶段 2 自身的轻量等待参数，但不越界到验证码阶段
 
 ## `context`
 - 类型：object
@@ -202,10 +208,21 @@
 
 ### 它干什么
 - 读取 profile
+- 按轻量等待节奏检查 form
 - 查找 email input
 - 查找 password input
 - 查找 submit button（先 selector，再 text）
 - 判断当前 Dreamina credential form 是否 ready
+
+### 当前等待策略
+这一步已经不再是纯即时探测，而是轻量两段式等待：
+- 首次立即检查
+- `credentialFormPrimaryWaitMs`
+- `credentialFormSecondaryWaitMs`
+
+设计目标是：
+- 降低页面慢一拍时的误判
+- 但不把阶段 2 扩成重轮询
 
 ### 返回值
 #### 成功时
@@ -215,7 +232,8 @@
   state: 'FORM_READY',
   emailField,
   passwordField,
-  submit
+  submit,
+  waitStepMs,
 }
 ```
 
@@ -226,7 +244,8 @@
   state: 'FORM_NOT_READY',
   emailField,
   passwordField,
-  submit
+  submit,
+  waitStepMs,
 }
 ```
 
@@ -234,6 +253,7 @@
 - `emailField`：email 输入框命中结果
 - `passwordField`：password 输入框命中结果
 - `submit`：提交按钮命中结果
+- `waitStepMs`：本次 ready 判定是在第几个等待步命中的
 
 ### 边界
 - 只确认 form 是否 ready
@@ -379,7 +399,11 @@
 {
   ok: true,
   state: 'FORM_SUBMITTED',
-  submit
+  submit,
+  beforeSnapshot,
+  afterSnapshot,
+  hasStateChange,
+  settlementResult,
 }
 ```
 
@@ -391,9 +415,18 @@
 }
 ```
 
+### 返回字段说明
+- `submit`：本次点击使用的提交入口标签
+- `beforeSnapshot`：点击前的阶段 2 轻量页面快照
+- `afterSnapshot`：点击后、settlement 跑完后的轻量页面快照
+- `hasStateChange`：submit 前后是否发生了有意义的状态变化
+- `settlementResult`：submit 后分层等待的收敛结果
+
 ### 边界
-- 只负责触发提交动作
-- 不负责判断提交后的结果
+- 负责触发提交动作
+- 负责采集 submit 前后快照
+- 负责把 settlement 结果带给 confirm 层复用
+- 不负责验证码阶段内后续动作
 
 ---
 
@@ -415,11 +448,11 @@
 
 ### 它干什么
 按顺序判断：
-1. 是否进入 successSignals（说明进验证码阶段）
-2. 是否出现 existingAccount
-3. 是否出现 rejected
-4. 是否出现 rateLimited
-5. 是否出现 inlineErrors
+1. 优先复用 submit 阶段已跑过的 settlement 结果
+2. 如果 settlement 已命中验证码阶段，就直接判成功
+3. 如果 settlement 已命中高价值失败，就直接复用失败
+4. 如果 settlement 没结果，再看 inlineErrors
+5. 再判断是否属于 no-state-change
 6. 否则返回未知状态
 
 ### 返回值
@@ -430,7 +463,9 @@
   state: 'CREDENTIAL_SUBMIT_OK',
   nextStage: 'verification',
   source,
-  value
+  value,
+  strength,
+  settleStage,
 }
 ```
 
@@ -441,7 +476,9 @@
   state: 'ACCOUNT_ALREADY_EXISTS',
   nextStage: '',
   source: 'text',
-  value: 'An account with this email already exists'
+  value: 'An account with this email already exists',
+  strength: 'strong',
+  settleStage: 'primary-failure',
 }
 ```
 
@@ -451,10 +488,18 @@
 - `SIGNUP_REJECTED`
 - `RATE_LIMITED`
 - `INLINE_ERROR_VISIBLE`
+- `CREDENTIAL_SUBMIT_NO_STATE_CHANGE`
 - `CREDENTIAL_SUBMIT_RESULT_UNKNOWN`
+
+### 返回字段说明
+- `source`：当前结果主要基于什么来源得出（selector / text / bodyText / snapshot）
+- `value`：命中的具体 selector / text / 辅助值
+- `strength`：当前信号强度（strong / weak / 空）
+- `settleStage`：结果是在第几层 settlement / 补充检查里收敛出来的
 
 ### 边界
 - 只负责判断提交结果
+- 可以复用 submit 阶段已跑过的 settlement 结果
 - 不负责进入验证码阶段后的动作
 
 ---
