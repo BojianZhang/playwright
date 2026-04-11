@@ -82,10 +82,11 @@
 
 ## 2. `waitForAccountDeliveryReady(page, runtime = {}, context = {})`
 - 作用：等待并确认当前页面已经进入第六阶段上下文
-- 当前建议分步骤：
+- 第一轮补强后当前分步骤：
   1. 查 delivery selector ready
-  2. 查 delivery text ready
-  3. 查最终 URL/路由线索
+  2. 查 account context 辅助 ready
+  3. 查 delivery text ready
+  4. 查最终 URL/路由线索
 - 返回值示例：
 ```js
 {

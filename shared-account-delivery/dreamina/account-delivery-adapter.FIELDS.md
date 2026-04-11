@@ -27,14 +27,22 @@
   - `selector`
   - `text`
   - `url`
+  - `account`
+- 口径：
+  - `account` 只表示“当前账号上下文已具备进入第六阶段整理的辅助条件”，不代表最终 delivery-complete
 
 ## `value`
 - 类型：`string`
 - 含义：命中的 selector / text / url 摘要
+- 当 `source=account` 时，这里记录的是当前已有值的关键 account fields 摘要
 
 ## `strength`
 - 类型：`string`
 - 含义：当前 ready 信号强度
+- 当前 ready 层口径：
+  - `strong` = 结构性 selector 命中
+  - `medium` = account context 辅助命中且关键字段较完整
+  - `weak` = text / url 辅助命中，或 account context 仅弱成立
 
 ## `waitStepMs`
 - 类型：`number`
