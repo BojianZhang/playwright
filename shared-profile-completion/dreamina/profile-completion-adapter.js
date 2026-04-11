@@ -1203,27 +1203,78 @@ async function confirmDreaminaProfileCompletionSubmitResult(page, runtime = {}, 
 
 /**
  * 将阶段 4 原始失败状态收敛成 Dreamina 专属 reason。
+ *
+ * 当前精修目标：
+ * - 把 submit / confirm 新增出来的失败语义收进来
+ * - 让 siteReason 更接近实际业务含义
+ * - 仍然只做第四阶段失败收口，不替 runner 做策略决策
  */
 function classifyDreaminaProfileCompletionFailure(input = {}) {
   // 先从输入中提取原始 reason/state，并统一转成大写形式便于比较。
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
+  // 从输入中提取 source，后面用于细化 submit/confirm 分支。
+  const source = String(input.source || '').trim().toLowerCase();
+  // 从输入中提取 value，后面用于识别更具体的失败含义。
+  const value = String(input.value || '').trim();
   // 默认情况下，siteReason 先等于原始 reason。
   let siteReason = reason;
+  // 默认将 hardFailure 视为 false，只有少数明确无继续价值的场景才提升。
+  let hardFailure = false;
 
-  // 按常见阶段 4 失败做第一版 Dreamina 专属映射。
-  if (reason === 'PROFILE_COMPLETION_NOT_READY') siteReason = 'DREAMINA_PROFILE_COMPLETION_NOT_READY';
-  else if (reason === 'PROFILE_COMPLETION_PLAN_FAILED') siteReason = 'DREAMINA_PROFILE_COMPLETION_PLAN_FAILED';
-  else if (reason === 'BIRTHDAY_YEAR_FILL_FAILED' || reason === 'BIRTHDAY_YEAR_FILL_NOT_IMPLEMENTED') siteReason = 'DREAMINA_BIRTHDAY_YEAR_FILL_FAILED';
-  else if (reason === 'BIRTHDAY_MONTH_FILL_FAILED' || reason === 'BIRTHDAY_MONTH_FILL_NOT_IMPLEMENTED') siteReason = 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
-  else if (reason === 'BIRTHDAY_DAY_FILL_FAILED' || reason === 'BIRTHDAY_DAY_FILL_NOT_IMPLEMENTED') siteReason = 'DREAMINA_BIRTHDAY_DAY_FILL_FAILED';
-  else if (reason === 'PROFILE_COMPLETION_SUBMIT_FAILED' || reason === 'PROFILE_COMPLETION_SUBMIT_NOT_IMPLEMENTED') siteReason = 'DREAMINA_PROFILE_COMPLETION_SUBMIT_FAILED';
-  else if (reason === 'PROFILE_COMPLETION_RESULT_UNKNOWN') siteReason = 'DREAMINA_PROFILE_COMPLETION_RESULT_UNKNOWN';
+  // 先收口第四阶段入口与计划类失败。
+  if (reason === 'PROFILE_COMPLETION_NOT_READY') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_NOT_READY';
+  } else if (reason === 'PROFILE_COMPLETION_PLAN_FAILED') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_PLAN_FAILED';
+  }
+  // 再收口 birthday 三字段填写失败。
+  else if (reason === 'BIRTHDAY_YEAR_FILL_FAILED' || reason === 'BIRTHDAY_YEAR_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'YEAR_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_YEAR_INPUT_MISSING'
+      : value === 'EMPTY_YEAR_PLAN'
+        ? 'DREAMINA_BIRTHDAY_YEAR_PLAN_EMPTY'
+        : 'DREAMINA_BIRTHDAY_YEAR_FILL_FAILED';
+  } else if (reason === 'BIRTHDAY_MONTH_FILL_FAILED' || reason === 'BIRTHDAY_MONTH_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'MONTH_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_MONTH_INPUT_MISSING'
+      : value === 'EMPTY_MONTH_PLAN'
+        ? 'DREAMINA_BIRTHDAY_MONTH_PLAN_EMPTY'
+        : 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
+  } else if (reason === 'BIRTHDAY_DAY_FILL_FAILED' || reason === 'BIRTHDAY_DAY_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'DAY_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_DAY_INPUT_MISSING'
+      : value === 'EMPTY_DAY_PLAN'
+        ? 'DREAMINA_BIRTHDAY_DAY_PLAN_EMPTY'
+        : 'DREAMINA_BIRTHDAY_DAY_FILL_FAILED';
+  }
+  // 再收口 submit 失败与 submit 后无有效推进。
+  else if (reason === 'PROFILE_COMPLETION_SUBMIT_FAILED' || reason === 'PROFILE_COMPLETION_SUBMIT_NOT_IMPLEMENTED') {
+    siteReason = value === 'SUBMIT_BUTTON_NOT_FOUND'
+      ? 'DREAMINA_PROFILE_COMPLETION_SUBMIT_BUTTON_MISSING'
+      : 'DREAMINA_PROFILE_COMPLETION_SUBMIT_FAILED';
+  } else if (reason === 'PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED') {
+    siteReason = source === 'form-still-visible'
+      ? 'DREAMINA_PROFILE_COMPLETION_FORM_STILL_VISIBLE_AFTER_SUBMIT'
+      : 'DREAMINA_PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED';
+  }
+  // 再收口确认阶段已经识别出的失败语义。
+  else if (reason === 'PROFILE_COMPLETION_INPUT_INVALID') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_INPUT_INVALID';
+    hardFailure = true;
+  } else if (reason === 'PROFILE_COMPLETION_INLINE_ERROR') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_INLINE_ERROR';
+  } else if (reason === 'PROFILE_COMPLETION_RESULT_UNKNOWN') {
+    // 如果 value 里已经包含 no-observable-change，就把它显式收成更具体的 unknown。
+    siteReason = /NO-OBSERVABLE-CHANGE/i.test(value)
+      ? 'DREAMINA_PROFILE_COMPLETION_NO_OBSERVABLE_CHANGE'
+      : 'DREAMINA_PROFILE_COMPLETION_RESULT_UNKNOWN';
+  }
 
   // 返回统一失败分类结构。
   return {
     reason,
     siteReason,
-    hardFailure: false,
+    hardFailure,
   };
 }
 

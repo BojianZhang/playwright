@@ -211,6 +211,11 @@
 
 ## 9. `classifyDreaminaProfileCompletionFailure(input = {})`
 - 作用：将阶段 4 失败 reason 收敛成 Dreamina 专属语义
+- 当前补强后会分步骤执行：
+  1. 提取原始 `reason/state`
+  2. 结合 `source/value` 细化失败语义
+  3. 生成更贴近 Dreamina 场景的 `siteReason`
+  4. 对少数明确无继续价值场景标记 `hardFailure`
 - 返回值示例：
 ```js
 {
