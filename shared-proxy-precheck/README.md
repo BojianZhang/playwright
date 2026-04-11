@@ -59,6 +59,40 @@
 
 ---
 
+# 本地代理入口
+
+当前已在包内提供本地联调入口：
+- `local-proxies.txt`
+- `local-proxy-loader.js`
+
+当前建议格式：
+
+```text
+host:port:username:password
+```
+
+加载后统一映射为：
+
+```js
+{
+  id,
+  provider,
+  protocol,
+  host,
+  port,
+  username,
+  password,
+  raw,
+}
+```
+
+注意：
+- 具体代理账号密码放在 `local-proxies.txt`
+- 站点规则仍只放在 Dreamina profile 里
+- 不要把具体代理账号密码写进 profile JSON
+
+---
+
 # 后续
 
 当前先落 Dreamina 草案。
