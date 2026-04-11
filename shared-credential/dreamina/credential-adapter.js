@@ -275,12 +275,86 @@ function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
 }
 
 /**
+ * 编排 submit 后的分层等待节奏。
+ *
+ * 作用：
+ * - 第一层短等待后先做快检
+ * - 如果第一层没拿到结果，再做第二层保护等待
+ * - 把等待阶段信息带回 confirm，避免把“只是稍慢”过早判成 unknown
+ */
+async function waitDreaminaCredentialSubmitSettlement(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context; // 读取日志函数，方便把等待节奏写进运行日志
+  const primaryWaitMs = Number(runtime?.credentialSubmitPrimaryWaitMs || 400); // 第一层短等待：让 submit 后的页面先开始响应
+  const secondaryWaitMs = Number(runtime?.credentialSubmitSecondaryWaitMs || 1200); // 第二层保护等待：给慢一点的验证码阶段更多稳定时间
+
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | primary wait start | ms=${primaryWaitMs}`); // 记录第一层等待开始，后面排日志能知道当前进入了哪一层
+  await page.waitForTimeout(primaryWaitMs); // 先做第一层短等待，避免点击完立刻检查导致误判
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | primary wait end | ms=${primaryWaitMs}`); // 记录第一层等待结束，确认短等待已经跑完
+
+  const primaryFailure = await runDreaminaCredentialImmediateFailureChecks(page, context); // 第一层等待后先做高价值失败快检，看是否已经出现已注册/被拒绝/限流
+  if (primaryFailure.hit) { // 如果第一层就命中失败，就没必要继续等第二层了
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | primary failure hit=${primaryFailure.state}`); // 把第一层命中的失败直接打日志
+    return {
+      settled: true, // 标记 settlement 已经拿到明确结果
+      stage: 'primary-failure', // 说明结果是在第一层等待后拿到的失败结果
+      quickFailure: primaryFailure, // 保留第一层失败结果给 confirm 复用
+      verificationReady: null, // 第一层失败命中时，不存在成功进入验证码阶段结果
+    };
+  }
+
+  const primaryVerification = await detectDreaminaVerificationStageReady(page, context); // 第一层等待后再看是否已经进入验证码阶段
+  if (primaryVerification.ok) { // 如果第一层就拿到成功信号，也直接结束 settlement
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | primary verification hit | strength=${primaryVerification.strength}`); // 记录第一层成功命中强度
+    return {
+      settled: true, // 标记 settlement 已经拿到明确结果
+      stage: 'primary-success', // 说明结果是在第一层等待后拿到的成功结果
+      quickFailure: null, // 第一层成功命中时，没有失败结果
+      verificationReady: primaryVerification, // 保留第一层成功结果给 confirm 复用
+    };
+  }
+
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | secondary wait start | ms=${secondaryWaitMs}`); // 第一层没结果时，进入第二层保护等待
+  await page.waitForTimeout(secondaryWaitMs); // 再给页面一段保护等待，覆盖慢一点的验证码阶段切换
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | secondary wait end | ms=${secondaryWaitMs}`); // 记录第二层等待结束，方便回溯“是不是等满了还没结果”
+
+  const secondaryFailure = await runDreaminaCredentialImmediateFailureChecks(page, context); // 第二层等待后再次做失败快检，看看较慢出现的错误是否已经落地
+  if (secondaryFailure.hit) { // 如果第二层才命中失败，也直接结束 settlement
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | secondary failure hit=${secondaryFailure.state}`); // 记录第二层命中的失败结果
+    return {
+      settled: true, // 标记 settlement 已经拿到明确结果
+      stage: 'secondary-failure', // 说明失败是在第二层等待后命中的
+      quickFailure: secondaryFailure, // 保留第二层失败结果给 confirm 使用
+      verificationReady: null, // 第二层失败命中时，不存在成功结果
+    };
+  }
+
+  const secondaryVerification = await detectDreaminaVerificationStageReady(page, context); // 第二层等待后再次检查验证码阶段成功信号
+  if (secondaryVerification.ok) { // 如果第二层才出现成功信号，就在这里收口
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.settlement | secondary verification hit | strength=${secondaryVerification.strength}`); // 记录第二层成功命中强度
+    return {
+      settled: true, // 标记 settlement 已经拿到明确结果
+      stage: 'secondary-success', // 说明成功是在第二层等待后命中的
+      quickFailure: null, // 第二层成功命中时，没有失败结果
+      verificationReady: secondaryVerification, // 保留第二层成功结果给 confirm 使用
+    };
+  }
+
+  if (typeof logInfo === 'function') logInfo('dreamina.credential.settlement | no result after layered waits'); // 两层等待都没命中时，明确记一条日志，说明问题不是单纯“没等”
+  return {
+    settled: true, // 标记 settlement 流程已经跑完，即使还没拿到明确结果
+    stage: 'no-result', // 说明两层等待都没有命中成功或高价值失败
+    quickFailure: null, // 保留为空，表示没有命中失败结果
+    verificationReady: null, // 保留为空，表示没有命中成功结果
+  };
+}
+
+/**
  * 提交 Dreamina credential form。
  *
  * 作用：
  * - 点击 Continue / Submit
- * - 提交后做一次很轻的等待，给页面一点切换时间
- * - 记录提交前后快照，为“NO_STATE_CHANGE”判断提供证据
+ * - 不在这里写完整结果判断，而是只负责点击和快照采集
+ * - 把 settlement 结果一并带回，让 confirm 层知道分层等待是否已经跑过
  */
 async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   const { logInfo = null, formReady = null } = context;
@@ -316,18 +390,18 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
     };
   }
 
-  const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+  const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context); // 点击前先抓一份快照，后面用来判断 submit 是否真的推动了页面变化
 
-  await submitLocator.click({ timeout: 1500 }).catch(async () => {
-    await submitLocator.click({ force: true, timeout: 1500 });
+  await submitLocator.click({ timeout: 1500 }).catch(async () => { // 先尝试正常点击，优先保留真实用户路径
+    await submitLocator.click({ force: true, timeout: 1500 }); // 如果正常点击失败，再 fallback 到 force click，避免轻微遮挡直接卡死阶段 2
   });
-  await page.waitForTimeout(700);
 
-  const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
-  const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot);
+  const settlementResult = await waitDreaminaCredentialSubmitSettlement(page, runtime, context); // 点击后运行分层等待节奏，把“短等待 + 保护等待”统一收敛在一个方法里
+  const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context); // 等 settlement 跑完后再抓 after 快照，让状态变化判断基于更完整的页面状态
+  const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot); // 比较前后快照，判断 submit 是否带来了有意义的页面变化
 
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | stateChanged=${hasStateChange ? 'Y' : 'N'}`);
+    logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | settlementStage=${settlementResult.stage} | stateChanged=${hasStateChange ? 'Y' : 'N'}`); // 把提交按钮、等待阶段和状态变化统一打进日志，方便后续读链路
   }
 
   return {
@@ -337,6 +411,7 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
     beforeSnapshot,
     afterSnapshot,
     hasStateChange,
+    settlementResult,
   };
 }
 
@@ -443,75 +518,67 @@ async function detectDreaminaVerificationStageReady(page, context = {}) {
  * 确认 Dreamina credential submit 结果。
  *
  * 作用：
- * - 先做提交后第一批安全检查
- * - 再做进入验证码阶段的强确认
- * - 再看 inline error
- * - 最后结合 submit 前后快照，区分 unknown 和 no-state-change
+ * - 优先复用 submit 后的 settlement 结果，避免重复无意义等待
+ * - settlement 没拿到结果时，再看 inline error / no-state-change / unknown
  *
  * 这是阶段 2 最核心的结果判断方法。
  */
 async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
   const { logInfo = null, submitResult = null } = context;
   const profile = loadDreaminaCredentialProfile();
+  const settlementResult = submitResult?.settlementResult || null; // 先拿 submit 阶段已经跑过的 settlement 结果，避免确认层再重复组织等待
 
-  /**
-   * 第一批安全检查：高价值失败优先。
-   */
-  const immediateFailure = await runDreaminaCredentialImmediateFailureChecks(page, context);
-  if (immediateFailure.hit) {
-    if (typeof logInfo === 'function') {
-      logInfo(`dreamina.credential.confirmResult | immediate failure hit=${immediateFailure.state} | value=${immediateFailure.value}`);
-    }
+  if (settlementResult?.quickFailure?.hit) { // 如果 settlement 已经命中高价值失败，这里直接复用，不再重复检查同一批失败
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement failure hit=${settlementResult.quickFailure.state} | stage=${settlementResult.stage}`); // 记录失败是在第几层等待命中的
     return {
       ok: false,
-      state: immediateFailure.state,
+      state: settlementResult.quickFailure.state,
       nextStage: '',
-      source: immediateFailure.source,
-      value: immediateFailure.value,
+      source: settlementResult.quickFailure.source,
+      value: settlementResult.quickFailure.value,
+      settleStage: settlementResult.stage,
     };
   }
 
-  /**
-   * 强确认：是否已经真正进入验证码阶段。
-   */
-  const verificationReady = await detectDreaminaVerificationStageReady(page, context);
-  if (verificationReady.ok) {
-    return verificationReady;
+  if (settlementResult?.verificationReady?.ok) { // 如果 settlement 已经命中验证码阶段成功信号，就直接把成功结果返回
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement verification hit | stage=${settlementResult.stage}`); // 把成功命中的等待阶段也写进日志
+    return {
+      ...settlementResult.verificationReady,
+      settleStage: settlementResult.stage,
+    };
   }
 
-  /**
-   * 继续看通用 inline error。
-   */
-  const inlineErrors = profile?.failureSignals?.inlineErrors || [];
-  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').toLowerCase();
-  const inlineHit = inlineErrors.find(item => bodyText.includes(String(item || '').toLowerCase()));
-  if (inlineHit) {
+  const inlineErrors = profile?.failureSignals?.inlineErrors || []; // 取出 profile 里的通用 inline error 关键字，作为 settlement 之后的补充检查
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').toLowerCase(); // 读取 body 文本，用于做通用 inline error 扫描
+  const inlineHit = inlineErrors.find(item => bodyText.includes(String(item || '').toLowerCase())); // 在 body 文本里查找是否出现已知内联错误
+  if (inlineHit) { // 如果页面上已经出现内联错误，就明确返回这类失败，不再落到更粗的 unknown
     return {
       ok: false,
       state: 'INLINE_ERROR_VISIBLE',
       nextStage: '',
       source: 'bodyText',
       value: inlineHit,
+      settleStage: settlementResult?.stage || 'inline-check',
     };
   }
 
-  /**
-   * 最后一层：如果 submit 前后根本没状态变化，明确打成 NO_STATE_CHANGE。
-   */
-  if (submitResult && submitResult.hasStateChange === false) {
+  if (submitResult && submitResult.hasStateChange === false) { // 如果 settlement 跑完后页面仍然没有有意义变化，就明确归类成 no-state-change
     return {
       ok: false,
       state: 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE',
       nextStage: '',
       source: 'snapshot',
       value: 'SUBMIT_NO_STATE_CHANGE',
+      settleStage: settlementResult?.stage || 'snapshot-check',
     };
   }
 
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`); // 记录已经经过 settlement 但仍未能判定，方便后续补 signal 而不是误怀疑等待
   return {
     ok: false,
     state: 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
     nextStage: '',
+    settleStage: settlementResult?.stage || 'none',
   };
 }
 
@@ -564,6 +631,7 @@ module.exports = {
   fillDreaminaCredentialPassword,
   captureDreaminaCredentialSubmitSnapshot,
   hasMeaningfulCredentialSubmitStateChange,
+  waitDreaminaCredentialSubmitSettlement,
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
