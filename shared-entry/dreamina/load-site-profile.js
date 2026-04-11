@@ -31,7 +31,7 @@ const path = require('path');
  * - 保证后续读取 profile 时，不依赖调用方当前 cwd。
  * - 始终以当前文件所在目录为基准定位 profiles 目录。
  */
-const PROFILES_DIR = path.join(__dirname, 'profiles');
+const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 
 /**
  * 移除 UTF-8 BOM。
