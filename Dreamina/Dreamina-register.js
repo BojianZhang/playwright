@@ -102,6 +102,8 @@ function buildDreaminaRegisterContext(options = {}) {
     context = null,
     page = null,
     account = {},
+    proxy = null,
+    proxyPrecheckResult = null,
     runtime = {},
     logInfo = null,
   } = options;
@@ -121,6 +123,10 @@ function buildDreaminaRegisterContext(options = {}) {
     page,
     // 当前账号上下文。
     account,
+    // 当前代理摘要或代理对象。
+    proxy,
+    // 当前代理预检结果；Dreamina-register 不负责运行它，但允许消费它。
+    proxyPrecheckResult,
     // 主链 runtime。
     runtime,
     // 日志函数；没有则保持 null。
@@ -154,6 +160,36 @@ function buildDreaminaRegisterContext(options = {}) {
  * 注意：
  * - 这里只做 orchestration，不做阶段内部逻辑
  */
+function buildProxyPrecheckSummary(proxyPrecheckResult) {
+  const result = proxyPrecheckResult && typeof proxyPrecheckResult === 'object' ? proxyPrecheckResult : null;
+  if (!result) return null;
+  return {
+    success: Boolean(result.success),
+    state: String(result.state || '').trim(),
+    reason: String(result.reason || result.state || '').trim(),
+    signalStrength: String(result.signalStrength || '').trim(),
+    detectionSource: String(result.detectionSource || '').trim(),
+  };
+}
+
+function checkDreaminaRegisterPreconditions(registerContext = {}) {
+  const proxyPrecheckResult = registerContext?.proxyPrecheckResult || null;
+  if (proxyPrecheckResult && proxyPrecheckResult.success === false) {
+    return {
+      ok: false,
+      state: 'PROXY_PRECHECK_REJECTED',
+      reason: String(proxyPrecheckResult.reason || proxyPrecheckResult.state || 'PROXY_PRECHECK_REJECTED').trim(),
+      source: 'proxy-precheck',
+    };
+  }
+  return {
+    ok: true,
+    state: 'DREAMINA_REGISTER_PRECONDITIONS_OK',
+    reason: 'DREAMINA_REGISTER_PRECONDITIONS_OK',
+    source: 'preconditions',
+  };
+}
+
 async function runDreaminaStage(stageKey, registerContext) {
   // 从主链上下文中读取 stageRegistry。
   const registry = registerContext?.stageRegistry || {};
@@ -215,6 +251,8 @@ async function runDreaminaStage(stageKey, registerContext) {
     browserContext: registerContext.browserContext,
     page: registerContext.page,
     account: registerContext.account,
+    proxy: registerContext.proxy,
+    proxyPrecheckResult: registerContext.proxyPrecheckResult,
     runtime: registerContext.runtime,
     stageResults: registerContext.stageResults,
     // 兼容部分阶段可能直接读取 context/account/page 等字段。
@@ -263,10 +301,14 @@ function normalizeDreaminaRegisterResult(input = {}) {
   const nextStage = String(input.nextStage || '').trim();
   // 账号基础上下文。
   const account = input.account && typeof input.account === 'object' ? input.account : {};
+  // 当前代理对象或代理摘要。
+  const proxy = input.proxy && typeof input.proxy === 'object' ? input.proxy : null;
   // 第六阶段交付对象草案。
   const deliveryPayload = input.deliveryPayload && typeof input.deliveryPayload === 'object' ? input.deliveryPayload : null;
   // 全链阶段结果汇总。
   const stageResults = input.stageResults && typeof input.stageResults === 'object' ? input.stageResults : {};
+  // 代理预检摘要；只做轻引用，不吞并完整 detail。
+  const proxyPrecheckSummary = input.proxyPrecheckSummary && typeof input.proxyPrecheckSummary === 'object' ? input.proxyPrecheckSummary : null;
   // 元信息。
   const meta = input.meta && typeof input.meta === 'object' ? input.meta : null;
 
@@ -278,8 +320,10 @@ function normalizeDreaminaRegisterResult(input = {}) {
     finalReason,
     nextStage,
     account,
+    proxy,
     deliveryPayload,
     stageResults,
+    proxyPrecheckSummary,
     meta,
   };
 }
@@ -297,6 +341,29 @@ async function runDreaminaRegisterFlow(options = {}) {
   const registerContext = buildDreaminaRegisterContext(options);
   // 解构日志函数，便于主链记录关键节点。
   const { logInfo = null } = registerContext;
+
+  // 在正式进入 Dreamina 六阶段主链前，先做极轻的启动前校验。
+  // 注意：Dreamina-register 不负责执行 proxy precheck，但如果外层已经传入失败的 proxyPrecheckResult，
+  // 这里会拒绝继续启动，避免把明显坏代理再次交给正式注册链。
+  const preconditions = checkDreaminaRegisterPreconditions(registerContext);
+  if (!preconditions.ok) {
+    registerContext.meta.finishedAt = Date.now();
+    registerContext.meta.durationMs = registerContext.meta.finishedAt - registerContext.meta.startedAt;
+    registerContext.meta.successStageCount = 0;
+    return normalizeDreaminaRegisterResult({
+      success: false,
+      finalStage: 'preconditions',
+      finalState: preconditions.state,
+      finalReason: preconditions.reason,
+      nextStage: '',
+      account: registerContext.account,
+      proxy: registerContext.proxy,
+      deliveryPayload: null,
+      stageResults: registerContext.stageResults,
+      proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.proxyPrecheckResult),
+      meta: registerContext.meta,
+    });
+  }
 
   // 定义 Dreamina 当前主链顺序。
   // 现在阶段 1 entry 也已经具备公共 runner 形态，因此按完整 1~6 顺序执行。
@@ -336,8 +403,10 @@ async function runDreaminaRegisterFlow(options = {}) {
         finalReason: stageResult?.reason || stageResult?.state || 'DREAMINA_REGISTER_FLOW_FAILED',
         nextStage: stageResult?.nextStage || '',
         account: registerContext.account,
+        proxy: registerContext.proxy,
         deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
         stageResults: registerContext.stageResults,
+        proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.proxyPrecheckResult),
         meta: registerContext.meta,
       });
     }
@@ -359,8 +428,10 @@ async function runDreaminaRegisterFlow(options = {}) {
     finalReason: registerContext.stageResults?.accountDelivery?.reason || registerContext.stageResults?.accountDelivery?.state || 'DELIVERY_COMPLETE',
     nextStage: registerContext.stageResults?.accountDelivery?.nextStage || 'delivery-complete',
     account: registerContext.account,
+    proxy: registerContext.proxy,
     deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
     stageResults: registerContext.stageResults,
+    proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.proxyPrecheckResult),
     meta: registerContext.meta,
   });
 }
@@ -368,6 +439,8 @@ async function runDreaminaRegisterFlow(options = {}) {
 module.exports = {
   buildDreaminaStageRegistry,
   buildDreaminaRegisterContext,
+  buildProxyPrecheckSummary,
+  checkDreaminaRegisterPreconditions,
   runDreaminaStage,
   normalizeDreaminaRegisterResult,
   runDreaminaRegisterFlow,

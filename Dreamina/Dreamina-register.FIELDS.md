@@ -72,6 +72,16 @@
 - 类型：`object`
 - 含义：当前账号上下文
 
+## `proxy`
+- 类型：`object | null`
+- 含义：当前代理对象或代理摘要
+- 说明：Dreamina-register 不负责生成代理，只负责把外层传入的代理上下文带进主链
+
+## `proxyPrecheckResult`
+- 类型：`object | null`
+- 含义：外层已经跑过的代理预检结果
+- 说明：Dreamina-register 不负责执行 proxy precheck，但允许消费它，并在启动前做轻校验
+
 ## `runtime`
 - 类型：`object`
 - 含义：主链 runtime
@@ -122,7 +132,57 @@
 
 ---
 
-# 三、`runDreaminaStage(...)` 返回字段
+# 三、`buildProxyPrecheckSummary(...)` 返回字段
+
+## `success`
+- 类型：`boolean`
+- 含义：代理预检是否成功
+
+## `state`
+- 类型：`string`
+- 含义：代理预检原始状态码摘要
+
+## `reason`
+- 类型：`string`
+- 含义：代理预检对外原因摘要
+
+## `signalStrength`
+- 类型：`string`
+- 含义：代理预检信号强度摘要
+
+## `detectionSource`
+- 类型：`string`
+- 含义：代理预检主要检测来源摘要
+
+---
+
+# 四、`checkDreaminaRegisterPreconditions(...)` 返回字段
+
+## `ok`
+- 类型：`boolean`
+- 含义：Dreamina-register 是否允许正式启动
+
+## `state`
+- 类型：`string`
+- 含义：启动前校验的状态码
+- 常见值：
+  - `DREAMINA_REGISTER_PRECONDITIONS_OK`
+  - `PROXY_PRECHECK_REJECTED`
+
+## `reason`
+- 类型：`string`
+- 含义：启动前校验对外原因
+
+## `source`
+- 类型：`string`
+- 含义：启动前校验来源
+- 常见值：
+  - `preconditions`
+  - `proxy-precheck`
+
+---
+
+# 五、`runDreaminaStage(...)` 返回字段
 
 ## `ok`
 - 类型：`boolean`
@@ -138,7 +198,7 @@
 
 ---
 
-# 四、`normalizeDreaminaRegisterResult(...)` 返回字段
+# 六、`normalizeDreaminaRegisterResult(...)` 返回字段
 
 ## `success`
 - 类型：`boolean`
@@ -168,6 +228,10 @@
 - 类型：`object`
 - 含义：账号基础上下文
 
+## `proxy`
+- 类型：`object | null`
+- 含义：当前代理对象或代理摘要
+
 ## `deliveryPayload`
 - 类型：`object | null`
 - 含义：第 6 阶段产出的交付对象草案
@@ -175,6 +239,31 @@
 ## `stageResults`
 - 类型：`object`
 - 含义：全链阶段结果汇总
+
+## `proxyPrecheckSummary`
+- 类型：`object | null`
+- 含义：代理预检轻摘要
+- 说明：这里只做引用摘要，不吞并 `shared-proxy-precheck` 的完整 detail
+
+### `proxyPrecheckSummary.success`
+- 类型：`boolean`
+- 含义：代理预检是否成功
+
+### `proxyPrecheckSummary.state`
+- 类型：`string`
+- 含义：代理预检原始状态码摘要
+
+### `proxyPrecheckSummary.reason`
+- 类型：`string`
+- 含义：代理预检对外原因摘要
+
+### `proxyPrecheckSummary.signalStrength`
+- 类型：`string`
+- 含义：代理预检信号强度摘要
+
+### `proxyPrecheckSummary.detectionSource`
+- 类型：`string`
+- 含义：代理预检主要检测来源摘要
 
 ## `meta`
 - 类型：`object | null`
