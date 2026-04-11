@@ -242,9 +242,11 @@
 
 ### 作用
 - 确认验证码提交后的结果
+- 当前补强后会先判 next-stage ready，再判明确失败，最后做一次保护等待后复判
 
 ### 成功时应重点判断
 - 是否进入 birthday / profile-completion
+- 是否在保护等待后进入 profile-completion
 
 ### 失败时应重点判断
 - wrong verification code

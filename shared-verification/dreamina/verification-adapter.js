@@ -684,168 +684,209 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
 }
 
 /**
- * 确认 Dreamina 验证码提交结果。
+ * 检测 Dreamina 是否已经进入 profile-completion。
  *
- * 当前策略：
- * 1. 先确认是否进入 profile-completion
- * 2. 再确认是否命中明确失败
- * 3. 如果都没有，则返回 unknown
- *
- * 注意：
- * - 这里只负责“确认第三阶段是否完成”
- * - 不负责填写 birthday / profile completion
+ * 作用：
+ * - 这是第三阶段成功的最强确认之一
+ * - 只确认“下一阶段是否可达”，不执行下一阶段填写动作
  */
-async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, context = {}) {
-  // 读取 Dreamina 第三阶段 profile。
-  const profile = loadDreaminaVerificationProfile();
-
-  // 先尝试通过 selector 确认是否已经进入下一阶段 profile-completion。
+async function detectDreaminaProfileCompletionReady(page, profile, context = {}) {
+  // 优先通过结构性 selector 判断是否进入下一阶段。
   const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.profileCompletion?.selectors || []);
-  // 如果 selector 命中，按强成功信号返回。
+  // 如果 selector 命中，直接按强信号返回。
   if (nextStageSelector.ok) {
     return {
-      // 表示当前阶段成功完成。
       ok: true,
-      // 当前阶段状态码：验证码提交成功。
-      state: 'VERIFICATION_SUBMIT_OK',
-      // 成功后应推进到 profile-completion。
-      nextStage: 'profile-completion',
-      // 当前结果通过 selector 命中。
       source: 'selector',
-      // 返回命中的 selector 值。
       value: nextStageSelector.selector,
-      // selector 命中按强信号处理。
       strength: 'strong',
-      // 当前结果在第一层确认就命中成功。
-      settleStage: 'primary-success',
     };
   }
 
-  // 如果 selector 没命中，再尝试通过文本确认是否已经进入下一阶段。
+  // 如果 selector 没命中，再通过文本判断是否进入下一阶段。
   const nextStageText = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.profileCompletion?.texts || []);
-  // 如果文本命中，按较弱成功信号返回。
+  // 如果文本命中，按弱一些的信号返回。
   if (nextStageText.ok) {
     return {
-      // 表示当前阶段成功完成。
       ok: true,
-      // 当前阶段状态码：验证码提交成功。
-      state: 'VERIFICATION_SUBMIT_OK',
-      // 成功后应推进到 profile-completion。
-      nextStage: 'profile-completion',
-      // 当前结果通过文本命中。
       source: 'text',
-      // 返回命中的文本值。
       value: nextStageText.text,
-      // 文本命中按弱一些的信号处理。
       strength: 'weak',
-      // 当前结果在第一层确认就命中成功。
-      settleStage: 'primary-success',
     };
   }
 
-  // 如果还没确认进入下一阶段，再检测是否命中 wrong code。
+  // 当前没有确认进入下一阶段。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 验证码提交后的明确失败信号。
+ *
+ * 作用：
+ * - 收口第三阶段里已经明确的失败语义
+ * - 优先减少 verification-result-unknown 的比例
+ */
+async function detectDreaminaVerificationFailureSignals(page, profile, context = {}) {
+  // 先检测 wrong code。
   const wrongCode = await findFirstVisibleByTexts(page, profile?.failureSignals?.wrongCode || []);
-  // 如果 wrong code 命中，返回明确失败。
+  // 如果验证码错误命中，返回明确失败。
   if (wrongCode.ok) {
     return {
-      // 当前阶段失败。
-      ok: false,
-      // 当前状态码：验证码错误。
+      hit: true,
       state: 'WRONG_VERIFICATION_CODE',
-      // 失败时 nextStage 为空。
-      nextStage: '',
-      // 当前失败来源为文本命中。
       source: 'text',
-      // 返回命中的失败文本。
       value: wrongCode.text,
-      // wrong code 属于强失败信号。
       strength: 'strong',
-      // 在第一层确认里就命中失败。
-      settleStage: 'primary-failure',
     };
   }
 
-  // 继续检测是否命中验证码频率受限。
+  // 再检测验证码频率受限。
   const rateLimited = await findFirstVisibleByTexts(page, profile?.failureSignals?.rateLimited || []);
   // 如果频率受限命中，返回明确失败。
   if (rateLimited.ok) {
     return {
-      // 当前阶段失败。
-      ok: false,
-      // 当前状态码：验证码频率受限。
+      hit: true,
       state: 'VERIFICATION_CODE_RATE_LIMITED',
-      // 失败时 nextStage 为空。
-      nextStage: '',
-      // 当前失败来源为文本命中。
       source: 'text',
-      // 返回命中的失败文本。
       value: rateLimited.text,
-      // 频率受限按强失败信号处理。
       strength: 'strong',
-      // 在第一层确认里就命中失败。
-      settleStage: 'primary-failure',
     };
   }
 
-  // 继续检测是否命中注册被拒绝相关提示。
+  // 再检测注册被拒绝。
   const rejected = await findFirstVisibleByTexts(page, profile?.failureSignals?.rejected || []);
   // 如果被拒绝命中，返回明确失败。
   if (rejected.ok) {
     return {
-      // 当前阶段失败。
-      ok: false,
-      // 当前状态码：注册被拒绝。
+      hit: true,
       state: 'SIGNUP_REJECTED',
-      // 失败时 nextStage 为空。
-      nextStage: '',
-      // 当前失败来源为文本命中。
       source: 'text',
-      // 返回命中的失败文本。
       value: rejected.text,
-      // 被拒绝按强失败信号处理。
       strength: 'strong',
-      // 在第一层确认里就命中失败。
-      settleStage: 'primary-failure',
     };
   }
 
-  // 最后检测是否命中“账号已存在”。
+  // 最后检测账号已存在。
   const existingAccount = await findFirstVisibleByTexts(page, profile?.failureSignals?.existingAccount || []);
   // 如果账号已存在命中，返回明确失败。
   if (existingAccount.ok) {
     return {
-      // 当前阶段失败。
-      ok: false,
-      // 当前状态码：账号已存在。
+      hit: true,
       state: 'ACCOUNT_ALREADY_EXISTS',
-      // 失败时 nextStage 为空。
-      nextStage: '',
-      // 当前失败来源为文本命中。
       source: 'text',
-      // 返回命中的失败文本。
       value: existingAccount.text,
-      // 账号已存在按强失败信号处理。
       strength: 'strong',
-      // 在第一层确认里就命中失败。
+    };
+  }
+
+  // 如果没有命中任何明确失败信号，则返回未命中结构。
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 确认 Dreamina 验证码提交结果。
+ *
+ * 当前补强后的策略：
+ * 1. 先确认是否进入 profile-completion
+ * 2. 再确认是否命中明确失败
+ * 3. 如果两者都没有，则再补一轮 profile-completion 保护等待
+ * 4. 最后才返回 unknown
+ *
+ * 注意：
+ * - 这里只负责“确认第三阶段是否完成”
+ * - 可以确认第四阶段是否已可达
+ * - 不能替第四阶段做填写动作
+ */
+async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, context = {}) {
+  // 读取第三阶段 profile。
+  const profile = loadDreaminaVerificationProfile();
+  // 从 runtime 中读取确认保护等待；默认给一小段时间让页面完成跳转。
+  const confirmGraceWaitMs = Number(runtime?.verificationConfirmGraceWaitMs || 900);
+
+  // 第一轮：先尝试确认是否已经进入下一阶段。
+  const profileCompletionReady = await detectDreaminaProfileCompletionReady(page, profile, context);
+  // 如果第一轮已经确认进入下一阶段，就直接按成功返回。
+  if (profileCompletionReady.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_SUBMIT_OK',
+      nextStage: 'profile-completion',
+      source: profileCompletionReady.source,
+      value: profileCompletionReady.value,
+      strength: profileCompletionReady.strength,
+      settleStage: 'primary-success',
+    };
+  }
+
+  // 第一轮：如果还没进入下一阶段，再尝试识别明确失败。
+  const failureSignal = await detectDreaminaVerificationFailureSignals(page, profile, context);
+  // 如果第一轮已经命中明确失败，就直接返回失败。
+  if (failureSignal.hit) {
+    return {
+      ok: false,
+      state: failureSignal.state,
+      nextStage: '',
+      source: failureSignal.source,
+      value: failureSignal.value,
+      strength: failureSignal.strength,
       settleStage: 'primary-failure',
     };
   }
 
-  // 如果既没有进入下一阶段，也没有命中明确失败，则按 unknown 返回。
+  // 如果第一轮既没成功也没失败，给页面一小段保护等待，降低“慢一拍导致误判 unknown”的概率。
+  if (confirmGraceWaitMs > 0) {
+    await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});
+  }
+
+  // 第二轮：保护等待后再次确认是否进入下一阶段。
+  const profileCompletionAfterGrace = await detectDreaminaProfileCompletionReady(page, profile, context);
+  // 如果第二轮确认进入下一阶段，则按 secondary-success 返回。
+  if (profileCompletionAfterGrace.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_SUBMIT_OK',
+      nextStage: 'profile-completion',
+      source: profileCompletionAfterGrace.source,
+      value: profileCompletionAfterGrace.value,
+      strength: profileCompletionAfterGrace.strength,
+      settleStage: 'secondary-success',
+    };
+  }
+
+  // 第二轮：保护等待后再次确认明确失败。
+  const failureAfterGrace = await detectDreaminaVerificationFailureSignals(page, profile, context);
+  // 如果第二轮命中明确失败，则按 secondary-failure 返回。
+  if (failureAfterGrace.hit) {
+    return {
+      ok: false,
+      state: failureAfterGrace.state,
+      nextStage: '',
+      source: failureAfterGrace.source,
+      value: failureAfterGrace.value,
+      strength: failureAfterGrace.strength,
+      settleStage: 'secondary-failure',
+    };
+  }
+
+  // 如果两轮确认都没有收敛到成功或明确失败，则按 unknown 返回。
   return {
-    // 当前无法确认成功。
     ok: false,
-    // 当前状态码：verification 结果未知。
     state: 'VERIFICATION_RESULT_UNKNOWN',
-    // 失败时 nextStage 为空。
     nextStage: '',
-    // 当前没有明确来源。
     source: '',
-    // 当前没有明确辅助值。
     value: '',
-    // 当前没有明确强弱定义。
     strength: '',
-    // settleStage 记为 none，表示当前没有清晰收敛层。
     settleStage: 'none',
   };
 }

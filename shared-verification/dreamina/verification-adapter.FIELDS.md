@@ -227,6 +227,8 @@
 - 常见值：
   - `primary-success`
   - `primary-failure`
+  - `secondary-success`
+  - `secondary-failure`
   - `none`
 
 ---
