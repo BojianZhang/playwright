@@ -143,6 +143,11 @@
 
 ## 5. `confirmAccountDeliveryResult(page, account, runtime = {}, context = {})`
 - 作用：根据 ready / summary / payload 三部分结果，收口第六阶段最终 success / failure / unknown
+- 第一轮补强后当前分步骤：
+  1. 先查第六阶段明确成功信号
+  2. 再看 summary + payload 是否联合成立
+  3. 再查第六阶段明确失败信号
+  4. 如果仍未收敛，再做一轮保护等待后复判
 - 返回值示例：
 ```js
 {

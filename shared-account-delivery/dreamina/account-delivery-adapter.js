@@ -494,54 +494,135 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
 }
 
 /**
- * 收口第六阶段最终结果。
+ * 检测第六阶段的明确成功信号。
  *
- * 当前草案实现策略：
- * - 如果 successSignals 命中，直接认定 delivery-complete
- * - 否则如果 summary 与 payload 都成立，也可作为联合成功草案
- * - 否则如果 failureSignals 命中，返回失败
- * - 最后返回 unknown
+ * 作用：
+ * - 优先用站点成功 signals 收敛 delivery-complete
+ * - 这层属于第六阶段自己的最终成功确认，不涉及外部系统写入
  */
-async function confirmAccountDeliveryResult(page, account, runtime = {}, context = {}) {
-  // 读取第六阶段 profile。
-  const profile = loadDreaminaAccountDeliveryProfile();
-  // 解构前序结果。
-  const { accountSummary = null, deliveryPayload = null } = context;
-
+async function detectDreaminaAccountDeliverySuccessSignals(page, profile) {
   // 优先查 success selector。
   const successSelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
+  // 如果 selector 命中，按强成功返回。
   if (successSelector.ok) {
     return {
-      ok: true,
+      hit: true,
       state: 'DELIVERY_COMPLETE',
-      nextStage: 'delivery-complete',
       source: 'selector',
       value: successSelector.selector,
       strength: 'strong',
+    };
+  }
+
+  // 再查 success text。
+  const successText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
+  // 如果文本命中，按弱成功返回。
+  if (successText.ok) {
+    return {
+      hit: true,
+      state: 'DELIVERY_COMPLETE',
+      source: 'text',
+      value: successText.text,
+      strength: 'weak',
+    };
+  }
+
+  // 都未命中时，返回统一未命中结构。
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测第六阶段的明确失败信号。
+ *
+ * 作用：
+ * - 优先减少 ACCOUNT_DELIVERY_RESULT_UNKNOWN 的比例
+ * - 把 delivery 页上的明确失败态先收口
+ */
+async function detectDreaminaAccountDeliveryFailureSignals(page, profile) {
+  // 优先查 failure selector。
+  const failureSelector = await findFirstVisibleBySelectors(page, profile?.failureSignals?.selectors || []);
+  // selector 命中时，按强失败返回。
+  if (failureSelector.ok) {
+    return {
+      hit: true,
+      state: 'ACCOUNT_DELIVERY_FAILED',
+      source: 'selector',
+      value: failureSelector.selector,
+      strength: 'strong',
+    };
+  }
+
+  // 再查 failure text。
+  const failureText = await findFirstVisibleByTexts(page, profile?.failureSignals?.texts || []);
+  // 文本命中时，按弱失败返回。
+  if (failureText.ok) {
+    return {
+      hit: true,
+      state: 'ACCOUNT_DELIVERY_FAILED',
+      source: 'text',
+      value: failureText.text,
+      strength: 'weak',
+    };
+  }
+
+  // 都未命中时，返回统一未命中结构。
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 收口第六阶段最终结果。
+ *
+ * 第一轮补强策略：
+ * 1. 先查第六阶段明确成功信号
+ * 2. 再看 summary + payload 是否联合成立
+ * 3. 再查明确失败信号
+ * 4. 如果都没有，再做一轮保护等待后复判
+ * 5. 最后才返回 unknown
+ */
+async function confirmAccountDeliveryResult(page, account, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null, accountSummary = null, deliveryPayload = null } = context;
+  // 读取第六阶段 profile。
+  const profile = loadDreaminaAccountDeliveryProfile();
+  // 读取保护等待；默认给一小段时间让第六阶段页面和对象收敛。
+  const confirmGraceWaitMs = Number(runtime?.accountDeliveryConfirmGraceWaitMs || 600);
+
+  // 第一轮：先看明确成功信号。
+  const successSignal = await detectDreaminaAccountDeliverySuccessSignals(page, profile);
+  if (successSignal.hit) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.accountDelivery.result | state=DELIVERY_COMPLETE | source=${successSignal.source} | value=${successSignal.value} | settleStage=primary-success`);
+    }
+    return {
+      ok: true,
+      state: successSignal.state,
+      nextStage: 'delivery-complete',
+      source: successSignal.source,
+      value: successSignal.value,
+      strength: successSignal.strength,
       settleStage: 'primary-success',
       stateChanged: true,
       retryCount: 0,
     };
   }
 
-  // 再查 success text。
-  const successText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
-  if (successText.ok) {
-    return {
-      ok: true,
-      state: 'DELIVERY_COMPLETE',
-      nextStage: 'delivery-complete',
-      source: 'text',
-      value: successText.text,
-      strength: 'weak',
-      settleStage: 'secondary-success',
-      stateChanged: true,
-      retryCount: 0,
-    };
-  }
-
-  // 如果 summary 与 payload 都成立，可以作为联合成功草案。
+  // 第一轮：如果 summary 与 payload 都成立，可以作为联合成功草案。
   if (accountSummary?.ok && deliveryPayload?.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.accountDelivery.result | state=DELIVERY_PAYLOAD_READY | source=payload | value=${deliveryPayload?.value || ''} | settleStage=payload-check`);
+    }
     return {
       ok: true,
       state: 'DELIVERY_PAYLOAD_READY',
@@ -555,39 +636,72 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
     };
   }
 
-  // 再查 failure selector。
-  const failureSelector = await findFirstVisibleBySelectors(page, profile?.failureSignals?.selectors || []);
-  if (failureSelector.ok) {
+  // 第一轮：再看明确失败信号。
+  const failureSignal = await detectDreaminaAccountDeliveryFailureSignals(page, profile);
+  if (failureSignal.hit) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.accountDelivery.result | state=${failureSignal.state} | source=${failureSignal.source} | value=${failureSignal.value} | settleStage=primary-failure`);
+    }
     return {
       ok: false,
-      state: 'ACCOUNT_DELIVERY_FAILED',
+      state: failureSignal.state,
       nextStage: '',
-      source: 'selector',
-      value: failureSelector.selector,
-      strength: 'strong',
+      source: failureSignal.source,
+      value: failureSignal.value,
+      strength: failureSignal.strength,
       settleStage: 'primary-failure',
       stateChanged: null,
       retryCount: 0,
     };
   }
 
-  // 最后查 failure text。
-  const failureText = await findFirstVisibleByTexts(page, profile?.failureSignals?.texts || []);
-  if (failureText.ok) {
+  // 如果第一轮没收敛，给一小段保护等待，降低慢一拍误判 unknown 的概率。
+  if (confirmGraceWaitMs > 0) {
+    await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});
+  }
+
+  // 第二轮：保护等待后再次检查成功信号。
+  const successSignalAfterGrace = await detectDreaminaAccountDeliverySuccessSignals(page, profile);
+  if (successSignalAfterGrace.hit) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.accountDelivery.result | state=DELIVERY_COMPLETE | source=${successSignalAfterGrace.source} | value=${successSignalAfterGrace.value} | settleStage=secondary-success`);
+    }
+    return {
+      ok: true,
+      state: successSignalAfterGrace.state,
+      nextStage: 'delivery-complete',
+      source: successSignalAfterGrace.source,
+      value: successSignalAfterGrace.value,
+      strength: successSignalAfterGrace.strength,
+      settleStage: 'secondary-success',
+      stateChanged: true,
+      retryCount: 0,
+    };
+  }
+
+  // 第二轮：保护等待后再次检查失败信号。
+  const failureSignalAfterGrace = await detectDreaminaAccountDeliveryFailureSignals(page, profile);
+  if (failureSignalAfterGrace.hit) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.accountDelivery.result | state=${failureSignalAfterGrace.state} | source=${failureSignalAfterGrace.source} | value=${failureSignalAfterGrace.value} | settleStage=secondary-failure`);
+    }
     return {
       ok: false,
-      state: 'ACCOUNT_DELIVERY_FAILED',
+      state: failureSignalAfterGrace.state,
       nextStage: '',
-      source: 'text',
-      value: failureText.text,
-      strength: 'weak',
+      source: failureSignalAfterGrace.source,
+      value: failureSignalAfterGrace.value,
+      strength: failureSignalAfterGrace.strength,
       settleStage: 'secondary-failure',
       stateChanged: null,
       retryCount: 0,
     };
   }
 
-  // 都没命中时，返回 unknown。
+  // 两轮都没收敛时，返回 unknown。
+  if (typeof logInfo === 'function') {
+    logInfo('dreamina.accountDelivery.result | state=ACCOUNT_DELIVERY_RESULT_UNKNOWN | source= | value= | settleStage=none');
+  }
   return {
     ok: false,
     state: 'ACCOUNT_DELIVERY_RESULT_UNKNOWN',

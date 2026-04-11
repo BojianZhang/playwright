@@ -181,6 +181,11 @@
   - `DELIVERY_PAYLOAD_READY`
   - `ACCOUNT_DELIVERY_RESULT_UNKNOWN`
   - `ACCOUNT_DELIVERY_FAILED`
+- 当前第一轮补强后口径：
+  - `DELIVERY_COMPLETE` = 命中第六阶段明确成功信号
+  - `DELIVERY_PAYLOAD_READY` = 虽未命中明确 successSignals，但 summary + payload 已联合成立
+  - `ACCOUNT_DELIVERY_FAILED` = 命中第六阶段明确失败信号
+  - `ACCOUNT_DELIVERY_RESULT_UNKNOWN` = 两轮检查后仍未收敛
 
 ## `nextStage`
 - 类型：`string`
@@ -203,6 +208,13 @@
 ## `settleStage`
 - 类型：`string`
 - 含义：最终结果是在第几层确认里收敛出来的
+- 当前第一轮补强后常见值：
+  - `primary-success`
+  - `payload-check`
+  - `primary-failure`
+  - `secondary-success`
+  - `secondary-failure`
+  - `none`
 
 ## `stateChanged`
 - 类型：`boolean | null`
