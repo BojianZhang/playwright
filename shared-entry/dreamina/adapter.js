@@ -119,9 +119,14 @@ const DREAMINA_LOGIN_ENTRY_CANDIDATES = [
     selector: null,
   },
   {
+    type: 'sign-up-text',
+    text: 'Sign up',
+    selector: null,
+  },
+  {
     type: 'sign-in-selector',
     text: null,
-    selector: '[class*="login"] button, [class*="signin"] button, [class*="sign-in"] button',
+    selector: '[class*="login"] button, [class*="signin"] button, [class*="sign-in"] button, [class*="signup"] button, [class*="sign-up"] button',
   },
 ];
 
@@ -694,17 +699,79 @@ async function recoverDreaminaEntry(page, input = {}, context = {}) {
 }
 
 /**
+ * 检查当前页面是否已经直接处于“邮箱登录门已就绪”状态。
+ *
+ * 作用：
+ * - 这是第一阶段登录里最重要的前置短路判断。
+ * - 如果 email input 已经出现，说明当前页面已经处在登录门，不应再重复点击首页入口。
+ * - 这个判断优先级必须高于 Continue with email / Sign in / Login 等普通入口扫描。
+ */
+async function detectDreaminaEmailGateReady(page, context = {}) {
+  const { logInfo = null } = context;
+  const emailGate = await findVisibleReadySelector(page, DREAMINA_LOGIN_GATE_SELECTORS);
+  if (emailGate.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.detectDreaminaEmailGateReady | 当前已在邮箱登录门: ${emailGate.value}`);
+    }
+    return {
+      ok: true,
+      state: 'EMAIL_GATE_READY',
+      source: emailGate.source,
+      value: emailGate.value,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'EMAIL_GATE_NOT_READY',
+    source: '',
+    value: '',
+  };
+}
+
+/**
  * 查找 Dreamina 第一阶段登录入口。
  *
  * 作用：
- * - 在首页 ready 之后，按既定优先级扫描登录入口候选
- * - 返回“哪个入口被命中、用什么方式命中、后续应该点哪个 locator”
+ * - 在首页 ready 之后，按既定优先级识别当前处于哪一种“登录前态”
+ * - 优先判断是否已经在 email gate
+ * - 再判断 Continue with email
+ * - 最后再判断 Sign in / Login / Sign up 这类外层入口
  *
- * 这个方法只负责“找入口”，不负责点击，不负责确认登录门是否真的打开。
+ * 这个方法只负责“识别状态和入口”，不负责点击，不负责最终确认登录门是否真的打开。
  */
 async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
 
+  /**
+   * 第一步：优先短路判断 email gate 是否已经就绪。
+   *
+   * 这样做的原因：
+   * - email input 已出现，说明已经处于登录门
+   * - 继续点首页入口只会制造多余动作，甚至把状态点乱
+   */
+  const emailGateState = await detectDreaminaEmailGateReady(page, context);
+  if (emailGateState.ok) {
+    return {
+      found: true,
+      type: 'email-input-ready',
+      matchType: 'gate',
+      text: null,
+      selector: emailGateState.value,
+      locator: null,
+      alreadyInGate: true,
+      nextExpectedState: 'EMAIL_GATE_READY',
+    };
+  }
+
+  /**
+   * 第二步：按登录入口优先级扫描候选。
+   *
+   * 当前优先级原则：
+   * 1. Continue with email
+   * 2. Sign in / Login / Log in / Sign up
+   * 3. 结构化 selector 兜底
+   */
   for (const candidate of DREAMINA_LOGIN_ENTRY_CANDIDATES) {
     if (candidate.text) {
       const locator = page.getByText(candidate.text, { exact: false }).first();
@@ -720,6 +787,8 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
           text: candidate.text,
           selector: null,
           locator,
+          alreadyInGate: false,
+          nextExpectedState: candidate.type === 'continue-with-email' ? 'EMAIL_GATE_READY' : 'LOGIN_GATE_LAYER_READY',
         };
       }
     }
@@ -740,6 +809,8 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
             text: null,
             selector,
             locator,
+            alreadyInGate: false,
+            nextExpectedState: 'LOGIN_GATE_LAYER_READY',
           };
         }
       }
@@ -757,6 +828,8 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
     text: null,
     selector: null,
     locator: null,
+    alreadyInGate: false,
+    nextExpectedState: '',
   };
 }
 
@@ -764,15 +837,33 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
  * 打开 Dreamina 第一阶段登录入口。
  *
  * 作用：
- * - 先调用 findDreaminaLoginEntry 找到最优入口
- * - 再尝试点击该入口
- * - 返回点击结果给上层做下一步确认
+ * - 先调用 findDreaminaLoginEntry 找到当前最优入口
+ * - 如果已经在 email gate，直接短路成功
+ * - 如果只是首页外层入口，则点击入口并返回点击结果
  *
- * 这个方法只负责“点击入口”，不负责判断点击后是否真的进入登录门。
+ * 这个方法只负责“执行入口点击动作”，不负责最终确认点击后是否真的进入登录门。
  */
 async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const { logInfo = null, logWarn = null } = context;
   const entry = await findDreaminaLoginEntry(page, runtime, context);
+
+  /**
+   * 已经在 email gate 时，直接视为第一阶段登录入口完成。
+   *
+   * 这里不再点击任何东西，避免把已经好的状态重新点坏。
+   */
+  if (entry.found && entry.alreadyInGate) {
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.adapter.openDreaminaLoginEntry | 当前已在邮箱登录门，跳过入口点击');
+    }
+    return {
+      success: true,
+      reason: 'LOGIN_GATE_ALREADY_READY',
+      entry,
+      clicked: false,
+      nextExpectedState: 'EMAIL_GATE_READY',
+    };
+  }
 
   if (!entry.found || !entry.locator) {
     if (typeof logWarn === 'function') {
@@ -782,6 +873,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
       success: false,
       reason: 'LOGIN_ENTRY_NOT_FOUND',
       entry,
+      clicked: false,
     };
   }
 
@@ -794,6 +886,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
       success: false,
       reason: 'LOGIN_ENTRY_NOT_CLICKABLE',
       entry,
+      clicked: false,
     };
   }
 
@@ -807,6 +900,8 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
       success: true,
       reason: 'LOGIN_ENTRY_CLICKED',
       entry,
+      clicked: true,
+      nextExpectedState: entry.nextExpectedState || 'LOGIN_GATE_LAYER_READY',
     };
   } catch (error) {
     if (typeof logWarn === 'function') {
@@ -816,6 +911,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
       success: false,
       reason: 'LOGIN_ENTRY_CLICK_FAILED',
       entry,
+      clicked: false,
       error: error.message,
     };
   }
@@ -826,36 +922,51 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
  *
  * 作用：
  * - 在点击登录入口后，确认页面是否真的出现登录前必要信号
- * - 第一版先用 email/input 类 selector 做确认
+ * - 第一优先确认 email input 是否已经出现
+ * - 第二优先确认是否只进入了 Continue with email 这一层中间态
  *
  * 这个方法不负责填写邮箱，也不负责点击发送验证码。
  * 它只回答一个问题：
- * “现在是不是已经进入登录门了？”
+ * “现在是不是已经进入登录门了？进入到了哪一层？”
  */
 async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
 
-  const selectorHit = await findVisibleReadySelector(page, DREAMINA_LOGIN_GATE_SELECTORS);
-  if (selectorHit.ok) {
+  /**
+   * 第一优先：email gate ready。
+   *
+   * email input 是第一阶段登录切换成功的最强确认信号，
+   * 因为它直接表示“现在已经可以填写邮箱了”。
+   */
+  const emailGate = await detectDreaminaEmailGateReady(page, context);
+  if (emailGate.ok) {
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中登录门 selector: ${selectorHit.value}`);
+      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中邮箱登录门信号: ${emailGate.value}`);
     }
     return {
       ok: true,
-      source: selectorHit.source,
-      value: selectorHit.value,
+      state: 'EMAIL_GATE_READY',
+      source: emailGate.source,
+      value: emailGate.value,
     };
   }
 
-  const textHit = await findVisibleReadyText(page, ['Continue with email', 'Sign in', 'Login', 'Log in']);
-  if (textHit.ok) {
+  /**
+   * 第二优先：Continue with email 可见。
+   *
+   * 这通常表示已经从首页进入了登录门外层，
+   * 但还没有真正进入 email input 就绪状态。
+   */
+  const continueLayer = await findVisibleReadyText(page, ['Continue with email']);
+  if (continueLayer.ok) {
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中登录门文本信号: ${textHit.value}`);
+      logInfo(`dreamina.adapter.confirmDreaminaLoginGate | 命中登录门外层信号: ${continueLayer.value}`);
     }
     return {
       ok: true,
-      source: textHit.source,
-      value: textHit.value,
+      state: 'LOGIN_GATE_LAYER_READY',
+      source: continueLayer.source,
+      value: continueLayer.value,
     };
   }
 
@@ -865,8 +976,135 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
 
   return {
     ok: false,
+    state: 'LOGIN_GATE_NOT_READY',
     source: '',
     value: '',
+  };
+}
+
+/**
+ * 确保 Dreamina 当前页面进入第一阶段登录门。
+ *
+ * 作用：
+ * - 这是“首页 -> 登录门”的总编排方法
+ * - 它负责把首页状态推进到 email gate ready
+ * - 只做到登录门，不继续做邮箱填写/验证码等后续业务
+ *
+ * 当前第一版编排策略：
+ * 1. 先做一次 overlay 清理
+ * 2. 先确认是否已经在 email gate
+ * 3. 如果不是，再找最优登录入口并点击
+ * 4. 点击后确认是否已经进入 gate
+ * 5. 如果只是进入 Continue with email 这一层，再做第二跳
+ * 6. 再次确认是否进入 email gate
+ */
+async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
+  const { logInfo = null, logWarn = null } = context;
+
+  /**
+   * 先清一次挡板。
+   *
+   * 原因：
+   * - 首页入口经常会被 cookie / onboarding / 提示层挡住
+   * - 不先清挡板，后续入口判断和点击都可能失真
+   */
+  await preprocessOverlays(page, context);
+
+  /**
+   * 第一步确认：是不是已经在 email gate。
+   */
+  let gateState = await confirmDreaminaLoginGate(page, runtime, context);
+  if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
+    return {
+      success: true,
+      reason: 'LOGIN_GATE_READY',
+      state: gateState.state,
+      gateState,
+    };
+  }
+
+  /**
+   * 第二步：尝试点击首页登录入口。
+   */
+  const openResult = await openDreaminaLoginEntry(page, runtime, context);
+  if (!openResult.success) {
+    return {
+      success: false,
+      reason: openResult.reason,
+      state: 'LOGIN_ENTRY_FAILED',
+      openResult,
+    };
+  }
+
+  /**
+   * 第三步：点击后先做一轮 gate 确认。
+   */
+  gateState = await confirmDreaminaLoginGate(page, runtime, context);
+  if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
+    return {
+      success: true,
+      reason: 'LOGIN_GATE_READY',
+      state: gateState.state,
+      openResult,
+      gateState,
+    };
+  }
+
+  /**
+   * 第四步：如果只到了 Continue with email 这一层，执行第二跳。
+   *
+   * 这是从旧逻辑提炼出来的真实行为：
+   * - 某些首页入口不会直接打开 email input
+   * - 而是先进入登录门外层，再出现 Continue with email
+   */
+  if (gateState.ok && gateState.state === 'LOGIN_GATE_LAYER_READY') {
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.adapter.ensureDreaminaLoginGate | 当前只进入登录门外层，准备执行第二跳 Continue with email');
+    }
+
+    const secondJumpResult = await openDreaminaLoginEntry(page, runtime, context);
+    if (!secondJumpResult.success) {
+      return {
+        success: false,
+        reason: secondJumpResult.reason,
+        state: 'LOGIN_GATE_SECOND_JUMP_FAILED',
+        openResult,
+        secondJumpResult,
+      };
+    }
+
+    gateState = await confirmDreaminaLoginGate(page, runtime, context);
+    if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
+      return {
+        success: true,
+        reason: 'LOGIN_GATE_READY',
+        state: gateState.state,
+        openResult,
+        secondJumpResult,
+        gateState,
+      };
+    }
+
+    return {
+      success: false,
+      reason: 'LOGIN_GATE_NOT_CONFIRMED',
+      state: 'LOGIN_GATE_LAYER_ONLY',
+      openResult,
+      secondJumpResult,
+      gateState,
+    };
+  }
+
+  if (typeof logWarn === 'function') {
+    logWarn('dreamina.adapter.ensureDreaminaLoginGate | 点击登录入口后仍未确认进入登录门');
+  }
+
+  return {
+    success: false,
+    reason: 'LOGIN_GATE_NOT_CONFIRMED',
+    state: 'LOGIN_GATE_NOT_READY',
+    openResult,
+    gateState,
   };
 }
 
@@ -882,20 +1120,25 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
  */
 function classifyDreaminaLoginGateFailure(input = {}) {
   const reason = String(input.reason || 'UNKNOWN').trim().toUpperCase();
+  const state = String(input.state || '').trim().toUpperCase();
 
   let siteReason = reason;
+
   if (reason === 'LOGIN_ENTRY_NOT_FOUND') {
     siteReason = 'DREAMINA_LOGIN_ENTRY_NOT_FOUND';
   } else if (reason === 'LOGIN_ENTRY_NOT_CLICKABLE') {
     siteReason = 'DREAMINA_LOGIN_ENTRY_NOT_CLICKABLE';
   } else if (reason === 'LOGIN_ENTRY_CLICK_FAILED') {
     siteReason = 'DREAMINA_LOGIN_ENTRY_CLICK_FAILED';
+  } else if (reason === 'LOGIN_GATE_NOT_CONFIRMED' && state === 'LOGIN_GATE_LAYER_ONLY') {
+    siteReason = 'DREAMINA_EMAIL_GATE_NOT_REACHED';
   } else if (reason === 'LOGIN_GATE_NOT_CONFIRMED') {
     siteReason = 'DREAMINA_LOGIN_GATE_NOT_CONFIRMED';
   }
 
   return {
     reason,
+    state,
     siteReason,
     hardFailure: false,
   };
@@ -926,8 +1169,10 @@ module.exports = {
   isRecoverableDreaminaEntryFailure,
   waitBrieflyForRecovery,
   recoverDreaminaEntry,
+  detectDreaminaEmailGateReady,
   findDreaminaLoginEntry,
   openDreaminaLoginEntry,
   confirmDreaminaLoginGate,
+  ensureDreaminaLoginGate,
   classifyDreaminaLoginGateFailure,
 };
