@@ -23,6 +23,7 @@
  */
 
 const path = require('path');
+const dreaminaAdapter = require('./dreamina/adapter');
 
 /**
  * 统一读取运行模式。
@@ -147,6 +148,28 @@ function getSiteEntryRuntime(siteProfile = {}, config = {}, options = {}) {
 function hasConsoleFailureEvidence(diagnostics = null) {
   if (!diagnostics?.consoleMessages?.length) return false;
   return diagnostics.consoleMessages.some(item => /chunk|failed|refused|blocked|cors|load|error/i.test(String(item || '')));
+}
+
+/**
+ * 根据站点名解析默认 adapter。
+ *
+ * 作用：
+ * - 让公共层先具备“按站点接 adapter”的能力。
+ * - 当前先接入 Dreamina。
+ * - 后续如果有 OpenAI / Claude，可以继续在这里扩展映射，
+ *   或者再进一步演进成独立 registry。
+ */
+function resolveSiteAdapter(siteProfile = {}, options = {}) {
+  if (options.adapter) {
+    return options.adapter;
+  }
+
+  const siteName = String(siteProfile?.name || '').trim().toLowerCase();
+  if (siteName === 'dreamina') {
+    return dreaminaAdapter;
+  }
+
+  return null;
 }
 
 /**
@@ -324,6 +347,8 @@ async function attemptOpenSiteEntry(options = {}) {
     dumpDiagnostics = null,
     preprocessOverlays = null,
     waitForReadySignals = null,
+    classifyFailure = null,
+    recoverEntry = null,
     logger = {},
     account = null,
     proxy = null,
@@ -432,7 +457,7 @@ async function attemptOpenSiteEntry(options = {}) {
   }
 
   if (runtime.overlayEnabled && typeof preprocessOverlays === 'function') {
-    await preprocessOverlays(page, log, prefix, config);
+    await preprocessOverlays(page, { log, logInfo, logWarn, logSuccess, logTaskStage, account, proxy, prefix, config, runtime });
   }
 
   const readySignal = typeof waitForReadySignals === 'function'
@@ -454,14 +479,32 @@ async function attemptOpenSiteEntry(options = {}) {
     };
   }
 
+  const failureInput = {
+    reason: 'READY_SIGNAL_MISSING',
+    runtime,
+    readySignal,
+    whiteScreen,
+    deadPage,
+    diagnostics,
+  };
+
+  const classifiedFailure = typeof classifyFailure === 'function'
+    ? classifyFailure(failureInput)
+    : { reason: failureInput.reason, siteReason: failureInput.reason, hardFailure: false, diagnostics };
+
+  if (typeof recoverEntry === 'function') {
+    await recoverEntry(page, classifiedFailure, { log, logInfo, logWarn, logSuccess, logTaskStage, account, proxy, prefix, config, runtime });
+  }
+
   return {
     success: false,
-    reason: 'READY_SIGNAL_MISSING',
+    reason: classifiedFailure.siteReason || classifiedFailure.reason || 'READY_SIGNAL_MISSING',
     whiteScreen,
     deadPage,
     readySignal,
     diagnosticsPath: null,
     elapsedMs: Date.now() - attemptStartedAt,
+    classifiedFailure,
   };
 }
 
@@ -499,6 +542,7 @@ async function openSiteEntryWithRetry(options = {}) {
   } = options;
 
   const runtime = getSiteEntryRuntime(siteProfile, config, { stage });
+  const adapter = resolveSiteAdapter(siteProfile, options);
   const attempts = Number(maxAttempts ?? runtime.retryAttempts ?? 3);
   const { log, logInfo, logWarn } = logger;
   let lastError = '';
@@ -513,8 +557,10 @@ async function openSiteEntryWithRetry(options = {}) {
         diagnostics,
         capture,
         dumpDiagnostics,
-        preprocessOverlays: contextHelpers.preprocessOverlays,
-        waitForReadySignals: contextHelpers.waitForReadySignals,
+        preprocessOverlays: contextHelpers.preprocessOverlays || adapter?.preprocessOverlays,
+        waitForReadySignals: contextHelpers.waitForReadySignals || adapter?.waitForDreaminaReady,
+        classifyFailure: contextHelpers.classifyFailure || adapter?.classifyDreaminaEntryFailure,
+        recoverEntry: contextHelpers.recoverEntry || adapter?.recoverDreaminaEntry,
         logger,
         account,
         proxy,
@@ -569,6 +615,7 @@ module.exports = {
   safeCapture,
   getSiteEntryRuntime,
   hasConsoleFailureEvidence,
+  resolveSiteAdapter,
   detectPositiveReadySignals,
   detectWhiteScreen,
   detectDeadPage,
