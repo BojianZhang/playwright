@@ -1003,6 +1003,25 @@ async function detectDreaminaPostAuthReady(page, profile, context = {}) {
     };
   }
 
+  // 再补一层第四阶段边界内允许的辅助成功信号：
+  // - birthday submit 按钮消失
+  // - year / month / day 输入都不可见
+  // 这只能作为“页面已经离开资料填写面板”的弱成功辅助，不等于第五阶段稳定完成。
+  const submitStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  const yearStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  const monthStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  const dayStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+
+  // 如果 birthday submit 与三个输入都已经不可见，可以视为“已离开第四阶段表单”的辅助成功信号。
+  if (!submitStillVisible.ok && !yearStillVisible.ok && !monthStillVisible.ok && !dayStillVisible.ok) {
+    return {
+      ok: true,
+      source: 'panel-disappeared',
+      value: 'birthday-form-hidden',
+      strength: 'weak',
+    };
+  }
+
   // 当前没有确认进入下一阶段。
   return {
     ok: false,
@@ -1043,6 +1062,22 @@ async function detectDreaminaProfileCompletionFailureSignals(page, profile, cont
       source: 'text',
       value: submitFailed.text,
       strength: 'strong',
+    };
+  }
+
+  // 再检查“表单仍完整停留在第四阶段”的弱失败信号。
+  const submitStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  const yearStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  const monthStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  const dayStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+  // 如果表单主元素仍都可见，说明至少当前还没明显离开第四阶段填写面板。
+  if (submitStillVisible.ok && yearStillVisible.ok && monthStillVisible.ok && dayStillVisible.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED',
+      source: 'form-still-visible',
+      value: [submitStillVisible.selector, yearStillVisible.selector, monthStillVisible.selector, dayStillVisible.selector].filter(Boolean).join(' | '),
+      strength: 'weak',
     };
   }
 

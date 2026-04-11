@@ -295,14 +295,17 @@
 ## `source`
 - 类型：`string`
 - 含义：当前 next-stage ready 信号来源
+- 当前除了 `selector` / `text` 外，也可能是：
+  - `panel-disappeared`：birthday 表单整体已不可见，只能作为弱成功辅助信号
 
 ## `value`
 - 类型：`string`
-- 含义：命中的 selector 或 text
+- 含义：命中的 selector / text，或辅助判定值（如 `birthday-form-hidden`）
 
 ## `strength`
 - 类型：`string`
 - 含义：当前 next-stage ready 信号强度
+- 对 `panel-disappeared` 这类辅助成功信号，默认只记为 `weak`
 
 ---
 
@@ -315,18 +318,24 @@
 ## `state`
 - 类型：`string`
 - 含义：命中的阶段 4 失败状态
+- 当前除原有状态外，还可能出现：
+  - `PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED`：提交后仍停留在第四阶段表单
 
 ## `source`
 - 类型：`string`
 - 含义：失败信号来源
+- 当前除 `text` 外，也可能是：
+  - `form-still-visible`：birthday submit 与 year/month/day 输入仍都可见
 
 ## `value`
 - 类型：`string`
 - 含义：命中的失败文本或辅助值
+- 对 `form-still-visible`，这里会记录仍然可见的关键 selector 摘要
 
 ## `strength`
 - 类型：`string`
 - 含义：失败信号强度
+- `PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED` 当前只作为 `weak` 失败信号处理
 
 ---
 
