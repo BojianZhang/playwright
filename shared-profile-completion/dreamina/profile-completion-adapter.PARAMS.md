@@ -103,12 +103,42 @@
 
 ## 4. `fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {})`
 - 作用：填写 year
+- 返回值示例：
+```js
+{
+  ok,
+  state,
+  source,
+  value,
+  stateChanged,
+}
+```
 
 ## 5. `fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})`
 - 作用：填写 month
+- 返回值示例：
+```js
+{
+  ok,
+  state,
+  source,
+  value,
+  stateChanged,
+}
+```
 
 ## 6. `fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {})`
 - 作用：填写 day
+- 返回值示例：
+```js
+{
+  ok,
+  state,
+  source,
+  value,
+  stateChanged,
+}
+```
 
 ## 7. `submitDreaminaProfileCompletion(page, runtime = {}, context = {})`
 - 作用：点击 next / submit

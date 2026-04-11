@@ -86,14 +86,26 @@
 ## `source`
 - 类型：`string`
 - 含义：当前填写动作来源
+- 常见值：
+  - `profile-input`
+  - `selector`
+  - `text`
 
 ## `value`
 - 类型：`string`
 - 含义：当前填写动作附带值或读回值
+- 常见语义：
+  - 实际填写进去的值
+  - 当前读回值
+  - 失败时的辅助错误值
 
 ## `stateChanged`
 - 类型：`boolean | null`
 - 含义：填写后页面是否发生了可识别变化
+- 口径：
+  - `true` = 填写后页面或输入值出现了明显变化
+  - `false` = 填写动作执行后没有看到明确变化
+  - `null` = 当前没有足够上下文判断
 
 ---
 
@@ -118,10 +130,17 @@
 ## `beforeSnapshot`
 - 类型：`object | null`
 - 含义：点击前的轻量页面快照
+- 第一版建议包含：
+  - 当前 birthday 输入值摘要
+  - 当前按钮可见性/可用性摘要
 
 ## `afterSnapshot`
 - 类型：`object | null`
 - 含义：点击后的轻量页面快照
+- 第一版建议包含：
+  - 点击后的 birthday 输入值摘要
+  - 下一阶段信号摘要
+  - 阶段 4 失败信号摘要
 
 ## `stateChanged`
 - 类型：`boolean | null`
@@ -172,7 +191,14 @@
 ## `siteReason`
 - 类型：`string`
 - 含义：Dreamina 专属失败语义
+- 示例：
+  - `DREAMINA_PROFILE_COMPLETION_NOT_READY`
+  - `DREAMINA_BIRTHDAY_INPUT_NOT_FOUND`
+  - `DREAMINA_PROFILE_COMPLETION_SUBMIT_FAILED`
+  - `DREAMINA_PROFILE_COMPLETION_RESULT_UNKNOWN`
 
 ## `hardFailure`
 - 类型：`boolean`
 - 含义：该失败是否应视作强失败
+- 作用：
+  - 给外层后续策略提供更稳定的失败等级语义
