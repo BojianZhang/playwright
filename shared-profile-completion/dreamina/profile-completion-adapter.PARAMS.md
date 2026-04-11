@@ -175,6 +175,7 @@
   3. 执行 click
   4. 读取点击后的轻量页面快照
   5. 判断页面是否发生了有意义变化
+  6. 给出变化原因（如 `advanced-to-next-stage` / `inline-error-appeared` / `submit-disappeared` / `form-value-reset` / `no-observable-change`）
 - 返回值示例：
 ```js
 {

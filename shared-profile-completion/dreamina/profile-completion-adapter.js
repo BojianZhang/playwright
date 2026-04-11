@@ -821,17 +821,70 @@ async function readDreaminaProfileCompletionSnapshot(page, profile) {
  * - 避免只看 click 是否报错
  * - 改为看页面摘要是否出现推进迹象
  */
-function hasDreaminaProfileCompletionStateChange(beforeSnapshot = {}, afterSnapshot = {}) {
-  // 只要下一阶段信号从不可见变成可见，就算强变化。
-  if (!beforeSnapshot?.nextStageVisible && afterSnapshot?.nextStageVisible) return true;
-  // 只要 failureText 出现变化，也视为页面发生了可识别变化。
-  if (String(beforeSnapshot?.failureText || '') !== String(afterSnapshot?.failureText || '')) return true;
-  // 只要 year / month / day 中任意一个值发生变化，也视为发生了变化。
-  if (String(beforeSnapshot?.yearValue || '') !== String(afterSnapshot?.yearValue || '')) return true;
-  if (String(beforeSnapshot?.monthValue || '') !== String(afterSnapshot?.monthValue || '')) return true;
-  if (String(beforeSnapshot?.dayValue || '') !== String(afterSnapshot?.dayValue || '')) return true;
-  // 否则认为没有可识别变化。
-  return false;
+function detectDreaminaProfileCompletionStateChange(beforeSnapshot = {}, afterSnapshot = {}) {
+  // 如果下一阶段信号从不可见变为可见，说明提交后页面已经开始往 post-auth-ready 推进。
+  if (!beforeSnapshot?.nextStageVisible && afterSnapshot?.nextStageVisible) {
+    return {
+      changed: true,
+      reason: 'advanced-to-next-stage',
+      source: 'next-stage-signal',
+      strength: 'strong',
+    };
+  }
+
+  // 如果提交按钮从可见变为不可见，也通常意味着页面发生了推进或切屏。
+  if (beforeSnapshot?.submitVisible && !afterSnapshot?.submitVisible) {
+    return {
+      changed: true,
+      reason: 'submit-disappeared',
+      source: 'submit-visibility',
+      strength: 'medium',
+    };
+  }
+
+  // 如果 failureText 发生变化，说明页面对这次提交给出了新的反馈。
+  if (String(beforeSnapshot?.failureText || '') !== String(afterSnapshot?.failureText || '')) {
+    return {
+      changed: true,
+      reason: 'inline-error-appeared',
+      source: 'failure-text',
+      strength: String(afterSnapshot?.failureText || '').trim() ? 'strong' : 'weak',
+    };
+  }
+
+  // 如果 year / month / day 中任意一个值发生变化，说明表单自身状态发生了改变。
+  if (String(beforeSnapshot?.yearValue || '') !== String(afterSnapshot?.yearValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'year-value',
+      strength: 'medium',
+    };
+  }
+  if (String(beforeSnapshot?.monthValue || '') !== String(afterSnapshot?.monthValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'month-value',
+      strength: 'medium',
+    };
+  }
+  if (String(beforeSnapshot?.dayValue || '') !== String(afterSnapshot?.dayValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'day-value',
+      strength: 'medium',
+    };
+  }
+
+  // 如果没有检测到任何可识别变化，则返回 no-observable-change。
+  return {
+    changed: false,
+    reason: 'no-observable-change',
+    source: 'snapshot-diff',
+    strength: 'none',
+  };
 }
 
 /**
@@ -883,12 +936,15 @@ async function submitDreaminaProfileCompletion(page, runtime = {}, context = {})
     await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
     // 读取点击后的页面摘要。
     const afterSnapshot = await readDreaminaProfileCompletionSnapshot(page, profile);
-    // 根据前后快照判断页面是否发生了有意义变化。
-    const stateChanged = hasDreaminaProfileCompletionStateChange(beforeSnapshot, afterSnapshot);
+    // 根据前后快照判断页面是否发生了有意义变化，并给出变化原因。
+    const stateChange = detectDreaminaProfileCompletionStateChange(beforeSnapshot, afterSnapshot);
+    // 保持原有布尔字段，兼容上层；同时在提交态 value 中补足变化原因。
+    const stateChanged = Boolean(stateChange.changed);
+    const submitValue = [submitTarget.value, stateChange.reason].filter(Boolean).join(' | ');
 
-    // 如果有日志函数，记录本轮 submit 摘要。
+    // 如果有日志函数，记录本轮 submit 摘要与变化类型。
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.submit | source=${submitTarget.source} | value=${submitTarget.value} | beforeNext=${beforeSnapshot.nextStageVisible ? 'Y' : 'N'} | afterNext=${afterSnapshot.nextStageVisible ? 'Y' : 'N'} | beforeFailure=${beforeSnapshot.failureText || '[NONE]'} | afterFailure=${afterSnapshot.failureText || '[NONE]'}`);
+      logInfo(`dreamina.profileCompletion.submit | source=${submitTarget.source} | value=${submitTarget.value} | changeReason=${stateChange.reason} | changeSource=${stateChange.source} | changeStrength=${stateChange.strength} | beforeNext=${beforeSnapshot.nextStageVisible ? 'Y' : 'N'} | afterNext=${afterSnapshot.nextStageVisible ? 'Y' : 'N'} | beforeFailure=${beforeSnapshot.failureText || '[NONE]'} | afterFailure=${afterSnapshot.failureText || '[NONE]'}`);
     }
 
     // 返回统一 submit 结果结构。
@@ -896,7 +952,7 @@ async function submitDreaminaProfileCompletion(page, runtime = {}, context = {})
       ok: true,
       state: 'PROFILE_COMPLETION_SUBMITTED',
       source: submitTarget.source,
-      value: submitTarget.value,
+      value: submitValue,
       beforeSnapshot,
       afterSnapshot,
       stateChanged,

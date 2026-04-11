@@ -221,7 +221,33 @@
 
 ---
 
-# 五、`submitDreaminaProfileCompletion(...)` 返回字段
+# 五、`detectDreaminaProfileCompletionStateChange(...)` 返回字段
+
+## `changed`
+- 类型：`boolean`
+- 含义：submit 前后页面摘要是否出现了可识别变化
+
+## `reason`
+- 类型：`string`
+- 含义：变化原因分类
+- 当前可能值：
+  - `advanced-to-next-stage`
+  - `submit-disappeared`
+  - `inline-error-appeared`
+  - `form-value-reset`
+  - `no-observable-change`
+
+## `source`
+- 类型：`string`
+- 含义：当前变化主要来自哪一类快照差异
+
+## `strength`
+- 类型：`string`
+- 含义：当前变化强度
+
+---
+
+# 六、`submitDreaminaProfileCompletion(...)` 返回字段
 
 ## `ok`
 - 类型：`boolean`
