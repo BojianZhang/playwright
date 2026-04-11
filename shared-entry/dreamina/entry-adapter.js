@@ -1,0 +1,280 @@
+'use strict';
+
+// 引入文件系统模块，用来读取 Dreamina 阶段 1 profile JSON 配置文件。
+const fs = require('fs');
+// 引入 path 模块，用来安全拼接当前目录下的 profile 文件路径。
+const path = require('path');
+
+// 当前 Dreamina 阶段 1 profile 的固定文件路径。
+const DREAMINA_ENTRY_PROFILE_PATH = path.join(__dirname, 'profiles', 'dreamina-entry-profile.json');
+
+// profile 缓存对象，避免每次调用 adapter 方法都重复读取磁盘文件。
+let dreaminaEntryProfileCache = null;
+
+/**
+ * 读取 Dreamina 阶段 1 profile。
+ *
+ * 作用：
+ * - 从 JSON 文件加载静态规则
+ * - 默认走内存缓存
+ * - 在需要时允许 forceReload 强制重新读取
+ */
+function loadDreaminaEntryProfile(options = {}) {
+  // 读取是否要求强制刷新 profile 的开关。
+  const forceReload = Boolean(options?.forceReload);
+  // 如果没有要求强制刷新，并且缓存里已经有 profile，就直接返回缓存。
+  if (!forceReload && dreaminaEntryProfileCache) return dreaminaEntryProfileCache;
+  // 从磁盘读取 profile 文件原始文本。
+  const raw = fs.readFileSync(DREAMINA_ENTRY_PROFILE_PATH, 'utf8');
+  // 解析 JSON，同时去掉可能存在的 BOM 头。
+  dreaminaEntryProfileCache = JSON.parse(String(raw || '').replace(/^\uFEFF/, ''));
+  // 返回最新读取到的 profile 对象。
+  return dreaminaEntryProfileCache;
+}
+
+/**
+ * 判断 locator 当前是否可见。
+ *
+ * 作用：
+ * - 统一阶段 1 所有可见性判断逻辑
+ * - 出错时不抛异常，而是安全返回 false
+ */
+async function isVisible(locator) {
+  // 尝试调用 Playwright 的 isVisible，若抛错则兜底为 false。
+  return await locator.isVisible().catch(() => false);
+}
+
+/**
+ * 从 selector 列表中找到第一个当前可见的目标。
+ */
+async function findFirstVisibleBySelectors(page, selectors = []) {
+  // 依次遍历所有候选 selector。
+  for (const selector of selectors) {
+    // 基于当前 selector 取第一个匹配元素。
+    const locator = page.locator(selector).first();
+    // 如果当前 locator 可见，就直接返回命中结果。
+    if (await isVisible(locator)) {
+      return { ok: true, selector, locator };
+    }
+  }
+  // 如果所有 selector 都没命中，就返回统一失败结构。
+  return { ok: false, selector: '', locator: null };
+}
+
+/**
+ * 从文本列表中找到第一个当前可见的目标。
+ */
+async function findFirstVisibleByTexts(page, texts = []) {
+  // 依次遍历所有候选文本。
+  for (const text of texts) {
+    // 基于当前文本构造 Playwright text locator。
+    const locator = page.getByText(String(text || ''), { exact: false }).first();
+    // 如果当前文本命中并且可见，就直接返回结果。
+    if (await isVisible(locator)) {
+      return { ok: true, text, locator };
+    }
+  }
+  // 如果所有文本都没命中，就返回统一失败结构。
+  return { ok: false, text: '', locator: null };
+}
+
+/**
+ * 打开或校正 Dreamina 入口页。
+ *
+ * 当前草案实现：
+ * - 如果当前 URL 已在 Dreamina 域内，则不强制 goto
+ * - 否则执行 goto 到 entryUrl
+ */
+async function openEntryPage(page, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 读取 Dreamina 阶段 1 profile。
+  const profile = loadDreaminaEntryProfile();
+  // 读取 entryUrl。
+  const entryUrl = String(profile?.entryUrl || '').trim();
+  // 读取当前 URL。
+  const currentUrl = String(page.url ? page.url() : '').trim();
+
+  // 如果当前 URL 已经包含 Dreamina 域名片段，则认为入口页打开步骤可以跳过。
+  if (currentUrl && currentUrl.includes('dreamina.com')) {
+    if (typeof logInfo === 'function') logInfo(`dreamina.entry.open | source=url | value=${currentUrl} | strength=weak`);
+    return {
+      ok: true,
+      state: 'ENTRY_PAGE_OPENED',
+      source: 'url',
+      value: currentUrl,
+      strength: 'weak',
+      stateChanged: false,
+    };
+  }
+
+  try {
+    // 执行 goto 到 entryUrl。
+    await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: Number(runtime?.entryGotoTimeoutMs || 30000) }).catch(() => {});
+    // 如果有日志函数，记录本轮 goto。
+    if (typeof logInfo === 'function') logInfo(`dreamina.entry.open | source=goto | value=${entryUrl} | strength=strong`);
+    return {
+      ok: true,
+      state: 'ENTRY_PAGE_OPENED',
+      source: 'goto',
+      value: entryUrl,
+      strength: 'strong',
+      stateChanged: true,
+    };
+  } catch (error) {
+    // goto 异常时，返回统一失败结构。
+    return {
+      ok: false,
+      state: 'ENTRY_PAGE_OPEN_FAILED',
+      source: 'goto',
+      value: error?.message || entryUrl,
+      strength: 'strong',
+      stateChanged: false,
+    };
+  }
+}
+
+/**
+ * 检查 Dreamina 入口页健康状态。
+ *
+ * 当前草案实现：
+ * - 检查常见错误文本
+ * - 检查 body 文本是否接近白屏
+ */
+async function checkEntryHealth(page, runtime = {}, context = {}) {
+  // 读取 profile。
+  const profile = loadDreaminaEntryProfile();
+  // 读取错误文本规则。
+  const errorTexts = profile?.healthSignals?.errorTexts || [];
+
+  // 优先检测错误文本。
+  const errorTextHit = await findFirstVisibleByTexts(page, errorTexts);
+  if (errorTextHit.ok) {
+    return {
+      ok: false,
+      state: 'ENTRY_ERROR_PAGE',
+      source: 'text',
+      value: errorTextHit.text,
+      strength: 'strong',
+      stateChanged: null,
+    };
+  }
+
+  // 读取页面 body 文本。
+  const bodyText = await page.evaluate(() => (document.body?.innerText || '').trim()).catch(() => '');
+  // 当文本长度极短时，按接近白屏处理。
+  if (String(bodyText || '').length <= Number(profile?.healthSignals?.whiteScreenMinTextLength || 0)) {
+    return {
+      ok: false,
+      state: 'ENTRY_WHITE_SCREEN',
+      source: 'health-check',
+      value: 'BODY_TEXT_TOO_SHORT',
+      strength: 'weak',
+      stateChanged: null,
+    };
+  }
+
+  // 健康检查通过。
+  return {
+    ok: true,
+    state: 'ENTRY_HEALTH_OK',
+    source: 'health-check',
+    value: 'HEALTH_OK',
+    strength: 'weak',
+    stateChanged: null,
+  };
+}
+
+/**
+ * 等待并确认 Dreamina 入口页 ready。
+ *
+ * 当前草案实现：
+ * - selector ready
+ * - text ready
+ * - url ready
+ */
+async function waitForEntryReady(page, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 读取 profile。
+  const profile = loadDreaminaEntryProfile();
+  // 构造等待步列表。
+  const steps = [...new Set([0, Number(runtime?.entryPrimaryWaitMs || 500), Number(runtime?.entrySecondaryWaitMs || 1200)].filter(ms => Number(ms) >= 0))];
+
+  // 记录最后一次执行到的等待步。
+  let lastWaitStepMs = 0;
+  // 依次执行等待步。
+  for (const waitStepMs of steps) {
+    // 更新等待步。
+    lastWaitStepMs = waitStepMs;
+    // 大于 0 时等待。
+    if (waitStepMs > 0) await page.waitForTimeout(waitStepMs).catch(() => {});
+
+    // 第一层：selector ready。
+    const selectorHit = await findFirstVisibleBySelectors(page, profile?.readySignals?.selectors || []);
+    if (selectorHit.ok) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=selector | value=${selectorHit.selector} | strength=strong | waitStepMs=${waitStepMs}`);
+      return { ok: true, state: 'ENTRY_READY', source: 'selector', value: selectorHit.selector, strength: 'strong', waitStepMs };
+    }
+
+    // 第二层：text ready。
+    const textHit = await findFirstVisibleByTexts(page, profile?.readySignals?.texts || []);
+    if (textHit.ok) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=text | value=${textHit.text} | strength=weak | waitStepMs=${waitStepMs}`);
+      return { ok: true, state: 'ENTRY_READY', source: 'text', value: textHit.text, strength: 'weak', waitStepMs };
+    }
+
+    // 第三层：url ready。
+    const currentUrl = String(page.url ? page.url() : '').trim();
+    const urlHit = (profile?.readySignals?.urlIncludes || []).find(fragment => currentUrl.includes(String(fragment || '')));
+    if (urlHit) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=url | value=${urlHit} | strength=weak | waitStepMs=${waitStepMs}`);
+      return { ok: true, state: 'ENTRY_READY', source: 'url', value: urlHit, strength: 'weak', waitStepMs };
+    }
+  }
+
+  // 所有等待步都未命中时，返回 not-ready。
+  return {
+    ok: false,
+    state: 'ENTRY_NOT_READY',
+    source: '',
+    value: '',
+    strength: '',
+    waitStepMs: lastWaitStepMs,
+  };
+}
+
+/**
+ * 将阶段 1 原始失败状态收敛成 Dreamina 专属 reason。
+ */
+function classifyEntryFailure(input = {}) {
+  // 提取原始 reason/state，并统一转成大写。
+  const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
+  // 默认情况下，siteReason 先等于原始 reason。
+  let siteReason = reason;
+
+  // 覆盖阶段 1 当前常见失败映射。
+  if (reason === 'ENTRY_PAGE_OPEN_FAILED') siteReason = 'DREAMINA_ENTRY_PAGE_OPEN_FAILED';
+  else if (reason === 'ENTRY_WHITE_SCREEN') siteReason = 'DREAMINA_ENTRY_WHITE_SCREEN';
+  else if (reason === 'ENTRY_ERROR_PAGE') siteReason = 'DREAMINA_ENTRY_ERROR_PAGE';
+  else if (reason === 'ENTRY_NOT_READY') siteReason = 'DREAMINA_ENTRY_NOT_READY';
+  else if (reason === 'ENTRY_HEALTH_FAILED') siteReason = 'DREAMINA_ENTRY_HEALTH_FAILED';
+
+  // 返回统一分类结果。
+  return {
+    reason,
+    siteReason,
+    hardFailure: reason === 'ENTRY_ERROR_PAGE',
+  };
+}
+
+module.exports = {
+  loadDreaminaEntryProfile,
+  isVisible,
+  findFirstVisibleBySelectors,
+  findFirstVisibleByTexts,
+  openEntryPage,
+  checkEntryHealth,
+  waitForEntryReady,
+  classifyEntryFailure,
+};
