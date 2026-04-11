@@ -185,7 +185,43 @@
 
 ---
 
-# 四、`submitDreaminaProfileCompletion(...)` 返回字段
+# 四、`readDreaminaProfileCompletionSnapshot(...)` 返回字段
+
+## `yearValue`
+- 类型：`string`
+- 含义：快照采集时的 year 输入值摘要
+
+## `monthValue`
+- 类型：`string`
+- 含义：快照采集时的 month 输入值摘要
+
+## `dayValue`
+- 类型：`string`
+- 含义：快照采集时的 day 输入值摘要
+
+## `submitVisible`
+- 类型：`boolean`
+- 含义：当前 submit / next 按钮是否可见
+
+## `submitSelector`
+- 类型：`string`
+- 含义：当前命中的 submit selector
+
+## `nextStageVisible`
+- 类型：`boolean`
+- 含义：当前是否已经出现 post-auth-ready 可达性信号
+
+## `nextStageSelector`
+- 类型：`string`
+- 含义：当前命中的 post-auth-ready selector
+
+## `failureText`
+- 类型：`string`
+- 含义：当前阶段 4 失败提示摘要
+
+---
+
+# 五、`submitDreaminaProfileCompletion(...)` 返回字段
 
 ## `ok`
 - 类型：`boolean`

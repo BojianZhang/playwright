@@ -169,6 +169,12 @@
 
 ## 7. `submitDreaminaProfileCompletion(page, runtime = {}, context = {})`
 - 作用：点击 next / submit
+- 当前补强后会分步骤执行：
+  1. 查找 submit / next 按钮
+  2. 读取点击前的轻量页面快照
+  3. 执行 click
+  4. 读取点击后的轻量页面快照
+  5. 判断页面是否发生了有意义变化
 - 返回值示例：
 ```js
 {

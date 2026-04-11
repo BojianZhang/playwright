@@ -777,20 +777,142 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
 }
 
 /**
+ * 读取第四阶段提交前后的轻量页面快照。
+ *
+ * 作用：
+ * - 给 submit 前后状态变化判断提供统一摘要
+ * - 避免一上来就引入复杂快照系统
+ */
+async function readDreaminaProfileCompletionSnapshot(page, profile) {
+  // 读取当前 year 输入值。
+  const yearState = await readDreaminaBirthdayYearValue(page, profile).catch(() => ({ value: '' }));
+  // 读取当前 month 输入值。
+  const monthState = await readDreaminaBirthdayMonthValue(page, profile).catch(() => ({ value: '' }));
+  // 读取当前 day 输入值。
+  const dayState = await readDreaminaBirthdayDayValue(page, profile).catch(() => ({ value: '' }));
+  // 检测 submit selector 是否可见。
+  const submitSelector = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  // 检测 post-auth-ready selector 是否可见。
+  const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.postAuthReady?.selectors || []);
+  // 检测阶段 4 失败提示文本是否可见。
+  const failureText = await findFirstVisibleByTexts(page, [
+    ...(profile?.failureSignals?.inputInvalid || []),
+    ...(profile?.failureSignals?.submitFailed || []),
+    ...(profile?.failureSignals?.inlineErrors || []),
+  ]);
+
+  // 返回轻量快照结构。
+  return {
+    yearValue: String(yearState?.value || '').trim(),
+    monthValue: String(monthState?.value || '').trim(),
+    dayValue: String(dayState?.value || '').trim(),
+    submitVisible: Boolean(submitSelector?.ok),
+    submitSelector: String(submitSelector?.selector || ''),
+    nextStageVisible: Boolean(nextStageSelector?.ok),
+    nextStageSelector: String(nextStageSelector?.selector || ''),
+    failureText: failureText?.ok ? String(failureText.text || '') : '',
+  };
+}
+
+/**
+ * 判断第四阶段 submit 前后是否发生了有意义状态变化。
+ *
+ * 作用：
+ * - 避免只看 click 是否报错
+ * - 改为看页面摘要是否出现推进迹象
+ */
+function hasDreaminaProfileCompletionStateChange(beforeSnapshot = {}, afterSnapshot = {}) {
+  // 只要下一阶段信号从不可见变成可见，就算强变化。
+  if (!beforeSnapshot?.nextStageVisible && afterSnapshot?.nextStageVisible) return true;
+  // 只要 failureText 出现变化，也视为页面发生了可识别变化。
+  if (String(beforeSnapshot?.failureText || '') !== String(afterSnapshot?.failureText || '')) return true;
+  // 只要 year / month / day 中任意一个值发生变化，也视为发生了变化。
+  if (String(beforeSnapshot?.yearValue || '') !== String(afterSnapshot?.yearValue || '')) return true;
+  if (String(beforeSnapshot?.monthValue || '') !== String(afterSnapshot?.monthValue || '')) return true;
+  if (String(beforeSnapshot?.dayValue || '') !== String(afterSnapshot?.dayValue || '')) return true;
+  // 否则认为没有可识别变化。
+  return false;
+}
+
+/**
  * 提交 Dreamina profile-completion。
  *
- * 第一版先返回骨架占位结构，后续再接 next / submit 的真实行为。
+ * 第一版真实能力目标：
+ * - 找到 next / submit 按钮
+ * - 记录 submit 前页面摘要
+ * - 执行 click
+ * - 记录 submit 后页面摘要
+ * - 根据摘要判断是否发生了有意义变化
  */
 async function submitDreaminaProfileCompletion(page, runtime = {}, context = {}) {
-  return {
-    ok: false,
-    state: 'PROFILE_COMPLETION_SUBMIT_NOT_IMPLEMENTED',
-    source: 'selector',
-    value: '',
-    beforeSnapshot: null,
-    afterSnapshot: null,
-    stateChanged: null,
-  };
+  // 从上下文中读取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 读取 Dreamina 第四阶段 profile。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 优先通过 selector 找 submit / next 按钮。
+  const submitBySelector = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  // 如果 selector 没命中，再尝试通过文本找 submit / next 按钮。
+  const submitByText = submitBySelector.ok ? { ok: false, text: '', locator: null } : await findFirstVisibleByTexts(page, profile?.birthday?.submitTexts || []);
+
+  // 统一 submit 入口结构。
+  const submitTarget = submitBySelector.ok
+    ? { ok: true, source: 'selector', value: submitBySelector.selector, locator: submitBySelector.locator }
+    : submitByText.ok
+      ? { ok: true, source: 'text', value: submitByText.text, locator: submitByText.locator }
+      : { ok: false, source: '', value: '', locator: null };
+
+  // 如果 submit 入口都没找到，就直接失败。
+  if (!submitTarget.ok || !submitTarget.locator) {
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: 'selector',
+      value: 'SUBMIT_BUTTON_NOT_FOUND',
+      beforeSnapshot: null,
+      afterSnapshot: null,
+      stateChanged: null,
+    };
+  }
+
+  try {
+    // 先读取点击前的页面摘要。
+    const beforeSnapshot = await readDreaminaProfileCompletionSnapshot(page, profile);
+    // 执行点击，尽量触发 next / submit。
+    await submitTarget.locator.click({ force: true }).catch(() => submitTarget.locator.click().catch(() => {}));
+    // 给页面一小段时间消化点击动作。
+    await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
+    // 读取点击后的页面摘要。
+    const afterSnapshot = await readDreaminaProfileCompletionSnapshot(page, profile);
+    // 根据前后快照判断页面是否发生了有意义变化。
+    const stateChanged = hasDreaminaProfileCompletionStateChange(beforeSnapshot, afterSnapshot);
+
+    // 如果有日志函数，记录本轮 submit 摘要。
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.submit | source=${submitTarget.source} | value=${submitTarget.value} | beforeNext=${beforeSnapshot.nextStageVisible ? 'Y' : 'N'} | afterNext=${afterSnapshot.nextStageVisible ? 'Y' : 'N'} | beforeFailure=${beforeSnapshot.failureText || '[NONE]'} | afterFailure=${afterSnapshot.failureText || '[NONE]'}`);
+    }
+
+    // 返回统一 submit 结果结构。
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMITTED',
+      source: submitTarget.source,
+      value: submitTarget.value,
+      beforeSnapshot,
+      afterSnapshot,
+      stateChanged,
+    };
+  } catch (error) {
+    // 如果 submit 过程抛异常，就按统一失败结构返回。
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: submitTarget.source || 'selector',
+      value: error?.message || 'UNKNOWN',
+      beforeSnapshot: null,
+      afterSnapshot: null,
+      stateChanged: false,
+    };
+  }
 }
 
 /**
