@@ -10,6 +10,14 @@
 
 # 一、`waitForDreaminaProfileCompletionReady(...)` 返回字段
 
+这个方法当前的执行步骤可以理解为：
+1. 读取第四阶段 ready 规则
+2. 先看强 selector ready
+3. 再看 birthday inputs 是否真正可达
+4. 最后看 Year / Month / Day 等文本 ready
+5. 如果本轮没命中，就进入下一等待步
+6. 所有等待步都没命中，才返回 not-ready
+
 ## `ok`
 - 类型：`boolean`
 - 含义：是否确认进入 profile-completion 阶段

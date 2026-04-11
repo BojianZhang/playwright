@@ -79,48 +79,187 @@ async function findFirstVisibleByTexts(page, texts = []) {
 }
 
 /**
+ * 检测 Dreamina 第四阶段的强 selector ready 信号。
+ *
+ * 作用：
+ * - 这一层优先看结构信号，而不是文本
+ * - 结构信号通常更像“真的已经进入可填写 birthday 的阶段”
+ */
+async function detectDreaminaProfileCompletionReadyBySelector(page, profile) {
+  // 读取 profile 中定义的 profile-completion ready selector 列表。
+  const selectorHit = await findFirstVisibleBySelectors(page, profile?.profileReady?.selectors || []);
+  // 如果没有命中任何 selector，就返回统一未命中结构。
+  if (!selectorHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中 selector，就按强信号返回。
+  return {
+    ok: true,
+    source: 'selector',
+    value: selectorHit.selector,
+    strength: 'strong',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段的 birthday inputs 是否真正可达。
+ *
+ * 作用：
+ * - year / month / day 输入是否都可见，是第四阶段比纯文本更强的入口信号
+ * - 这一层用来减少“看到文本但其实表单还没完全 ready”的误判
+ */
+async function detectDreaminaBirthdayInputsReachable(page, profile) {
+  // 依次检测 year 输入是否可见。
+  const yearHit = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  // 依次检测 month 输入是否可见。
+  const monthHit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  // 依次检测 day 输入是否可见。
+  const dayHit = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+  // 检测 birthday next/submit 按钮是否可见。
+  const submitHit = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+
+  // 只要 year/month/day 都可见，就说明 birthday 面板基本已经可操作。
+  if (yearHit.ok && monthHit.ok && dayHit.ok) {
+    return {
+      ok: true,
+      source: 'profile-input',
+      value: [yearHit.selector, monthHit.selector, dayHit.selector, submitHit.ok ? submitHit.selector : ''].filter(Boolean).join(' | '),
+      strength: 'strong',
+    };
+  }
+
+  // 如果核心输入没齐，就返回未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段的文本 ready 信号。
+ *
+ * 作用：
+ * - 这一层承接 Year / Month / Day 之类的文本线索
+ * - 文本信号弱于结构信号，但仍然是有效的补充判断
+ */
+async function detectDreaminaProfileCompletionReadyByText(page, profile) {
+  // 读取 profile 中定义的 profile-completion ready 文本列表。
+  const textHit = await findFirstVisibleByTexts(page, profile?.profileReady?.texts || []);
+  // 如果没有命中任何文本，就返回统一未命中结构。
+  if (!textHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中文本，则按弱一些的信号返回。
+  return {
+    ok: true,
+    source: 'text',
+    value: textHit.text,
+    strength: 'weak',
+  };
+}
+
+/**
+ * 在单个等待步内执行一次 profile-completion ready 探测。
+ *
+ * 当前顺序：
+ * 1. 先查强 selector ready
+ * 2. 再查 birthday inputs 是否可达
+ * 3. 最后查文本 ready
+ */
+async function detectDreaminaProfileCompletionReadyOnce(page, profile, context = {}) {
+  // 先做 selector 级 ready 探测。
+  const selectorReady = await detectDreaminaProfileCompletionReadyBySelector(page, profile);
+  // 如果 selector 已命中，直接返回 selector 结果。
+  if (selectorReady.ok) return selectorReady;
+
+  // selector 没命中时，再补一轮 birthday inputs 可达性检查。
+  const inputsReady = await detectDreaminaBirthdayInputsReachable(page, profile);
+  // 如果 year/month/day 已经可达，就按强信号返回。
+  if (inputsReady.ok) return inputsReady;
+
+  // 最后再补一轮文本级 ready 探测。
+  const textReady = await detectDreaminaProfileCompletionReadyByText(page, profile);
+  // 如果文本命中，就返回文本 ready 结果。
+  if (textReady.ok) return textReady;
+
+  // 三层都没有命中时，返回统一未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
  * 等待 Dreamina profile-completion 阶段 ready。
  *
- * 第一版目标：
- * - 先把第四阶段入口判断骨架搭出来
- * - 结构与前三阶段保持一致
+ * 当前补强后的步骤：
+ * 1. 读取第四阶段 profile
+ * 2. 构造 ready 检测等待步
+ * 3. 每个等待步内先查强 selector 信号
+ * 4. 如果强 selector 没命中，再查 birthday inputs 是否可达
+ * 5. 如果上面两层都没命中，再查弱文本信号
+ * 6. 一旦任意一步确认 ready，就立即返回
+ * 7. 所有等待步都没命中时，再统一返回 not-ready
  */
 async function waitForDreaminaProfileCompletionReady(page, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
   const { logInfo = null } = context;
-  // 读取 Dreamina 第四阶段 profile。
+  // 第一步：读取 Dreamina 第四阶段 profile，用来拿 ready selector/text/inputs 规则。
   const profile = loadDreaminaProfileCompletionProfile();
-  // 构造 ready 检测等待步列表。
+  // 第二步：构造 ready 检测等待步列表。
   const steps = [...new Set([0, Number(runtime?.profileCompletionPrimaryWaitMs || 300), Number(runtime?.profileCompletionSecondaryWaitMs || 900)].filter(ms => Number(ms) >= 0))];
 
   // 记录最后一次执行到的等待步。
   let lastWaitStepMs = 0;
-  // 依次执行每个等待步。
+  // 第三步：依次执行每个等待步。
   for (const waitStepMs of steps) {
     // 更新当前等待步记录。
     lastWaitStepMs = waitStepMs;
     // 如果当前等待步大于 0，则等待对应毫秒数。
     if (waitStepMs > 0) await page.waitForTimeout(waitStepMs);
 
-    // 优先查强 selector ready 信号。
-    const selectorHit = await findFirstVisibleBySelectors(page, profile?.profileReady?.selectors || []);
-    // 如果 selector 命中，按强信号返回成功。
-    if (selectorHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | source=selector | value=${selectorHit.selector} | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'PROFILE_COMPLETION_READY', source: 'selector', value: selectorHit.selector, strength: 'strong', waitStepMs };
+    // 第四步：在当前等待步内执行一次完整 ready 探测。
+    const readyResult = await detectDreaminaProfileCompletionReadyOnce(page, profile, context);
+    // 如果当前等待步已经确认 ready，就直接返回成功结构。
+    if (readyResult.ok) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | source=${readyResult.source} | value=${readyResult.value} | strength=${readyResult.strength} | waitStepMs=${waitStepMs}`);
+      return {
+        ok: true,
+        state: 'PROFILE_COMPLETION_READY',
+        source: readyResult.source,
+        value: readyResult.value,
+        strength: readyResult.strength,
+        waitStepMs,
+      };
     }
 
-    // selector 没命中时，再查文本 ready 信号。
-    const textHit = await findFirstVisibleByTexts(page, profile?.profileReady?.texts || []);
-    // 如果文本命中，按弱一些的信号返回成功。
-    if (textHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | source=text | value=${textHit.text} | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'PROFILE_COMPLETION_READY', source: 'text', value: textHit.text, strength: 'weak', waitStepMs };
-    }
+    // 如果当前等待步没命中 ready，也记录一条 miss 日志，便于后续判断是慢一拍还是根本没进到第四阶段。
+    if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | miss | waitStepMs=${waitStepMs}`);
   }
 
   // 所有等待步都没有命中 ready，则返回 not-ready。
-  return { ok: false, state: 'PROFILE_COMPLETION_NOT_READY', source: '', value: '', strength: '', waitStepMs: lastWaitStepMs };
+  return {
+    ok: false,
+    state: 'PROFILE_COMPLETION_NOT_READY',
+    source: '',
+    value: '',
+    strength: '',
+    waitStepMs: lastWaitStepMs,
+  };
 }
 
 /**

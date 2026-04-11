@@ -77,6 +77,10 @@
 
 ## 2. `waitForDreaminaProfileCompletionReady(page, runtime = {}, context = {})`
 - 作用：等待并确认当前页面已经进入 birthday / profile-completion 阶段
+- 当前补强后会分步骤执行：
+  1. 先查强 selector 信号
+  2. 再查 birthday inputs 是否可达
+  3. 最后查 Year / Month / Day 等文本信号
 - 返回值示例：
 ```js
 {
