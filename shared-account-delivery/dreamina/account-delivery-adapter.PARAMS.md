@@ -101,10 +101,12 @@
 
 ## 3. `collectAccountDeliverySummary(page, account, runtime = {}, context = {})`
 - 作用：整理账号最终交付摘要
-- 当前建议收集：
-  - 账号基础字段
-  - session / storage 摘要
-  - 当前 URL / UI 摘要
+- 第一轮补强后当前分步骤：
+  1. 提取 profile 规定的 account 基础字段
+  2. 复用第五阶段 sessionInspection 摘要
+  3. 复用第五阶段 uiConfirmation 摘要
+  4. 读取当前 URL 与轻量文本预览
+  5. 组合 account / session / ui / url 四类摘要并收口主要来源
 - 返回值示例：
 ```js
 {

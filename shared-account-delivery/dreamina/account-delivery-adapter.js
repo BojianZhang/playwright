@@ -291,14 +291,32 @@ async function waitForAccountDeliveryReady(page, runtime = {}, context = {}) {
 }
 
 /**
+ * 读取当前页面轻量文本摘要。
+ *
+ * 作用：
+ * - 第六阶段只需要最小 UI/页面上下文线索
+ * - 不需要把整个页面文本全量塞进交付结构
+ */
+async function readDreaminaPageTextPreview(page, runtime = {}) {
+  // 读取预览长度预算；默认只保留前 200 个字符，避免结构膨胀。
+  const maxChars = Number(runtime?.accountDeliveryTextPreviewChars || 200);
+  // 在页面上下文中读取 body 文本。
+  const bodyText = await page.evaluate(() => (document.body?.innerText || '').trim()).catch(() => '');
+  // 返回裁剪后的轻量预览文本。
+  return String(bodyText || '').slice(0, Math.max(0, maxChars));
+}
+
+/**
  * 收集当前账号最终交付摘要。
  *
- * 当前草案实现：
- * - 先收口 account 基础字段
- * - 再收口 URL 与页面 UI 辅助摘要
- * - 暂不直接写外部系统
+ * 第一轮补强目标：
+ * - 不再只是 account 字段占位
+ * - 开始把 account / session / url / ui 四类摘要真正收进来
+ * - 仍然只做“交付摘要整理”，不做外部写入
  */
 async function collectAccountDeliverySummary(page, account, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null, sessionInspection = null, uiConfirmation = null } = context;
   // 读取第六阶段 profile。
   const profile = loadDreaminaAccountDeliveryProfile();
   // 读取当前 URL。
@@ -311,26 +329,70 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
     accountSnapshot[field] = account?.[field] ?? '';
   }
 
-  // 组装最小 session 摘要草案；后续可与阶段 5 结果联动。
+  // 统计当前已有值的 account fields。
+  const presentAccountFields = accountFields.filter(field => String(accountSnapshot?.[field] ?? '').trim());
+
+  // 收口 session 摘要；优先复用第五阶段已经拿到的 sessionInspection 结果。
   const sessionSnapshot = {
     expectedKeys: profile?.summarySignals?.sessionKeys || [],
+    source: String(sessionInspection?.source || ''),
+    value: String(sessionInspection?.value || ''),
+    state: String(sessionInspection?.state || ''),
+    strength: String(sessionInspection?.strength || ''),
   };
 
-  // 组装最小 UI 摘要草案。
+  // 读取页面轻量文本预览，作为 UI 摘要的一部分。
+  const textPreview = await readDreaminaPageTextPreview(page, runtime);
+  // 组装 UI 摘要。
   const uiSnapshot = {
     expectedSignals: profile?.summarySignals?.uiSignals || [],
+    source: String(uiConfirmation?.source || ''),
+    value: String(uiConfirmation?.value || ''),
+    state: String(uiConfirmation?.state || ''),
+    strength: String(uiConfirmation?.strength || ''),
     currentUrl,
+    textPreview,
   };
 
-  // 判断最小摘要是否至少具备 account 基础字段。
-  const hasRequiredAccountField = Object.values(accountSnapshot).some(value => String(value || '').trim());
+  // 判断是否至少具备 account 基础字段。
+  const hasRequiredAccountField = presentAccountFields.length > 0;
+  // 判断是否至少具备 session 或 UI 辅助线索。
+  const hasSupportSignal = Boolean(sessionSnapshot.value || uiSnapshot.value || currentUrl);
+
+  // 组合本轮 summary 是否可以认为“已收集到可用摘要”。
+  const ok = hasRequiredAccountField || hasSupportSignal;
+  // 为当前摘要选择主要来源。
+  const source = hasRequiredAccountField
+    ? 'account'
+    : sessionSnapshot.value
+      ? 'session'
+      : uiSnapshot.value
+        ? 'ui'
+        : currentUrl
+          ? 'url'
+          : '';
+  // 为当前摘要选择主要值。
+  const value = hasRequiredAccountField
+    ? (presentAccountFields[0] || '')
+    : sessionSnapshot.value || uiSnapshot.value || currentUrl || '';
+  // 为当前摘要给出信号强度。
+  const strength = hasRequiredAccountField && hasSupportSignal
+    ? 'medium'
+    : ok
+      ? 'weak'
+      : '';
+
+  // 如果有日志函数，记录本轮摘要的主要收敛来源。
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.accountDelivery.summary | source=${source} | value=${value} | strength=${strength} | accountFields=${presentAccountFields.join('|') || '[NONE]'}`);
+  }
 
   return {
-    ok: hasRequiredAccountField,
-    state: hasRequiredAccountField ? 'ACCOUNT_SUMMARY_COLLECTED' : 'ACCOUNT_SUMMARY_INCOMPLETE',
-    source: hasRequiredAccountField ? 'account' : '',
-    value: hasRequiredAccountField ? Object.keys(accountSnapshot).find(key => String(accountSnapshot[key] || '').trim()) || '' : '',
-    strength: hasRequiredAccountField ? 'medium' : '',
+    ok,
+    state: ok ? 'ACCOUNT_SUMMARY_COLLECTED' : 'ACCOUNT_SUMMARY_INCOMPLETE',
+    source,
+    value,
+    strength,
     accountSnapshot,
     sessionSnapshot,
     uiSnapshot,

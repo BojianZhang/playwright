@@ -76,26 +76,48 @@
   - `session`
   - `ui`
   - `url`
+- 当前第一轮补强后口径：
+  - `account` = account 基础字段是当前摘要最主要支撑
+  - `session` = sessionInspection 摘要是当前摘要最主要支撑
+  - `ui` = uiConfirmation 摘要是当前摘要最主要支撑
+  - `url` = 当前 URL 是唯一还能提供收敛价值的辅助线索
 
 ## `value`
 - 类型：`string`
 - 含义：当前摘要阶段最主要的命中值或辅助摘要
+- 当前第一轮补强后口径：
+  - `account` 时通常是第一条有值的 account field 名
+  - `session` 时通常是 sessionInspection 的代表值
+  - `ui` 时通常是 uiConfirmation 的代表值
+  - `url` 时通常是当前页面 URL
 
 ## `strength`
 - 类型：`string`
 - 含义：当前摘要信号强度
+- 当前第一轮补强后口径：
+  - `medium` = 同时具备 account 基础字段与 session/ui/url 辅助线索
+  - `weak` = 只具备单类摘要线索
+  - `''` = 当前没有足够摘要可收口
 
 ## `accountSnapshot`
 - 类型：`object | null`
 - 含义：账号基础字段摘要
+- 当前第一轮补强后：
+  - 真实按 `summarySignals.accountFields` 从 account 上提取
 
 ## `sessionSnapshot`
 - 类型：`object | null`
 - 含义：session / storage 侧摘要
+- 当前第一轮补强后：
+  - 优先复用第五阶段传入的 `sessionInspection`
+  - 当前包含：`expectedKeys / source / value / state / strength`
 
 ## `uiSnapshot`
 - 类型：`object | null`
 - 含义：登录后 UI 侧摘要
+- 当前第一轮补强后：
+  - 优先复用第五阶段传入的 `uiConfirmation`
+  - 当前包含：`expectedSignals / source / value / state / strength / currentUrl / textPreview`
 
 ---
 
