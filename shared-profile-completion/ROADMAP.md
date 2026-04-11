@@ -53,5 +53,7 @@
 - submit result signals
 - post-auth-ready reachability
 
+> 当前第四阶段在“第一版主链闭环”基础上，已完成一轮结果表达层精修；收口结论见：`REFINEMENT-CLOSEOUT.md`
+
 ## 5. 再决定是否扩更多站点
 等 Dreamina 阶段 4 跑通后，再验证抽象层是否足够通用。
