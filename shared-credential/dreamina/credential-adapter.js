@@ -227,11 +227,60 @@ async function fillDreaminaCredentialPassword(page, account, runtime = {}, conte
 }
 
 /**
+ * 捕获阶段 2 提交前后的轻量状态快照。
+ *
+ * 作用：
+ * - 用来判断 submit 后页面到底有没有发生有效变化
+ * - 不做重 DOM diff，只抓阶段 2 最关心的几个状态
+ */
+async function captureDreaminaCredentialSubmitSnapshot(page, context = {}) {
+  const profile = loadDreaminaCredentialProfile();
+  const successBySelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
+  const successByText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
+  const existingAccount = await findFirstVisibleByTexts(page, profile?.failureSignals?.existingAccount || []);
+  const rejected = await findFirstVisibleByTexts(page, profile?.failureSignals?.rejected || []);
+  const rateLimited = await findFirstVisibleByTexts(page, profile?.failureSignals?.rateLimited || []);
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
+
+  return {
+    url: page.url(),
+    hasSuccessSelector: Boolean(successBySelector.ok),
+    hasSuccessText: Boolean(successByText.ok),
+    hasExistingAccount: Boolean(existingAccount.ok),
+    hasRejected: Boolean(rejected.ok),
+    hasRateLimited: Boolean(rateLimited.ok),
+    bodyTextLength: bodyText.length,
+    bodyPreview: bodyText.slice(0, 200),
+  };
+}
+
+/**
+ * 判断 submit 前后是否发生了足够明确的状态变化。
+ *
+ * 作用：
+ * - 把“提交后无状态变化”从纯 unknown 里单独拆出来
+ * - 后续更容易判断是 submit 没生效，还是结果判定不够
+ */
+function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
+  if (!before || !after) return false;
+  if (before.url !== after.url) return true;
+  if (before.hasSuccessSelector !== after.hasSuccessSelector) return true;
+  if (before.hasSuccessText !== after.hasSuccessText) return true;
+  if (before.hasExistingAccount !== after.hasExistingAccount) return true;
+  if (before.hasRejected !== after.hasRejected) return true;
+  if (before.hasRateLimited !== after.hasRateLimited) return true;
+  if (before.bodyPreview !== after.bodyPreview) return true;
+  if (Math.abs(Number(before.bodyTextLength || 0) - Number(after.bodyTextLength || 0)) >= 40) return true;
+  return false;
+}
+
+/**
  * 提交 Dreamina credential form。
  *
  * 作用：
  * - 点击 Continue / Submit
  * - 提交后做一次很轻的等待，给页面一点切换时间
+ * - 记录提交前后快照，为“NO_STATE_CHANGE”判断提供证据
  */
 async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   const { logInfo = null, formReady = null } = context;
@@ -267,68 +316,45 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
     };
   }
 
+  const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+
   await submitLocator.click({ timeout: 1500 }).catch(async () => {
     await submitLocator.click({ force: true, timeout: 1500 });
   });
   await page.waitForTimeout(700);
 
+  const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+  const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot);
+
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.submitForm | submit=${submitLabel}`);
+    logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | stateChanged=${hasStateChange ? 'Y' : 'N'}`);
   }
 
   return {
     ok: true,
     state: 'FORM_SUBMITTED',
     submit: submitLabel,
+    beforeSnapshot,
+    afterSnapshot,
+    hasStateChange,
   };
 }
 
 /**
- * 确认 Dreamina credential submit 结果。
+ * 提交后第一批安全检查。
  *
  * 作用：
- * - 判断是否进入验证码阶段
- * - 判断是否出现 existing account / rejected / rate limited / inline error
- * - 这是阶段 2 最核心的结果判断方法
+ * - 优先识别旧链里已经证明很值的高价值失败
+ * - 避免把“已存在账号 / 被拒绝 / 限流”误看成只是没进验证码阶段
  */
-async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
-  const { logInfo = null } = context;
+async function runDreaminaCredentialImmediateFailureChecks(page, context = {}) {
   const profile = loadDreaminaCredentialProfile();
-
-  const successBySelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
-  if (successBySelector.ok) {
-    if (typeof logInfo === 'function') {
-      logInfo(`dreamina.credential.confirmResult | success selector hit=${successBySelector.selector}`);
-    }
-    return {
-      ok: true,
-      state: 'CREDENTIAL_SUBMIT_OK',
-      nextStage: 'verification',
-      source: 'selector',
-      value: successBySelector.selector,
-    };
-  }
-
-  const successByText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
-  if (successByText.ok) {
-    if (typeof logInfo === 'function') {
-      logInfo(`dreamina.credential.confirmResult | success text hit=${successByText.text}`);
-    }
-    return {
-      ok: true,
-      state: 'CREDENTIAL_SUBMIT_OK',
-      nextStage: 'verification',
-      source: 'text',
-      value: successByText.text,
-    };
-  }
 
   const existingAccount = await findFirstVisibleByTexts(page, profile?.failureSignals?.existingAccount || []);
   if (existingAccount.ok) {
     return {
-      ok: false,
+      hit: true,
       state: 'ACCOUNT_ALREADY_EXISTS',
-      nextStage: '',
       source: 'text',
       value: existingAccount.text,
     };
@@ -337,9 +363,8 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
   const rejected = await findFirstVisibleByTexts(page, profile?.failureSignals?.rejected || []);
   if (rejected.ok) {
     return {
-      ok: false,
+      hit: true,
       state: 'SIGNUP_REJECTED',
-      nextStage: '',
       source: 'text',
       value: rejected.text,
     };
@@ -348,14 +373,115 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
   const rateLimited = await findFirstVisibleByTexts(page, profile?.failureSignals?.rateLimited || []);
   if (rateLimited.ok) {
     return {
-      ok: false,
+      hit: true,
       state: 'RATE_LIMITED',
-      nextStage: '',
       source: 'text',
       value: rateLimited.text,
     };
   }
 
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 是否已经强确认进入验证码阶段。
+ *
+ * 作用：
+ * - 比单纯 success text 更强
+ * - 优先确认验证码输入框 / one-time-code 输入框这类强信号
+ */
+async function detectDreaminaVerificationStageReady(page, context = {}) {
+  const { logInfo = null } = context;
+  const profile = loadDreaminaCredentialProfile();
+
+  const successBySelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
+  if (successBySelector.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.detectVerificationStageReady | strong selector hit=${successBySelector.selector}`);
+    }
+    return {
+      ok: true,
+      state: 'CREDENTIAL_SUBMIT_OK',
+      nextStage: 'verification',
+      source: 'selector',
+      value: successBySelector.selector,
+      strength: 'strong',
+    };
+  }
+
+  const successByText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
+  if (successByText.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.detectVerificationStageReady | weak text hit=${successByText.text}`);
+    }
+    return {
+      ok: true,
+      state: 'CREDENTIAL_SUBMIT_OK',
+      nextStage: 'verification',
+      source: 'text',
+      value: successByText.text,
+      strength: 'weak',
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'VERIFICATION_STAGE_NOT_READY',
+    nextStage: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 确认 Dreamina credential submit 结果。
+ *
+ * 作用：
+ * - 先做提交后第一批安全检查
+ * - 再做进入验证码阶段的强确认
+ * - 再看 inline error
+ * - 最后结合 submit 前后快照，区分 unknown 和 no-state-change
+ *
+ * 这是阶段 2 最核心的结果判断方法。
+ */
+async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
+  const { logInfo = null, submitResult = null } = context;
+  const profile = loadDreaminaCredentialProfile();
+
+  /**
+   * 第一批安全检查：高价值失败优先。
+   */
+  const immediateFailure = await runDreaminaCredentialImmediateFailureChecks(page, context);
+  if (immediateFailure.hit) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.confirmResult | immediate failure hit=${immediateFailure.state} | value=${immediateFailure.value}`);
+    }
+    return {
+      ok: false,
+      state: immediateFailure.state,
+      nextStage: '',
+      source: immediateFailure.source,
+      value: immediateFailure.value,
+    };
+  }
+
+  /**
+   * 强确认：是否已经真正进入验证码阶段。
+   */
+  const verificationReady = await detectDreaminaVerificationStageReady(page, context);
+  if (verificationReady.ok) {
+    return verificationReady;
+  }
+
+  /**
+   * 继续看通用 inline error。
+   */
   const inlineErrors = profile?.failureSignals?.inlineErrors || [];
   const bodyText = (await page.locator('body').innerText().catch(() => '') || '').toLowerCase();
   const inlineHit = inlineErrors.find(item => bodyText.includes(String(item || '').toLowerCase()));
@@ -366,6 +492,19 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       nextStage: '',
       source: 'bodyText',
       value: inlineHit,
+    };
+  }
+
+  /**
+   * 最后一层：如果 submit 前后根本没状态变化，明确打成 NO_STATE_CHANGE。
+   */
+  if (submitResult && submitResult.hasStateChange === false) {
+    return {
+      ok: false,
+      state: 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE',
+      nextStage: '',
+      source: 'snapshot',
+      value: 'SUBMIT_NO_STATE_CHANGE',
     };
   }
 
@@ -402,8 +541,10 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
     siteReason = 'DREAMINA_RATE_LIMITED';
   } else if (reason === 'INLINE_ERROR_VISIBLE') {
     siteReason = 'DREAMINA_INLINE_ERROR_VISIBLE';
-  } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
+  } else if (reason === 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_NO_STATE_CHANGE';
+  } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
+    siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN';
   }
 
   return {
@@ -421,7 +562,11 @@ module.exports = {
   waitForDreaminaCredentialFormReady,
   fillDreaminaCredentialEmail,
   fillDreaminaCredentialPassword,
+  captureDreaminaCredentialSubmitSnapshot,
+  hasMeaningfulCredentialSubmitStateChange,
   submitDreaminaCredentialForm,
+  runDreaminaCredentialImmediateFailureChecks,
+  detectDreaminaVerificationStageReady,
   confirmDreaminaCredentialSubmitResult,
   classifyDreaminaCredentialSubmitFailure,
 };
