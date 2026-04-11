@@ -104,7 +104,27 @@
 
 ---
 
-# 四、填写类返回字段
+# 四、`readDreaminaBirthdayMonthValue(...)` 返回字段
+
+## `ok`
+- 类型：`boolean`
+- 含义：当前是否成功读取到 month 输入控件与其值
+
+## `selector`
+- 类型：`string`
+- 含义：命中的 month 输入 selector
+
+## `value`
+- 类型：`string`
+- 含义：当前 month 输入框里的实际值
+
+## `locator`
+- 类型：`Locator | undefined`
+- 含义：命中的 month 输入控件 locator
+
+---
+
+# 五、填写类返回字段
 
 适用于：
 - `fillDreaminaBirthdayYear(...)`
