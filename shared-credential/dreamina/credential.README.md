@@ -4,12 +4,20 @@
 
 ---
 
+# 阶段输入
+- `page` 已存在且可操作
+- 页面已经进入 Dreamina login gate / credential form 上下文
+- 当前阶段只处理 credential submit，不再负责首页入口切换
+
+---
+
 # 负责什么
 - credential form ready 判断
 - email / password 填写
 - Continue / Submit 点击
 - 提交结果确认
 - 提交失败分类
+- 成功时确认进入 `verification`
 
 ---
 
@@ -19,6 +27,7 @@
 - 验证码
 - birthday
 - session / storage
+- runner 层调度、代理惩罚、结果落盘
 
 ---
 

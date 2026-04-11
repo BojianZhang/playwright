@@ -48,6 +48,10 @@ function normalizeCredentialStageResult(input = {}) {
     state: String(input.state || '').trim(),
     reason: String(input.reason || '').trim(),
     nextStage: String(input.nextStage || '').trim(),
+    signalStrength: String(input.signalStrength || '').trim(),
+    settleStage: String(input.settleStage || '').trim(),
+    detectionSource: String(input.detectionSource || '').trim(),
+    stateChanged: typeof input.stateChanged === 'boolean' ? input.stateChanged : null,
     detail: input.detail || null,
   };
 }
@@ -196,13 +200,23 @@ async function runCredentialSubmitStage(options = {}) {
    * 这是阶段 2 的成败判定核心。
    * 成功时通常意味着进入下一阶段（Dreamina 当前是 verification）。
    */
-  const confirmResult = await confirmSubmitResult(page, runtime, context);
+  const confirmResult = await confirmSubmitResult(page, runtime, {
+    ...context,
+    formReady,
+    emailResult,
+    passwordResult,
+    submitResult,
+  });
   if (confirmResult?.ok) {
     return normalizeCredentialStageResult({
       success: true,
       state: confirmResult?.state || 'CREDENTIAL_SUBMIT_OK',
       reason: confirmResult?.state || 'CREDENTIAL_SUBMIT_OK',
       nextStage: confirmResult?.nextStage || 'verification',
+      signalStrength: confirmResult?.strength || '',
+      settleStage: confirmResult?.settleStage || '',
+      detectionSource: confirmResult?.source || '',
+      stateChanged: typeof submitResult?.hasStateChange === 'boolean' ? submitResult.hasStateChange : null,
       detail: {
         formReady,
         emailResult,
@@ -224,6 +238,10 @@ async function runCredentialSubmitStage(options = {}) {
     state: confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
     reason: classified?.siteReason || classified?.reason || confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
     nextStage: '',
+    signalStrength: confirmResult?.strength || '',
+    settleStage: confirmResult?.settleStage || '',
+    detectionSource: confirmResult?.source || '',
+    stateChanged: typeof submitResult?.hasStateChange === 'boolean' ? submitResult.hasStateChange : null,
     detail: {
       formReady,
       emailResult,

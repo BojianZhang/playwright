@@ -31,6 +31,7 @@ const path = require('path');
  * - 避免把阶段 2 细节全写死在 JS 代码里
  */
 const DREAMINA_CREDENTIAL_PROFILE_PATH = path.join(__dirname, 'profiles', 'dreamina-credential-profile.json');
+let dreaminaCredentialProfileCache = null;
 
 /**
  * 读取 Dreamina 阶段 2 profile。
@@ -39,9 +40,12 @@ const DREAMINA_CREDENTIAL_PROFILE_PATH = path.join(__dirname, 'profiles', 'dream
  * - 读取 JSON 配置
  * - 统一供本文件内部方法使用
  */
-function loadDreaminaCredentialProfile() {
+function loadDreaminaCredentialProfile(options = {}) {
+  const forceReload = Boolean(options?.forceReload);
+  if (!forceReload && dreaminaCredentialProfileCache) return dreaminaCredentialProfileCache;
   const raw = fs.readFileSync(DREAMINA_CREDENTIAL_PROFILE_PATH, 'utf8');
-  return JSON.parse(String(raw || '').replace(/^\uFEFF/, ''));
+  dreaminaCredentialProfileCache = JSON.parse(String(raw || '').replace(/^\uFEFF/, ''));
+  return dreaminaCredentialProfileCache;
 }
 
 /**
@@ -115,46 +119,67 @@ async function findFirstVisibleByTexts(page, texts = []) {
 async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const profile = loadDreaminaCredentialProfile();
+  const primaryWaitMs = Number(runtime?.credentialFormPrimaryWaitMs || 300);
+  const secondaryWaitMs = Number(runtime?.credentialFormSecondaryWaitMs || 900);
+  const waitSteps = [...new Set([0, primaryWaitMs, secondaryWaitMs].filter(ms => Number(ms) >= 0))];
 
-  const emailSelectors = profile?.fields?.email?.selectors || [];
-  const passwordSelectors = profile?.fields?.password?.selectors || [];
-  const submitSelectors = profile?.submit?.selectors || [];
-  const submitTexts = profile?.submit?.texts || [];
-
-  const emailField = await findFirstVisibleBySelectors(page, emailSelectors);
-  const passwordField = await findFirstVisibleBySelectors(page, passwordSelectors);
-  const submitBySelector = await findFirstVisibleBySelectors(page, submitSelectors);
-  const submitByText = submitBySelector.ok ? { ok: false, text: '', locator: null } : await findFirstVisibleByTexts(page, submitTexts);
-
-  const submit = submitBySelector.ok
-    ? { ok: true, source: 'selector', value: submitBySelector.selector, locator: submitBySelector.locator }
-    : submitByText.ok
-      ? { ok: true, source: 'text', value: submitByText.text, locator: submitByText.locator }
-      : { ok: false, source: '', value: '', locator: null };
-
-  if (emailField.ok && passwordField.ok && submit.ok) {
-    if (typeof logInfo === 'function') {
-      logInfo(`dreamina.credential.waitForFormReady | email=${emailField.selector} | password=${passwordField.selector} | submit=${submit.source}:${submit.value}`);
+  let lastResult = null;
+  for (const waitMs of waitSteps) {
+    if (waitMs > 0) {
+      await page.waitForTimeout(waitMs);
     }
-    return {
-      ok: true,
-      state: 'FORM_READY',
+
+    const emailSelectors = profile?.fields?.email?.selectors || [];
+    const passwordSelectors = profile?.fields?.password?.selectors || [];
+    const submitSelectors = profile?.submit?.selectors || [];
+    const submitTexts = profile?.submit?.texts || [];
+
+    const emailField = await findFirstVisibleBySelectors(page, emailSelectors);
+    const passwordField = await findFirstVisibleBySelectors(page, passwordSelectors);
+    const submitBySelector = await findFirstVisibleBySelectors(page, submitSelectors);
+    const submitByText = submitBySelector.ok ? { ok: false, text: '', locator: null } : await findFirstVisibleByTexts(page, submitTexts);
+
+    const submit = submitBySelector.ok
+      ? { ok: true, source: 'selector', value: submitBySelector.selector, locator: submitBySelector.locator }
+      : submitByText.ok
+        ? { ok: true, source: 'text', value: submitByText.text, locator: submitByText.locator }
+        : { ok: false, source: '', value: '', locator: null };
+
+    lastResult = {
+      ok: false,
+      state: 'FORM_NOT_READY',
       emailField,
       passwordField,
       submit,
+      waitStepMs: waitMs,
     };
+
+    if (emailField.ok && passwordField.ok && submit.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.credential.waitForFormReady | ready | waitStepMs=${waitMs} | email=${emailField.selector} | password=${passwordField.selector} | submit=${submit.source}:${submit.value}`);
+      }
+      return {
+        ok: true,
+        state: 'FORM_READY',
+        emailField,
+        passwordField,
+        submit,
+        waitStepMs: waitMs,
+      };
+    }
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.waitForFormReady | not-ready | waitStepMs=${waitMs} | email=${emailField.ok ? 'Y' : 'N'} | password=${passwordField.ok ? 'Y' : 'N'} | submit=${submit.ok ? 'Y' : 'N'}`);
+    }
   }
 
-  if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.waitForFormReady | not-ready | email=${emailField.ok ? 'Y' : 'N'} | password=${passwordField.ok ? 'Y' : 'N'} | submit=${submit.ok ? 'Y' : 'N'}`);
-  }
-
-  return {
+  return lastResult || {
     ok: false,
     state: 'FORM_NOT_READY',
-    emailField,
-    passwordField,
-    submit,
+    emailField: { ok: false, selector: '', locator: null },
+    passwordField: { ok: false, selector: '', locator: null },
+    submit: { ok: false, source: '', value: '', locator: null },
+    waitStepMs: 0,
   };
 }
 
@@ -536,6 +561,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       nextStage: '',
       source: settlementResult.quickFailure.source,
       value: settlementResult.quickFailure.value,
+      strength: 'strong',
       settleStage: settlementResult.stage,
     };
   }
@@ -545,6 +571,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     return {
       ...settlementResult.verificationReady,
       settleStage: settlementResult.stage,
+      strength: settlementResult.verificationReady?.strength || '',
     };
   }
 
@@ -558,6 +585,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       nextStage: '',
       source: 'bodyText',
       value: inlineHit,
+      strength: 'weak',
       settleStage: settlementResult?.stage || 'inline-check',
     };
   }
@@ -569,6 +597,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       nextStage: '',
       source: 'snapshot',
       value: 'SUBMIT_NO_STATE_CHANGE',
+      strength: 'weak',
       settleStage: settlementResult?.stage || 'snapshot-check',
     };
   }
@@ -578,6 +607,9 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     ok: false,
     state: 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
     nextStage: '',
+    source: '',
+    value: '',
+    strength: '',
     settleStage: settlementResult?.stage || 'none',
   };
 }
