@@ -145,6 +145,19 @@ const DREAMINA_LOGIN_GATE_SELECTORS = [
 ];
 
 /**
+ * Dreamina 首页/登录门阶段专属错误弹窗文本。
+ *
+ * 作用：
+ * - 用于识别旧链里真实存在的 Something went wrong / Refresh 异常页
+ * - 第一轮只做识别，不自动恢复，不点 Refresh
+ */
+const DREAMINA_ERROR_MODAL_TEXTS = [
+  'Something went wrong',
+  'Refresh',
+  'Refresh the page and try again',
+];
+
+/**
  * 一些明显过泛的 selector，不适合直接当强 ready 信号。
  *
  * 例如：
@@ -730,6 +743,104 @@ async function detectDreaminaEmailGateReady(page, context = {}) {
 }
 
 /**
+ * 捕获第一阶段登录门切换前后的轻量页面状态快照。
+ *
+ * 作用：
+ * - 用于判断“点击登录入口后到底有没有产生状态变化”
+ * - 这里只抓最轻量、最有用的几个字段，不做重 DOM 对比
+ *
+ * 为什么需要它：
+ * - 点击成功并不等于页面状态真的变了
+ * - 没有快照就很难区分“点击失败”和“点击无变化”
+ */
+async function captureDreaminaLoginGateSnapshot(page, context = {}) {
+  const emailGate = await detectDreaminaEmailGateReady(page, context);
+  const continueLayer = await findVisibleReadyText(page, ['Continue with email']);
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
+
+  return {
+    url: page.url(),
+    emailGateReady: Boolean(emailGate.ok),
+    continueLayerVisible: Boolean(continueLayer.ok),
+    bodyTextLength: bodyText.length,
+    bodyPreview: bodyText.slice(0, 200),
+  };
+}
+
+/**
+ * 比较点击前后快照，判断页面是否发生了足够明确的状态变化。
+ *
+ * 作用：
+ * - 不追求完全精确的 DOM diff
+ * - 只判断对第一阶段登录最重要的几个状态是否有变化
+ */
+function hasMeaningfulLoginGateStateChange(before = null, after = null) {
+  if (!before || !after) return false;
+  if (before.url !== after.url) return true;
+  if (before.emailGateReady !== after.emailGateReady) return true;
+  if (before.continueLayerVisible !== after.continueLayerVisible) return true;
+  if (before.bodyPreview !== after.bodyPreview) return true;
+  if (Math.abs(Number(before.bodyTextLength || 0) - Number(after.bodyTextLength || 0)) >= 40) return true;
+  return false;
+}
+
+/**
+ * 检测 Dreamina 首页/登录门阶段专属错误弹窗。
+ *
+ * 作用：
+ * - 识别 Something went wrong / Refresh 这类旧链已验证存在的异常态
+ * - 第一轮只做识别，不自动恢复，不点击 Refresh
+ *
+ * 这么做的原因：
+ * - 先把问题分类准确，再决定是否要加自动恢复动作
+ * - 避免第一轮就把恢复逻辑做重
+ */
+async function detectDreaminaErrorModal(page, context = {}) {
+  const { logInfo = null } = context;
+
+  for (const text of DREAMINA_ERROR_MODAL_TEXTS) {
+    const locator = page.getByText(text, { exact: false }).first();
+    if (await locator.isVisible().catch(() => false)) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.detectDreaminaErrorModal | 命中 Dreamina 错误弹窗信号: ${text}`);
+      }
+      return {
+        ok: true,
+        reason: 'ERROR_MODAL_VISIBLE',
+        value: text,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'NO_ERROR_MODAL',
+    value: '',
+  };
+}
+
+/**
+ * 对点击后的状态切换做一次非常轻的保护性等待。
+ *
+ * 作用：
+ * - 避免页面状态切换慢一拍时被立刻误判失败
+ * - 不恢复旧的大轮询，只给一次很轻的缓冲时间
+ *
+ * 为什么放在第一阶段登录里：
+ * - Dreamina 首页 -> 登录门切换不是严格同步瞬时完成
+ * - 轻等待能显著降低“点完马上判失败”的误伤率
+ */
+async function waitAfterLoginEntryAction(page, context = {}) {
+  const { logInfo = null } = context;
+  const waitMs = 700;
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.adapter.waitAfterLoginEntryAction | 点击后保护性等待 ${waitMs}ms`);
+  }
+  await page.waitForTimeout(waitMs);
+  return waitMs;
+}
+
+/**
  * 查找 Dreamina 第一阶段登录入口。
  *
  * 作用：
@@ -840,6 +951,7 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
  * - 先调用 findDreaminaLoginEntry 找到当前最优入口
  * - 如果已经在 email gate，直接短路成功
  * - 如果只是首页外层入口，则点击入口并返回点击结果
+ * - 同时记录点击前后快照，判断页面是否真的发生了有意义的状态变化
  *
  * 这个方法只负责“执行入口点击动作”，不负责最终确认点击后是否真的进入登录门。
  */
@@ -890,18 +1002,51 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
     };
   }
 
+  /**
+   * 点击前做轻量状态快照。
+   *
+   * 目的不是做重 DOM diff，而是给“点击后无状态变化”这种真实问题留证据。
+   */
+  const beforeSnapshot = await captureDreaminaLoginGateSnapshot(page, context);
+
   try {
     await entry.locator.click({ timeout: 1500 });
-    await page.waitForTimeout(500);
+
+    /**
+     * 点击后做一次很轻的保护性等待。
+     *
+     * 这样做的原因：
+     * - 登录门切换有时不是同步立刻完成
+     * - 没有这一步容易把“慢一拍”误判成失败
+     */
+    await waitAfterLoginEntryAction(page, context);
+
+    const afterSnapshot = await captureDreaminaLoginGateSnapshot(page, context);
+    const hasStateChange = hasMeaningfulLoginGateStateChange(beforeSnapshot, afterSnapshot);
+
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.adapter.openDreaminaLoginEntry | 已点击登录入口: ${entry.type}`);
+      logInfo(`dreamina.adapter.openDreaminaLoginEntry | 已点击登录入口: ${entry.type} | stateChanged=${hasStateChange ? 'Y' : 'N'}`);
     }
+
+    if (!hasStateChange) {
+      return {
+        success: false,
+        reason: 'LOGIN_ENTRY_CLICK_NO_STATE_CHANGE',
+        entry,
+        clicked: true,
+        beforeSnapshot,
+        afterSnapshot,
+      };
+    }
+
     return {
       success: true,
       reason: 'LOGIN_ENTRY_CLICKED',
       entry,
       clicked: true,
       nextExpectedState: entry.nextExpectedState || 'LOGIN_GATE_LAYER_READY',
+      beforeSnapshot,
+      afterSnapshot,
     };
   } catch (error) {
     if (typeof logWarn === 'function') {
@@ -924,6 +1069,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
  * - 在点击登录入口后，确认页面是否真的出现登录前必要信号
  * - 第一优先确认 email input 是否已经出现
  * - 第二优先确认是否只进入了 Continue with email 这一层中间态
+ * - 额外识别 Dreamina 专属错误弹窗，避免把异常态误当成普通 gate 失败
  *
  * 这个方法不负责填写邮箱，也不负责点击发送验证码。
  * 它只回答一个问题：
@@ -931,6 +1077,22 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
  */
 async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
+
+  /**
+   * 先识别 Dreamina 专属错误弹窗。
+   *
+   * 第一轮先只识别，不自动恢复；
+   * 这样至少能把错误分类做准，不再把这类页面异常混成普通 gate not ready。
+   */
+  const errorModal = await detectDreaminaErrorModal(page, context);
+  if (errorModal.ok) {
+    return {
+      ok: false,
+      state: 'ERROR_MODAL_VISIBLE',
+      source: 'text',
+      value: errorModal.value,
+    };
+  }
 
   /**
    * 第一优先：email gate ready。
@@ -1088,7 +1250,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
     return {
       success: false,
       reason: 'LOGIN_GATE_NOT_CONFIRMED',
-      state: 'LOGIN_GATE_LAYER_ONLY',
+      state: gateState.state === 'ERROR_MODAL_VISIBLE' ? 'ERROR_MODAL_VISIBLE' : 'LOGIN_GATE_LAYER_ONLY',
       openResult,
       secondJumpResult,
       gateState,
@@ -1102,7 +1264,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
   return {
     success: false,
     reason: 'LOGIN_GATE_NOT_CONFIRMED',
-    state: 'LOGIN_GATE_NOT_READY',
+    state: gateState.state || 'LOGIN_GATE_NOT_READY',
     openResult,
     gateState,
   };
@@ -1113,7 +1275,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
  *
  * 作用：
  * - 把“首页 ready 之后进入登录入口”这一段失败独立分类
- * - 让日志和后续策略能区分：是没找到入口、点不了、还是点了没状态变化
+ * - 让日志和后续策略能区分：是没找到入口、点不了、点了没变化，还是 Dreamina 异常弹窗
  *
  * 这类分类只服务“首页 -> 登录门”这一段，
  * 不用于验证码、生日、注册提交等后续阶段。
@@ -1130,6 +1292,10 @@ function classifyDreaminaLoginGateFailure(input = {}) {
     siteReason = 'DREAMINA_LOGIN_ENTRY_NOT_CLICKABLE';
   } else if (reason === 'LOGIN_ENTRY_CLICK_FAILED') {
     siteReason = 'DREAMINA_LOGIN_ENTRY_CLICK_FAILED';
+  } else if (reason === 'LOGIN_ENTRY_CLICK_NO_STATE_CHANGE') {
+    siteReason = 'DREAMINA_LOGIN_ENTRY_CLICK_NO_STATE_CHANGE';
+  } else if (state === 'ERROR_MODAL_VISIBLE') {
+    siteReason = 'DREAMINA_LOGIN_GATE_ERROR_MODAL_VISIBLE';
   } else if (reason === 'LOGIN_GATE_NOT_CONFIRMED' && state === 'LOGIN_GATE_LAYER_ONLY') {
     siteReason = 'DREAMINA_EMAIL_GATE_NOT_REACHED';
   } else if (reason === 'LOGIN_GATE_NOT_CONFIRMED') {
@@ -1150,6 +1316,7 @@ module.exports = {
   DREAMINA_STRONG_READY_SELECTORS,
   DREAMINA_LOGIN_ENTRY_CANDIDATES,
   DREAMINA_LOGIN_GATE_SELECTORS,
+  DREAMINA_ERROR_MODAL_TEXTS,
   OVER_GENERIC_READY_SELECTORS,
   isVisibleAndEnabled,
   tryClickLocator,
@@ -1170,6 +1337,10 @@ module.exports = {
   waitBrieflyForRecovery,
   recoverDreaminaEntry,
   detectDreaminaEmailGateReady,
+  captureDreaminaLoginGateSnapshot,
+  hasMeaningfulLoginGateStateChange,
+  detectDreaminaErrorModal,
+  waitAfterLoginEntryAction,
   findDreaminaLoginEntry,
   openDreaminaLoginEntry,
   confirmDreaminaLoginGate,
