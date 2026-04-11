@@ -358,16 +358,246 @@ async function resolveDreaminaVerificationInput(page, runtime = {}, context = {}
 }
 
 /**
+ * 读取 Dreamina 验证码输入状态。
+ *
+ * 作用：
+ * - 在多种输入策略后读取当前页面上的验证码输入结果
+ * - 避免只看 click/fill 是否报错，而不看页面真实状态
+ */
+async function readDreaminaVerificationInputState(page) {
+  // 在页面上下文里读取 Dreamina 验证码输入框与验证码格子的当前状态。
+  return await page.evaluate(() => {
+    // 优先寻找 Dreamina 真实 6 位验证码 input。
+    const input = document.querySelector("input[maxlength='6'][autocomplete='one-time-code'], input[autocomplete='one-time-code'][inputmode='numeric'], .verification_code_input-wrapper input[maxlength='6']");
+    // 收集页面上验证码格子的文本内容，作为 wrapper 模式下的补充判断依据。
+    const boxes = Array.from(document.querySelectorAll(".verification_code_input-number, [class*='verification_code_input-number']"));
+    // 返回统一状态结构。
+    return {
+      // 当前 input 的 value。
+      inputValue: input instanceof HTMLInputElement ? String(input.value || '') : '',
+      // 当前激活元素的标签名。
+      activeTag: document.activeElement ? document.activeElement.tagName : '',
+      // 当前激活元素的 className。
+      activeClass: document.activeElement ? String(document.activeElement.className || '') : '',
+      // 当前验证码格子的文本集合。
+      boxTexts: boxes.map(node => String(node.textContent || '').trim()),
+    };
+  }).catch(() => ({ inputValue: '', activeTag: '', activeClass: '', boxTexts: [] }));
+}
+
+/**
+ * 判断当前验证码输入状态是否已经成功承载目标验证码。
+ *
+ * 成功口径：
+ * - inputValue 与验证码完全一致
+ * - 或验证码格子的拼接文本前缀与验证码一致
+ */
+function hasDreaminaVerificationValue(state = {}, code = '') {
+  // 把目标验证码统一成字符串。
+  const expectedValue = String(code || '').trim();
+  // 如果目标验证码为空，直接返回 false。
+  if (!expectedValue) return false;
+  // 读取 inputValue。
+  const inputValue = String(state?.inputValue || '').trim();
+  // 把 boxTexts 拼接起来，适配 Dreamina wrapper 格子输入场景。
+  const joinedBoxText = Array.isArray(state?.boxTexts) ? state.boxTexts.join('') : '';
+  // 只要 inputValue 全等，或者格子文本前缀等于验证码，就视为成功承载验证码。
+  return inputValue === expectedValue || joinedBoxText.slice(0, expectedValue.length) === expectedValue;
+}
+
+/**
+ * 尝试通过 Dreamina 真实 input 做输入。
+ *
+ * 这是 Dreamina 最优先的输入策略：
+ * - click / focus
+ * - 清空旧值
+ * - fill / type
+ * - evaluate 注入 input/change/keyup 事件
+ */
+async function tryDreaminaHiddenInputFill(page, locator, code, logInfo) {
+  // 统一目标验证码字符串。
+  const value = String(code || '').trim();
+  // 如果没有验证码，直接失败返回。
+  if (!value) return { ok: false, mode: 'dreamina-hidden-input', value: 'EMPTY_CODE', stateChanged: null };
+  try {
+    // 先点击目标 input，尽量把焦点落在真实输入框上。
+    await locator.click({ force: true }).catch(() => {});
+    // 再次显式 focus，降低只 click 不聚焦的概率。
+    await locator.focus().catch(() => {});
+    // 尝试全选旧值。
+    await locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+    // 删除旧值，避免新旧验证码拼接。
+    await locator.press('Backspace').catch(() => {});
+    // 先尝试 fill 直接写入验证码。
+    await locator.fill(value).catch(async () => {
+      // 如果 fill 失败，再回退到 type。
+      await locator.type(value, { delay: 60 }).catch(() => {});
+    });
+    // 补一层 DOM 注入，触发 input / change / keyup，覆盖 Dreamina 可能依赖的事件链。
+    await locator.evaluate((node, verificationCode) => {
+      // 只有 HTMLInputElement 才继续执行。
+      if (!(node instanceof HTMLInputElement)) return;
+      // 直接设置 input value。
+      node.value = verificationCode;
+      // 主动派发 input 事件。
+      node.dispatchEvent(new InputEvent('input', { bubbles: true, data: verificationCode, inputType: 'insertText' }));
+      // 主动派发 change 事件。
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+      // 主动派发 keyup 事件，补 Dreamina 某些监听链。
+      node.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: verificationCode.slice(-1) || '' }));
+    }, value).catch(() => {});
+    // 给页面一小段时间吃掉状态变化。
+    await page.waitForTimeout(180).catch(() => {});
+    // 读取输入后的页面状态。
+    const state = await readDreaminaVerificationInputState(page);
+    // 如果有日志函数，记录当前输入结果状态。
+    if (typeof logInfo === 'function') logInfo(`dreamina.verification.fillCode.hiddenInput | active=${state.activeTag}.${state.activeClass} | inputValue=${state.inputValue || '[EMPTY]'} | boxTexts=${JSON.stringify(state.boxTexts || [])}`);
+    // 判断当前页面状态是否已经成功承载验证码。
+    const ok = hasDreaminaVerificationValue(state, value);
+    // 返回本轮 hidden input 输入结果。
+    return {
+      ok,
+      mode: 'dreamina-hidden-input',
+      value: String(state?.inputValue || ''),
+      stateChanged: ok || Boolean(String(state?.inputValue || '').trim()),
+    };
+  } catch (error) {
+    // hidden input 路径抛异常时，按失败结构返回，交给下一条策略继续尝试。
+    return {
+      ok: false,
+      mode: 'dreamina-hidden-input',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+    };
+  }
+}
+
+/**
+ * 尝试通过 Dreamina wrapper 容器做键盘输入。
+ *
+ * 这个策略适用于：
+ * - 页面表面是验证码格子容器
+ * - 真实输入焦点落在 wrapper 关联元素上
+ */
+async function tryDreaminaWrapperKeyboardFill(page, code, logInfo) {
+  // 统一目标验证码字符串。
+  const value = String(code || '').trim();
+  // 如果验证码为空，直接失败。
+  if (!value) return { ok: false, mode: 'dreamina-wrapper-keyboard', value: 'EMPTY_CODE', stateChanged: null };
+  // 构造 Dreamina wrapper 候选集合。
+  const wrapperCandidates = [
+    page.locator('.verification_code_input-wrapper').first(),
+    page.locator("[class*='verification_code_input-wrapper']").first(),
+    page.locator(".verification_code_input-number-focus").first(),
+    page.locator("[class*='verification_code_input-number-focus']").first(),
+  ];
+
+  // 依次尝试每个 wrapper 候选。
+  for (const candidate of wrapperCandidates) {
+    // 如果候选不存在或不可见，则跳过。
+    if (!candidate || !(await isVisible(candidate))) continue;
+    try {
+      // 先强制点击 wrapper，让焦点尽量落到 Dreamina 的验证码输入链路上。
+      await candidate.click({ force: true }).catch(() => {});
+      // 尝试全选旧值。
+      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+      // 删除旧值。
+      await page.keyboard.press('Backspace').catch(() => {});
+      // 使用键盘逐字输入验证码。
+      await page.keyboard.type(value, { delay: 80 }).catch(() => {});
+      // 给页面一点时间同步格子状态。
+      await page.waitForTimeout(180).catch(() => {});
+      // 读取输入后的页面状态。
+      const state = await readDreaminaVerificationInputState(page);
+      // 如果有日志函数，记录当前 wrapper 输入结果。
+      if (typeof logInfo === 'function') logInfo(`dreamina.verification.fillCode.wrapper | active=${state.activeTag}.${state.activeClass} | inputValue=${state.inputValue || '[EMPTY]'} | boxTexts=${JSON.stringify(state.boxTexts || [])}`);
+      // 判断当前页面状态是否已经成功承载验证码。
+      const ok = hasDreaminaVerificationValue(state, value);
+      // 如果当前 wrapper 路径成功，就直接返回。
+      if (ok) {
+        return {
+          ok: true,
+          mode: 'dreamina-wrapper-keyboard',
+          value: String(state?.inputValue || ''),
+          stateChanged: true,
+        };
+      }
+    } catch (error) {
+      // 当前 wrapper 候选失败时，静默进入下一个候选。
+    }
+  }
+
+  // 所有 wrapper 候选都失败时，返回统一失败结构。
+  return {
+    ok: false,
+    mode: 'dreamina-wrapper-keyboard',
+    value: 'WRAPPER_INPUT_NOT_APPLIED',
+    stateChanged: false,
+  };
+}
+
+/**
+ * 回退到普通 input fill/type 策略。
+ *
+ * 这是第三层兜底：
+ * - 当前面 Dreamina 专用路径都没成功时
+ * - 仍尝试直接对已解析出的 locator 做普通输入
+ */
+async function tryDreaminaFallbackFill(page, locator, code, logInfo) {
+  // 统一目标验证码字符串。
+  const value = String(code || '').trim();
+  // 如果验证码为空，直接失败。
+  if (!value) return { ok: false, mode: 'fallback-keyboard-type', value: 'EMPTY_CODE', stateChanged: null };
+  try {
+    // 点击目标输入控件。
+    await locator.click().catch(() => {});
+    // 先尝试键盘逐字输入。
+    await page.keyboard.type(value, { delay: 80 }).catch(async () => {
+      // 如果键盘输入失败，再尝试 fill。
+      await locator.fill(value).catch(() => {});
+    });
+    // 给页面一点时间同步状态。
+    await page.waitForTimeout(180).catch(() => {});
+    // 读取输入后的页面状态。
+    const state = await readDreaminaVerificationInputState(page);
+    // 如果有日志函数，记录 fallback 输入结果。
+    if (typeof logInfo === 'function') logInfo(`dreamina.verification.fillCode.fallback | active=${state.activeTag}.${state.activeClass} | inputValue=${state.inputValue || '[EMPTY]'} | boxTexts=${JSON.stringify(state.boxTexts || [])}`);
+    // 判断当前页面状态是否已经成功承载验证码。
+    const ok = hasDreaminaVerificationValue(state, value);
+    // 返回 fallback 输入结果。
+    return {
+      ok,
+      mode: 'fallback-keyboard-type',
+      value: String(state?.inputValue || ''),
+      stateChanged: ok || Boolean(String(state?.inputValue || '').trim()),
+    };
+  } catch (error) {
+    // fallback 路径抛异常时，按统一失败结构返回。
+    return {
+      ok: false,
+      mode: 'fallback-keyboard-type',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+    };
+  }
+}
+
+/**
  * 输入 Dreamina 验证码。
  *
- * 当前状态说明：
- * - 这还是第一版基础实现
- * - 当前只做 direct-fill + type fallback
- * - 后续会补 Dreamina hidden input / wrapper keyboard / fallback 多策略
+ * 当前策略：
+ * 1. 先走 Dreamina hidden input 路径
+ * 2. 再走 Dreamina wrapper keyboard 路径
+ * 3. 最后走 fallback 普通输入路径
+ *
+ * 设计目标：
+ * - 优先保留 Dreamina 专属输入能力
+ * - 不退回宽泛输入目标匹配
+ * - 不因为单一路径失败就直接判整阶段失败
  */
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
   // 从上下文里读取前一步解析出来的输入目标结果。
-  const { codeInputResolution = null } = context;
+  const { codeInputResolution = null, logInfo = null } = context;
   // 如果输入目标本身都不存在，就直接失败，不再继续输入动作。
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
@@ -386,54 +616,71 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
-  try {
-    // 尝试先点击输入目标，尽量让焦点落在目标输入控件上。
-    await codeInputResolution.locator.click().catch(() => {});
-    // 优先尝试使用 fill 直接输入验证码。
-    await codeInputResolution.locator.fill(String(code || '')).catch(async () => {
-      // 如果 fill 失败，再 fallback 到 type。
-      if (typeof codeInputResolution.locator.type === 'function') {
-        // 用轻微 delay 的方式模拟逐字输入。
-        await codeInputResolution.locator.type(String(code || ''), { delay: 60 }).catch(() => {});
-      }
-    });
-
-    // 读取当前输入框里的值，作为输入是否成功的基础判断。
-    const currentValue = await codeInputResolution.locator.inputValue().catch(() => '');
-    // 如果当前值非空，则认为状态发生了可识别变化。
-    const stateChanged = Boolean(String(currentValue || '').trim());
-    // 返回输入结果结构。
+  // 统一验证码字符串，避免后面多次重复 trim。
+  const normalizedCode = String(code || '').trim();
+  // 如果验证码本身为空，也直接失败，不做无意义输入动作。
+  if (!normalizedCode) {
     return {
-      // 只要当前值非空，就先按成功处理。
-      ok: Boolean(String(currentValue || '').trim()),
-      // 如果当前值非空，state 就是输入成功；否则仍然算失败。
-      state: String(currentValue || '').trim() ? 'VERIFICATION_CODE_FILLED' : 'VERIFICATION_CODE_FILL_FAILED',
-      // 当前第一版输入模式固定为 direct-fill。
-      mode: 'direct-fill',
-      // 当前输入来源固定为 verification-input。
-      source: 'verification-input',
-      // 返回当前输入框里读取到的值。
-      value: currentValue,
-      // 返回状态变化判断结果。
-      stateChanged,
-    };
-  } catch (error) {
-    // 如果整个输入过程抛异常，则返回统一失败结构。
-    return {
-      // 明确失败。
       ok: false,
-      // 当前阶段状态码：验证码输入失败。
       state: 'VERIFICATION_CODE_FILL_FAILED',
-      // 当前输入模式仍记作 direct-fill，因为异常发生在这一条链上。
-      mode: 'direct-fill',
-      // 当前来源仍记为 verification-input。
+      mode: '',
       source: 'verification-input',
-      // 用异常消息作为辅助值，便于排查。
-      value: error?.message || 'UNKNOWN',
-      // 明确记为没有成功状态变化。
-      stateChanged: false,
+      value: 'EMPTY_CODE',
+      stateChanged: null,
     };
   }
+
+  // 第一层：优先尝试 Dreamina hidden input 路径。
+  const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  // 如果 hidden input 成功，就直接返回成功结果。
+  if (hiddenInputResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: hiddenInputResult.mode,
+      source: 'verification-input',
+      value: hiddenInputResult.value,
+      stateChanged: hiddenInputResult.stateChanged,
+    };
+  }
+
+  // 第二层：hidden input 没成功时，尝试 Dreamina wrapper keyboard 路径。
+  const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
+  // 如果 wrapper 路径成功，就直接返回成功结果。
+  if (wrapperResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: wrapperResult.mode,
+      source: 'verification-input',
+      value: wrapperResult.value,
+      stateChanged: wrapperResult.stateChanged,
+    };
+  }
+
+  // 第三层：当前面两条 Dreamina 专用路径都没成功时，再走普通 fallback 路径。
+  const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  // 如果 fallback 成功，也按成功结果返回。
+  if (fallbackResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: fallbackResult.mode,
+      source: 'verification-input',
+      value: fallbackResult.value,
+      stateChanged: fallbackResult.stateChanged,
+    };
+  }
+
+  // 三条路径都失败时，统一返回失败结构。
+  return {
+    ok: false,
+    state: 'VERIFICATION_CODE_FILL_FAILED',
+    mode: fallbackResult.mode || wrapperResult.mode || hiddenInputResult.mode || '',
+    source: 'verification-input',
+    value: fallbackResult.value || wrapperResult.value || hiddenInputResult.value || 'UNKNOWN',
+    stateChanged: false,
+  };
 }
 
 /**

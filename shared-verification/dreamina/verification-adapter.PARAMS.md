@@ -201,6 +201,10 @@
 
 ### 作用
 - 执行验证码输入
+- 当前第一版已补成 Dreamina 多策略输入：
+  - hidden input 注入
+  - wrapper keyboard
+  - fallback keyboard/type
 
 ### 返回值
 #### 成功时
@@ -214,6 +218,11 @@
   stateChanged,
 }
 ```
+
+### `mode` 当前常见值
+- `dreamina-hidden-input`
+- `dreamina-wrapper-keyboard`
+- `fallback-keyboard-type`
 
 #### 失败时
 ```js

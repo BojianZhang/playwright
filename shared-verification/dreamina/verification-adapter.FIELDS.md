@@ -164,8 +164,7 @@
 ## `mode`
 - 类型：`string`
 - 含义：本次使用的输入策略
-- 当前/目标可能值：
-  - `direct-fill`
+- 当前常见值：
   - `dreamina-hidden-input`
   - `dreamina-wrapper-keyboard`
   - `fallback-keyboard-type`
