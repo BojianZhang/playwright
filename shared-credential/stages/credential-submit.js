@@ -19,6 +19,22 @@
  */
 
 /**
+ * 从 adapter 上取某个方法。
+ *
+ * 作用：
+ * - 当前先兼容 Dreamina 风格命名
+ * - 后续如果 OpenAI / Claude adapter 用统一命名，这里也能自然兼容
+ */
+function resolveAdapterMethod(adapter, names = []) {
+  for (const name of names) {
+    if (typeof adapter?.[name] === 'function') {
+      return adapter[name].bind(adapter);
+    }
+  }
+  return null;
+}
+
+/**
  * 统一阶段 2 的返回结构。
  *
  * 作用：
@@ -41,7 +57,15 @@ function normalizeCredentialStageResult(input = {}) {
  *
  * 作用：
  * - 统一编排 credential submit 阶段
- * - 当前先保留最小骨架，等待具体站点 adapter 接入
+ * - 当前先接通 Dreamina adapter 的真实流程
+ *
+ * 当前执行顺序：
+ * 1. 等 form ready
+ * 2. 填 email
+ * 3. 填 password
+ * 4. 点 submit
+ * 5. 确认提交结果
+ * 6. 如果失败，走站点分类
  */
 async function runCredentialSubmitStage(options = {}) {
   const {
@@ -60,29 +84,159 @@ async function runCredentialSubmitStage(options = {}) {
     });
   }
 
-  if (typeof adapter.waitForDreaminaCredentialFormReady !== 'function'
-    && typeof adapter.waitForCredentialFormReady !== 'function') {
+  const waitForFormReady = resolveAdapterMethod(adapter, ['waitForCredentialFormReady', 'waitForDreaminaCredentialFormReady']);
+  const fillEmail = resolveAdapterMethod(adapter, ['fillCredentialEmail', 'fillDreaminaCredentialEmail']);
+  const fillPassword = resolveAdapterMethod(adapter, ['fillCredentialPassword', 'fillDreaminaCredentialPassword']);
+  const submitForm = resolveAdapterMethod(adapter, ['submitCredentialForm', 'submitDreaminaCredentialForm']);
+  const confirmSubmitResult = resolveAdapterMethod(adapter, ['confirmCredentialSubmitResult', 'confirmDreaminaCredentialSubmitResult']);
+  const classifyFailure = resolveAdapterMethod(adapter, ['classifyCredentialSubmitFailure', 'classifyDreaminaCredentialSubmitFailure']);
+
+  if (!waitForFormReady || !fillEmail || !fillPassword || !submitForm || !confirmSubmitResult) {
     return normalizeCredentialStageResult({
       success: false,
       state: 'ADAPTER_INCOMPLETE',
-      reason: 'CREDENTIAL_STAGE_FORM_READY_METHOD_MISSING',
+      reason: 'CREDENTIAL_STAGE_REQUIRED_METHOD_MISSING',
+      detail: {
+        hasWaitForFormReady: Boolean(waitForFormReady),
+        hasFillEmail: Boolean(fillEmail),
+        hasFillPassword: Boolean(fillPassword),
+        hasSubmitForm: Boolean(submitForm),
+        hasConfirmSubmitResult: Boolean(confirmSubmitResult),
+      },
     });
   }
 
+  /**
+   * 第一步：等 credential form ready。
+   *
+   * 如果这里都没过，后面的 fill / submit 就都没有意义。
+   */
+  const formReady = await waitForFormReady(page, runtime, context);
+  if (!formReady?.ok) {
+    const classified = classifyFailure ? classifyFailure({ reason: formReady?.state || 'FORM_NOT_READY' }) : null;
+    return normalizeCredentialStageResult({
+      success: false,
+      state: formReady?.state || 'FORM_NOT_READY',
+      reason: classified?.siteReason || classified?.reason || formReady?.state || 'FORM_NOT_READY',
+      detail: {
+        formReady,
+        classified,
+      },
+    });
+  }
+
+  /**
+   * 第二步：填 email。
+   *
+   * 这里把 formReady 通过 context 继续传下去，
+   * 让 adapter 可以复用前一步已经识别出的字段，不必重复扫描。
+   */
+  const emailResult = await fillEmail(page, account, runtime, { ...context, formReady });
+  if (!emailResult?.ok) {
+    const classified = classifyFailure ? classifyFailure({ reason: emailResult?.state || 'EMAIL_FILL_FAILED' }) : null;
+    return normalizeCredentialStageResult({
+      success: false,
+      state: emailResult?.state || 'EMAIL_FILL_FAILED',
+      reason: classified?.siteReason || classified?.reason || emailResult?.state || 'EMAIL_FILL_FAILED',
+      detail: {
+        formReady,
+        emailResult,
+        classified,
+      },
+    });
+  }
+
+  /**
+   * 第三步：填 password。
+   *
+   * 当前阶段 2 先按 Dreamina 的 email + password 结构接通。
+   * 后续如果有站点只需要 email，这里可以再扩成字段可选策略。
+   */
+  const passwordResult = await fillPassword(page, account, runtime, { ...context, formReady });
+  if (!passwordResult?.ok) {
+    const classified = classifyFailure ? classifyFailure({ reason: passwordResult?.state || 'PASSWORD_FILL_FAILED' }) : null;
+    return normalizeCredentialStageResult({
+      success: false,
+      state: passwordResult?.state || 'PASSWORD_FILL_FAILED',
+      reason: classified?.siteReason || classified?.reason || passwordResult?.state || 'PASSWORD_FILL_FAILED',
+      detail: {
+        formReady,
+        emailResult,
+        passwordResult,
+        classified,
+      },
+    });
+  }
+
+  /**
+   * 第四步：提交表单。
+   *
+   * 这里只做 submit 动作，不在公共层写任何站点特有按钮逻辑。
+   */
+  const submitResult = await submitForm(page, runtime, { ...context, formReady });
+  if (!submitResult?.ok) {
+    const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'FORM_SUBMIT_FAILED' }) : null;
+    return normalizeCredentialStageResult({
+      success: false,
+      state: submitResult?.state || 'FORM_SUBMIT_FAILED',
+      reason: classified?.siteReason || classified?.reason || submitResult?.state || 'FORM_SUBMIT_FAILED',
+      detail: {
+        formReady,
+        emailResult,
+        passwordResult,
+        submitResult,
+        classified,
+      },
+    });
+  }
+
+  /**
+   * 第五步：确认提交结果。
+   *
+   * 这是阶段 2 的成败判定核心。
+   * 成功时通常意味着进入下一阶段（Dreamina 当前是 verification）。
+   */
+  const confirmResult = await confirmSubmitResult(page, runtime, context);
+  if (confirmResult?.ok) {
+    return normalizeCredentialStageResult({
+      success: true,
+      state: confirmResult?.state || 'CREDENTIAL_SUBMIT_OK',
+      reason: confirmResult?.state || 'CREDENTIAL_SUBMIT_OK',
+      nextStage: confirmResult?.nextStage || 'verification',
+      detail: {
+        formReady,
+        emailResult,
+        passwordResult,
+        submitResult,
+        confirmResult,
+      },
+    });
+  }
+
+  /**
+   * 第六步：失败时走站点分类。
+   *
+   * 这样公共层只负责流程，具体 reason 语义仍由站点 adapter 定义。
+   */
+  const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN' }) : null;
   return normalizeCredentialStageResult({
     success: false,
-    state: 'STAGE_SCAFFOLD_ONLY',
-    reason: 'CREDENTIAL_STAGE_NOT_CONNECTED_YET',
+    state: confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
+    reason: classified?.siteReason || classified?.reason || confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
+    nextStage: '',
     detail: {
-      account: account?.email || '',
-      hasPage: Boolean(page),
-      runtimeMode: String(runtime.mode || ''),
-      note: '阶段 2 公共骨架已建立，待接入具体站点 adapter 主流程。',
+      formReady,
+      emailResult,
+      passwordResult,
+      submitResult,
+      confirmResult,
+      classified,
     },
   });
 }
 
 module.exports = {
+  resolveAdapterMethod,
   normalizeCredentialStageResult,
   runCredentialSubmitStage,
 };
