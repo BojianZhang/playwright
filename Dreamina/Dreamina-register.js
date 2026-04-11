@@ -1,5 +1,7 @@
 'use strict';
 
+const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
+
 // ==============================
 // Dreamina 主链编排层：阶段公共 runner 引入
 // ==============================
@@ -473,6 +475,86 @@ async function runDreaminaRegisterFlow(options = {}) {
   });
 }
 
+function parseCliArgs(argv = []) {
+  const args = Array.isArray(argv) ? argv : [];
+  let proxyIndex = 0;
+
+  for (let index = 0; index < args.length; index++) {
+    const token = String(args[index] || '').trim();
+    if (!token) continue;
+    if (token === '--proxy-index') {
+      proxyIndex = Number(args[index + 1] || 0);
+      index += 1;
+      continue;
+    }
+    if (/^\d+$/.test(token)) {
+      proxyIndex = Number(token);
+    }
+  }
+
+  return {
+    proxyIndex: Number.isFinite(proxyIndex) ? proxyIndex : 0,
+  };
+}
+
+function selectCliProxy(proxies = [], proxyIndex = 0) {
+  const list = Array.isArray(proxies) ? proxies.filter(Boolean) : [];
+  if (!list.length) return null;
+  const normalizedIndex = Math.max(0, Math.min(Number(proxyIndex) || 0, list.length - 1));
+  return list[normalizedIndex] || null;
+}
+
+async function runDreaminaRegisterCli(argv = []) {
+  const { proxyIndex } = parseCliArgs(argv);
+  const proxies = loadLocalProxies();
+  const proxy = selectCliProxy(proxies, proxyIndex);
+
+  if (!proxy) {
+    const emptyResult = {
+      success: false,
+      site: 'dreamina',
+      finalStage: 'preconditions',
+      finalState: 'DREAMINA_REGISTER_PROXY_MISSING',
+      finalReason: 'DREAMINA_REGISTER_PROXY_MISSING',
+      nextStage: '',
+      account: {},
+      proxy: null,
+      deliveryPayload: null,
+      stageResults: {},
+      proxyPrecheckSummary: null,
+      meta: {
+        cli: true,
+        proxyIndex,
+      },
+    };
+    console.log('[Dreamina Register] 未找到可用代理');
+    console.log(JSON.stringify(emptyResult, null, 2));
+    return emptyResult;
+  }
+
+  const result = await runDreaminaRegisterFlow({
+    proxy,
+    account: {},
+    runtime: {},
+    logInfo: null,
+  });
+
+  console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+if (require.main === module) {
+  runDreaminaRegisterCli(process.argv.slice(2))
+    .then(result => {
+      process.exit(result?.success ? 0 : 1);
+    })
+    .catch(error => {
+      console.error(error);
+      process.exit(1);
+    });
+}
+
 module.exports = {
   buildDreaminaStageRegistry,
   buildDreaminaRegisterContext,
@@ -481,4 +563,7 @@ module.exports = {
   runDreaminaStage,
   normalizeDreaminaRegisterResult,
   runDreaminaRegisterFlow,
+  parseCliArgs,
+  selectCliProxy,
+  runDreaminaRegisterCli,
 };
