@@ -85,6 +85,7 @@
   settleStage,
   detectionSource,
   stateChanged,
+  retryCount,
   detail,
 }
 ```
@@ -191,7 +192,18 @@
 
 ---
 
-## 10. `detail`
+## 10. `retryCount`
+- 类型：`number`
+- 含义：verification 阶段内部已经发生了多少次重试
+- 口径：
+  - `0` 表示第一次尝试就收口
+  - `1` 表示已经发生过 1 次 verification 内重试
+- 注意：
+  - 这里是第三阶段内部重试，不是 runner 全局重试
+
+---
+
+## 11. `detail`
 - 类型：`object | null`
 - 含义：阶段内部的详细上下文结果
 - 当前常见内容建议：

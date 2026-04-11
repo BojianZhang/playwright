@@ -75,6 +75,8 @@ function normalizeVerificationStageResult(input = {}) {
     detectionSource: String(input.detectionSource || '').trim(),
     // 当前页面/输入状态是否发生了有意义变化。
     stateChanged: typeof input.stateChanged === 'boolean' ? input.stateChanged : null,
+    // verification 内有限重试次数。
+    retryCount: Number.isFinite(Number(input.retryCount)) ? Number(input.retryCount) : 0,
     // 阶段内部详细上下文，供调试和分析使用。
     detail: input.detail || null,
   };
@@ -162,94 +164,161 @@ async function runVerificationSubmitStage(options = {}) {
     });
   }
 
-  // 第二步：获取验证码。
-  const fetchCodeResult = await fetchCode(page, account, runtime, { ...context, verificationReady });
-  // 如果验证码拿不到，第三阶段也无法继续。
-  if (!fetchCodeResult?.ok) {
-    // 先尝试按站点语义分类失败原因。
-    const classified = classifyFailure ? classifyFailure({ reason: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE' }) : null;
-    // 返回统一失败结果。
+  // 从 runtime 中读取 verification 阶段内部重试上限；默认允许第一次尝试 + 1 次重试。
+  const verificationRetryMaxAttempts = Math.max(1, Number(runtime?.verificationRetryMaxAttempts || 2));
+  // 维护一个已使用验证码集合，避免 wrong code 后反复拿到并重复填写同一个验证码。
+  const usedCodes = new Set();
+  // 记录最近一次获取验证码结果。
+  let fetchCodeResult = null;
+  // 记录最近一次输入目标解析结果。
+  let codeInputResolution = null;
+  // 记录最近一次输入结果。
+  let fillResult = null;
+  // 记录最近一次确认结果。
+  let confirmResult = null;
+  // 记录当前重试摘要，方便最终 detail 对外输出。
+  const retrySummary = [];
+
+  // 从第一次尝试开始，最多执行 verificationRetryMaxAttempts 轮 verification 内部尝试。
+  for (let attemptIndex = 1; attemptIndex <= verificationRetryMaxAttempts; attemptIndex++) {
+    // 第二步：获取验证码。
+    fetchCodeResult = await fetchCode(page, account, runtime, {
+      ...context,
+      verificationReady,
+      usedCodes,
+      attemptIndex,
+    });
+    // 记录本轮拉码摘要，便于后续分析 verification 内部重试过程。
+    retrySummary.push({
+      attemptIndex,
+      fetchState: fetchCodeResult?.state || '',
+      code: String(fetchCodeResult?.code || ''),
+      provider: String(fetchCodeResult?.provider || ''),
+      matchMode: String(fetchCodeResult?.matchMode || ''),
+    });
+    // 如果验证码拿不到，第三阶段也无法继续。
+    if (!fetchCodeResult?.ok) {
+      // 先尝试按站点语义分类失败原因。
+      const classified = classifyFailure ? classifyFailure({ reason: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE' }) : null;
+      // 返回统一失败结果。
+      return normalizeVerificationStageResult({
+        success: false,
+        state: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',
+        reason: classified?.siteReason || classified?.reason || fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',
+        detectionSource: fetchCodeResult?.source || '',
+        retryCount: attemptIndex - 1,
+        detail: { verificationReady, fetchCodeResult, classified, retrySummary },
+      });
+    }
+
+    // 只要当前拉到的验证码非空，就把它加入 usedCodes，避免下一轮继续重复消费同一个验证码。
+    if (String(fetchCodeResult?.code || '').trim()) {
+      usedCodes.add(String(fetchCodeResult.code).trim());
+    }
+
+    // 第三步：解析验证码输入目标。
+    codeInputResolution = await resolveCodeInput(page, runtime, { ...context, verificationReady, fetchCodeResult, usedCodes, attemptIndex });
+    // 如果连输入目标都找不到，就不能继续输入验证码。
+    if (!codeInputResolution?.ok) {
+      // 先尝试按站点语义分类失败原因。
+      const classified = classifyFailure ? classifyFailure({ reason: codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND' }) : null;
+      // 返回统一失败结果。
+      return normalizeVerificationStageResult({
+        success: false,
+        state: codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND',
+        reason: classified?.siteReason || classified?.reason || codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND',
+        signalStrength: codeInputResolution?.strength || '',
+        detectionSource: codeInputResolution?.source || '',
+        retryCount: attemptIndex - 1,
+        detail: { verificationReady, fetchCodeResult, codeInputResolution, classified, retrySummary },
+      });
+    }
+
+    // 第四步：执行验证码输入动作。
+    fillResult = await fillCode(page, fetchCodeResult.code, runtime, { ...context, verificationReady, fetchCodeResult, codeInputResolution, usedCodes, attemptIndex });
+    // 如果验证码输入动作失败，就在这一层直接收口，不继续误跑到结果确认。
+    if (!fillResult?.ok) {
+      // 先尝试按站点语义分类失败原因。
+      const classified = classifyFailure ? classifyFailure({ reason: fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED' }) : null;
+      // 返回统一失败结果。
+      return normalizeVerificationStageResult({
+        success: false,
+        state: fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED',
+        reason: classified?.siteReason || classified?.reason || fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED',
+        detectionSource: fillResult?.source || '',
+        stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+        retryCount: attemptIndex - 1,
+        detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, classified, retrySummary },
+      });
+    }
+
+    // 第五步：确认验证码提交结果。
+    confirmResult = await confirmSubmitResult(page, runtime, {
+      ...context,
+      verificationReady,
+      fetchCodeResult,
+      codeInputResolution,
+      fillResult,
+      usedCodes,
+      attemptIndex,
+    });
+
+    // 如果确认结果成功，说明当前阶段可以推进到下一阶段。
+    if (confirmResult?.ok) {
+      // 返回统一成功结构。
+      return normalizeVerificationStageResult({
+        success: true,
+        state: confirmResult?.state || 'VERIFICATION_SUBMIT_OK',
+        reason: confirmResult?.state || 'VERIFICATION_SUBMIT_OK',
+        nextStage: confirmResult?.nextStage || 'profile-completion',
+        signalStrength: confirmResult?.strength || '',
+        settleStage: confirmResult?.settleStage || '',
+        detectionSource: confirmResult?.source || '',
+        stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+        retryCount: attemptIndex - 1,
+        detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, retrySummary },
+      });
+    }
+
+    // 如果当前轮返回 wrong code，并且后面还有剩余轮次，则进入 verification 阶段内下一轮重试。
+    if (String(confirmResult?.state || '') === 'WRONG_VERIFICATION_CODE' && attemptIndex < verificationRetryMaxAttempts) {
+      retrySummary.push({
+        attemptIndex,
+        confirmState: 'WRONG_VERIFICATION_CODE',
+        action: 'retry-next-code',
+      });
+      continue;
+    }
+
+    // 走到这里说明当前确认结果没有成功，且不应继续 verification 内重试，需要进入失败分类。
+    const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN' }) : null;
+    // 返回统一失败结构。
     return normalizeVerificationStageResult({
       success: false,
-      state: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',
-      reason: classified?.siteReason || classified?.reason || fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',
-      detectionSource: fetchCodeResult?.source || '',
-      detail: { verificationReady, fetchCodeResult, classified },
-    });
-  }
-
-  // 第三步：解析验证码输入目标。
-  const codeInputResolution = await resolveCodeInput(page, runtime, { ...context, verificationReady, fetchCodeResult });
-  // 如果连输入目标都找不到，就不能继续输入验证码。
-  if (!codeInputResolution?.ok) {
-    // 先尝试按站点语义分类失败原因。
-    const classified = classifyFailure ? classifyFailure({ reason: codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND' }) : null;
-    // 返回统一失败结果。
-    return normalizeVerificationStageResult({
-      success: false,
-      state: codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND',
-      reason: classified?.siteReason || classified?.reason || codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND',
-      signalStrength: codeInputResolution?.strength || '',
-      detectionSource: codeInputResolution?.source || '',
-      detail: { verificationReady, fetchCodeResult, codeInputResolution, classified },
-    });
-  }
-
-  // 第四步：执行验证码输入动作。
-  const fillResult = await fillCode(page, fetchCodeResult.code, runtime, { ...context, verificationReady, fetchCodeResult, codeInputResolution });
-  // 如果验证码输入动作失败，就在这一层直接收口，不继续误跑到结果确认。
-  if (!fillResult?.ok) {
-    // 先尝试按站点语义分类失败原因。
-    const classified = classifyFailure ? classifyFailure({ reason: fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED' }) : null;
-    // 返回统一失败结果。
-    return normalizeVerificationStageResult({
-      success: false,
-      state: fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED',
-      reason: classified?.siteReason || classified?.reason || fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED',
-      detectionSource: fillResult?.source || '',
-      stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
-      detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, classified },
-    });
-  }
-
-  // 第五步：确认验证码提交结果。
-  const confirmResult = await confirmSubmitResult(page, runtime, {
-    ...context,
-    verificationReady,
-    fetchCodeResult,
-    codeInputResolution,
-    fillResult,
-  });
-
-  // 如果确认结果成功，说明当前阶段可以推进到下一阶段。
-  if (confirmResult?.ok) {
-    // 返回统一成功结构。
-    return normalizeVerificationStageResult({
-      success: true,
-      state: confirmResult?.state || 'VERIFICATION_SUBMIT_OK',
-      reason: confirmResult?.state || 'VERIFICATION_SUBMIT_OK',
-      nextStage: confirmResult?.nextStage || 'profile-completion',
+      state: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN',
+      reason: classified?.siteReason || classified?.reason || confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN',
+      nextStage: '',
       signalStrength: confirmResult?.strength || '',
       settleStage: confirmResult?.settleStage || '',
       detectionSource: confirmResult?.source || '',
       stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
-      detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult },
+      retryCount: attemptIndex - 1,
+      detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, classified, retrySummary },
     });
   }
 
-  // 到这里说明确认结果没有成功，需要进入失败分类。
-  const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN' }) : null;
-  // 返回统一失败结构。
+  // 理论上不应走到这里；如果真的走到这里，按 unknown 兜底返回，避免主链无返回。
   return normalizeVerificationStageResult({
     success: false,
     state: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN',
-    reason: classified?.siteReason || classified?.reason || confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN',
+    reason: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN',
     nextStage: '',
     signalStrength: confirmResult?.strength || '',
     settleStage: confirmResult?.settleStage || '',
     detectionSource: confirmResult?.source || '',
     stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
-    detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, classified },
+    retryCount: Math.max(0, verificationRetryMaxAttempts - 1),
+    detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, retrySummary },
   });
 }
 
