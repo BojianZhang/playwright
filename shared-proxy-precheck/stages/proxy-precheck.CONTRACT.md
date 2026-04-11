@@ -1,16 +1,16 @@
-# 代理预检主链契约
+# 代理预检测速主链契约
 
 对应文件：
 - `D:\playwright\shared-proxy-precheck\stages\proxy-precheck.js`
 
 这个文档只做一件事：
-**把代理预检主链的统一输入、统一输出、字段语义、边界讲清楚。**
+**把代理预检测速主链的统一输入、统一输出、字段语义、边界讲清楚。**
 
 ---
 
 # 一、定位
 
-`proxy-precheck` 不是正式注册业务阶段，而是正式注册开始之前的独立预检链。
+`proxy-precheck` 不是正式注册业务阶段，而是正式注册开始之前的独立网络预检测速链。
 
 它的职责边界是：
 - 从当前代理待检查开始
@@ -22,10 +22,6 @@
 
 `runProxyPrecheckChain(options)` 当前输入：
 
-## `page`
-- 类型：Playwright Page | null
-- 含义：当前可用于预检的页面对象
-
 ## `proxy`
 - 类型：object
 - 含义：当前代理配置对象
@@ -34,6 +30,7 @@
   - `proxy.port`
   - `proxy.username`
   - `proxy.password`
+  - `proxy.protocol`
 
 ## `adapter`
 - 类型：object
@@ -60,6 +57,7 @@
   state,
   reason,
   nextStage,
+  proxyGrade,
   signalStrength,
   settleStage,
   detectionSource,
@@ -75,16 +73,15 @@
 
 ## `success`
 - 类型：`boolean`
-- 含义：代理预检链是否成功完成
+- 含义：代理预检测速链是否成功完成
 
 ## `stage`
 - 类型：`string`
 - 固定值：`proxy-precheck`
-- 含义：当前结果所属主链名
 
 ## `state`
 - 类型：`string`
-- 含义：代理预检主链最终原始状态码
+- 含义：代理预检测速主链最终原始状态码
 
 ## `reason`
 - 类型：`string`
@@ -92,9 +89,12 @@
 
 ## `nextStage`
 - 类型：`string`
-- 含义：成功后建议推进到哪个最终阶段
-- 当前成功时通常为：
-  - `proxy-precheck-complete`
+- 成功时通常为：`proxy-precheck-complete`
+
+## `proxyGrade`
+- 类型：`string`
+- 枚举：`OK` / `WEAK` / `BAD`
+- 含义：给上层快速消费的代理质量分级
 
 ## `signalStrength`
 - 类型：`string`
@@ -110,7 +110,7 @@
 
 ## `stateChanged`
 - 类型：`boolean | null`
-- 含义：预检过程中页面或状态是否发生了有意义变化
+- 含义：预检过程中状态是否发生了有意义变化
 
 ## `retryCount`
 - 类型：`number`
@@ -118,12 +118,11 @@
 
 ## `detail`
 - 类型：`object | null`
-- 含义：预检链详细结果
 - 当前建议包含：
   - `connectivity`
-  - `networkHealth`
-  - `entryReachability`
-  - `siteReady`
-  - `businessReady`
+  - `exitIp`
+  - `primaryTarget`
+  - `secondaryTarget`
   - `resultConfirmation`
   - `classified`
+  - `proxySummary`

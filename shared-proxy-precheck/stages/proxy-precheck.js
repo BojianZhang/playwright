@@ -1,23 +1,18 @@
 'use strict';
 
-/**
- * 从 adapter 上解析指定方法。
- */
 function resolveAdapterMethod(adapter, methodName) {
   if (!adapter || typeof adapter !== 'object') return null;
   const method = adapter[methodName];
   return typeof method === 'function' ? method : null;
 }
 
-/**
- * 规范化代理预检主链输出结构。
- */
 function normalizeProxyPrecheckResult(input = {}) {
   const success = Boolean(input.success);
   const stage = 'proxy-precheck';
   const state = String(input.state || 'UNKNOWN').trim();
   const reason = String(input.reason || state).trim();
   const nextStage = success ? String(input.nextStage || 'proxy-precheck-complete').trim() : '';
+  const proxyGrade = String(input.proxyGrade || (success ? 'OK' : 'BAD')).trim();
   const signalStrength = String(input.signalStrength || '').trim();
   const settleStage = String(input.settleStage || 'none').trim();
   const detectionSource = String(input.detectionSource || '').trim();
@@ -31,6 +26,7 @@ function normalizeProxyPrecheckResult(input = {}) {
     state,
     reason,
     nextStage,
+    proxyGrade,
     signalStrength,
     settleStage,
     detectionSource,
@@ -40,14 +36,8 @@ function normalizeProxyPrecheckResult(input = {}) {
   };
 }
 
-/**
- * 运行代理预检主链。
- *
- * 当前版本先把统一 orchestration 骨架钉死。
- */
 async function runProxyPrecheckChain(options = {}) {
   const {
-    page = null,
     proxy = {},
     adapter = {},
     runtime = {},
@@ -55,14 +45,13 @@ async function runProxyPrecheckChain(options = {}) {
   } = options;
 
   const checkProxyConnectivity = resolveAdapterMethod(adapter, 'checkProxyConnectivity');
-  const checkProxyNetworkHealth = resolveAdapterMethod(adapter, 'checkProxyNetworkHealth');
-  const checkProxyEntryReachability = resolveAdapterMethod(adapter, 'checkProxyEntryReachability');
-  const checkProxySiteReady = resolveAdapterMethod(adapter, 'checkProxySiteReady');
-  const checkProxyBusinessReady = resolveAdapterMethod(adapter, 'checkProxyBusinessReady');
+  const checkProxyExitIp = resolveAdapterMethod(adapter, 'checkProxyExitIp');
+  const checkDreaminaPrimaryTarget = resolveAdapterMethod(adapter, 'checkDreaminaPrimaryTarget');
+  const checkDreaminaSecondaryTarget = resolveAdapterMethod(adapter, 'checkDreaminaSecondaryTarget');
   const confirmProxyPrecheckResult = resolveAdapterMethod(adapter, 'confirmProxyPrecheckResult');
   const classifyProxyPrecheckFailure = resolveAdapterMethod(adapter, 'classifyProxyPrecheckFailure');
 
-  const connectivity = checkProxyConnectivity ? await checkProxyConnectivity(page, proxy, runtime, context) : null;
+  const connectivity = checkProxyConnectivity ? await checkProxyConnectivity(proxy, runtime, context) : null;
   if (connectivity && connectivity.ok === false) {
     const classified = classifyProxyPrecheckFailure
       ? classifyProxyPrecheckFailure({ state: connectivity.state, source: connectivity.source, value: connectivity.value })
@@ -72,36 +61,37 @@ async function runProxyPrecheckChain(options = {}) {
       state: String(connectivity.state || 'PROXY_CONNECTIVITY_FAILED'),
       reason: classified?.siteReason || String(connectivity.state || 'PROXY_CONNECTIVITY_FAILED'),
       nextStage: '',
+      proxyGrade: 'BAD',
       signalStrength: String(connectivity.strength || ''),
-      settleStage: 'primary-failure',
+      settleStage: 'connectivity',
       detectionSource: String(connectivity.source || ''),
       detail: {
         connectivity,
-        networkHealth: null,
-        entryReachability: null,
-        siteReady: null,
-        businessReady: null,
+        exitIp: null,
+        primaryTarget: null,
+        secondaryTarget: null,
         resultConfirmation: null,
         classified,
+        proxySummary: context?.proxySummary || null,
       },
     });
   }
 
-  const networkHealth = checkProxyNetworkHealth ? await checkProxyNetworkHealth(page, proxy, runtime, { ...context, connectivity }) : null;
-  const entryReachability = checkProxyEntryReachability ? await checkProxyEntryReachability(page, proxy, runtime, { ...context, connectivity, networkHealth }) : null;
-  const siteReady = checkProxySiteReady ? await checkProxySiteReady(page, proxy, runtime, { ...context, connectivity, networkHealth, entryReachability }) : null;
-  const businessReady = checkProxyBusinessReady ? await checkProxyBusinessReady(page, proxy, runtime, { ...context, connectivity, networkHealth, entryReachability, siteReady }) : null;
+  const exitIp = checkProxyExitIp ? await checkProxyExitIp(proxy, runtime, { ...context, connectivity }) : null;
+  const primaryTarget = checkDreaminaPrimaryTarget ? await checkDreaminaPrimaryTarget(proxy, runtime, { ...context, connectivity, exitIp }) : null;
+  const secondaryTarget = checkDreaminaSecondaryTarget ? await checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget }) : null;
 
   const resultConfirmation = confirmProxyPrecheckResult
-    ? await confirmProxyPrecheckResult(page, proxy, runtime, { ...context, connectivity, networkHealth, entryReachability, siteReady, businessReady })
-    : { ok: false, state: 'PROXY_PRECHECK_RESULT_UNKNOWN', nextStage: '', source: '', value: '', strength: '', settleStage: 'none' };
+    ? await confirmProxyPrecheckResult(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget })
+    : { ok: false, state: 'PROXY_PRECHECK_BAD', nextStage: '', proxyGrade: 'BAD', source: '', value: '', strength: '', settleStage: 'none' };
 
   if (resultConfirmation?.ok) {
     return normalizeProxyPrecheckResult({
       success: true,
-      state: String(resultConfirmation.state || 'PROXY_PRECHECK_COMPLETE'),
-      reason: String(resultConfirmation.state || 'PROXY_PRECHECK_COMPLETE'),
+      state: String(resultConfirmation.state || 'PROXY_PRECHECK_OK'),
+      reason: String(resultConfirmation.state || 'PROXY_PRECHECK_OK'),
       nextStage: String(resultConfirmation.nextStage || 'proxy-precheck-complete'),
+      proxyGrade: String(resultConfirmation.proxyGrade || 'OK'),
       signalStrength: String(resultConfirmation.strength || ''),
       settleStage: String(resultConfirmation.settleStage || 'none'),
       detectionSource: String(resultConfirmation.source || ''),
@@ -109,25 +99,26 @@ async function runProxyPrecheckChain(options = {}) {
       retryCount: Number.isFinite(Number(resultConfirmation.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
       detail: {
         connectivity,
-        networkHealth,
-        entryReachability,
-        siteReady,
-        businessReady,
+        exitIp,
+        primaryTarget,
+        secondaryTarget,
         resultConfirmation,
         classified: null,
+        proxySummary: context?.proxySummary || null,
       },
     });
   }
 
   const classified = classifyProxyPrecheckFailure
-    ? classifyProxyPrecheckFailure({ state: resultConfirmation?.state || 'PROXY_PRECHECK_RESULT_UNKNOWN', source: resultConfirmation?.source, value: resultConfirmation?.value })
+    ? classifyProxyPrecheckFailure({ state: resultConfirmation?.state || 'PROXY_PRECHECK_BAD', source: resultConfirmation?.source, value: resultConfirmation?.value })
     : null;
 
   return normalizeProxyPrecheckResult({
     success: false,
-    state: String(resultConfirmation?.state || 'PROXY_PRECHECK_RESULT_UNKNOWN'),
-    reason: classified?.siteReason || String(resultConfirmation?.state || 'PROXY_PRECHECK_RESULT_UNKNOWN'),
+    state: String(resultConfirmation?.state || 'PROXY_PRECHECK_BAD'),
+    reason: classified?.siteReason || String(resultConfirmation?.state || 'PROXY_PRECHECK_BAD'),
     nextStage: '',
+    proxyGrade: String(resultConfirmation?.proxyGrade || 'BAD'),
     signalStrength: String(resultConfirmation?.strength || ''),
     settleStage: String(resultConfirmation?.settleStage || 'none'),
     detectionSource: String(resultConfirmation?.source || ''),
@@ -135,12 +126,12 @@ async function runProxyPrecheckChain(options = {}) {
     retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
     detail: {
       connectivity,
-      networkHealth,
-      entryReachability,
-      siteReady,
-      businessReady,
+      exitIp,
+      primaryTarget,
+      secondaryTarget,
       resultConfirmation,
       classified,
+      proxySummary: context?.proxySummary || null,
     },
   });
 }

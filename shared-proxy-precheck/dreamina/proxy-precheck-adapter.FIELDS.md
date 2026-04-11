@@ -4,7 +4,7 @@
 - `D:\playwright\shared-proxy-precheck\dreamina\proxy-precheck-adapter.js`
 
 这个文档只做一件事：
-**把代理预检 adapter 里所有关键返回对象字段讲清楚。**
+**把代理预检测速 adapter 里所有关键返回对象字段讲清楚。**
 
 ---
 
@@ -12,10 +12,9 @@
 
 适用于：
 - `checkProxyConnectivity(...)`
-- `checkProxyNetworkHealth(...)`
-- `checkProxyEntryReachability(...)`
-- `checkProxySiteReady(...)`
-- `checkProxyBusinessReady(...)`
+- `checkProxyExitIp(...)`
+- `checkDreaminaPrimaryTarget(...)`
+- `checkDreaminaSecondaryTarget(...)`
 
 ## `ok`
 - 类型：`boolean`
@@ -37,9 +36,9 @@
 - 类型：`string`
 - 含义：当前子阶段信号强度
 
-## `stateChanged`
-- 类型：`boolean | null`
-- 含义：预检前后状态是否发生了有意义变化
+## `elapsedMs`
+- 类型：`number | undefined`
+- 含义：当前子阶段耗时
 
 ---
 
@@ -47,15 +46,20 @@
 
 ## `ok`
 - 类型：`boolean`
-- 含义：代理预检主链是否确认成功
+- 含义：代理预检测速主链是否确认成功
 
 ## `state`
 - 类型：`string`
-- 含义：预检主链最终状态码
+- 含义：预检测速主链最终状态码
 
 ## `nextStage`
 - 类型：`string`
 - 含义：成功后应推进到哪个最终阶段
+
+## `proxyGrade`
+- 类型：`string`
+- 枚举：`OK` / `WEAK` / `BAD`
+- 含义：当前代理质量分级
 
 ## `source`
 - 类型：`string`

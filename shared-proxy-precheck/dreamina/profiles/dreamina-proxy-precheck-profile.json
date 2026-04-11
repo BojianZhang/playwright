@@ -1,17 +1,25 @@
 {
   "site": "dreamina",
   "chain": "proxy-precheck",
-  "entryUrl": "https://www.dreamina.com/",
-  "siteReady": {
-    "selectors": [],
-    "texts": [],
-    "urlIncludes": ["dreamina.com"]
-  },
-  "businessReady": {
-    "selectors": [],
-    "texts": []
-  },
-  "failureSignals": {
-    "texts": ["Try again", "Something went wrong"]
+  "targets": {
+    "primary": {
+      "url": "https://www.dreamina.com/",
+      "method": "GET",
+      "okMinStatus": 200,
+      "okMaxStatus": 399,
+      "timeoutMs": 15000
+    },
+    "secondary": {
+      "url": "https://www.capcut.com/",
+      "method": "GET",
+      "okMinStatus": 200,
+      "okMaxStatus": 399,
+      "timeoutMs": 15000
+    },
+    "exitIp": {
+      "url": "https://api.ipify.org?format=json",
+      "method": "GET",
+      "timeoutMs": 15000
+    }
   }
 }

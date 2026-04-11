@@ -4,15 +4,11 @@
 - `D:\playwright\shared-proxy-precheck\dreamina\proxy-precheck-adapter.js`
 
 这个文档只做一件事：
-**把代理预检 adapter 里每个方法的参数、参数作用、返回值、职责边界讲清楚。**
+**把代理预检测速 adapter 里每个方法的参数、参数作用、返回值、职责边界讲清楚。**
 
 ---
 
 # 一、公共参数说明
-
-## `page`
-- 类型：Playwright Page | null
-- 含义：当前可用于预检的页面对象
 
 ## `proxy`
 - 类型：object
@@ -30,23 +26,20 @@
 
 # 二、方法逐个说明
 
-## `checkProxyConnectivity(page, proxy, runtime = {}, context = {})`
+## `checkProxyConnectivity(proxy, runtime = {}, context = {})`
 - 作用：检查代理是否具备最基本连通性
 
-## `checkProxyNetworkHealth(page, proxy, runtime = {}, context = {})`
-- 作用：检查代理基础网络健康
+## `checkProxyExitIp(proxy, runtime = {}, context = {})`
+- 作用：检查代理出口 IP 是否可获取
 
-## `checkProxyEntryReachability(page, proxy, runtime = {}, context = {})`
-- 作用：检查目标站点入口是否可达
+## `checkDreaminaPrimaryTarget(proxy, runtime = {}, context = {})`
+- 作用：检查 Dreamina 主目标是否可达、状态码与耗时是否合理
 
-## `checkProxySiteReady(page, proxy, runtime = {}, context = {})`
-- 作用：检查站点首屏是否达到 ready
+## `checkDreaminaSecondaryTarget(proxy, runtime = {}, context = {})`
+- 作用：检查 Dreamina 副目标是否可达、状态码与耗时是否合理
 
-## `checkProxyBusinessReady(page, proxy, runtime = {}, context = {})`
-- 作用：检查业务首屏是否达到可用态
-
-## `confirmProxyPrecheckResult(page, proxy, runtime = {}, context = {})`
-- 作用：收口代理预检链最终 success / failure / unknown
+## `confirmProxyPrecheckResult(proxy, runtime = {}, context = {})`
+- 作用：收口代理预检测速链最终 success / weak / failure / unknown
 
 ## `classifyProxyPrecheckFailure(input = {})`
-- 作用：把代理预检失败收敛成 Dreamina 专属语义
+- 作用：把代理预检测速失败收敛成 Dreamina 专属语义

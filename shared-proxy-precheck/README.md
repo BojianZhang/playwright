@@ -1,12 +1,12 @@
 # shared-proxy-precheck
 
 这个包负责：
-**代理预检主链**。
+**即梦相关目标的代理预检测速主链。**
 
 也就是：
 - 在正式注册主链开始之前
-- 对当前代理做可用性、健康度、页面打开能力、站点入口可达性、业务首屏可用性等分阶段检查
-- 输出统一的代理预检结果
+- 对当前代理做基础连通性检查、出口 IP 检查、即梦相关目标可达性/测速检查
+- 输出统一的代理预检结果与分级
 - 成功时只确认进入最终阶段 `proxy-precheck-complete`
 
 ---
@@ -15,20 +15,21 @@
 
 ## 输入
 - 代理配置已由外层准备好
-- browser / context / page 可由外层传入，或由预检链单独构造
-- 站点 runtime 已由上层准备好
+- 运行时参数已由上层准备好
+- 站点 profile 已定义待测速目标
 
 ## 负责什么
-- 代理连通性检查
-- 代理基础网络健康检查
-- 站点入口可达性检查
-- 站点首屏/业务首页可用性检查
-- 代理预检最终 success / failure / unknown 收口
-- 各站点在代理预检链上的适配与配置
-- 成功时输出 `nextStage=proxy-precheck-complete`
+- 代理基础连通性检查
+- 代理出口 IP 检查
+- 即梦主目标检查
+- 即梦副目标检查
+- 统一 success / failure / weak / unknown 收口
+- 输出 `proxyGrade`（`OK` / `WEAK` / `BAD`）
 
 ## 不负责什么
-- 正式注册主链业务操作
+- Playwright 打开页面
+- 首页 UI ready 检查
+- 业务首屏判断
 - credential submit
 - verification submit
 - profile completion
@@ -41,21 +42,20 @@
 
 # 设计原则
 
-- 继续沿用“公共阶段骨架 + 站点 adapter + profile + log”的架构风格
+- 继续沿用“公共主链 + 站点 adapter + profile”的架构风格
 - 代理预检和正式注册主链分开，不把代理治理揉进业务阶段
 - 每个阶段都有统一输入输出与字段语义
-- 优先把边界、字段、注释、文档立起来，再逐步做实
+- 当前只做网络级预检测速，不进入页面/UI 判断层
 
 ---
 
 # 当前规划的阶段
 
 1. `proxy-connectivity`
-2. `proxy-network-health`
-3. `proxy-entry-reachability`
-4. `proxy-site-ready`
-5. `proxy-business-ready`
-6. `proxy-precheck-result`
+2. `proxy-exit-ip`
+3. `dreamina-primary-target-check`
+4. `dreamina-secondary-target-check`
+5. `proxy-precheck-result`
 
 ---
 
@@ -89,19 +89,6 @@ host:port:username:password
 
 注意：
 - 具体代理账号密码放在 `local-proxies.txt`
-- 站点规则仍只放在 Dreamina profile 里
+- 站点规则只放在 Dreamina profile 里
 - 不要把具体代理账号密码写进 profile JSON
-
-当前包内统一入口：
-- `index.js`
-- 入口方法：`runDreaminaProxyPrecheckFromLocal(options = {})`
-
----
-
-# 后续
-
-当前先落 Dreamina 草案。
-后续如果接 OpenAI / Claude 等站点，继续沿用：
-- 公共阶段模块
-- 站点 adapter
-- profile 三件套
+- `index.js` 当前只作为包内联调辅助入口，不作为正式运行主入口

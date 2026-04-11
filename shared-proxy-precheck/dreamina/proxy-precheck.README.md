@@ -1,21 +1,20 @@
-# Dreamina 代理预检链
+# Dreamina 代理预检测速链
 
 对应文件：
 - `D:\playwright\shared-proxy-precheck\dreamina\proxy-precheck-adapter.js`
 
-这个目录承接 Dreamina 在代理预检链上的站点适配。
+这个目录承接 Dreamina 在代理预检测速链上的站点适配。
 
 ---
 
-# 一、Dreamina 代理预检职责
+# 一、Dreamina 代理预检测速职责
 
-Dreamina 代理预检负责：
-- 代理连通性
-- 代理网络健康
-- Dreamina 入口可达
-- Dreamina 首屏 ready
-- Dreamina 业务首屏可用态
-- 最终预检结果收口
+Dreamina 代理预检测速负责：
+- 代理基础连通性检查
+- 代理出口 IP 检查
+- Dreamina 主目标检查
+- Dreamina 副目标检查
+- 最终预检结果收口与分级
 
 ---
 
@@ -23,9 +22,8 @@ Dreamina 代理预检负责：
 
 - `loadDreaminaProxyPrecheckProfile(...)`
 - `checkProxyConnectivity(...)`
-- `checkProxyNetworkHealth(...)`
-- `checkProxyEntryReachability(...)`
-- `checkProxySiteReady(...)`
-- `checkProxyBusinessReady(...)`
+- `checkProxyExitIp(...)`
+- `checkDreaminaPrimaryTarget(...)`
+- `checkDreaminaSecondaryTarget(...)`
 - `confirmProxyPrecheckResult(...)`
 - `classifyProxyPrecheckFailure(...)`
