@@ -1,0 +1,26 @@
+{
+  "site": "dreamina",
+  "stage": "account-delivery",
+  "deliveryReady": {
+    "selectors": [],
+    "texts": [],
+    "urlIncludes": ["/app", "/workspace", "/home"]
+  },
+  "summarySignals": {
+    "accountFields": ["email"],
+    "sessionKeys": [],
+    "uiSignals": []
+  },
+  "payloadRules": {
+    "requiredFields": ["email"],
+    "optionalFields": ["password"]
+  },
+  "successSignals": {
+    "selectors": [],
+    "texts": []
+  },
+  "failureSignals": {
+    "selectors": [],
+    "texts": []
+  }
+}
