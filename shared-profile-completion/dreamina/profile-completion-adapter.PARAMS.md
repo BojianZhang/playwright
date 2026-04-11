@@ -190,6 +190,10 @@
 
 ## 8. `confirmDreaminaProfileCompletionSubmitResult(page, runtime = {}, context = {})`
 - 作用：确认提交后的结果
+- 当前补强后会分步骤执行：
+  1. 先判 post-auth-ready 是否已可达
+  2. 再判明确阶段 4 失败
+  3. 如仍未收敛，再做一轮保护等待后复判
 - 返回值示例：
 ```js
 {

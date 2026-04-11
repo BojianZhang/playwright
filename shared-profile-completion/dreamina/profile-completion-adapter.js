@@ -916,11 +916,189 @@ async function submitDreaminaProfileCompletion(page, runtime = {}, context = {})
 }
 
 /**
+ * 检测 Dreamina 是否已经进入 post-auth-ready。
+ *
+ * 作用：
+ * - 这是第四阶段成功的最强确认之一
+ * - 只确认“下一阶段是否可达”，不执行第五阶段稳定确认动作
+ */
+async function detectDreaminaPostAuthReady(page, profile, context = {}) {
+  // 优先通过结构性 selector 判断是否进入下一阶段。
+  const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.postAuthReady?.selectors || []);
+  // 如果 selector 命中，直接按强信号返回。
+  if (nextStageSelector.ok) {
+    return {
+      ok: true,
+      source: 'selector',
+      value: nextStageSelector.selector,
+      strength: 'strong',
+    };
+  }
+
+  // 如果 selector 没命中，再通过文本判断是否进入下一阶段。
+  const nextStageText = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.postAuthReady?.texts || []);
+  // 如果文本命中，按弱一些的信号返回。
+  if (nextStageText.ok) {
+    return {
+      ok: true,
+      source: 'text',
+      value: nextStageText.text,
+      strength: 'weak',
+    };
+  }
+
+  // 当前没有确认进入下一阶段。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段提交后的明确失败信号。
+ *
+ * 作用：
+ * - 收口第四阶段里已经明确的失败语义
+ * - 优先减少 profile-completion-result-unknown 的比例
+ */
+async function detectDreaminaProfileCompletionFailureSignals(page, profile, context = {}) {
+  // 先检测 input invalid。
+  const inputInvalid = await findFirstVisibleByTexts(page, profile?.failureSignals?.inputInvalid || []);
+  // 如果 input invalid 命中，返回明确失败。
+  if (inputInvalid.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_INPUT_INVALID',
+      source: 'text',
+      value: inputInvalid.text,
+      strength: 'strong',
+    };
+  }
+
+  // 再检测 submit failed。
+  const submitFailed = await findFirstVisibleByTexts(page, profile?.failureSignals?.submitFailed || []);
+  // 如果 submit failed 命中，返回明确失败。
+  if (submitFailed.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: 'text',
+      value: submitFailed.text,
+      strength: 'strong',
+    };
+  }
+
+  // 最后检测 inline error。
+  const inlineError = await findFirstVisibleByTexts(page, profile?.failureSignals?.inlineErrors || []);
+  // 如果 inline error 命中，返回明确失败。
+  if (inlineError.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_INLINE_ERROR',
+      source: 'text',
+      value: inlineError.text,
+      strength: 'weak',
+    };
+  }
+
+  // 如果没有命中任何明确失败信号，则返回未命中结构。
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
  * 确认 Dreamina 第四阶段提交结果。
  *
- * 第一版先返回骨架占位结构，后续再接 post-auth-ready reachability 判断。
+ * 当前补强后的策略：
+ * 1. 先确认是否进入 post-auth-ready
+ * 2. 再确认是否命中明确失败
+ * 3. 如果两者都没有，则补一轮保护等待后复判
+ * 4. 最后才返回 unknown
+ *
+ * 注意：
+ * - 这里只负责“确认第四阶段是否完成”
+ * - 可以确认第五阶段是否已可达
+ * - 不能替第五阶段做最终稳定确认动作
  */
 async function confirmDreaminaProfileCompletionSubmitResult(page, runtime = {}, context = {}) {
+  // 读取第四阶段 profile。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 从 runtime 中读取确认保护等待；默认给一小段时间让页面完成跳转。
+  const confirmGraceWaitMs = Number(runtime?.profileCompletionConfirmGraceWaitMs || 900);
+
+  // 第一轮：先尝试确认是否已经进入下一阶段。
+  const postAuthReady = await detectDreaminaPostAuthReady(page, profile, context);
+  // 如果第一轮已经确认进入下一阶段，就直接按成功返回。
+  if (postAuthReady.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: postAuthReady.source,
+      value: postAuthReady.value,
+      strength: postAuthReady.strength,
+      settleStage: 'primary-success',
+    };
+  }
+
+  // 第一轮：如果还没进入下一阶段，再尝试识别明确失败。
+  const failureSignal = await detectDreaminaProfileCompletionFailureSignals(page, profile, context);
+  // 如果第一轮已经命中明确失败，就直接返回失败。
+  if (failureSignal.hit) {
+    return {
+      ok: false,
+      state: failureSignal.state,
+      nextStage: '',
+      source: failureSignal.source,
+      value: failureSignal.value,
+      strength: failureSignal.strength,
+      settleStage: 'primary-failure',
+    };
+  }
+
+  // 如果第一轮既没成功也没失败，给页面一小段保护等待，降低慢一拍误判 unknown 的概率。
+  if (confirmGraceWaitMs > 0) {
+    await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});
+  }
+
+  // 第二轮：保护等待后再次确认是否进入下一阶段。
+  const postAuthReadyAfterGrace = await detectDreaminaPostAuthReady(page, profile, context);
+  // 如果第二轮确认进入下一阶段，则按 secondary-success 返回。
+  if (postAuthReadyAfterGrace.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: postAuthReadyAfterGrace.source,
+      value: postAuthReadyAfterGrace.value,
+      strength: postAuthReadyAfterGrace.strength,
+      settleStage: 'secondary-success',
+    };
+  }
+
+  // 第二轮：保护等待后再次确认明确失败。
+  const failureAfterGrace = await detectDreaminaProfileCompletionFailureSignals(page, profile, context);
+  // 如果第二轮命中明确失败，则按 secondary-failure 返回。
+  if (failureAfterGrace.hit) {
+    return {
+      ok: false,
+      state: failureAfterGrace.state,
+      nextStage: '',
+      source: failureAfterGrace.source,
+      value: failureAfterGrace.value,
+      strength: failureAfterGrace.strength,
+      settleStage: 'secondary-failure',
+    };
+  }
+
+  // 如果两轮确认都没有收敛到成功或明确失败，则按 unknown 返回。
   return {
     ok: false,
     state: 'PROFILE_COMPLETION_RESULT_UNKNOWN',

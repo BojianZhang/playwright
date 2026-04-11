@@ -260,7 +260,51 @@
 
 ---
 
-# 五、`confirmDreaminaProfileCompletionSubmitResult(...)` 返回字段
+# 五、`detectDreaminaPostAuthReady(...)` 返回字段
+
+## `ok`
+- 类型：`boolean`
+- 含义：是否确认已经进入 `post-auth-ready`
+
+## `source`
+- 类型：`string`
+- 含义：当前 next-stage ready 信号来源
+
+## `value`
+- 类型：`string`
+- 含义：命中的 selector 或 text
+
+## `strength`
+- 类型：`string`
+- 含义：当前 next-stage ready 信号强度
+
+---
+
+# 六、`detectDreaminaProfileCompletionFailureSignals(...)` 返回字段
+
+## `hit`
+- 类型：`boolean`
+- 含义：是否命中阶段 4 明确失败信号
+
+## `state`
+- 类型：`string`
+- 含义：命中的阶段 4 失败状态
+
+## `source`
+- 类型：`string`
+- 含义：失败信号来源
+
+## `value`
+- 类型：`string`
+- 含义：命中的失败文本或辅助值
+
+## `strength`
+- 类型：`string`
+- 含义：失败信号强度
+
+---
+
+# 七、`confirmDreaminaProfileCompletionSubmitResult(...)` 返回字段
 
 ## `ok`
 - 类型：`boolean`
