@@ -1,0 +1,62 @@
+﻿{
+  "name": "Dreamina",
+  "homeUrl": "https://dreamina.capcut.com/ai-tool/home/",
+  "entry": {
+    "navigation": {
+      "runTimeoutMs": 120000,
+      "testTimeoutMs": 120000,
+      "retryAttempts": 3
+    },
+    "firstLoad": {
+      "runGraceWaitMs": 4000,
+      "testGraceWaitMs": 12000,
+      "deadPageBodyTextMinLength": 80
+    },
+    "readySignals": {
+      "text": [
+        "Continue with email",
+        "Sign in",
+        "Log in",
+        "Login",
+        "Sign up",
+        "Create realistic talk",
+        "Start Creating With AI Agent",
+        "AI Image",
+        "Canvas"
+      ],
+      "selectors": [
+        "input[role='textbox']",
+        "button",
+        "a",
+        "[class*='credit-display-container']"
+      ],
+      "bodyPatterns": [
+        "dreamina",
+        "capcut",
+        "continue with email",
+        "sign in",
+        "create realistic talk",
+        "ai image"
+      ]
+    },
+    "whiteScreen": {
+      "bodyTextMinLength": 20,
+      "recheckOnSuspected": true,
+      "precheckRecheckWaitMinMs": 1200,
+      "precheckRecheckWaitMaxMs": 4000
+    },
+    "deadPage": {
+      "bodyTextMinLength": 80
+    },
+    "overlays": {
+      "enabled": true,
+      "patterns": [
+        "Accept",
+        "Agree",
+        "Got it",
+        "Close",
+        "Skip"
+      ]
+    }
+  }
+}
