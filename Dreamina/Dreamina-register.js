@@ -35,6 +35,38 @@ const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/
 const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
 
 function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
+  async function detectEntryDeadPage(page) {
+    return await page.evaluate(() => {
+      const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const title = normalize(document.title || '');
+      const bodyText = normalize(document.body?.innerText || '');
+      const bodyHtml = String(document.body?.innerHTML || '');
+      const rootChildCount = document.body?.children?.length || 0;
+      const readyState = String(document.readyState || '');
+      const bodyTextLength = bodyText.length;
+      const bodyHtmlLength = bodyHtml.length;
+      const whiteScreenLike = bodyTextLength === 0 && bodyHtmlLength < 2000;
+      const deadPageLike = !title && bodyTextLength === 0 && rootChildCount <= 1;
+      return {
+        title,
+        readyState,
+        bodyTextLength,
+        bodyHtmlLength,
+        rootChildCount,
+        whiteScreenLike,
+        deadPageLike,
+      };
+    }).catch(() => ({
+      title: '',
+      readyState: '',
+      bodyTextLength: 0,
+      bodyHtmlLength: 0,
+      rootChildCount: 0,
+      whiteScreenLike: false,
+      deadPageLike: false,
+    }));
+  }
+
   async function preprocessEntryOverlays(page) {
     const overlaySelectors = [
       'button[aria-label="Close"]',
@@ -171,6 +203,21 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           timeout: Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000),
         });
 
+        const deadPageSnapshot = await detectEntryDeadPage(page);
+        if (deadPageSnapshot.whiteScreenLike || deadPageSnapshot.deadPageLike) {
+          return {
+            ok: false,
+            state: 'ENTRY_PAGE_OPEN_FAILED',
+            source: 'goto',
+            value: deadPageSnapshot.whiteScreenLike ? 'DREAMINA_WHITE_SCREEN' : 'DREAMINA_FIRST_LOAD_DEAD_PAGE',
+            strength: 'strong',
+            stateChanged: false,
+            detail: {
+              deadPageSnapshot,
+            },
+          };
+        }
+
         return {
           ok: true,
           state: 'ENTRY_PAGE_OPENED',
@@ -180,13 +227,18 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           stateChanged: true,
         };
       } catch (error) {
+        const message = String(error?.message || homeUrl);
+        const deadPageSnapshot = await detectEntryDeadPage(page);
         return {
           ok: false,
           state: 'ENTRY_PAGE_OPEN_FAILED',
           source: 'goto',
-          value: String(error?.message || homeUrl),
+          value: /Timeout\s+\d+ms\s+exceeded/i.test(message) ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT' : message,
           strength: 'strong',
           stateChanged: false,
+          detail: {
+            deadPageSnapshot,
+          },
         };
       }
     },
@@ -297,9 +349,16 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
       }
 
       if (entryReason === 'ENTRY_PAGE_OPEN_FAILED') {
+        const openFailureValue = String(input.value || '').trim().toUpperCase();
         return {
           reason: entryReason,
-          siteReason: 'DREAMINA_ENTRY_PAGE_OPEN_FAILED',
+          siteReason: openFailureValue === 'DREAMINA_WHITE_SCREEN'
+            ? 'DREAMINA_WHITE_SCREEN'
+            : openFailureValue === 'DREAMINA_FIRST_LOAD_DEAD_PAGE'
+              ? 'DREAMINA_FIRST_LOAD_DEAD_PAGE'
+              : openFailureValue === 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT'
+                ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT'
+                : 'DREAMINA_ENTRY_PAGE_OPEN_FAILED',
           hardFailure: true,
         };
       }
@@ -828,6 +887,104 @@ function loadLocalAccounts() {
   return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : [];
 }
 
+function readJsonFileSafe(filePath, fallback) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(String(fs.readFileSync(filePath, 'utf8') || '').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function loadProxyHealth() {
+  const filePath = path.join(__dirname, 'proxy-health.json');
+  const parsed = readJsonFileSafe(filePath, {});
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
+function saveProxyHealth(health = {}) {
+  const filePath = path.join(__dirname, 'proxy-health.json');
+  fs.writeFileSync(filePath, `${JSON.stringify(health, null, 2)}\n`, 'utf8');
+}
+
+function appendBadProxyRecord(proxy = null, reason = '') {
+  if (!proxy || typeof proxy !== 'object') return;
+  const filePath = path.join(__dirname, 'bad-proxies.txt');
+  const line = String(proxy.raw || `${proxy.host || ''}:${proxy.port || ''}`).trim();
+  if (!line) return;
+
+  const existing = fs.existsSync(filePath) ? String(fs.readFileSync(filePath, 'utf8') || '') : '';
+  if (existing.split(/\r?\n/).includes(line)) return;
+  const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
+  fs.appendFileSync(filePath, `${prefix}${line}\n`, 'utf8');
+}
+
+function resolveProxyDisposition(result = {}) {
+  const finalStage = String(result?.finalStage || '').trim().toLowerCase();
+  const finalReason = String(result?.finalReason || result?.finalState || '').trim().toUpperCase();
+  const finalState = String(result?.finalState || '').trim().toUpperCase();
+
+  if (finalStage === 'proxy-precheck' && /407|PROXY_CONNECTIVITY_FAILED|DREAMINA_PROXY_CONNECTIVITY_FAILED/.test(finalReason)) {
+    return {
+      status: 'bad',
+      reason: finalReason || finalState || 'PROXY_PRECHECK_FAILED',
+      bucket: 'proxy-precheck',
+    };
+  }
+
+  if (finalStage === 'entry' && /DREAMINA_WHITE_SCREEN|DREAMINA_FIRST_LOAD_DEAD_PAGE|DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT|DREAMINA_ENTRY_PAGE_OPEN_FAILED/.test(finalReason)) {
+    return {
+      status: 'bad',
+      reason: finalReason || finalState || 'ENTRY_FAILED',
+      bucket: 'entry',
+    };
+  }
+
+  if (result?.success) {
+    return {
+      status: 'healthy',
+      reason: 'SUCCESS',
+      bucket: 'success',
+    };
+  }
+
+  return {
+    status: 'observe',
+    reason: finalReason || finalState || 'UNKNOWN',
+    bucket: finalStage || 'unknown',
+  };
+}
+
+function recordProxyHealth(result = {}, proxy = null) {
+  if (!proxy || typeof proxy !== 'object') return null;
+
+  const proxyId = String(summarizeProxy(proxy).id || proxy.id || proxy.raw || '').trim();
+  if (!proxyId) return null;
+
+  const disposition = resolveProxyDisposition(result);
+  const health = loadProxyHealth();
+  const current = health[proxyId] && typeof health[proxyId] === 'object' ? health[proxyId] : {};
+  const next = {
+    proxyId,
+    status: disposition.status,
+    lastReason: disposition.reason,
+    lastBucket: disposition.bucket,
+    failCount: disposition.status === 'healthy' ? 0 : Number(current.failCount || 0) + 1,
+    successCount: disposition.status === 'healthy' ? Number(current.successCount || 0) + 1 : Number(current.successCount || 0),
+    lastRaw: String(proxy.raw || '').trim(),
+    lastUpdatedAt: Date.now(),
+  };
+
+  health[proxyId] = next;
+  saveProxyHealth(health);
+
+  if (disposition.status === 'bad') {
+    appendBadProxyRecord(proxy, disposition.reason);
+  }
+
+  return next;
+}
+
 function selectCliAccount(accounts = [], accountIndex = 0) {
   const list = Array.isArray(accounts) ? accounts.filter(Boolean) : [];
   if (!list.length) return null;
@@ -1006,6 +1163,14 @@ async function runDreaminaRegisterCli(argv = []) {
       logInfo: null,
     });
 
+    const proxyHealthRecord = recordProxyHealth(result, proxy);
+    if (proxyHealthRecord) {
+      result.meta = {
+        ...(result.meta || {}),
+        proxyDisposition: proxyHealthRecord,
+      };
+    }
+
     console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | AccountIndex=${accountIndex} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
     console.log(JSON.stringify(result, null, 2));
     return result;
@@ -1042,6 +1207,9 @@ module.exports = {
   selectCliProxy,
   loadLocalAccounts,
   selectCliAccount,
+  loadProxyHealth,
+  resolveProxyDisposition,
+  recordProxyHealth,
   createDreaminaCliRuntime,
   runDreaminaRegisterCli,
 };
