@@ -351,6 +351,78 @@ async function recoverEntry(page, classifiedFailure = {}, context = {}) {
     postWaitMs: postRecoveryWaitMs,
   };
 }
+
+/**
+ * 入口 ready 主链确认（第一轮带 recover 版）。
+ *
+ * 流程：
+ * 1. 先做一次 ready 检查
+ * 2. 未命中则分类失败
+ * 3. 尝试执行 entry recover
+ * 4. recover 成功后再做一次 ready recheck
+ */
+async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+
+  const readyResult = await waitForEntryReady(page, runtime, context);
+  if (readyResult?.ok) {
+    return {
+      ok: true,
+      state: readyResult?.state || 'ENTRY_READY',
+      source: readyResult?.source || '',
+      value: readyResult?.value || '',
+      strength: readyResult?.strength || '',
+      waitStepMs: Number(readyResult?.waitStepMs || 0),
+      recoveryResult: null,
+    };
+  }
+
+  const classified = classifyEntryFailure({
+    reason: readyResult?.state || 'ENTRY_NOT_READY',
+    source: readyResult?.source || '',
+    value: readyResult?.value || '',
+  });
+
+  const recoveryResult = await recoverEntry(page, classified, {
+    ...context,
+    runtime,
+  });
+
+  if (recoveryResult?.recovered) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.entry.ready.recheck | action=${recoveryResult.action} | reason=${recoveryResult.reason}`);
+    }
+
+    const readyAfterRecovery = await waitForEntryReady(page, runtime, {
+      ...context,
+      runtime,
+      recoveryResult,
+    });
+
+    if (readyAfterRecovery?.ok) {
+      return {
+        ok: true,
+        state: readyAfterRecovery?.state || 'ENTRY_READY',
+        source: readyAfterRecovery?.source || '',
+        value: readyAfterRecovery?.value || '',
+        strength: readyAfterRecovery?.strength || '',
+        waitStepMs: Number(readyAfterRecovery?.waitStepMs || 0),
+        recoveryResult,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    state: readyResult?.state || 'ENTRY_NOT_READY',
+    reason: classified?.siteReason || classified?.reason || readyResult?.state || 'ENTRY_NOT_READY',
+    source: readyResult?.source || '',
+    value: readyResult?.value || '',
+    strength: readyResult?.strength || '',
+    waitStepMs: Number(readyResult?.waitStepMs || 0),
+    recoveryResult: recoveryResult || null,
+  };
+}
 function classifyEntryFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
@@ -380,5 +452,8 @@ module.exports = {
   openEntryPage,
   checkEntryHealth,
   waitForEntryReady,
+  detectDreaminaEntryRecoverableError,
+  recoverEntry,
+  confirmEntryReadyWithRecovery,
   classifyEntryFailure,
 };
