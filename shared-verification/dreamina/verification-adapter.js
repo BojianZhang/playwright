@@ -806,21 +806,38 @@ async function tryDreaminaDirectFill(page, locator, code, logInfo) {
     });
     await page.waitForTimeout(900).catch(() => {});
 
+    const birthdaySignals = [
+      page.locator('div.lv_new_sign_in_panel_wide-birthday-title').first(),
+      page.locator('div.lv_new_sign_in_panel_wide-birthday-subtitle').first(),
+      page.locator('button.lv_new_sign_in_panel_wide-birthday-next').first(),
+      page.getByText('Year').first(),
+      page.getByText('Month').first(),
+      page.getByText('Day', { exact: true }).first(),
+    ];
+    let birthdayHit = false;
+    for (const signal of birthdaySignals) {
+      if (await isVisible(signal)) {
+        birthdayHit = true;
+        break;
+      }
+    }
+
     const state = await readDreaminaVerificationInputState(page);
     const inputValue = String(state?.inputValue || '').trim();
     const boxTexts = Array.isArray(state?.boxTexts) ? state.boxTexts : [];
-    const ok = inputValue === value || boxTexts.join('').includes(value.slice(0, 3)) || boxTexts.some(item => String(item || '').includes(value[0] || ''));
+    const ok = birthdayHit || inputValue === value || boxTexts.join('').includes(value.slice(0, 3)) || boxTexts.some(item => String(item || '').includes(value[0] || ''));
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.verification.directFill | inputValue=${inputValue || '[EMPTY]'} | boxTexts=${boxTexts.join('|') || '[EMPTY]'} | target=${value}`);
+      logInfo('dreamina.verification.directFill | birthdayHit=' + (birthdayHit ? 'Y' : 'N') + ' | inputValue=' + (inputValue || '[EMPTY]') + ' | boxTexts=' + (boxTexts.join('|') || '[EMPTY]') + ' | target=' + value);
     }
 
     return {
       ok,
       mode: 'dreamina-direct-fill',
       value: inputValue || value,
-      stateChanged: ok || Boolean(inputValue) || boxTexts.some(Boolean),
+      stateChanged: birthdayHit || ok || Boolean(inputValue) || boxTexts.some(Boolean),
       boxTexts,
+      transitionHint: birthdayHit ? { enteredProfileCompletion: true } : null,
     };
   } catch (error) {
     return { ok: false, mode: 'dreamina-direct-fill', value: error?.message || 'UNKNOWN', stateChanged: false };
@@ -1083,6 +1100,22 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
     });
   };
+
+  const directFillResult = await tryDreaminaDirectFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  await recordAttempt('dreamina-direct-fill', directFillResult);
+  if (directFillResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: directFillResult.mode,
+      source: 'verification-input',
+      value: directFillResult.value,
+      stateChanged: directFillResult.stateChanged,
+      attempts,
+      activationResult,
+      charSteps: [],
+    };
+  }
 
   const charByCharResult = await tryDreaminaCharByCharInput(page, codeInputResolution.locator, normalizedCode, runtime, context);
   await recordAttempt('dreamina-char-by-char', charByCharResult);
