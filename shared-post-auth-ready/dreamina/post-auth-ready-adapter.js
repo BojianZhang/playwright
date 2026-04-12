@@ -85,6 +85,24 @@ async function findFirstVisibleByTexts(page, texts = []) {
  * - 优先依赖结构信号，而不是只看文本或 URL
  * - selector 命中时，一般更接近真实进入登录后区域
  */
+async function findAllVisibleBySelectors(page, selectors = []) {
+  const hits = [];
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await isVisible(locator)) hits.push(selector);
+  }
+  return [...new Set(hits)];
+}
+
+async function findAllVisibleByTexts(page, texts = []) {
+  const hits = [];
+  for (const text of texts) {
+    const locator = page.getByText(String(text || ''), { exact: false }).first();
+    if (await isVisible(locator)) hits.push(String(text || ''));
+  }
+  return [...new Set(hits)];
+}
+
 async function detectDreaminaPostAuthReadyBySelector(page, profile) {
   // 从 profile 中读取第五阶段入口 selector 列表。
   const selectorHit = await findFirstVisibleBySelectors(page, profile?.postAuthReady?.selectors || []);
@@ -475,6 +493,46 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
  * - 返回统一结构
  */
 async function confirmPostAuthUi(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaPostAuthReadyProfile();
+  const matchedSelectors = await findAllVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
+  const matchedTexts = await findAllVisibleByTexts(page, profile?.uiSignals?.texts || []);
+
+  const selectorHit = matchedSelectors[0] ? { ok: true, selector: matchedSelectors[0] } : { ok: false, selector: '' };
+  if (selectorHit.ok) {
+    return {
+      ok: true,
+      state: 'USER_PANEL_VISIBLE',
+      source: 'selector',
+      value: selectorHit.selector,
+      strength: 'strong',
+      matchedSelectors,
+      matchedTexts,
+    };
+  }
+
+  const textHit = matchedTexts[0] ? { ok: true, text: matchedTexts[0] } : { ok: false, text: '' };
+  if (textHit.ok) {
+    return {
+      ok: true,
+      state: 'DASHBOARD_VISIBLE',
+      source: 'text',
+      value: textHit.text,
+      strength: 'weak',
+      matchedSelectors,
+      matchedTexts,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'POST_AUTH_UI_NOT_CONFIRMED',
+    source: '',
+    value: '',
+    strength: '',
+    matchedSelectors,
+    matchedTexts,
+  };
+}, context = {}) {
   // 读取 Dreamina 第五阶段 profile。
   const profile = loadDreaminaPostAuthReadyProfile();
 
@@ -522,6 +580,111 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
  * - 最后返回 unknown
  */
 async function confirmPostAuthResult(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaPostAuthReadyProfile();
+  const { sessionInspection = null, uiConfirmation = null } = context;
+  const matchedSuccessSelectors = await findAllVisibleBySelectors(page, profile?.successSignals?.selectors || []);
+  const matchedSuccessTexts = await findAllVisibleByTexts(page, profile?.successSignals?.texts || []);
+  const matchedFailureSelectors = await findAllVisibleBySelectors(page, profile?.failureSignals?.selectors || []);
+  const matchedFailureTexts = await findAllVisibleByTexts(page, profile?.failureSignals?.texts || []);
+
+  const successSelector = matchedSuccessSelectors[0] ? { ok: true, selector: matchedSuccessSelectors[0] } : { ok: false, selector: '' };
+  if (successSelector.ok) {
+    return {
+      ok: true,
+      state: 'REGISTRATION_COMPLETE',
+      nextStage: 'registration-complete',
+      source: 'selector',
+      value: successSelector.selector,
+      strength: 'strong',
+      settleStage: 'primary-success',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: matchedSuccessSelectors,
+      matchedTexts: matchedSuccessTexts,
+    };
+  }
+
+  const successText = matchedSuccessTexts[0] ? { ok: true, text: matchedSuccessTexts[0] } : { ok: false, text: '' };
+  if (successText.ok) {
+    return {
+      ok: true,
+      state: 'REGISTRATION_COMPLETE',
+      nextStage: 'registration-complete',
+      source: 'text',
+      value: successText.text,
+      strength: 'weak',
+      settleStage: 'secondary-success',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: matchedSuccessSelectors,
+      matchedTexts: matchedSuccessTexts,
+    };
+  }
+
+  if (sessionInspection?.ok && uiConfirmation?.ok) {
+    return {
+      ok: true,
+      state: 'POST_AUTH_SUCCESS',
+      nextStage: 'registration-complete',
+      source: 'session+ui',
+      value: [sessionInspection.value, uiConfirmation.value].filter(Boolean).join(' | '),
+      strength: sessionInspection?.strength === 'strong' || uiConfirmation?.strength === 'strong' ? 'medium' : 'weak',
+      settleStage: 'session-check',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: Array.isArray(uiConfirmation?.matchedSelectors) ? uiConfirmation.matchedSelectors : [],
+      matchedTexts: Array.isArray(uiConfirmation?.matchedTexts) ? uiConfirmation.matchedTexts : [],
+    };
+  }
+
+  const failureSelector = matchedFailureSelectors[0] ? { ok: true, selector: matchedFailureSelectors[0] } : { ok: false, selector: '' };
+  if (failureSelector.ok) {
+    return {
+      ok: false,
+      state: 'POST_AUTH_FAILED',
+      nextStage: '',
+      source: 'selector',
+      value: failureSelector.selector,
+      strength: 'strong',
+      settleStage: 'primary-failure',
+      stateChanged: null,
+      retryCount: 0,
+      matchedSelectors: matchedFailureSelectors,
+      matchedTexts: matchedFailureTexts,
+    };
+  }
+
+  const failureText = matchedFailureTexts[0] ? { ok: true, text: matchedFailureTexts[0] } : { ok: false, text: '' };
+  if (failureText.ok) {
+    return {
+      ok: false,
+      state: 'POST_AUTH_FAILED',
+      nextStage: '',
+      source: 'text',
+      value: failureText.text,
+      strength: 'weak',
+      settleStage: 'secondary-failure',
+      stateChanged: null,
+      retryCount: 0,
+      matchedSelectors: matchedFailureSelectors,
+      matchedTexts: matchedFailureTexts,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'POST_AUTH_RESULT_UNKNOWN',
+    nextStage: '',
+    source: '',
+    value: '',
+    strength: '',
+    settleStage: 'none',
+    stateChanged: null,
+    retryCount: 0,
+    matchedSelectors: [],
+    matchedTexts: [],
+  };
+}, context = {}) {
   // 读取 Dreamina 第五阶段 profile。
   const profile = loadDreaminaPostAuthReadyProfile();
   // 解构前序步骤结果。
