@@ -1562,6 +1562,25 @@ async function confirmDreaminaProfileCompletionSubmitResult(page, runtime = {}, 
     };
   }
 
+  // 如果当前就是 Dreamina birthday 连续流，并且 Next 已由 continuous-flow 提交，
+  // 只要 birthday 面板仍稳定存在，也把它视为“第四阶段已成功完成并可交给 post-auth-ready 继续接手确认”。
+  const birthdayTitleVisible = await findFirstVisibleBySelectors(page, [
+    'div.lv_new_sign_in_panel_wide-birthday-title',
+    'div.lv_new_sign_in_panel_wide-birthday-subtitle',
+    'button.lv_new_sign_in_panel_wide-birthday-next',
+  ]);
+  if (birthdayTitleVisible.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: 'selector',
+      value: birthdayTitleVisible.selector,
+      strength: 'medium',
+      settleStage: 'bridge-success',
+    };
+  }
+
   // 如果第一轮既没成功也没失败，给页面一小段保护等待，降低慢一拍误判 unknown 的概率。
   if (confirmGraceWaitMs > 0) {
     await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});

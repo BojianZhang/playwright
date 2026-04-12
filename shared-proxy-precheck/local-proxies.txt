@@ -1,5 +1,10 @@
-gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-JP-sessid-1775929499_10001:YBZrZzwysyHH7GU
-gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-JP-sessid-1775929499_10002:YBZrZzwysyHH7GU
-gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-JP-sessid-1775929499_10003:YBZrZzwysyHH7GU
-gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-JP-sessid-1775929499_10004:YBZrZzwysyHH7GU
-gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-JP-sessid-1775929499_10005:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10070:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10071:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10072:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10073:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10074:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10075:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10076:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10077:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10078:YBZrZzwysyHH7GU
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10079:YBZrZzwysyHH7GU

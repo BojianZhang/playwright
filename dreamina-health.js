@@ -1,3 +1,4 @@
+const path = require('path');
 const { loadDreaminaRegisterProfile } = require('./dreamina-register-profile-loader');
 
 function resolveRunMode(config = {}) {
@@ -358,73 +359,134 @@ async function openDreaminaWithHealthRetry(options = {}) {
 
   const targetUrl = resolveDreaminaHomeUrl(config);
   let lastOpenError = '';
-  if (typeof logTaskStage === 'function') logTaskStage(2, account, proxy, '?? Dreamina', targetUrl);
+  if (typeof logTaskStage === 'function') logTaskStage(2, account, proxy, '打开 Dreamina', targetUrl);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const attemptStartedAt = Date.now();
     try {
-      if (typeof log === 'function') log(`Dreamina ???? ${attempt}/${maxAttempts}`);
-      if (typeof logInfo === 'function') logInfo(`?? 2.${attempt}????? Dreamina ???${targetUrl}`);
+      if (typeof log === 'function') log(`Dreamina 打开尝试 ${attempt}/${maxAttempts}`);
+      if (typeof logInfo === 'function') logInfo(`阶段 2.${attempt}：尝试进入 Dreamina 首页：${targetUrl}`);
 
       const navStartedAt = Date.now();
-      if (attempt === 1) await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: Number(config.runDreaminaNavigationTimeoutMs ?? config.dreaminaNavigationTimeoutMs ?? 120000) });
-      else await page.reload({ waitUntil: 'domcontentloaded', timeout: Number(config.runDreaminaNavigationTimeoutMs ?? config.dreaminaNavigationTimeoutMs ?? 120000) });
-      if (typeof logInfo === 'function') logInfo(`openDreamina.navDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - navStartedAt}ms | mode=${attempt === 1 ? 'goto' : 'reload'} | url=${page.url()}`);
+      const navigationTimeoutMs = Number(config.runDreaminaNavigationTimeoutMs ?? config.dreaminaNavigationTimeoutMs ?? 120000);
+      if (attempt === 1) {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: navigationTimeoutMs });
+      } else {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: navigationTimeoutMs });
+      }
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.navDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - navStartedAt}ms | mode=${attempt === 1 ? 'goto' : 'reload'} | url=${page.url()}`);
+      }
 
       const captureStartedAt = Date.now();
       if (typeof capture === 'function') await capture(page, `dreamina-open-${attempt}`, prefix, config);
-      if (typeof logInfo === 'function') logInfo(`openDreamina.captureDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - captureStartedAt}ms`);
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.captureDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - captureStartedAt}ms`);
+      }
 
       const whiteScreenCheckStartedAt = Date.now();
-      const whiteScreen = await detectDreaminaWhiteScreen(page, { account, proxy, prefix, config, capture, stage: 'register' });
+      const whiteScreen = await detectDreaminaWhiteScreen(page, {
+        account,
+        proxy,
+        prefix,
+        config,
+        capture,
+        stage: 'register',
+      });
       if (whiteScreen.hit) {
-        const diagnosticsPath = typeof dumpPageDiagnostics === 'function' ? await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_WHITE_SCREEN') : null;
-        if (diagnosticsPath && typeof logWarn === 'function') logWarn(`????????${diagnosticsPath}`);
+        const diagnosticsPath = typeof dumpPageDiagnostics === 'function'
+          ? await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_WHITE_SCREEN')
+          : null;
+        if (diagnosticsPath && typeof logWarn === 'function') {
+          logWarn(`白屏诊断已写出：${diagnosticsPath}`);
+        }
         throw new Error('DREAMINA_WHITE_SCREEN');
       }
-      if (typeof logInfo === 'function') logInfo(`openDreamina.whiteScreenCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - whiteScreenCheckStartedAt}ms`);
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.whiteScreenCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - whiteScreenCheckStartedAt}ms`);
+      }
 
       const deadPageCheckStartedAt = Date.now();
-      const deadPage = await detectDreaminaFirstLoadDeadPage(page, { prefix, config, diagnostics, capture, stage: 'register' });
+      const deadPage = await detectDreaminaFirstLoadDeadPage(page, {
+        prefix,
+        config,
+        diagnostics,
+        capture,
+        stage: 'register',
+      });
       if (deadPage.hit) {
-        const diagnosticsPath = typeof dumpPageDiagnostics === 'function' ? await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_FIRST_LOAD_DEAD_PAGE') : null;
-        if (typeof logWarn === 'function') logWarn('Dreamina ?????????????????????/?????????????/????');
+        const diagnosticsPath = typeof dumpPageDiagnostics === 'function'
+          ? await dumpPageDiagnostics(page, diagnostics, account, proxy, prefix, 'DREAMINA_FIRST_LOAD_DEAD_PAGE')
+          : null;
+        if (typeof logWarn === 'function') {
+          logWarn('Dreamina 首轮加载后仍无任何正常页面元素，且伴随资源/脚本失败证据，判定当前代理/页面死链');
+        }
         if (diagnosticsPath) {
-          const diagName = require('path').basename(diagnosticsPath);
-          if (typeof logWarn === 'function') logWarn(`????????${diagnosticsPath}`);
+          const diagName = path.basename(diagnosticsPath);
+          if (typeof logWarn === 'function') {
+            logWarn(`死页诊断已写出：${diagnosticsPath}`);
+          }
           throw new Error(`DREAMINA_FIRST_LOAD_DEAD_PAGE|debug=${diagName}`);
         }
         throw new Error('DREAMINA_FIRST_LOAD_DEAD_PAGE');
       }
-      if (typeof logInfo === 'function') logInfo(`openDreamina.deadPageCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - deadPageCheckStartedAt}ms`);
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.deadPageCheckDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - deadPageCheckStartedAt}ms`);
+      }
 
       const overlayStartedAt = Date.now();
-      if (typeof preprocessDreaminaOverlays === 'function') await preprocessDreaminaOverlays(page, log, prefix, config);
-      if (typeof logInfo === 'function') logInfo(`openDreamina.overlayDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - overlayStartedAt}ms`);
+      if (typeof preprocessDreaminaOverlays === 'function') {
+        await preprocessDreaminaOverlays(page, log, prefix, config);
+      }
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.overlayDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - overlayStartedAt}ms`);
+      }
 
-      const recoveryConfig = typeof resolveDreaminaRecoveryConfig === 'function' ? resolveDreaminaRecoveryConfig(config) : { maxRecoveries: 1, recoveryBonusMs: 5000 };
-      const loginSignalStages = typeof resolveLoginSignalStages === 'function' ? resolveLoginSignalStages(config) : [];
-      if (typeof logInfo === 'function') logInfo(`openDreamina.loginSignalStages | mode=${typeof resolveRunMode === 'function' ? resolveRunMode(config) : 'run'} | stages=${JSON.stringify(loginSignalStages)}`);
+      const recoveryConfig = typeof resolveDreaminaRecoveryConfig === 'function'
+        ? resolveDreaminaRecoveryConfig(config)
+        : { maxRecoveries: 1, recoveryBonusMs: 5000 };
+      const loginSignalStages = typeof resolveLoginSignalStages === 'function'
+        ? resolveLoginSignalStages(config)
+        : [];
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.loginSignalStages | mode=${typeof resolveRunMode === 'function' ? resolveRunMode(config) : 'run'} | stages=${JSON.stringify(loginSignalStages)}`);
+      }
+
       const waitSignalStartedAt = Date.now();
       const signal = typeof waitForDreaminaLoginSignals === 'function'
-        ? await waitForDreaminaLoginSignals(page, log, prefix, account, proxy, { stages: loginSignalStages, maxRecoveries: recoveryConfig.maxRecoveries, recoveryBonusMs: recoveryConfig.recoveryBonusMs, config })
+        ? await waitForDreaminaLoginSignals(page, log, prefix, account, proxy, {
+            stages: loginSignalStages,
+            maxRecoveries: recoveryConfig.maxRecoveries,
+            recoveryBonusMs: recoveryConfig.recoveryBonusMs,
+            config,
+          })
         : { found: false, label: '' };
-      if (typeof logInfo === 'function') logInfo(`openDreamina.loginSignalDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - waitSignalStartedAt}ms | found=${signal.found ? 'Y' : 'N'} | label=${signal.label || 'NA'}`);
+      if (typeof logInfo === 'function') {
+        logInfo(`openDreamina.loginSignalDone | attempt=${attempt}/${maxAttempts} | elapsed=${Date.now() - waitSignalStartedAt}ms | found=${signal.found ? 'Y' : 'N'} | label=${signal.label || 'NA'}`);
+      }
 
       if (signal.found) {
-        if (typeof log === 'function') log(`Dreamina ???????${signal.label}`);
-        if (typeof logInfo === 'function') logInfo(`openDreamina.attemptReady | attempt=${attempt}/${maxAttempts} | totalElapsed=${Date.now() - attemptStartedAt}ms`);
-        if (typeof logSuccess === 'function') logSuccess('Dreamina ??????????');
+        if (typeof log === 'function') log(`Dreamina 登录信号出现：${signal.label}`);
+        if (typeof logInfo === 'function') {
+          logInfo(`openDreamina.attemptReady | attempt=${attempt}/${maxAttempts} | totalElapsed=${Date.now() - attemptStartedAt}ms`);
+        }
+        if (typeof logSuccess === 'function') {
+          logSuccess('Dreamina 首页已进入可操作状态');
+        }
         return { success: true, reason: 'OK', signal };
       }
     } catch (error) {
       lastOpenError = String(error?.message || 'UNKNOWN');
-      if (typeof log === 'function') log(`Dreamina ????: ${error.message}`);
+      if (typeof log === 'function') log(`Dreamina 打开失败: ${error.message}`);
       if (shouldRecreateDreaminaPage(error)) {
-        if (typeof logWarn === 'function') logWarn(`Dreamina ?????????? page ?????? reload?${error.message} | attemptElapsed=${Date.now() - attemptStartedAt}ms`);
+        if (typeof logWarn === 'function') {
+          logWarn(`Dreamina 页面上下文异常，当前 page 不再适合继续 reload：${error.message} | attemptElapsed=${Date.now() - attemptStartedAt}ms`);
+        }
         throw new Error(`DREAMINA_PAGE_CONTEXT_INVALID|last=${lastOpenError}`);
       }
-      if (typeof logWarn === 'function') logWarn(`Dreamina ??????????${error.message} | attemptElapsed=${Date.now() - attemptStartedAt}ms`);
+      if (typeof logWarn === 'function') {
+        logWarn(`Dreamina 打开异常，准备重试：${error.message} | attemptElapsed=${Date.now() - attemptStartedAt}ms`);
+      }
     }
   }
 

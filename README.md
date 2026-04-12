@@ -73,6 +73,16 @@
 - 处理生日填写
 - 保存登录态与 session 信息
 
+#### Dreamina 验证码控件维护说明
+
+- Dreamina 验证码区域不是通用表单输入框，页面可能同时存在真实 6 位 input、wrapper 容器、focus 展示格等多种节点。
+- 已确认的一次核心失败根因是：验证码候选池过宽，误把非验证码 DOM（例如 `lv-menu-item`）选成 `codeInput`，导致后续 fill / type / 注入全部打空，表面现象看起来像“拿到码但不填写”。
+- 因此当前实现故意把验证码候选池收窄为 Dreamina 专用白名单，不要轻易回退到通用 textbox / 泛化 input / 任意可见 div 的策略。
+- Continue 后的安全检查也采用“单次、轻量、非阻塞”的回补方式，避免恢复旧的结果判定窗口后再次卡住主线程。
+- 为了加速首页打开，当前支持按运行模式拦截非核心资源：默认 `run` 模式拦截 `image / media / font`，`test` 模式保留可视调试，不默认拦截。
+- `firstLoadHealth` 现已支持 run/test 分离：默认 `runGraceWaitMs=6000`、`testGraceWaitMs=12000`，用于平衡首页死页误判保护与真实批跑速度。
+- 登录信号等待也已支持 run/test 分离：默认 `run` 使用更激进的短周期轮询阶段，`test` 继续保留更保守的等待节奏，便于调试和观察页面渐进加载。
+
 ### 4.3 Firstmail 验证码轮询
 
 `firstmail-api.js` 负责：

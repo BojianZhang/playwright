@@ -7,6 +7,8 @@
     "start": "node runner.js",
     "run": "node runner.js",
     "precheck": "node proxy-precheck.js",
+    "profile:check": "node dreamina-register-profile-loader.js",
+    "layout:check": "node window-layout-profile-loader.js",
     "reset": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1",
     "reset:all": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1 -IncludeReports",
     "test": "playwright test",

@@ -1,0 +1,12 @@
+{
+  "local-proxy-2": {
+    "proxyId": "local-proxy-2",
+    "status": "healthy",
+    "lastReason": "SUCCESS",
+    "lastBucket": "success",
+    "failCount": 0,
+    "successCount": 5,
+    "lastRaw": "gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10071:YBZrZzwysyHH7GU",
+    "lastUpdatedAt": 1775998323022
+  }
+}

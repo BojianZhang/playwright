@@ -1,0 +1,19 @@
+{
+  "mode": "uniform-grid",
+  "margin": 8,
+  "gap": 12,
+  "topInset": 8,
+  "bottomInset": 48,
+  "singleMinWidth": 960,
+  "singleMinHeight": 720,
+  "minWindowWidth": 640,
+  "minWindowHeight": 420,
+  "preferredColumns": {
+    "1": 1,
+    "2": 2,
+    "3": 2,
+    "4": 2,
+    "5": 2,
+    "6": 2
+  }
+}
