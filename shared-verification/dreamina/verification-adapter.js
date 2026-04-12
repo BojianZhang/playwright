@@ -355,9 +355,9 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       proxyLabel: 'STAGE3_VERIFICATION',
       // 如果上层有传触发时间，就继续透传；没有就按 0 处理。
       triggeredAtMs: Number(runtime?.verificationTriggeredAtMs || context?.verificationTriggeredAtMs || 0),
-      // 当前策略改为：先允许 provider 返回最近可提取验证码，不在 provider 层提前跳过“历史已见码”。
-      // 只有页面明确返回 WRONG_VERIFICATION_CODE 后，公共层才会把该验证码写入 usedCodes 并触发 resend。
-      seenCodes: new Set(),
+      // 当前策略：provider 直接消费 verification 阶段沉淀下来的 wrong-code 排除集。
+      // 这样 recent candidate pool 才会真正跳过已经被页面明确判错的验证码，转而命中下一枚候选码。
+      seenCodes: usedCodeSet,
     });
 
     // 取出 provider 返回的验证码文本，并统一 trim。
