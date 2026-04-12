@@ -235,10 +235,8 @@ async function runVerificationSubmitStage(options = {}) {
       });
     }
 
-    // 只要当前拉到的验证码非空，就把它加入 usedCodes，避免下一轮继续重复消费同一个验证码。
-    if (String(fetchCodeResult?.code || '').trim()) {
-      usedCodes.add(String(fetchCodeResult.code).trim());
-    }
+    // 注意：当前轮成功拉到验证码后，先不要立刻把它写入 usedCodes。
+    // 只有在页面明确返回 WRONG_VERIFICATION_CODE 之后，才把该验证码视为“已验证失败、不可再试”。
 
     // 第三步：解析验证码输入目标。
     codeInputResolution = await resolveCodeInput(page, runtime, { ...context, verificationReady, fetchCodeResult, usedCodes, attemptIndex });
@@ -304,12 +302,31 @@ async function runVerificationSubmitStage(options = {}) {
       });
     }
 
-    // 如果当前轮返回 wrong code，并且后面还有剩余轮次，则进入 verification 阶段内下一轮重试。
+    // 如果当前轮返回 wrong code，并且后面还有剩余轮次，则先把当前验证码记入 usedCodes，
+    // 再尝试触发 resend，随后进入 verification 阶段内下一轮重试。
     if (String(confirmResult?.state || '') === 'WRONG_VERIFICATION_CODE' && attemptIndex < verificationRetryMaxAttempts) {
+      if (String(fetchCodeResult?.code || '').trim()) {
+        usedCodes.add(String(fetchCodeResult.code).trim());
+      }
+
+      const resendResult = triggerCodeResend
+        ? await triggerCodeResend(page, runtime, {
+            ...context,
+            verificationReady,
+            fetchCodeResult,
+            codeInputResolution,
+            fillResult,
+            confirmResult,
+            usedCodes,
+            attemptIndex,
+          })
+        : null;
+
       retrySummary.push({
         attemptIndex,
         confirmState: 'WRONG_VERIFICATION_CODE',
-        action: 'retry-next-code',
+        resendState: resendResult?.state || (triggerCodeResend ? 'VERIFICATION_CODE_RESEND_NOT_AVAILABLE' : 'VERIFICATION_CODE_RESEND_UNSUPPORTED'),
+        action: 'resend-and-retry-next-code',
       });
       continue;
     }
