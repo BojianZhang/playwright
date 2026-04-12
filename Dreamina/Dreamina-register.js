@@ -35,6 +35,51 @@ const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/
 const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
 
 function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
+  async function captureEntryDebugSnapshot(page) {
+    return await page.evaluate(() => {
+      const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const visible = element => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+      };
+
+      const bodyText = normalize(document.body?.innerText || '');
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+        .filter(visible)
+        .map(element => normalize(element.innerText || element.textContent || element.getAttribute('aria-label') || ''))
+        .filter(Boolean)
+        .slice(0, 20);
+
+      const inputs = Array.from(document.querySelectorAll('input, textarea'))
+        .filter(visible)
+        .map(element => ({
+          tag: String(element.tagName || '').toLowerCase(),
+          type: normalize(element.getAttribute('type') || ''),
+          name: normalize(element.getAttribute('name') || ''),
+          placeholder: normalize(element.getAttribute('placeholder') || ''),
+          ariaLabel: normalize(element.getAttribute('aria-label') || ''),
+          autocomplete: normalize(element.getAttribute('autocomplete') || ''),
+        }))
+        .slice(0, 20);
+
+      return {
+        url: String(window.location.href || ''),
+        title: normalize(document.title || ''),
+        bodyPreview: bodyText.slice(0, 500),
+        visibleButtons: buttons,
+        visibleInputs: inputs,
+      };
+    }).catch(() => ({
+      url: String(page?.url ? page.url() : ''),
+      title: '',
+      bodyPreview: '',
+      visibleButtons: [],
+      visibleInputs: [],
+    }));
+  }
+
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
       const homeUrl = String(runtime?.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
@@ -122,12 +167,17 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
         };
       }
 
+      const debugSnapshot = await captureEntryDebugSnapshot(page);
       return {
         ok: false,
         state: 'ENTRY_NOT_READY',
         source: gateResult?.state || gateResult?.source || 'login-gate',
         value: gateResult?.reason || gateResult?.state || '',
         strength: '',
+        detail: {
+          gateResult,
+          debugSnapshot,
+        },
       };
     },
 
