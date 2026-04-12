@@ -35,49 +35,64 @@ const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
 function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
-      const result = typeof siteAdapter.waitForDreaminaReady === 'function'
-        ? await siteAdapter.waitForDreaminaReady(page, runtime, context)
-        : null;
+      const homeUrl = String(runtime?.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
 
-      if (result?.ok) {
+      try {
+        await page.goto(homeUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000),
+        });
+
         return {
           ok: true,
           state: 'ENTRY_PAGE_OPENED',
-          source: result.source || 'dreamina-ready',
-          value: result.value || 'ENTRY_READY',
-          strength: result.strength || 'strong',
+          source: 'goto',
+          value: homeUrl,
+          strength: 'strong',
           stateChanged: true,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          state: 'ENTRY_PAGE_OPEN_FAILED',
+          source: 'goto',
+          value: String(error?.message || homeUrl),
+          strength: 'strong',
+          stateChanged: false,
+        };
+      }
+    },
+
+    async checkEntryHealth(page, runtime = {}, context = {}) {
+      if (typeof siteAdapter.waitForDreaminaReady !== 'function') {
+        return {
+          ok: false,
+          state: 'ENTRY_HEALTH_FAILED',
+          source: 'adapter',
+          value: 'waitForDreaminaReady',
+          strength: '',
+          stateChanged: null,
         };
       }
 
-      if (result) {
+      const readyResult = await siteAdapter.waitForDreaminaReady(page, runtime, context);
+      if (readyResult?.ok) {
         return {
-          ok: false,
-          state: String(result.state || 'ENTRY_PAGE_OPEN_FAILED'),
-          source: result.source || 'dreamina-ready',
-          value: result.value || '',
-          strength: result.strength || '',
-          stateChanged: typeof result.stateChanged === 'boolean' ? result.stateChanged : null,
+          ok: true,
+          state: 'ENTRY_HEALTH_OK',
+          source: readyResult.source || 'dreamina-ready',
+          value: readyResult.value || 'READY_SIGNAL_FOUND',
+          strength: readyResult.strength || 'weak',
+          stateChanged: null,
         };
       }
 
       return {
         ok: false,
-        state: 'ENTRY_PAGE_OPEN_FAILED',
+        state: 'ENTRY_HEALTH_FAILED',
         source: 'dreamina-ready',
-        value: 'ENTRY_ADAPTER_RETURNED_EMPTY',
+        value: 'READY_SIGNAL_MISSING',
         strength: '',
-        stateChanged: null,
-      };
-    },
-
-    async checkEntryHealth(page, runtime = {}, context = {}) {
-      return {
-        ok: true,
-        state: 'ENTRY_HEALTH_OK',
-        source: 'delegated',
-        value: 'DELEGATED_TO_DREAMINA_READY',
-        strength: 'weak',
         stateChanged: null,
       };
     },
@@ -94,11 +109,11 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
       }
 
       const gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
-      if (gateResult?.ok) {
+      if (gateResult?.success) {
         return {
           ok: true,
           state: 'ENTRY_READY',
-          source: gateResult.state || gateResult.source || 'login-gate',
+          source: gateResult.state || 'login-gate',
           value: gateResult.reason || gateResult.state || 'LOGIN_GATE_READY',
           strength: 'strong',
           stateChanged: true,
@@ -115,14 +130,36 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
     },
 
     classifyEntryFailure(input = {}) {
-      const classified = typeof siteAdapter.classifyDreaminaLoginGateFailure === 'function'
+      const entryReason = String(input.reason || input.state || '').trim().toUpperCase();
+
+      if (entryReason === 'ENTRY_HEALTH_FAILED') {
+        const classifiedEntry = typeof siteAdapter.classifyDreaminaEntryFailure === 'function'
+          ? siteAdapter.classifyDreaminaEntryFailure({ reason: 'READY_SIGNAL_MISSING' })
+          : null;
+
+        return {
+          reason: entryReason || 'ENTRY_HEALTH_FAILED',
+          siteReason: classifiedEntry?.siteReason || 'DREAMINA_READY_SIGNAL_MISSING',
+          hardFailure: Boolean(classifiedEntry?.hardFailure),
+        };
+      }
+
+      const classifiedGate = typeof siteAdapter.classifyDreaminaLoginGateFailure === 'function'
         ? siteAdapter.classifyDreaminaLoginGateFailure(input)
         : null;
 
+      if (entryReason === 'ENTRY_PAGE_OPEN_FAILED') {
+        return {
+          reason: entryReason,
+          siteReason: 'DREAMINA_ENTRY_PAGE_OPEN_FAILED',
+          hardFailure: true,
+        };
+      }
+
       return {
-        reason: String(input.reason || input.state || 'ENTRY_NOT_READY').trim().toUpperCase(),
-        siteReason: classified?.siteReason || 'DREAMINA_ENTRY_NOT_READY',
-        hardFailure: Boolean(classified?.hardFailure),
+        reason: entryReason || 'ENTRY_NOT_READY',
+        siteReason: classifiedGate?.siteReason || 'DREAMINA_ENTRY_NOT_READY',
+        hardFailure: Boolean(classifiedGate?.hardFailure),
       };
     },
   };
