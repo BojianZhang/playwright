@@ -1770,6 +1770,7 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
         nextState: { visible: true, enabled: nextEnabled, disabled: !nextEnabled, selector: 'button:Next', text: 'Next' },
         scopeMode,
         submitPerformed: true,
+        submitOwner: 'continuous-flow',
       },
     };
   } catch (error) {

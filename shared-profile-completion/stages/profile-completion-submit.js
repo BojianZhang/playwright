@@ -193,6 +193,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       source: 'profile-input',
       value: birthdayContinuousResult?.detail?.year || '',
       stateChanged: true,
+      mode: 'continuous-flow',
     };
     monthFillResult = {
       ok: true,
@@ -214,7 +215,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       attempts: [],
       nextState: birthdayContinuousResult?.detail?.nextState || null,
     };
-  } else {
+  } else if (hasSplitFlow) {
     // 第三步：填写 year。
     yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult });
     if (!yearFillResult?.ok) {
@@ -256,6 +257,13 @@ async function runProfileCompletionSubmitStage(options = {}) {
         detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, dayFillResult, classified },
       });
     }
+  } else {
+    return normalizeProfileCompletionStageResult({
+      success: false,
+      state: 'ADAPTER_INCOMPLETE',
+      reason: 'PROFILE_COMPLETION_STAGE_NO_ACTIVE_FILL_PATH',
+      detail: { profileReady, birthdayFillPlan, hasContinuousFlow, hasSplitFlow, birthdayContinuousResult },
+    });
   }
 
   // 第六步：提交 profile completion。
