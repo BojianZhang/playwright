@@ -259,7 +259,17 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   // 第六步：提交 profile completion。
-  const submitResult = await submitProfileCompletion(page, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult });
+  const submitResult = birthdayContinuousResult?.ok && birthdayContinuousResult?.detail?.submitPerformed
+    ? {
+        ok: true,
+        state: 'PROFILE_COMPLETION_SUBMITTED',
+        source: birthdayContinuousResult?.detail?.submitOwner || 'continuous-flow',
+        value: 'birthday-continuous-flow-submitted',
+        beforeSnapshot: null,
+        afterSnapshot: null,
+        stateChanged: true,
+      }
+    : await submitProfileCompletion(page, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, birthdayContinuousResult });
   // 如果提交动作本身失败，就在这一层直接收口。
   if (!submitResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED' }) : null;
