@@ -2,7 +2,8 @@
   "name": "DreaminaVerificationStage",
   "verificationReady": {
     "texts": [
-      "Resend code"
+      "Resend code",
+      "Check your spam folder"
     ],
     "selectors": [
       "input[maxlength='6']",
@@ -57,7 +58,7 @@
   },
   "mailProvider": {
     "firstmail": {
-      "apiKey": ""
+      "apiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE"
     }
   }
 }

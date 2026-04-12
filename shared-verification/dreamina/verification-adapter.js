@@ -217,6 +217,17 @@ async function detectDreaminaVerificationStageReadyOnce(page, profile, context =
  * 5. 一旦任意一步确认 ready，就立即返回
  * 6. 所有等待步都没命中时，再统一返回 not-ready
  */
+async function readDreaminaVerificationResendCountdown(page) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  const match = String(bodyText || '').match(/Resend code(?:\s+in)?\s+(\d+)s/i);
+  return {
+    ok: Boolean(match),
+    seconds: match ? Number(match[1]) : null,
+    source: match ? 'bodyText' : '',
+    value: match ? match[0] : '',
+  };
+}
+
 async function waitForDreaminaVerificationStageReady(page, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
   const { logInfo = null } = context;
@@ -245,6 +256,7 @@ async function waitForDreaminaVerificationStageReady(page, runtime = {}, context
       // 如果存在日志函数，记录当前 ready 命中来源、值和等待步。
       if (typeof logInfo === 'function') logInfo(`dreamina.verification.waitForStageReady | source=${readyResult.source} | value=${readyResult.value} | strength=${readyResult.strength} | waitStepMs=${waitStepMs}`);
       // 返回统一 ready 结果。
+      const resendCountdown = await readDreaminaVerificationResendCountdown(page);
       return {
         ok: true,
         state: 'VERIFICATION_STAGE_READY',
@@ -252,6 +264,7 @@ async function waitForDreaminaVerificationStageReady(page, runtime = {}, context
         value: readyResult.value,
         strength: readyResult.strength,
         waitStepMs,
+        resendCountdown,
       };
     }
 
@@ -289,7 +302,14 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
   // 从上下文中读取日志函数；没有就保持为 null。
   const { logInfo = null, log = null, verificationReady = null, usedCodes = new Set(), attemptIndex = 1 } = context;
   const profile = loadDreaminaVerificationProfile();
-  const effectiveRuntime = resolveDreaminaVerificationRuntime(runtime, profile);
+  const effectiveRuntime = resolveDreaminaVerificationRuntime({
+    firstmailApiMaxPollAttempts: Number(runtime?.firstmailApiMaxPollAttempts || 2),
+    waitMailIntervalMs: Number(runtime?.waitMailIntervalMs || 2500),
+    firstmailRecentMessageScanLimit: Number(runtime?.firstmailRecentMessageScanLimit || 8),
+    firstmailPollJitterMinMs: Number(runtime?.firstmailPollJitterMinMs || 0),
+    firstmailPollJitterMaxMs: Number(runtime?.firstmailPollJitterMaxMs || 0),
+    ...runtime,
+  }, profile);
   // 读取 provider 名称；当前默认使用 firstmail。
   const provider = String(effectiveRuntime?.verificationCodeProvider || 'firstmail').trim().toLowerCase();
   // 把 usedCodes 统一转成 Set，保证后续 has 判断稳定可用。
@@ -362,6 +382,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
         messageTs: result?.messageTs,
         // 保留 provider 的命中模式。
         matchMode: result?.matchMode,
+        resendCountdown: verificationReady?.resendCountdown || null,
       };
     }
 
@@ -381,6 +402,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
         attempt: Number(result?.attempt || 0),
         messageTs: result?.messageTs,
         matchMode: result?.matchMode,
+        resendCountdown: verificationReady?.resendCountdown || null,
       };
     }
 
@@ -404,6 +426,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       messageTs: result?.messageTs,
       // 返回验证码命中模式。
       matchMode: result?.matchMode,
+      resendCountdown: verificationReady?.resendCountdown || null,
     };
   } catch (error) {
     // 如果 provider 调用过程中抛异常，则按统一失败结构返回，而不是把异常直接抛给公共层。
@@ -422,6 +445,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       provider,
       // 失败时尝试次数先记 0，避免制造不真实的次数语义。
       attempt: 0,
+      resendCountdown: verificationReady?.resendCountdown || null,
     };
   }
 }
@@ -1126,6 +1150,7 @@ module.exports = {
   // 导出验证码获取能力。
   fetchDreaminaVerificationCode,
   triggerDreaminaVerificationCodeResend,
+  readDreaminaVerificationResendCountdown,
   // 导出验证码输入目标解析能力。
   resolveDreaminaVerificationInput,
   // 导出验证码输入能力。

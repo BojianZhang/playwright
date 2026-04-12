@@ -1130,6 +1130,11 @@ async function runDreaminaRegisterCli(argv = []) {
         credentialSignupSwitchWaitMs: 1200,
         verificationRetryMaxAttempts: 3,
         verificationResendWaitMs: 1800,
+        firstmailApiMaxPollAttempts: 2,
+        waitMailIntervalMs: 2500,
+        firstmailRecentMessageScanLimit: 8,
+        firstmailPollJitterMinMs: 0,
+        firstmailPollJitterMaxMs: 0,
         readyTextSignals: [
           'Continue with email',
           'Sign in',
