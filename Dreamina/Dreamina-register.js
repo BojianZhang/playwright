@@ -1,5 +1,6 @@
 'use strict';
 
+const { chromium } = require('playwright');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
 
 // ==============================
@@ -478,12 +479,27 @@ async function runDreaminaRegisterFlow(options = {}) {
 function parseCliArgs(argv = []) {
   const args = Array.isArray(argv) ? argv : [];
   let proxyIndex = 0;
+  let headed = false;
+  let slowMo = 0;
 
   for (let index = 0; index < args.length; index++) {
     const token = String(args[index] || '').trim();
     if (!token) continue;
     if (token === '--proxy-index') {
       proxyIndex = Number(args[index + 1] || 0);
+      index += 1;
+      continue;
+    }
+    if (token === '--headed') {
+      headed = true;
+      continue;
+    }
+    if (token === '--headless') {
+      headed = false;
+      continue;
+    }
+    if (token === '--slow-mo') {
+      slowMo = Number(args[index + 1] || 0);
       index += 1;
       continue;
     }
@@ -494,6 +510,8 @@ function parseCliArgs(argv = []) {
 
   return {
     proxyIndex: Number.isFinite(proxyIndex) ? proxyIndex : 0,
+    headed,
+    slowMo: Number.isFinite(slowMo) ? slowMo : 0,
   };
 }
 
@@ -504,8 +522,43 @@ function selectCliProxy(proxies = [], proxyIndex = 0) {
   return list[normalizedIndex] || null;
 }
 
+async function createDreaminaCliRuntime(options = {}) {
+  const proxy = options?.proxy && typeof options.proxy === 'object' ? options.proxy : null;
+  const headed = Boolean(options?.headed);
+  const slowMo = Number.isFinite(Number(options?.slowMo)) ? Number(options.slowMo) : 0;
+
+  const launchOptions = {
+    headless: !headed,
+    slowMo,
+  };
+
+  if (proxy?.server) {
+    launchOptions.proxy = {
+      server: proxy.server,
+      username: proxy.username,
+      password: proxy.password,
+    };
+  }
+
+  const browser = await chromium.launch(launchOptions);
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    locale: 'en-US',
+    timezoneId: 'Asia/Shanghai',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    ignoreHTTPSErrors: true,
+  });
+  const page = await context.newPage();
+
+  return {
+    browser,
+    context,
+    page,
+  };
+}
+
 async function runDreaminaRegisterCli(argv = []) {
-  const { proxyIndex } = parseCliArgs(argv);
+  const { proxyIndex, headed, slowMo } = parseCliArgs(argv);
   const proxies = loadLocalProxies();
   const proxy = selectCliProxy(proxies, proxyIndex);
 
@@ -532,16 +585,39 @@ async function runDreaminaRegisterCli(argv = []) {
     return emptyResult;
   }
 
-  const result = await runDreaminaRegisterFlow({
-    proxy,
-    account: {},
-    runtime: {},
-    logInfo: null,
-  });
+  let cliRuntime = null;
+  try {
+    cliRuntime = await createDreaminaCliRuntime({
+      proxy,
+      headed,
+      slowMo,
+    });
 
-  console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
-  console.log(JSON.stringify(result, null, 2));
-  return result;
+    const result = await runDreaminaRegisterFlow({
+      browser: cliRuntime.browser,
+      context: cliRuntime.context,
+      page: cliRuntime.page,
+      proxy,
+      account: {},
+      runtime: {
+        cli: true,
+        headed,
+        slowMo,
+      },
+      logInfo: null,
+    });
+
+    console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
+    console.log(JSON.stringify(result, null, 2));
+    return result;
+  } finally {
+    if (cliRuntime?.context && typeof cliRuntime.context.close === 'function') {
+      await cliRuntime.context.close().catch(() => {});
+    }
+    if (cliRuntime?.browser && typeof cliRuntime.browser.close === 'function') {
+      await cliRuntime.browser.close().catch(() => {});
+    }
+  }
 }
 
 if (require.main === module) {
@@ -565,5 +641,6 @@ module.exports = {
   runDreaminaRegisterFlow,
   parseCliArgs,
   selectCliProxy,
+  createDreaminaCliRuntime,
   runDreaminaRegisterCli,
 };
