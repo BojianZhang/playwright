@@ -335,10 +335,16 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
   // 收口 session 摘要；优先复用第五阶段已经拿到的 sessionInspection 结果。
   const sessionSnapshot = {
     expectedKeys: profile?.summarySignals?.sessionKeys || [],
+    matchedCookieKeys: sessionInspection?.cookieSummary?.presentKeys || [],
+    matchedLocalStorageKeys: sessionInspection?.localStorageSummary?.presentKeys || [],
+    matchedSessionStorageKeys: sessionInspection?.sessionStorageSummary?.presentKeys || [],
     source: String(sessionInspection?.source || ''),
     value: String(sessionInspection?.value || ''),
     state: String(sessionInspection?.state || ''),
     strength: String(sessionInspection?.strength || ''),
+    cookieSummary: sessionInspection?.cookieSummary || null,
+    localStorageSummary: sessionInspection?.localStorageSummary || null,
+    sessionStorageSummary: sessionInspection?.sessionStorageSummary || null,
   };
 
   // 读取页面轻量文本预览，作为 UI 摘要的一部分。
@@ -346,6 +352,8 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
   // 组装 UI 摘要。
   const uiSnapshot = {
     expectedSignals: profile?.summarySignals?.uiSignals || [],
+    matchedSelectors: uiConfirmation?.matchedSelectors || [],
+    matchedTexts: uiConfirmation?.matchedTexts || [],
     source: String(uiConfirmation?.source || ''),
     value: String(uiConfirmation?.value || ''),
     state: String(uiConfirmation?.state || ''),
@@ -463,9 +471,18 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
 
   // 第三层：补充第六阶段允许携带的轻量辅助摘要。
   payload.currentUrl = String(page.url ? page.url() : '').trim();
-  payload.accountSummary = accountSummary?.accountSnapshot || null;
+  payload.accountSummary = {
+    ...(accountSummary?.accountSnapshot || {}),
+    registrationState: String(context?.resultConfirmation?.state || ''),
+    finalStage: 'account-delivery',
+  };
   payload.sessionSummary = accountSummary?.sessionSnapshot || null;
-  payload.uiSummary = accountSummary?.uiSnapshot || null;
+  payload.uiSummary = accountSummary?.uiSnapshot
+    ? {
+        ...accountSummary.uiSnapshot,
+        textPreview: String(accountSummary?.uiSnapshot?.textPreview || '').slice(0, 500),
+      }
+    : null;
 
   // 计算当前哪些 requiredFields 已经具备值。
   const presentRequiredFields = requiredFields.filter(field => String(payload?.[field] ?? '').trim());
