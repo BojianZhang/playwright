@@ -30,7 +30,105 @@ const { runAccountDeliveryStage } = require('../shared-account-delivery/stages/a
 // 阶段 0：Dreamina proxy-precheck adapter。
 const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/proxy-precheck-adapter');
 // 阶段 1：Dreamina entry adapter。
-const dreaminaEntryAdapter = require('../shared-entry/dreamina/entry-adapter');
+const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
+
+function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
+  return {
+    async openEntryPage(page, runtime = {}, context = {}) {
+      const result = typeof siteAdapter.waitForDreaminaReady === 'function'
+        ? await siteAdapter.waitForDreaminaReady(page, runtime, context)
+        : null;
+
+      if (result?.ok) {
+        return {
+          ok: true,
+          state: 'ENTRY_PAGE_OPENED',
+          source: result.source || 'dreamina-ready',
+          value: result.value || 'ENTRY_READY',
+          strength: result.strength || 'strong',
+          stateChanged: true,
+        };
+      }
+
+      if (result) {
+        return {
+          ok: false,
+          state: String(result.state || 'ENTRY_PAGE_OPEN_FAILED'),
+          source: result.source || 'dreamina-ready',
+          value: result.value || '',
+          strength: result.strength || '',
+          stateChanged: typeof result.stateChanged === 'boolean' ? result.stateChanged : null,
+        };
+      }
+
+      return {
+        ok: false,
+        state: 'ENTRY_PAGE_OPEN_FAILED',
+        source: 'dreamina-ready',
+        value: 'ENTRY_ADAPTER_RETURNED_EMPTY',
+        strength: '',
+        stateChanged: null,
+      };
+    },
+
+    async checkEntryHealth(page, runtime = {}, context = {}) {
+      return {
+        ok: true,
+        state: 'ENTRY_HEALTH_OK',
+        source: 'delegated',
+        value: 'DELEGATED_TO_DREAMINA_READY',
+        strength: 'weak',
+        stateChanged: null,
+      };
+    },
+
+    async waitForEntryReady(page, runtime = {}, context = {}) {
+      if (typeof siteAdapter.ensureDreaminaLoginGate !== 'function') {
+        return {
+          ok: false,
+          state: 'ENTRY_ADAPTER_METHOD_MISSING',
+          source: 'adapter',
+          value: 'ensureDreaminaLoginGate',
+          strength: '',
+        };
+      }
+
+      const gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
+      if (gateResult?.ok) {
+        return {
+          ok: true,
+          state: 'ENTRY_READY',
+          source: gateResult.state || gateResult.source || 'login-gate',
+          value: gateResult.reason || gateResult.state || 'LOGIN_GATE_READY',
+          strength: 'strong',
+          stateChanged: true,
+        };
+      }
+
+      return {
+        ok: false,
+        state: 'ENTRY_NOT_READY',
+        source: gateResult?.state || gateResult?.source || 'login-gate',
+        value: gateResult?.reason || gateResult?.state || '',
+        strength: '',
+      };
+    },
+
+    classifyEntryFailure(input = {}) {
+      const classified = typeof siteAdapter.classifyDreaminaLoginGateFailure === 'function'
+        ? siteAdapter.classifyDreaminaLoginGateFailure(input)
+        : null;
+
+      return {
+        reason: String(input.reason || input.state || 'ENTRY_NOT_READY').trim().toUpperCase(),
+        siteReason: classified?.siteReason || 'DREAMINA_ENTRY_NOT_READY',
+        hardFailure: Boolean(classified?.hardFailure),
+      };
+    },
+  };
+}
+
+const dreaminaEntryAdapter = buildDreaminaEntryStageAdapter(dreaminaEntrySiteAdapter);
 // 阶段 2：Dreamina credential adapter。
 const dreaminaCredentialAdapter = require('../shared-credential/dreamina/credential-adapter');
 // 阶段 3：Dreamina verification adapter。
