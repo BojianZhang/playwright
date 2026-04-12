@@ -600,6 +600,43 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
  * - 在填写前后读取 month 输入框当前值
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
+async function readDreaminaBirthdayMonthDisplayState(page, profile) {
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      inputValue: '',
+      displayText: '',
+      placeholder: '',
+      effectiveValue: '',
+      emptyState: true,
+      locator: null,
+    };
+  }
+
+  const inputValue = String(await hit.locator.inputValue().catch(() => '')).trim();
+  const placeholder = String(await hit.locator.getAttribute('placeholder').catch(() => '')).trim();
+  const displayText = String(await hit.locator.evaluate(node => {
+    const wrapper = node?.closest?.('.gate_birthday-picker, [class*="birthday-picker"], [class*="select"], [class*="picker"]') || node?.parentElement;
+    return String(wrapper?.textContent || node?.textContent || '');
+  }).catch(() => '')).replace(/\s+/g, ' ').trim();
+
+  const effectiveValue = inputValue || displayText;
+  const emptyState = !effectiveValue || /^month$/i.test(effectiveValue) || /^month$/i.test(placeholder);
+
+  return {
+    ok: true,
+    selector: hit.selector,
+    inputValue,
+    displayText,
+    placeholder,
+    effectiveValue,
+    emptyState,
+    locator: hit.locator,
+  };
+}
+
 async function readDreaminaBirthdayMonthValue(page, profile) {
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
   if (!hit.ok || !hit.locator) {
@@ -626,11 +663,12 @@ async function readDreaminaBirthdayMonthValue(page, profile) {
   const tagName = String(await hit.locator.evaluate(node => String(node?.tagName || '')).catch(() => '')).trim();
   const className = String(await hit.locator.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
   const optionPanelVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+  const displayState = await readDreaminaBirthdayMonthDisplayState(page, profile);
 
   const normalizedInputValue = String(currentValue || '').trim();
   const normalizedTextValue = String(textContent || '').trim();
-  const value = normalizedInputValue || normalizedTextValue;
-  const readMode = normalizedInputValue ? 'input-value' : (normalizedTextValue ? 'text-content' : 'empty');
+  const value = displayState.effectiveValue || normalizedInputValue || normalizedTextValue;
+  const readMode = displayState.effectiveValue ? 'display-state' : (normalizedInputValue ? 'input-value' : (normalizedTextValue ? 'text-content' : 'empty'));
 
   return {
     ok: true,
@@ -647,6 +685,7 @@ async function readDreaminaBirthdayMonthValue(page, profile) {
       opensPicker: /select|picker|dropdown|month/i.test(`${className} ${role} ${placeholder} ${ariaLabel}`),
       optionPanelVisible: Boolean(optionPanelVisible?.ok),
     },
+    displayState,
     locator: hit.locator,
   };
 }
@@ -696,35 +735,52 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
     await page.waitForTimeout(180).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
-    await page.waitForTimeout(180).catch(() => {});
-    const afterState = await readDreaminaBirthdayMonthValue(page, profile);
+    await page.waitForTimeout(160).catch(() => {});
+    let afterState = await readDreaminaBirthdayMonthValue(page, profile);
+    let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+    if (panelAfter.ok && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) {
+      await page.waitForTimeout(320).catch(() => {});
+      afterState = await readDreaminaBirthdayMonthValue(page, profile);
+      panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+    }
     const nextState = await readDreaminaBirthdayNextState(page, profile);
-    const ok = optionPick.ok && String(afterState?.value || '').trim().toLowerCase() === targetMonth.toLowerCase();
+    const effectiveValue = String(afterState?.displayState?.effectiveValue || afterState?.value || '').trim();
+    const displayMatched = effectiveValue.toLowerCase() === targetMonth.toLowerCase();
+    const panelClosed = !panelAfter.ok;
+    const ok = optionPick.ok && displayMatched;
 
     attempts.push({
       mode: 'dropdown-select',
       candidate: targetMonth,
-      beforeValue: String(beforeState?.value || ''),
-      afterValue: String(afterState?.value || ''),
+      beforeValue: String(beforeState?.displayState?.effectiveValue || beforeState?.value || ''),
+      afterValue: effectiveValue,
       panelVisible: Boolean(panelState?.ok),
+      panelClosed,
       optionMatched: optionPick.ok ? optionPick.text : '',
+      clickTarget: optionPick.clickTarget || '',
+      clickMode: optionPick.clickMode || '',
       nextEnabled: Boolean(nextState?.enabled),
       ok,
     });
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState.value || '[EMPTY]'} | after=${afterState.value || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
       ok,
       state: ok ? 'BIRTHDAY_MONTH_FILLED' : 'BIRTHDAY_MONTH_FILL_FAILED',
       source: 'profile-input',
-      value: String(afterState?.value || '').trim(),
-      stateChanged: String(afterState?.value || '').trim() !== String(beforeState?.value || '').trim() || optionPick.ok,
+      value: effectiveValue,
+      stateChanged: effectiveValue !== String(beforeState?.displayState?.effectiveValue || beforeState?.value || '').trim() || optionPick.ok,
       mode: 'dropdown-select',
       attempts,
       nextState,
+      monthApplyResult: {
+        panelClosed,
+        displayMatched,
+        effectiveValue,
+      },
     };
   } catch (error) {
     return {
@@ -762,14 +818,54 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
       const text = String(await option.innerText().catch(() => '')).trim();
       if (!text) continue;
       if (!normalizedCandidates.includes(text.toLowerCase())) continue;
-      await option.click({ force: true }).catch(() => {});
+
+      const contentCandidate = option.locator('.lv-select-option-content, .lv-select-option-content-text, span, div').first();
+      const contentVisible = await isVisible(contentCandidate);
+      let clickTarget = 'option';
+      let clickMode = 'click';
+
+      if (contentVisible) {
+        await contentCandidate.hover().catch(() => {});
+        const clicked = await contentCandidate.click({ timeout: 1200 }).then(() => true).catch(() => false);
+        if (clicked) {
+          clickTarget = 'content';
+          clickMode = 'hover-click';
+        } else {
+          await option.hover().catch(() => {});
+          const optionClicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
+          if (optionClicked) {
+            clickTarget = 'wrapper';
+            clickMode = 'hover-click';
+          } else {
+            await option.click({ force: true, timeout: 1200 }).catch(() => {});
+            clickTarget = 'option';
+            clickMode = 'force-click';
+          }
+        }
+      } else {
+        await option.hover().catch(() => {});
+        const optionClicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
+        if (optionClicked) {
+          clickTarget = 'option';
+          clickMode = 'hover-click';
+        } else {
+          await option.click({ force: true, timeout: 1200 }).catch(() => {});
+          clickTarget = 'option';
+          clickMode = 'force-click';
+        }
+      }
+
+      const panelStillVisible = await isVisible(option);
       if (typeof logInfo === 'function') {
-        logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text}`);
+        logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text} | clickTarget=${clickTarget} | clickMode=${clickMode} | panelStillVisible=${panelStillVisible ? 'Y' : 'N'}`);
       }
       return {
         ok: true,
         selector,
         text,
+        clickTarget,
+        clickMode,
+        panelStillVisible,
       };
     }
   }
@@ -778,6 +874,9 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
     ok: false,
     selector: '',
     text: '',
+    clickTarget: '',
+    clickMode: '',
+    panelStillVisible: false,
   };
 }
 
@@ -1356,7 +1455,7 @@ function classifyDreaminaProfileCompletionFailure(input = {}) {
       : value === 'EMPTY_MONTH_PLAN'
         ? 'DREAMINA_BIRTHDAY_MONTH_PLAN_EMPTY'
         : value === ''
-          ? 'DREAMINA_BIRTHDAY_MONTH_OPTION_NOT_APPLIED'
+          ? 'DREAMINA_BIRTHDAY_MONTH_TRIGGER_TEXT_NOT_UPDATED'
           : 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
   } else if (reason === 'BIRTHDAY_DAY_FILL_FAILED' || reason === 'BIRTHDAY_DAY_FILL_NOT_IMPLEMENTED') {
     siteReason = value === 'DAY_INPUT_NOT_FOUND'
