@@ -131,7 +131,12 @@ async function runProfileCompletionSubmitStage(options = {}) {
   const classifyFailure = resolveAdapterMethod(adapter, ['classifyProfileCompletionFailure', 'classifyDreaminaProfileCompletionFailure']);
 
   // 如果阶段 4 必需方法不完整，就直接失败，不让主链继续跑半截。
-  if (!waitForProfileReady || !buildProfilePlan || !fillYear || !fillMonth || !fillDay || !submitProfileCompletion || !confirmSubmitResult) {
+  const hasSplitFlowMethods = Boolean(fillYear && fillMonth && fillDay);
+  const hasContinuousFlowMethod = Boolean(fillBirthdayContinuous);
+
+  // 当前阶段的基础必需能力：ready / plan / submit / confirm 必须存在。
+  // 具体填写路径允许 continuous-flow 与 split-flow 二选一。
+  if (!waitForProfileReady || !buildProfilePlan || !submitProfileCompletion || !confirmSubmitResult || (!hasContinuousFlowMethod && !hasSplitFlowMethods)) {
     return normalizeProfileCompletionStageResult({
       success: false,
       state: 'ADAPTER_INCOMPLETE',
@@ -142,6 +147,9 @@ async function runProfileCompletionSubmitStage(options = {}) {
         hasFillYear: Boolean(fillYear),
         hasFillMonth: Boolean(fillMonth),
         hasFillDay: Boolean(fillDay),
+        hasFillBirthdayContinuous: Boolean(fillBirthdayContinuous),
+        hasSplitFlowMethods,
+        hasContinuousFlowMethod,
         hasSubmitProfileCompletion: Boolean(submitProfileCompletion),
         hasConfirmSubmitResult: Boolean(confirmSubmitResult),
       },
