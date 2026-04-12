@@ -45,7 +45,7 @@ function loadDreaminaVerificationProfile(options = {}) {
 function resolveDreaminaVerificationRuntime(runtime = {}, profile = null) {
   const verificationProfile = profile || loadDreaminaVerificationProfile();
   const profileApiKey = String(verificationProfile?.mailProvider?.firstmail?.apiKey || '').trim();
-  if (String(runtime?.FIRSTMAIL_API_KEY || '').trim()) {
+  if (String(runtime?.firstmailApiKey || runtime?.FIRSTMAIL_API_KEY || '').trim()) {
     return runtime;
   }
 
@@ -55,6 +55,7 @@ function resolveDreaminaVerificationRuntime(runtime = {}, profile = null) {
 
   return {
     ...runtime,
+    firstmailApiKey: profileApiKey,
     FIRSTMAIL_API_KEY: profileApiKey,
   };
 }
@@ -317,7 +318,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
   try {
     // 如果存在日志函数，先记一条第三阶段拉码开始日志，同时把 usedCodes 数量也记录出来。
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'} | attemptIndex=${attemptIndex} | usedCodes=${usedCodeSet.size} | apiKeySource=${String(runtime?.FIRSTMAIL_API_KEY || '').trim() ? 'runtime' : (String(profile?.mailProvider?.firstmail?.apiKey || '').trim() ? 'profile' : 'missing')}`);
+      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'} | attemptIndex=${attemptIndex} | usedCodes=${usedCodeSet.size} | apiKeySource=${String(runtime?.firstmailApiKey || runtime?.FIRSTMAIL_API_KEY || '').trim() ? 'runtime' : (String(profile?.mailProvider?.firstmail?.apiKey || '').trim() ? 'profile' : 'missing')}`);
     }
 
     // 调用现有 firstmail provider 能力，复用已经稳定的 latest 轮询与验证码提取逻辑。
