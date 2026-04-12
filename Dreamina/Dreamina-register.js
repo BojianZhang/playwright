@@ -133,6 +133,8 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
 
     classifyEntryFailure(input = {}) {
       const entryReason = String(input.reason || input.state || '').trim().toUpperCase();
+      const gateReason = String(input.value || '').trim().toUpperCase();
+      const gateState = String(input.source || '').trim().toUpperCase();
 
       if (entryReason === 'ENTRY_HEALTH_FAILED') {
         const classifiedEntry = typeof siteAdapter.classifyDreaminaEntryFailure === 'function'
@@ -146,10 +148,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
         };
       }
 
-      const classifiedGate = typeof siteAdapter.classifyDreaminaLoginGateFailure === 'function'
-        ? siteAdapter.classifyDreaminaLoginGateFailure(input)
-        : null;
-
       if (entryReason === 'ENTRY_PAGE_OPEN_FAILED') {
         return {
           reason: entryReason,
@@ -158,8 +156,15 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
         };
       }
 
+      const classifiedGate = typeof siteAdapter.classifyDreaminaLoginGateFailure === 'function'
+        ? siteAdapter.classifyDreaminaLoginGateFailure({
+            reason: gateReason || input.reason,
+            state: gateState || input.state,
+          })
+        : null;
+
       return {
-        reason: entryReason || 'ENTRY_NOT_READY',
+        reason: gateReason || entryReason || 'ENTRY_NOT_READY',
         siteReason: classifiedGate?.siteReason || 'DREAMINA_ENTRY_NOT_READY',
         hardFailure: Boolean(classifiedGate?.hardFailure),
       };
