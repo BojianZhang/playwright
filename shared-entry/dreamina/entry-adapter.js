@@ -185,6 +185,126 @@ async function checkEntryHealth(page, runtime = {}, context = {}) {
   };
 }
 
+
+/**
+ * 解析 Dreamina 登录入口 staged wait 配置。
+ */
+function resolveDreaminaLoginSignalStages(runtime = {}, profile = {}) {
+  const fromRuntime = Array.isArray(runtime?.entryLoginSignalStages) ? runtime.entryLoginSignalStages : null;
+  const fromProfile = Array.isArray(profile?.loginSignalStages) ? profile.loginSignalStages : null;
+  const fallback = [
+    { seconds: 8, intervalMs: 500 },
+    { seconds: 10, intervalMs: 1000 },
+    { seconds: 10, intervalMs: 1500 },
+  ];
+
+  const stages = fromRuntime && fromRuntime.length
+    ? fromRuntime
+    : (fromProfile && fromProfile.length ? fromProfile : fallback);
+
+  return stages
+    .map(item => ({
+      seconds: Number(item?.seconds || 0),
+      intervalMs: Number(item?.intervalMs || 0),
+    }))
+    .filter(item => item.seconds > 0 && item.intervalMs > 0);
+}
+
+/**
+ * 检测 Dreamina 登录入口信号。
+ */
+async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaEntryProfile();
+  const loginSignals = profile?.loginSignals || {};
+
+  const entryTexts = Array.isArray(loginSignals?.entryTexts) ? loginSignals.entryTexts : [];
+  const entryRolePattern = String(loginSignals?.entryRolePattern || 'sign in|log in|login|sign up').trim();
+  const emailInputRoleName = String(loginSignals?.emailInputRoleName || 'Enter email').trim();
+  const continueWithEmailText = String(loginSignals?.continueWithEmailText || 'Continue with email').trim();
+
+  const emailInput = page.getByRole('textbox', { name: emailInputRoleName }).first();
+  if (await isVisible(emailInput)) {
+    return { found: true, label: 'email-input', source: 'role', value: emailInputRoleName };
+  }
+
+  const continueWithEmail = page.getByText(continueWithEmailText, { exact: false }).first();
+  if (await isVisible(continueWithEmail)) {
+    return { found: true, label: 'continue-with-email', source: 'text', value: continueWithEmailText };
+  }
+
+  for (const text of entryTexts) {
+    const locator = page.getByText(String(text || ''), { exact: false }).first();
+    if (await isVisible(locator)) {
+      return { found: true, label: 'entry-text', source: 'text', value: text };
+    }
+  }
+
+  const roleLocator = page.getByRole('button', { name: new RegExp(entryRolePattern || 'sign in|log in|login|sign up', 'i') }).first();
+  if (await isVisible(roleLocator)) {
+    return { found: true, label: 'entry-role', source: 'role', value: entryRolePattern };
+  }
+
+  return { found: false, label: '', source: '', value: '' };
+}
+
+/**
+ * Dreamina 登录入口 staged wait。
+ */
+async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const profile = loadDreaminaEntryProfile();
+  const stages = resolveDreaminaLoginSignalStages(runtime, profile);
+
+  let elapsedMs = 0;
+  let round = 0;
+
+  for (const stage of stages) {
+    const seconds = Number(stage.seconds || 0);
+    const intervalMs = Number(stage.intervalMs || 0);
+
+    for (let i = 0; i < seconds; i++) {
+      round += 1;
+
+      const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+      if (signal.found) {
+        if (typeof logInfo === 'function') {
+          logInfo(`dreamina.entry.loginSignal.ready | label=${signal.label} | source=${signal.source} | value=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
+        }
+
+        return {
+          ok: true,
+          state: 'ENTRY_READY',
+          source: signal.source || '',
+          value: signal.value || signal.label || '',
+          strength: signal.label === 'email-input' ? 'strong' : 'weak',
+          waitStepMs: elapsedMs,
+          detail: {
+            loginSignal: signal,
+            round,
+            elapsedMs,
+          },
+        };
+      }
+
+      await page.waitForTimeout(intervalMs).catch(() => {});
+      elapsedMs += intervalMs;
+    }
+  }
+
+  return {
+    ok: false,
+    state: 'ENTRY_NOT_READY',
+    source: '',
+    value: '',
+    strength: '',
+    waitStepMs: elapsedMs,
+    detail: {
+      loginSignal: null,
+      round,
+      elapsedMs,
+    },
+  };
+}
 /**
  * 等待并确认 Dreamina 入口页 ready。
  *
@@ -452,6 +572,9 @@ module.exports = {
   openEntryPage,
   checkEntryHealth,
   waitForEntryReady,
+  resolveDreaminaLoginSignalStages,
+  detectDreaminaLoginEntrySignals,
+  waitForDreaminaLoginEntryReady,
   detectDreaminaEntryRecoverableError,
   recoverEntry,
   confirmEntryReadyWithRecovery,

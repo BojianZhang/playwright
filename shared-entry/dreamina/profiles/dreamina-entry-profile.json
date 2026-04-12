@@ -27,5 +27,30 @@
                                  ],
                        "refreshButtonPattern":  "refresh",
                        "postRecoveryWaitMs":  4000
-                   }
+                   },
+    "loginSignals":  {
+                         "entryTexts":  [
+                                            "Sign in",
+                                            "Log in",
+                                            "Login",
+                                            "Sign up"
+                                        ],
+                         "entryRolePattern":  "sign in|log in|login|sign up",
+                         "emailInputRoleName":  "Enter email",
+                         "continueWithEmailText":  "Continue with email"
+                     },
+    "loginSignalStages":  [
+                              {
+                                  "seconds":  8,
+                                  "intervalMs":  500
+                              },
+                              {
+                                  "seconds":  10,
+                                  "intervalMs":  1000
+                              },
+                              {
+                                  "seconds":  10,
+                                  "intervalMs":  1500
+                              }
+                          ]
 }
