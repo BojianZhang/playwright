@@ -845,6 +845,9 @@ async function createDreaminaCliRuntime(options = {}) {
   const proxy = options?.proxy && typeof options.proxy === 'object' ? options.proxy : null;
   const headed = Boolean(options?.headed);
   const slowMo = Number.isFinite(Number(options?.slowMo)) ? Number(options.slowMo) : 0;
+  const blockedResourceTypes = Array.isArray(options?.blockedResourceTypes)
+    ? options.blockedResourceTypes.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : ['image', 'media', 'font'];
 
   const launchOptions = {
     headless: !headed,
@@ -867,6 +870,17 @@ async function createDreaminaCliRuntime(options = {}) {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
     ignoreHTTPSErrors: true,
   });
+
+  await context.route('**/*', async route => {
+    const request = route.request();
+    const resourceType = String(request.resourceType() || '').trim().toLowerCase();
+    if (blockedResourceTypes.includes(resourceType)) {
+      await route.abort().catch(() => {});
+      return;
+    }
+    await route.continue().catch(() => {});
+  });
+
   const page = await context.newPage();
 
   return {
@@ -937,6 +951,7 @@ async function runDreaminaRegisterCli(argv = []) {
       proxy,
       headed,
       slowMo,
+      blockedResourceTypes: ['image', 'media', 'font'],
     });
 
     const result = await runDreaminaRegisterFlow({
