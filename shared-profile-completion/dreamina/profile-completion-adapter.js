@@ -522,6 +522,125 @@ async function readDreaminaBirthdayNextState(page, profile) {
   };
 }
 
+async function readDreaminaBirthdayTriggerState(page, kind, profile) {
+  const label = kind === 'day' ? 'Day' : 'Month';
+  const roleLocator = kind === 'day'
+    ? page.getByText('Day', { exact: true }).first()
+    : page.getByText('Month').first();
+
+  let locator = roleLocator;
+  let selector = `text:${label}`;
+  if (!(await isVisible(locator))) {
+    const fallbackHit = await findFirstVisibleBySelectors(page, kind === 'day' ? (profile?.birthday?.daySelectors || []) : (profile?.birthday?.monthSelectors || []));
+    locator = fallbackHit.locator;
+    selector = fallbackHit.selector || selector;
+  }
+
+  if (!locator || !(await isVisible(locator))) {
+    return {
+      ok: false,
+      kind,
+      text: '',
+      selector: '',
+      className: '',
+      role: '',
+      ariaExpanded: '',
+      ariaHaspopup: '',
+      opened: false,
+      active: false,
+      focused: false,
+      locator: null,
+    };
+  }
+
+  const text = String(await locator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+  const className = String(await locator.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+  const role = String(await locator.getAttribute('role').catch(() => '')).trim();
+  const ariaExpanded = String(await locator.getAttribute('aria-expanded').catch(() => '')).trim();
+  const ariaHaspopup = String(await locator.getAttribute('aria-haspopup').catch(() => '')).trim();
+  const focused = await locator.evaluate(node => node === document.activeElement).catch(() => false);
+  const panelVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+  const opened = ariaExpanded.toLowerCase() === 'true' || panelVisible.ok;
+  const active = opened || focused || /active|open|opened|focus/i.test(className);
+
+  return {
+    ok: true,
+    kind,
+    text,
+    selector,
+    className,
+    role,
+    ariaExpanded,
+    ariaHaspopup,
+    opened,
+    active,
+    focused,
+    locator,
+  };
+}
+
+async function activateDreaminaBirthdayTrigger(page, kind, profile, context = {}) {
+  const { logInfo = null } = context;
+  const label = kind === 'day' ? 'Day' : 'Month';
+  const baseLocator = kind === 'day'
+    ? page.getByText('Day', { exact: true }).first()
+    : page.getByText('Month').first();
+
+  const clickPlans = [];
+  if (await isVisible(baseLocator)) {
+    clickPlans.push({ label: 'text', locator: baseLocator });
+    clickPlans.push({ label: 'text-parent', locator: baseLocator.locator('xpath=..').first() });
+    clickPlans.push({ label: 'text-grandparent', locator: baseLocator.locator('xpath=../..').first() });
+  }
+  const fallbackHit = await findFirstVisibleBySelectors(page, kind === 'day' ? (profile?.birthday?.daySelectors || []) : (profile?.birthday?.monthSelectors || []));
+  if (fallbackHit.ok && fallbackHit.locator) {
+    clickPlans.push({ label: 'selector', locator: fallbackHit.locator });
+  }
+
+  const attempts = [];
+  for (const plan of clickPlans) {
+    if (!plan.locator || !(await isVisible(plan.locator))) continue;
+    await plan.locator.hover().catch(() => {});
+    const clicked = await plan.locator.click({ timeout: 1200 }).then(() => true).catch(() => false);
+    if (!clicked) {
+      await plan.locator.click({ force: true, timeout: 1200 }).catch(() => {});
+    }
+    await page.waitForTimeout(220).catch(() => {});
+    const triggerState = await readDreaminaBirthdayTriggerState(page, kind, profile);
+    attempts.push({
+      mode: plan.label,
+      opened: Boolean(triggerState.opened),
+      active: Boolean(triggerState.active),
+      focused: Boolean(triggerState.focused),
+      selector: triggerState.selector,
+    });
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.activateTrigger | kind=${label} | mode=${plan.label} | opened=${triggerState.opened ? 'Y' : 'N'} | active=${triggerState.active ? 'Y' : 'N'} | focused=${triggerState.focused ? 'Y' : 'N'}`);
+    }
+    if (triggerState.opened || triggerState.active) {
+      return {
+        ok: true,
+        kind,
+        mode: plan.label,
+        triggerState,
+        panelVisible: Boolean(triggerState.opened),
+        stateChanged: true,
+        attempts,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    kind,
+    mode: '',
+    triggerState: await readDreaminaBirthdayTriggerState(page, kind, profile),
+    panelVisible: false,
+    stateChanged: false,
+    attempts,
+  };
+}
+
 async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const profile = loadDreaminaProfileCompletionProfile();
@@ -753,12 +872,7 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
 
   const attempts = [];
   try {
-    const monthDropdown = page.getByText('Month').first();
-    if (await isVisible(monthDropdown)) {
-      await monthDropdown.click().catch(() => {});
-    } else {
-      await beforeState.locator.click({ force: true }).catch(() => {});
-    }
+    const triggerActivation = await activateDreaminaBirthdayTrigger(page, 'month', profile, context);
     await page.waitForTimeout(850).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
@@ -787,9 +901,7 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
     if ((!selectedState.selected && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) || panelAfter.ok) {
-      if (await isVisible(monthDropdown)) {
-        await monthDropdown.click().catch(() => {});
-      }
+      await activateDreaminaBirthdayTrigger(page, 'month', profile, context).catch(() => {});
       await page.waitForTimeout(650).catch(() => {});
       const retryPick = await tryRoleClick();
       if (retryPick?.ok) {
@@ -817,6 +929,8 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       clickTarget: optionPick.clickTarget || '',
       clickMode: optionPick.clickMode || '',
       retried: Boolean(optionPick.retried),
+      triggerActivated: Boolean(triggerActivation?.ok),
+      triggerMode: String(triggerActivation?.mode || ''),
       selected: Boolean(selectedState?.selected),
       nextEnabled: Boolean(nextState?.enabled),
       ok,
@@ -1046,12 +1160,7 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
   }
 
   try {
-    const dayDropdown = page.getByText('Day', { exact: true }).first();
-    if (await isVisible(dayDropdown)) {
-      await dayDropdown.click().catch(() => {});
-    } else {
-      await beforeState.locator.click({ force: true }).catch(() => {});
-    }
+    const triggerActivation = await activateDreaminaBirthdayTrigger(page, 'day', profile, context);
     await page.waitForTimeout(850).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
@@ -1080,9 +1189,7 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
     if ((!selectedState.selected && !String(afterState?.value || '').trim()) || panelAfter.ok) {
-      if (await isVisible(dayDropdown)) {
-        await dayDropdown.click().catch(() => {});
-      }
+      await activateDreaminaBirthdayTrigger(page, 'day', profile, context).catch(() => {});
       await page.waitForTimeout(650).catch(() => {});
       const retryPick = await tryRoleClick();
       if (retryPick?.ok) {
@@ -1120,6 +1227,8 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
         clickTarget: optionPick.clickTarget || '',
         clickMode: optionPick.clickMode || '',
         retried: Boolean(optionPick.retried),
+        triggerActivated: Boolean(triggerActivation?.ok),
+        triggerMode: String(triggerActivation?.mode || ''),
         selected: Boolean(selectedState?.selected),
         nextEnabled: Boolean(nextState?.enabled),
         ok,
