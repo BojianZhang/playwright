@@ -35,6 +35,87 @@ const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/
 const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
 
 function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
+  async function preprocessEntryOverlays(page) {
+    const overlaySelectors = [
+      'button[aria-label="Close"]',
+      '[data-testid="close"]',
+      '.close-button-bXf1SB',
+      '.modal-close',
+      '.dialog-close',
+      '.popup-close',
+    ];
+    const overlayTexts = ['Accept all', 'Accept', 'I agree', 'Got it', 'Close', 'Skip', 'Not now', 'Maybe later'];
+
+    for (const text of overlayTexts) {
+      const button = page.getByRole('button', { name: text }).first();
+      const visible = await button.isVisible().catch(() => false);
+      if (visible) {
+        await button.click().catch(() => {});
+        await page.waitForTimeout(1200);
+      }
+    }
+
+    for (const selector of overlaySelectors) {
+      const target = page.locator(selector).first();
+      const visible = await target.isVisible().catch(() => false);
+      if (visible) {
+        await target.click().catch(() => {});
+        await page.waitForTimeout(1200);
+      }
+    }
+  }
+
+  async function hasVisibleEntrySignals(page) {
+    const signals = [
+      page.getByText('Sign in').first(),
+      page.getByText('Log in').first(),
+      page.getByText('Login').first(),
+      page.getByText('Sign up').first(),
+      page.getByText('Continue with email').first(),
+      page.getByRole('button', { name: /sign in|log in|login|sign up|continue with email/i }).first(),
+      page.getByRole('link', { name: /sign in|log in|login|sign up/i }).first(),
+      page.locator("input[type='email']").first(),
+      page.locator("input[placeholder*='email' i]").first(),
+    ];
+
+    for (const signal of signals) {
+      if (await signal.isVisible().catch(() => false)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function recoverEntrySignals(page, runtime = {}) {
+    await preprocessEntryOverlays(page);
+
+    const firstObservationMs = Number(runtime?.entrySignalObservationMs || 6000);
+    const secondObservationMs = Number(runtime?.entrySignalObservationAfterReloadMs || 10000);
+    const observe = async totalMs => {
+      const rounds = Math.max(1, Math.ceil(totalMs / 1000));
+      for (let index = 0; index < rounds; index++) {
+        if (await hasVisibleEntrySignals(page)) {
+          return true;
+        }
+        await page.waitForTimeout(1000);
+      }
+      return await hasVisibleEntrySignals(page);
+    };
+
+    if (await observe(firstObservationMs)) {
+      return true;
+    }
+
+    await page.reload({
+      waitUntil: 'domcontentloaded',
+      timeout: Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000),
+    }).catch(() => {});
+
+    await preprocessEntryOverlays(page);
+    return await observe(secondObservationMs);
+  }
+
   async function captureEntryDebugSnapshot(page) {
     return await page.evaluate(() => {
       const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -155,7 +236,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
         };
       }
 
-      const gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
+      let gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
       if (gateResult?.success) {
         return {
           ok: true,
@@ -165,6 +246,23 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           strength: 'strong',
           stateChanged: true,
         };
+      }
+
+      if (String(gateResult?.reason || '').trim().toUpperCase() === 'LOGIN_ENTRY_NOT_FOUND') {
+        const recovered = await recoverEntrySignals(page, runtime);
+        if (recovered) {
+          gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
+          if (gateResult?.success) {
+            return {
+              ok: true,
+              state: 'ENTRY_READY',
+              source: gateResult.state || 'login-gate',
+              value: gateResult.reason || gateResult.state || 'LOGIN_GATE_READY',
+              strength: 'strong',
+              stateChanged: true,
+            };
+          }
+        }
       }
 
       const debugSnapshot = await captureEntryDebugSnapshot(page);
