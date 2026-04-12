@@ -558,16 +558,17 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
   const { sessionInspection = null, uiConfirmation = null } = context;
   const matchedSuccessSelectors = await findAllVisibleBySelectors(page, profile?.successSignals?.selectors || []);
   const matchedSuccessTexts = await findAllVisibleByTexts(page, profile?.successSignals?.texts || []);
+  const matchedBridgeSelectors = await findAllVisibleBySelectors(page, profile?.bridgeSignals?.selectors || []);
+  const matchedBridgeTexts = await findAllVisibleByTexts(page, profile?.bridgeSignals?.texts || []);
   const matchedFailureSelectors = await findAllVisibleBySelectors(page, profile?.failureSignals?.selectors || []);
   const matchedFailureTexts = await findAllVisibleByTexts(page, profile?.failureSignals?.texts || []);
 
   const successSelector = matchedSuccessSelectors[0] ? { ok: true, selector: matchedSuccessSelectors[0] } : { ok: false, selector: '' };
   if (successSelector.ok) {
-    const isBridge = isDreaminaBridgeSignal(successSelector.selector);
     return {
       ok: true,
-      state: isBridge ? 'POST_AUTH_READY_ONLY' : 'REGISTRATION_COMPLETE',
-      nextStage: isBridge ? 'account-delivery' : 'registration-complete',
+      state: 'REGISTRATION_COMPLETE',
+      nextStage: 'registration-complete',
       source: 'selector',
       value: successSelector.selector,
       strength: 'strong',
@@ -581,11 +582,10 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 
   const successText = matchedSuccessTexts[0] ? { ok: true, text: matchedSuccessTexts[0] } : { ok: false, text: '' };
   if (successText.ok) {
-    const isBridge = isDreaminaBridgeSignal(successText.text);
     return {
       ok: true,
-      state: isBridge ? 'POST_AUTH_READY_ONLY' : 'REGISTRATION_COMPLETE',
-      nextStage: isBridge ? 'account-delivery' : 'registration-complete',
+      state: 'REGISTRATION_COMPLETE',
+      nextStage: 'registration-complete',
       source: 'text',
       value: successText.text,
       strength: 'weak',
@@ -594,6 +594,40 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
       retryCount: 0,
       matchedSelectors: matchedSuccessSelectors,
       matchedTexts: matchedSuccessTexts,
+    };
+  }
+
+  const bridgeSelector = matchedBridgeSelectors[0] ? { ok: true, selector: matchedBridgeSelectors[0] } : { ok: false, selector: '' };
+  if (bridgeSelector.ok) {
+    return {
+      ok: true,
+      state: 'POST_AUTH_READY_ONLY',
+      nextStage: 'account-delivery',
+      source: 'selector',
+      value: bridgeSelector.selector,
+      strength: 'strong',
+      settleStage: 'primary-success',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: matchedBridgeSelectors,
+      matchedTexts: matchedBridgeTexts,
+    };
+  }
+
+  const bridgeText = matchedBridgeTexts[0] ? { ok: true, text: matchedBridgeTexts[0] } : { ok: false, text: '' };
+  if (bridgeText.ok) {
+    return {
+      ok: true,
+      state: 'POST_AUTH_READY_ONLY',
+      nextStage: 'account-delivery',
+      source: 'text',
+      value: bridgeText.text,
+      strength: 'weak',
+      settleStage: 'secondary-success',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: matchedBridgeSelectors,
+      matchedTexts: matchedBridgeTexts,
     };
   }
 

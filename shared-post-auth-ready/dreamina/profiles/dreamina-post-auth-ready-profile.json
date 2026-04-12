@@ -13,7 +13,11 @@
       "Your birthday won’t be shown publicly.",
       "Your birthday won't be shown publicly."
     ],
-    "urlIncludes": ["/app", "/workspace", "/home"]
+    "urlIncludes": [
+      "/app",
+      "/workspace",
+      "/home"
+    ]
   },
   "sessionSignals": {
     "cookieKeys": [],
@@ -32,17 +36,22 @@
     ]
   },
   "successSignals": {
+    "selectors": [],
+    "texts": []
+  },
+  "failureSignals": {
+    "selectors": [],
+    "texts": []
+  },
+  "bridgeSignals": {
     "selectors": [
       "button.lv_new_sign_in_panel_wide-birthday-next"
     ],
     "texts": [
       "Year",
       "Month",
-      "Day"
+      "Day",
+      "Next"
     ]
-  },
-  "failureSignals": {
-    "selectors": [],
-    "texts": []
   }
 }
