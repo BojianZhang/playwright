@@ -788,18 +788,13 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
   // 如果输入目标本身都不存在，就直接失败，不再继续输入动作。
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
-      // 表示输入动作失败。
       ok: false,
-      // 当前阶段状态码：验证码输入失败。
       state: 'VERIFICATION_CODE_FILL_FAILED',
-      // 当前没有可用输入模式。
       mode: '',
-      // 当前来源仍然记为 verification-input。
       source: 'verification-input',
-      // 辅助值说明当前没有解析出的输入目标。
       value: 'NO_RESOLVED_INPUT',
-      // 没有足够上下文判断 stateChanged。
       stateChanged: null,
+      attempts: [],
     };
   }
 
@@ -814,12 +809,28 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       source: 'verification-input',
       value: 'EMPTY_CODE',
       stateChanged: null,
+      attempts: [],
     };
   }
 
+  const attempts = [];
+  const recordAttempt = async (label, result) => {
+    const state = await readDreaminaVerificationInputState(page);
+    attempts.push({
+      mode: result?.mode || label,
+      ok: Boolean(result?.ok),
+      value: String(result?.value || ''),
+      inputValue: String(state?.inputValue || ''),
+      boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
+      activeTag: String(state?.activeTag || ''),
+      activeClass: String(state?.activeClass || ''),
+      stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
+    });
+  };
+
   // 第一层：优先尝试 Dreamina hidden input 路径。
   const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-  // 如果 hidden input 成功，就直接返回成功结果。
+  await recordAttempt('dreamina-hidden-input', hiddenInputResult);
   if (hiddenInputResult.ok) {
     return {
       ok: true,
@@ -828,12 +839,13 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       source: 'verification-input',
       value: hiddenInputResult.value,
       stateChanged: hiddenInputResult.stateChanged,
+      attempts,
     };
   }
 
   // 第二层：hidden input 没成功时，尝试 Dreamina wrapper keyboard 路径。
   const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
-  // 如果 wrapper 路径成功，就直接返回成功结果。
+  await recordAttempt('dreamina-wrapper-keyboard', wrapperResult);
   if (wrapperResult.ok) {
     return {
       ok: true,
@@ -842,12 +854,13 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       source: 'verification-input',
       value: wrapperResult.value,
       stateChanged: wrapperResult.stateChanged,
+      attempts,
     };
   }
 
   // 第三层：当前面两条 Dreamina 专用路径都没成功时，再走普通 fallback 路径。
   const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-  // 如果 fallback 成功，也按成功结果返回。
+  await recordAttempt('fallback-keyboard-type', fallbackResult);
   if (fallbackResult.ok) {
     return {
       ok: true,
@@ -856,10 +869,10 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       source: 'verification-input',
       value: fallbackResult.value,
       stateChanged: fallbackResult.stateChanged,
+      attempts,
     };
   }
 
-  // 三条路径都失败时，统一返回失败结构。
   return {
     ok: false,
     state: 'VERIFICATION_CODE_FILL_FAILED',
@@ -867,6 +880,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     source: 'verification-input',
     value: fallbackResult.value || wrapperResult.value || hiddenInputResult.value || 'UNKNOWN',
     stateChanged: false,
+    attempts,
   };
 }
 
@@ -880,34 +894,54 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
 async function detectDreaminaProfileCompletionReady(page, profile, context = {}) {
   // 优先通过结构性 selector 判断是否进入下一阶段。
   const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.profileCompletion?.selectors || []);
-  // 如果 selector 命中，直接按强信号返回。
   if (nextStageSelector.ok) {
     return {
       ok: true,
       source: 'selector',
       value: nextStageSelector.selector,
       strength: 'strong',
+      signalGroup: 'selector',
     };
   }
 
-  // 如果 selector 没命中，再通过文本判断是否进入下一阶段。
-  const nextStageText = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.profileCompletion?.texts || []);
-  // 如果文本命中，按弱一些的信号返回。
-  if (nextStageText.ok) {
+  const titleHit = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.profileCompletion?.titleTexts || []);
+  if (titleHit.ok) {
     return {
       ok: true,
-      source: 'text',
-      value: nextStageText.text,
-      strength: 'weak',
+      source: 'birthday-title',
+      value: titleHit.text,
+      strength: 'strong',
+      signalGroup: 'title',
     };
   }
 
-  // 当前没有确认进入下一阶段。
+  const textSignals = profile?.nextStageSignals?.profileCompletion?.texts || [];
+  let visibleCount = 0;
+  const visibleTexts = [];
+  for (const text of textSignals) {
+    const hit = await findFirstVisibleByTexts(page, [text]);
+    if (hit.ok) {
+      visibleCount += 1;
+      visibleTexts.push(text);
+    }
+  }
+
+  if (visibleCount >= Math.min(3, textSignals.length || 3)) {
+    return {
+      ok: true,
+      source: 'birthday-fields',
+      value: visibleTexts.join('+'),
+      strength: visibleCount >= 4 ? 'strong' : 'weak',
+      signalGroup: 'field-combo',
+    };
+  }
+
   return {
     ok: false,
     source: '',
     value: '',
     strength: '',
+    signalGroup: '',
   };
 }
 
@@ -996,14 +1030,11 @@ async function detectDreaminaVerificationFailureSignals(page, profile, context =
  * - 不能替第四阶段做填写动作
  */
 async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, context = {}) {
-  // 读取第三阶段 profile。
   const profile = loadDreaminaVerificationProfile();
-  // 从 runtime 中读取确认保护等待；默认给一小段时间让页面完成跳转。
   const confirmGraceWaitMs = Number(runtime?.verificationConfirmGraceWaitMs || 900);
+  const { fillResult = null, logInfo = null } = context;
 
-  // 第一轮：先尝试确认是否已经进入下一阶段。
   const profileCompletionReady = await detectDreaminaProfileCompletionReady(page, profile, context);
-  // 如果第一轮已经确认进入下一阶段，就直接按成功返回。
   if (profileCompletionReady.ok) {
     return {
       ok: true,
@@ -1013,12 +1044,16 @@ async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, conte
       value: profileCompletionReady.value,
       strength: profileCompletionReady.strength,
       settleStage: 'primary-success',
+      transitionHint: {
+        enteredProfileCompletion: true,
+        profileReadySource: profileCompletionReady.source,
+        profileReadyValue: profileCompletionReady.value,
+        signalGroup: profileCompletionReady.signalGroup || '',
+      },
     };
   }
 
-  // 第一轮：如果还没进入下一阶段，再尝试识别明确失败。
   const failureSignal = await detectDreaminaVerificationFailureSignals(page, profile, context);
-  // 如果第一轮已经命中明确失败，就直接返回失败。
   if (failureSignal.hit) {
     return {
       ok: false,
@@ -1028,17 +1063,17 @@ async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, conte
       value: failureSignal.value,
       strength: failureSignal.strength,
       settleStage: 'primary-failure',
+      transitionHint: {
+        enteredProfileCompletion: false,
+      },
     };
   }
 
-  // 如果第一轮既没成功也没失败，给页面一小段保护等待，降低“慢一拍导致误判 unknown”的概率。
   if (confirmGraceWaitMs > 0) {
     await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});
   }
 
-  // 第二轮：保护等待后再次确认是否进入下一阶段。
   const profileCompletionAfterGrace = await detectDreaminaProfileCompletionReady(page, profile, context);
-  // 如果第二轮确认进入下一阶段，则按 secondary-success 返回。
   if (profileCompletionAfterGrace.ok) {
     return {
       ok: true,
@@ -1048,12 +1083,16 @@ async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, conte
       value: profileCompletionAfterGrace.value,
       strength: profileCompletionAfterGrace.strength,
       settleStage: 'secondary-success',
+      transitionHint: {
+        enteredProfileCompletion: true,
+        profileReadySource: profileCompletionAfterGrace.source,
+        profileReadyValue: profileCompletionAfterGrace.value,
+        signalGroup: profileCompletionAfterGrace.signalGroup || '',
+      },
     };
   }
 
-  // 第二轮：保护等待后再次确认明确失败。
   const failureAfterGrace = await detectDreaminaVerificationFailureSignals(page, profile, context);
-  // 如果第二轮命中明确失败，则按 secondary-failure 返回。
   if (failureAfterGrace.hit) {
     return {
       ok: false,
@@ -1063,18 +1102,27 @@ async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, conte
       value: failureAfterGrace.value,
       strength: failureAfterGrace.strength,
       settleStage: 'secondary-failure',
+      transitionHint: {
+        enteredProfileCompletion: false,
+      },
     };
   }
 
-  // 如果两轮确认都没有收敛到成功或明确失败，则按 unknown 返回。
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.verification.confirmResult | unresolved | fillMode=${fillResult?.mode || ''} | attempts=${Array.isArray(fillResult?.attempts) ? fillResult.attempts.length : 0}`);
+  }
+
   return {
     ok: false,
-    state: 'VERIFICATION_RESULT_UNKNOWN',
+    state: fillResult?.ok ? 'VERIFICATION_RESULT_UNKNOWN' : 'VERIFICATION_CODE_FILL_FAILED',
     nextStage: '',
-    source: '',
-    value: '',
+    source: fillResult?.source || '',
+    value: fillResult?.value || '',
     strength: '',
     settleStage: 'none',
+    transitionHint: {
+      enteredProfileCompletion: false,
+    },
   };
 }
 

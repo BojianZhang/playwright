@@ -46,10 +46,15 @@
   },
   "nextStageSignals": {
     "profileCompletion": {
+      "titleTexts": [
+        "When’s your birthday?",
+        "When's your birthday?"
+      ],
       "texts": [
         "Year",
         "Month",
-        "Day"
+        "Day",
+        "Next"
       ],
       "selectors": [
         "button.lv_new_sign_in_panel_wide-birthday-next"
