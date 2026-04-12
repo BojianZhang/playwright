@@ -139,19 +139,49 @@ async function runAccountDeliveryStage(options = {}) {
     });
   }
 
+  // 从上游 post-auth-ready 阶段 detail 中显式摘取关键信号，避免下游 adapter 自己猜路径。
+  const postAuthDetail = context?.stageResults?.postAuthReady?.detail || null;
+  const sessionInspection = postAuthDetail?.sessionInspection || null;
+  const uiConfirmation = postAuthDetail?.uiConfirmation || null;
+  const postAuthResultConfirmation = postAuthDetail?.resultConfirmation || null;
+
   // 第二步：收集账号最终交付摘要；如果 adapter 还没实现，就保留 null。
   const accountSummary = collectAccountDeliverySummary
-    ? await collectAccountDeliverySummary(page, account, runtime, { ...context, deliveryReady })
+    ? await collectAccountDeliverySummary(page, account, runtime, {
+        ...context,
+        deliveryReady,
+        postAuthDetail,
+        sessionInspection,
+        uiConfirmation,
+        postAuthResultConfirmation,
+      })
     : null;
 
   // 第三步：组装 delivery payload；如果 adapter 还没实现，就保留 null。
   const deliveryPayload = buildAccountDeliveryPayload
-    ? await buildAccountDeliveryPayload(page, account, runtime, { ...context, deliveryReady, accountSummary })
+    ? await buildAccountDeliveryPayload(page, account, runtime, {
+        ...context,
+        deliveryReady,
+        accountSummary,
+        postAuthDetail,
+        sessionInspection,
+        uiConfirmation,
+        postAuthResultConfirmation,
+      })
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
   const resultConfirmation = confirmAccountDeliveryResult
-    ? await confirmAccountDeliveryResult(page, account, runtime, { ...context, deliveryReady, accountSummary, deliveryPayload })
+    ? await confirmAccountDeliveryResult(page, account, runtime, {
+        ...context,
+        deliveryReady,
+        accountSummary,
+        deliveryPayload,
+        postAuthDetail,
+        sessionInspection,
+        uiConfirmation,
+        postAuthResultConfirmation,
+      })
     : {
         ok: false,
         state: 'ACCOUNT_DELIVERY_RESULT_UNKNOWN',
