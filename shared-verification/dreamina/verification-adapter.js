@@ -355,8 +355,9 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       proxyLabel: 'STAGE3_VERIFICATION',
       // 如果上层有传触发时间，就继续透传；没有就按 0 处理。
       triggeredAtMs: Number(runtime?.verificationTriggeredAtMs || context?.verificationTriggeredAtMs || 0),
-      // 把第三阶段已使用验证码集合透传给 provider，让 provider 在 recent candidate 里跳过旧验证码继续找新码。
-      seenCodes: usedCodeSet,
+      // 当前策略改为：先允许 provider 返回最近可提取验证码，不在 provider 层提前跳过“历史已见码”。
+      // 只有页面明确返回 WRONG_VERIFICATION_CODE 后，公共层才会把该验证码写入 usedCodes 并触发 resend。
+      seenCodes: new Set(),
     });
 
     // 取出 provider 返回的验证码文本，并统一 trim。
@@ -386,27 +387,13 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       };
     }
 
-    // 理论上 provider 已经消费了 seenCodes，并优先返回未使用的新验证码。
-    // 这里保留一层防守式判断，避免 provider 未来变更时又把旧验证码漏回第三阶段。
-    if (usedCodeSet.has(code)) {
-      if (typeof logInfo === 'function') {
-        logInfo(`dreamina.verification.fetchCode | duplicate-code-guard-hit | code=${code} | attemptIndex=${attemptIndex} | providerAttempt=${Number(result?.attempt || 0)}`);
-      }
-      return {
-        ok: false,
-        state: 'VERIFICATION_CODE_NOT_AVAILABLE',
-        code: '',
-        source: 'mail-provider',
-        value: `DUPLICATE_CODE_SKIPPED:${code}`,
-        provider,
-        attempt: Number(result?.attempt || 0),
-        messageTs: result?.messageTs,
-        matchMode: result?.matchMode,
-        resendCountdown: verificationReady?.resendCountdown || null,
-      };
+    // 当前策略：哪怕这个验证码在历史 usedCodes 中出现过，也先允许本轮尝试一次。
+    // 只有当页面明确返回 WRONG_VERIFICATION_CODE 后，外层公共阶段才会把它正式退休。
+    if (usedCodeSet.has(code) && typeof logInfo === 'function') {
+      logInfo(`dreamina.verification.fetchCode | duplicate-code-observed-but-allowed | code=${code} | attemptIndex=${attemptIndex} | providerAttempt=${Number(result?.attempt || 0)}`);
     }
 
-    // provider 成功命中新验证码后，返回第三阶段统一成功结构。
+    // provider 成功命中最近可用验证码后，返回第三阶段统一成功结构。
     return {
       // 表示本轮成功获取到了可用的新验证码。
       ok: true,
