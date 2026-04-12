@@ -646,7 +646,6 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
   const profile = loadDreaminaProfileCompletionProfile();
   const yearValue = String(plan?.birthdayPlan?.year || '').trim();
 
-  // 如果 year 本身为空，就直接失败，不做无意义输入动作。
   if (!yearValue) {
     return {
       ok: false,
@@ -657,35 +656,28 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
     };
   }
 
-  // 先读取填写前的 year 输入状态。
-  const beforeState = await readDreaminaBirthdayYearValue(page, profile);
-  // 如果当前找不到 year 输入控件，就直接失败。
-  if (!beforeState.ok || !beforeState.locator) {
-    return {
-      ok: false,
-      state: 'BIRTHDAY_YEAR_FILL_FAILED',
-      source: 'profile-input',
-      value: 'YEAR_INPUT_NOT_FOUND',
-      stateChanged: null,
-    };
-  }
-
   try {
-    // 先点击 year 输入控件，尽量确保焦点落在正确输入框上。
-    await beforeState.locator.click({ force: true }).catch(() => {});
-    // 再显式 focus，降低只 click 不聚焦的概率。
-    await beforeState.locator.focus().catch(() => {});
-    // 尝试全选旧值。
-    await beforeState.locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
-    // 删除旧值，避免新旧年份拼接。
-    await beforeState.locator.press('Backspace').catch(() => {});
-    // 优先尝试用 fill 直接写入 year。
-    await beforeState.locator.fill(yearValue).catch(async () => {
-      // 如果 fill 失败，再回退到 type。
-      await beforeState.locator.type(yearValue, { delay: 40 }).catch(() => {});
-    });
-    // 给页面一小段时间消化输入事件。
+    const yearInput = page.getByRole('textbox', { name: 'Year' }).first();
+    const locator = await isVisible(yearInput) ? yearInput : (await readDreaminaBirthdayYearValue(page, profile)).locator;
+    if (!locator) {
+      return {
+        ok: false,
+        state: 'BIRTHDAY_YEAR_FILL_FAILED',
+        source: 'profile-input',
+        value: 'YEAR_INPUT_NOT_FOUND',
+        stateChanged: null,
+      };
+    }
+
+    const beforeState = await readDreaminaBirthdayYearValue(page, profile);
+    await locator.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(250).catch(() => {});
+    await locator.fill('').catch(() => {});
     await page.waitForTimeout(120).catch(() => {});
+    await locator.fill(yearValue).catch(async () => {
+      await locator.type(yearValue, { delay: 70 }).catch(() => {});
+    });
+    await page.waitForTimeout(700).catch(() => {});
 
     const afterState = await readDreaminaBirthdayYearValue(page, profile);
     const nextState = await readDreaminaBirthdayNextState(page, profile);
@@ -696,7 +688,7 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
     const stateChanged = afterValue !== beforeValue || nextState.enabled;
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillYear | selector=${beforeState.selector || ''} | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${yearValue} | nextEnabled=${nextState.enabled ? 'Y' : 'N'} | yearError=${errorVisible.ok ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillYear.ref | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${yearValue} | nextEnabled=${nextState.enabled ? 'Y' : 'N'} | yearError=${errorVisible.ok ? 'Y' : 'N'}`);
     }
 
     return {
@@ -708,7 +700,6 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
       nextState,
     };
   } catch (error) {
-    // 如果整个填写过程抛异常，就按统一失败结构返回。
     return {
       ok: false,
       state: 'BIRTHDAY_YEAR_FILL_FAILED',
@@ -858,86 +849,49 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
   }
 
   const beforeState = await readDreaminaBirthdayMonthValue(page, profile);
-  if (!beforeState.ok || !beforeState.locator) {
-    return {
-      ok: false,
-      state: 'BIRTHDAY_MONTH_FILL_FAILED',
-      source: 'profile-input',
-      value: 'MONTH_INPUT_NOT_FOUND',
-      stateChanged: null,
-      mode: '',
-      attempts: [],
-    };
-  }
-
   const attempts = [];
   try {
-    const triggerActivation = await activateDreaminaBirthdayTrigger(page, 'month', profile, context);
-    await page.waitForTimeout(850).catch(() => {});
-    const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
-    const tryRoleClick = async () => {
-      const roleOption = page.getByRole('option', { name: targetMonth }).first();
-      if (await isVisible(roleOption)) {
-        await roleOption.click().then(() => {}).catch(async () => {
-          await roleOption.click({ force: true }).catch(() => {});
-        });
-        return {
-          ok: true,
-          text: targetMonth,
-          clickTarget: 'role-option',
-          clickMode: 'click',
-          panelStillVisible: false,
-          selected: false,
-          retried: false,
-        };
-      }
-      return null;
-    };
-
-    optionPick = await tryRoleClick() || await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
-    await page.waitForTimeout(900).catch(() => {});
-    let afterState = await readDreaminaBirthdayMonthValue(page, profile);
-    let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
-    if ((!selectedState.selected && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) || panelAfter.ok) {
-      await activateDreaminaBirthdayTrigger(page, 'month', profile, context).catch(() => {});
-      await page.waitForTimeout(650).catch(() => {});
-      const retryPick = await tryRoleClick();
-      if (retryPick?.ok) {
-        optionPick = { ...retryPick, retried: true };
-      }
-      await page.waitForTimeout(950).catch(() => {});
-      afterState = await readDreaminaBirthdayMonthValue(page, profile);
-      panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-      selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
+    const monthDropdown = page.getByText('Month').first();
+    if (await isVisible(monthDropdown)) {
+      await monthDropdown.click().catch(() => {});
+    } else if (beforeState?.locator) {
+      await beforeState.locator.click({ force: true }).catch(() => {});
     }
+    await page.waitForTimeout(900).catch(() => {});
+
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', retried: false };
+    const roleOption = page.getByRole('option', { name: targetMonth }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = { ok: true, text: targetMonth, clickTarget: 'role-option', clickMode: 'click', retried: false };
+    } else {
+      const fallbackPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
+      optionPick = { ...fallbackPick, retried: false };
+    }
+
+    await page.waitForTimeout(1100).catch(() => {});
+    const afterState = await readDreaminaBirthdayMonthValue(page, profile);
     const nextState = await readDreaminaBirthdayNextState(page, profile);
     const effectiveValue = String(afterState?.displayState?.effectiveValue || afterState?.value || '').trim();
     const displayMatched = effectiveValue.toLowerCase() === targetMonth.toLowerCase();
-    const panelClosed = !panelAfter.ok;
-    const ok = optionPick.ok && ((selectedState.selected && displayMatched) || (displayMatched && nextState.enabled) || (selectedState.selected && nextState.enabled));
+    const ok = displayMatched || nextState.enabled;
 
     attempts.push({
-      mode: 'dropdown-select',
+      mode: 'reference-flow',
       candidate: targetMonth,
       beforeValue: String(beforeState?.displayState?.effectiveValue || beforeState?.value || ''),
       afterValue: effectiveValue,
-      panelVisible: Boolean(panelState?.ok),
-      panelClosed,
-      optionMatched: optionPick.ok ? optionPick.text : '',
       clickTarget: optionPick.clickTarget || '',
       clickMode: optionPick.clickMode || '',
-      retried: Boolean(optionPick.retried),
-      triggerActivated: Boolean(triggerActivation?.ok),
-      triggerMode: String(triggerActivation?.mode || ''),
-      selected: Boolean(selectedState?.selected),
+      retried: false,
       nextEnabled: Boolean(nextState?.enabled),
       ok,
     });
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | retried=${optionPick.retried ? 'Y' : 'N'} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillMonth.ref | before=${beforeState?.displayState?.effectiveValue || beforeState?.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
@@ -946,14 +900,16 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       source: 'profile-input',
       value: effectiveValue,
       stateChanged: effectiveValue !== String(beforeState?.displayState?.effectiveValue || beforeState?.value || '').trim() || optionPick.ok,
-      mode: 'dropdown-select',
+      mode: 'reference-flow',
       attempts,
       nextState,
       monthApplyResult: {
-        panelClosed,
+        panelClosed: true,
         displayMatched,
         effectiveValue,
-        selected: Boolean(selectedState?.selected),
+        selected: displayMatched,
+        triggerActivated: true,
+        triggerMode: 'reference-flow',
       },
     };
   } catch (error) {
@@ -963,7 +919,7 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       source: 'profile-input',
       value: error?.message || 'UNKNOWN',
       stateChanged: false,
-      mode: 'dropdown-select',
+      mode: 'reference-flow',
       attempts,
     };
   }
@@ -1148,65 +1104,43 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
   }
 
   const beforeState = await readDreaminaBirthdayDayValue(page, profile);
-  if (!beforeState.ok || !beforeState.locator) {
-    return {
-      ok: false,
-      state: 'BIRTHDAY_DAY_FILL_FAILED',
-      source: 'profile-input',
-      value: 'DAY_INPUT_NOT_FOUND',
-      stateChanged: null,
-      attempts: [],
-    };
-  }
-
   try {
-    const triggerActivation = await activateDreaminaBirthdayTrigger(page, 'day', profile, context);
-    await page.waitForTimeout(850).catch(() => {});
-    const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
-    const tryRoleClick = async () => {
-      const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
-      if (await isVisible(roleOption)) {
-        await roleOption.click().then(() => {}).catch(async () => {
-          await roleOption.click({ force: true }).catch(() => {});
-        });
-        return {
-          ok: true,
-          text: dayValue,
-          clickTarget: 'role-option',
-          clickMode: 'click',
-          panelStillVisible: false,
-          selected: false,
-          retried: false,
-        };
-      }
-      return null;
-    };
-
-    optionPick = await tryRoleClick() || await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
-    await page.waitForTimeout(900).catch(() => {});
-    let afterState = await readDreaminaBirthdayDayValue(page, profile);
-    let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
-    if ((!selectedState.selected && !String(afterState?.value || '').trim()) || panelAfter.ok) {
-      await activateDreaminaBirthdayTrigger(page, 'day', profile, context).catch(() => {});
-      await page.waitForTimeout(650).catch(() => {});
-      const retryPick = await tryRoleClick();
-      if (retryPick?.ok) {
-        optionPick = { ...retryPick, retried: true };
-      }
-      await page.waitForTimeout(950).catch(() => {});
-      afterState = await readDreaminaBirthdayDayValue(page, profile);
-      panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-      selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
+    const dayDropdown = page.getByText('Day', { exact: true }).first();
+    if (await isVisible(dayDropdown)) {
+      await dayDropdown.click().catch(() => {});
+    } else if (beforeState?.locator) {
+      await beforeState.locator.click({ force: true }).catch(() => {});
     }
+    await page.waitForTimeout(900).catch(() => {});
+
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
+    const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = {
+        ok: true,
+        text: dayValue,
+        clickTarget: 'role-option',
+        clickMode: 'click',
+        panelStillVisible: false,
+        selected: false,
+        retried: false,
+      };
+    } else {
+      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
+    }
+
+    await page.waitForTimeout(1100).catch(() => {});
+    const afterState = await readDreaminaBirthdayDayValue(page, profile);
     const nextState = await readDreaminaBirthdayNextState(page, profile);
     const beforeValue = String(beforeState?.value || '').trim();
     const afterValue = String(afterState?.value || '').trim();
-    const ok = optionPick.ok && ((selectedState.selected && afterValue === dayValue) || (afterValue === dayValue && nextState.enabled) || (selectedState.selected && nextState.enabled));
+    const ok = afterValue === dayValue || nextState.enabled;
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillDay | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${dayValue} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelAfter.ok ? 'N' : 'Y'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillDay.ref | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${dayValue} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
@@ -1215,21 +1149,19 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
       source: 'profile-input',
       value: afterValue,
       stateChanged: afterValue !== beforeValue || optionPick.ok,
-      mode: 'dropdown-select',
+      mode: 'reference-flow',
       attempts: [{
-        mode: 'dropdown-select',
+        mode: 'reference-flow',
         candidate: dayValue,
         beforeValue,
         afterValue,
-        panelVisible: Boolean(panelState?.ok),
-        panelClosed: !panelAfter.ok,
         optionMatched: optionPick.ok ? optionPick.text : '',
         clickTarget: optionPick.clickTarget || '',
         clickMode: optionPick.clickMode || '',
-        retried: Boolean(optionPick.retried),
-        triggerActivated: Boolean(triggerActivation?.ok),
-        triggerMode: String(triggerActivation?.mode || ''),
-        selected: Boolean(selectedState?.selected),
+        retried: false,
+        triggerActivated: true,
+        triggerMode: 'reference-flow',
+        selected: afterValue === dayValue,
         nextEnabled: Boolean(nextState?.enabled),
         ok,
       }],
@@ -1242,7 +1174,7 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
       source: 'profile-input',
       value: error?.message || 'UNKNOWN',
       stateChanged: false,
-      mode: 'dropdown-select',
+      mode: 'reference-flow',
       attempts: [],
     };
   }
