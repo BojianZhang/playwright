@@ -117,19 +117,27 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
       ok: true,
       state: 'AUTH_MODE_SIGNIN_ALLOWED',
       switched: false,
+      authMode: 'signin',
+      signalStrength: 'weak',
     };
   }
 
   const signInHeader = await findFirstVisibleByTexts(page, ['Sign in', 'Welcome back']);
   const signUpEntry = await findFirstVisibleByTexts(page, ['Sign up', "Don't have an account?"]);
+  const signUpHeader = await findFirstVisibleByTexts(page, ['Sign up']);
   const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
   const passwordInput = page.locator("input[type='password']").first();
+  const emailVisible = await isVisible(emailInput);
+  const passwordVisible = await isVisible(passwordInput);
 
-  if ((!signInHeader.ok && signUpEntry.ok) || (!signInHeader.ok && await isVisible(emailInput) && await isVisible(passwordInput))) {
+  if ((signUpHeader.ok && emailVisible && passwordVisible) || (!signInHeader.ok && emailVisible && passwordVisible)) {
     return {
       ok: true,
       state: 'AUTH_MODE_ALREADY_SIGNUP_LIKE',
       switched: false,
+      authMode: 'signup',
+      signalStrength: signUpHeader.ok ? 'strong' : 'weak',
+      source: signUpHeader.ok ? signUpHeader.text : 'fields-visible',
     };
   }
 
@@ -138,6 +146,8 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
       ok: false,
       state: 'SIGNUP_SWITCH_NOT_FOUND',
       switched: false,
+      authMode: signInHeader.ok ? 'signin' : 'unknown',
+      signalStrength: 'weak',
     };
   }
 
@@ -146,15 +156,21 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
   });
   await page.waitForTimeout(Number(runtime?.credentialSignupSwitchWaitMs || 1200));
 
+  const postSwitchHeader = await findFirstVisibleByTexts(page, ['Sign up']);
+  const postSwitchEmailVisible = await isVisible(emailInput);
+  const postSwitchPasswordVisible = await isVisible(passwordInput);
+
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.ensureSignupMode | switched via=${signUpEntry.text}`);
+    logInfo(`dreamina.credential.ensureSignupMode | switched via=${signUpEntry.text} | signupHeader=${postSwitchHeader.ok ? 'Y' : 'N'} | email=${postSwitchEmailVisible ? 'Y' : 'N'} | password=${postSwitchPasswordVisible ? 'Y' : 'N'}`);
   }
 
   return {
-    ok: true,
-    state: 'AUTH_MODE_SWITCHED_TO_SIGNUP',
+    ok: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible),
+    state: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible) ? 'AUTH_MODE_SWITCHED_TO_SIGNUP' : 'AUTH_MODE_SIGNUP_NOT_STABLE',
     switched: true,
     source: signUpEntry.text,
+    authMode: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible) ? 'signup' : 'unknown',
+    signalStrength: postSwitchHeader.ok ? 'strong' : 'weak',
   };
 }
 
@@ -324,15 +340,35 @@ async function captureDreaminaCredentialSubmitSnapshot(page, context = {}) {
   const existingAccount = await findFirstVisibleByTexts(page, profile?.failureSignals?.existingAccount || []);
   const rejected = await findFirstVisibleByTexts(page, profile?.failureSignals?.rejected || []);
   const rateLimited = await findFirstVisibleByTexts(page, profile?.failureSignals?.rateLimited || []);
+  const inlineErrors = await findFirstVisibleByTexts(page, profile?.failureSignals?.inlineErrors || []);
+  const authTitle = await findFirstVisibleByTexts(page, ['Sign up', 'Sign in', 'Welcome back']);
+  const emailField = await findFirstVisibleBySelectors(page, profile?.fields?.email?.selectors || []);
+  const passwordField = await findFirstVisibleBySelectors(page, profile?.fields?.password?.selectors || []);
+  const continueBySelector = await findFirstVisibleBySelectors(page, profile?.submit?.selectors || []);
+  const continueByText = continueBySelector.ok ? { ok: false, text: '', locator: null } : await findFirstVisibleByTexts(page, profile?.submit?.texts || []);
+  const continueLocator = continueBySelector.ok ? continueBySelector.locator : continueByText.locator;
+  const continueText = continueBySelector.ok ? continueBySelector.selector : (continueByText.ok ? continueByText.text : '');
+  const continueEnabled = continueLocator ? await continueLocator.isEnabled().catch(() => false) : false;
+  const errorModal = await findFirstVisibleByTexts(page, ['Something went wrong', 'Refresh']);
   const bodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
 
   return {
     url: page.url(),
+    authTitle: authTitle.ok ? authTitle.text : '',
+    authMode: authTitle.ok ? (/sign up/i.test(authTitle.text) ? 'signup' : 'signin') : 'unknown',
+    emailVisible: Boolean(emailField.ok),
+    passwordVisible: Boolean(passwordField.ok),
+    continueVisible: Boolean(continueLocator),
+    continueEnabled,
+    continueText,
+    verificationVisible: Boolean(successBySelector.ok || successByText.ok),
     hasSuccessSelector: Boolean(successBySelector.ok),
     hasSuccessText: Boolean(successByText.ok),
     hasExistingAccount: Boolean(existingAccount.ok),
     hasRejected: Boolean(rejected.ok),
     hasRateLimited: Boolean(rateLimited.ok),
+    hasInlineError: Boolean(inlineErrors.ok),
+    hasErrorModal: Boolean(errorModal.ok),
     bodyTextLength: bodyText.length,
     bodyPreview: bodyText.slice(0, 200),
   };
@@ -348,11 +384,17 @@ async function captureDreaminaCredentialSubmitSnapshot(page, context = {}) {
 function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
   if (!before || !after) return false;
   if (before.url !== after.url) return true;
+  if (before.authMode !== after.authMode) return true;
+  if (before.authTitle !== after.authTitle) return true;
+  if (before.continueEnabled !== after.continueEnabled) return true;
+  if (before.verificationVisible !== after.verificationVisible) return true;
   if (before.hasSuccessSelector !== after.hasSuccessSelector) return true;
   if (before.hasSuccessText !== after.hasSuccessText) return true;
   if (before.hasExistingAccount !== after.hasExistingAccount) return true;
   if (before.hasRejected !== after.hasRejected) return true;
   if (before.hasRateLimited !== after.hasRateLimited) return true;
+  if (before.hasInlineError !== after.hasInlineError) return true;
+  if (before.hasErrorModal !== after.hasErrorModal) return true;
   if (before.bodyPreview !== after.bodyPreview) return true;
   if (Math.abs(Number(before.bodyTextLength || 0) - Number(after.bodyTextLength || 0)) >= 40) return true;
   return false;
@@ -444,10 +486,7 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   const { logInfo = null, formReady = null } = context;
   const profile = loadDreaminaCredentialProfile();
 
-  const submit = formReady?.submit?.ok
-    ? formReady.submit
-    : (() => null)();
-
+  const submit = formReady?.submit?.ok ? formReady.submit : null;
   let submitLocator = submit?.locator || null;
   let submitLabel = submit?.value || '';
 
@@ -458,7 +497,6 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
       submitLabel = submitBySelector.selector;
     }
   }
-
   if (!submitLocator) {
     const submitByText = await findFirstVisibleByTexts(page, profile?.submit?.texts || []);
     if (submitByText.ok) {
@@ -474,28 +512,84 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
     };
   }
 
-  const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context); // 点击前先抓一份快照，后面用来判断 submit 是否真的推动了页面变化
+  const attempts = [];
+  const runAttempt = async (mode, runner) => {
+    const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+    await runner();
+    const settlementResult = await waitDreaminaCredentialSubmitSettlement(page, runtime, context);
+    const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+    const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot);
+    attempts.push({
+      mode,
+      beforeAuthMode: beforeSnapshot.authMode,
+      afterAuthMode: afterSnapshot.authMode,
+      continueEnabled: beforeSnapshot.continueEnabled,
+      verificationVisible: afterSnapshot.verificationVisible,
+      inlineError: afterSnapshot.hasInlineError,
+      stateChanged: hasStateChange,
+      settlementStage: settlementResult?.stage || '',
+    });
+    return { beforeSnapshot, afterSnapshot, settlementResult, hasStateChange };
+  };
 
-  await submitLocator.click({ timeout: 1500 }).catch(async () => { // 先尝试正常点击，优先保留真实用户路径
-    await submitLocator.click({ force: true, timeout: 1500 }); // 如果正常点击失败，再 fallback 到 force click，避免轻微遮挡直接卡死阶段 2
-  });
+  const strategies = [
+    {
+      mode: 'click',
+      run: async () => {
+        await submitLocator.click({ timeout: 1500 }).catch(() => {});
+      },
+    },
+    {
+      mode: 'force-click',
+      run: async () => {
+        await submitLocator.click({ force: true, timeout: 1500 }).catch(() => {});
+      },
+    },
+    {
+      mode: 'enter-submit',
+      run: async () => {
+        const passwordField = formReady?.passwordField?.locator || page.locator("input[type='password']").first();
+        await passwordField.focus().catch(() => {});
+        await passwordField.press('Enter').catch(() => {});
+      },
+    },
+  ];
 
-  const settlementResult = await waitDreaminaCredentialSubmitSettlement(page, runtime, context); // 点击后运行分层等待节奏，把“短等待 + 保护等待”统一收敛在一个方法里
-  const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context); // 等 settlement 跑完后再抓 after 快照，让状态变化判断基于更完整的页面状态
-  const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot); // 比较前后快照，判断 submit 是否带来了有意义的页面变化
+  let finalResult = null;
+  for (const strategy of strategies) {
+    finalResult = await runAttempt(strategy.mode, strategy.run);
+    if (finalResult.hasStateChange || finalResult.settlementResult?.quickFailure?.hit || finalResult.settlementResult?.verificationReady?.ok) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | mode=${strategy.mode} | settlementStage=${finalResult.settlementResult?.stage || ''} | stateChanged=${finalResult.hasStateChange ? 'Y' : 'N'}`);
+      }
+      return {
+        ok: true,
+        state: 'FORM_SUBMITTED',
+        submit: submitLabel,
+        submitMode: strategy.mode,
+        beforeSnapshot: finalResult.beforeSnapshot,
+        afterSnapshot: finalResult.afterSnapshot,
+        hasStateChange: finalResult.hasStateChange,
+        settlementResult: finalResult.settlementResult,
+        attempts,
+      };
+    }
+  }
 
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | settlementStage=${settlementResult.stage} | stateChanged=${hasStateChange ? 'Y' : 'N'}`); // 把提交按钮、等待阶段和状态变化统一打进日志，方便后续读链路
+    logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | mode=all | settlementStage=${finalResult?.settlementResult?.stage || ''} | stateChanged=${finalResult?.hasStateChange ? 'Y' : 'N'}`);
   }
 
   return {
     ok: true,
     state: 'FORM_SUBMITTED',
     submit: submitLabel,
-    beforeSnapshot,
-    afterSnapshot,
-    hasStateChange,
-    settlementResult,
+    submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
+    beforeSnapshot: finalResult?.beforeSnapshot || null,
+    afterSnapshot: finalResult?.afterSnapshot || null,
+    hasStateChange: Boolean(finalResult?.hasStateChange),
+    settlementResult: finalResult?.settlementResult || null,
+    attempts,
   };
 }
 
@@ -685,6 +779,8 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
 
   if (reason === 'FORM_NOT_READY') {
     siteReason = 'DREAMINA_CREDENTIAL_FORM_NOT_READY';
+  } else if (reason === 'AUTH_MODE_SIGNUP_NOT_STABLE') {
+    siteReason = 'DREAMINA_CREDENTIAL_AUTH_MODE_NOT_STABLE';
   } else if (reason === 'EMAIL_INPUT_NOT_FOUND') {
     siteReason = 'DREAMINA_EMAIL_INPUT_NOT_FOUND';
   } else if (reason === 'PASSWORD_INPUT_NOT_FOUND') {
@@ -702,7 +798,7 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
   } else if (reason === 'SIGNUP_SWITCH_NOT_FOUND') {
     siteReason = 'DREAMINA_SIGNUP_SWITCH_NOT_FOUND';
   } else if (reason === 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE') {
-    siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_NO_STATE_CHANGE';
+    siteReason = 'DREAMINA_CREDENTIAL_NO_STATE_CHANGE_AFTER_ALL_STRATEGIES';
   } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN';
   }
