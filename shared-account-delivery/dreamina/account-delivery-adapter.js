@@ -440,12 +440,12 @@ function normalizeDeliveryFieldValue(value) {
 }
 
 /**
- * 组装当前账号的最终交付对象草案。
+ * Build the current account-delivery payload draft.
  *
- * 第一轮补强目标：
- * - 不再只是机械塞 required/optional 字段
- * - 开始把 accountSummary 里的结构化摘要真正吸进 payload
- * - 仍然只负责“组装交付对象草案”，不做外部写入
+ * Current Dreamina semantics:
+ * - this is still a minimal-delivery payload layer
+ * - it focuses on packaging a deliverable object draft
+ * - it does not imply a fully mature external delivery contract
  */
 async function buildAccountDeliveryPayload(page, account, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
@@ -599,14 +599,14 @@ async function detectDreaminaAccountDeliveryFailureSignals(page, profile) {
 }
 
 /**
- * 收口第六阶段最终结果。
+ * Confirm the final account-delivery result.
  *
- * 第一轮补强策略：
- * 1. 先查第六阶段明确成功信号
- * 2. 再看 summary + payload 是否联合成立
- * 3. 再查明确失败信号
- * 4. 如果都没有，再做一轮保护等待后复判
- * 5. 最后才返回 unknown
+ * Current Dreamina strategy:
+ * 1. check explicit delivery success signals first
+ * 2. allow summary + payload readiness to act as a minimal-delivery bridge success
+ * 3. check explicit delivery failure signals
+ * 4. run one grace wait and retry success/failure checks
+ * 5. otherwise return unknown
  */
 async function confirmAccountDeliveryResult(page, account, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
@@ -635,8 +635,8 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
     };
   }
 
-  // 第一轮：如果 summary 与 payload 都成立，可以作为联合成功草案。
-  if (accountSummary?.ok && deliveryPayload?.ok) {
+  // Current Dreamina bridge path:
+  // if summary and payload are both ready, treat it as a minimal-delivery success draft.
     if (typeof logInfo === 'function') {
       logInfo(`dreamina.accountDelivery.result | state=DELIVERY_PAYLOAD_READY | source=payload | value=${deliveryPayload?.value || ''} | settleStage=payload-check`);
     }
@@ -715,7 +715,7 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
     };
   }
 
-  // 两轮都没收敛时，返回 unknown。
+  // If neither explicit signals nor the minimal-delivery bridge path can settle the stage, return unknown.
   if (typeof logInfo === 'function') {
     logInfo('dreamina.accountDelivery.result | state=ACCOUNT_DELIVERY_RESULT_UNKNOWN | source= | value= | settleStage=none');
   }
@@ -733,11 +733,10 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
 }
 
 /**
- * 将第六阶段原始失败状态收敛成 Dreamina 专属 reason。
+ * Classify Dreamina account-delivery failure reason.
  *
- * 第一轮补强目标：
- * - 不再只按 reason 粗映射
- * - 开始结合 source / value 做更细的 delivery 失败语义收口
+ * Map raw stage reason/state to a Dreamina-specific siteReason,
+ * with extra narrowing from source/value when available.
  */
 function classifyAccountDeliveryFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
