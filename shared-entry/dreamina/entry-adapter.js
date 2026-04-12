@@ -247,6 +247,110 @@ async function waitForEntryReady(page, runtime = {}, context = {}) {
 /**
  * 将阶段 1 原始失败状态收敛成 Dreamina 专属 reason。
  */
+
+/**
+ * 检测 Dreamina 入口阶段是否出现可恢复错误态。
+ *
+ * 第一轮最小版只识别：
+ * - Something went wrong
+ * - Refresh the page and try again
+ * - Refresh 按钮
+ */
+async function detectDreaminaEntryRecoverableError(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaEntryProfile();
+  const errorTexts = Array.isArray(profile?.errorModal?.texts)
+    ? profile.errorModal.texts
+    : ['Something went wrong', 'Refresh the page and try again'];
+  const refreshButtonPattern = String(profile?.errorModal?.refreshButtonPattern || 'refresh').trim();
+
+  const errorTextHit = await findFirstVisibleByTexts(page, errorTexts);
+  if (errorTextHit.ok) {
+    return {
+      ok: true,
+      source: 'text',
+      value: errorTextHit.text,
+      reason: 'DREAMINA_ENTRY_ERROR_MODAL',
+    };
+  }
+
+  const refreshButton = page.getByRole('button', { name: new RegExp(refreshButtonPattern || 'refresh', 'i') }).first();
+  if (await isVisible(refreshButton)) {
+    return {
+      ok: true,
+      source: 'button',
+      value: 'refresh',
+      reason: 'DREAMINA_ENTRY_ERROR_MODAL',
+    };
+  }
+
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    reason: '',
+  };
+}
+
+/**
+ * Dreamina 入口阶段恢复动作。
+ *
+ * 第一轮最小版只做：
+ * - 命中可恢复错误态后优先点击 Refresh
+ * - 否则退回 page.reload
+ * - 恢复后等待一个短暂 post wait
+ */
+async function recoverEntry(page, classifiedFailure = {}, context = {}) {
+  const { logInfo = null, logWarn = null, prefix = '', config = {}, capture = null, runtime = {} } = context;
+  const profile = loadDreaminaEntryProfile();
+
+  const recoverable = await detectDreaminaEntryRecoverableError(page, runtime, context);
+  if (!recoverable.ok) {
+    return {
+      recovered: false,
+      action: 'skip-recovery',
+      reason: 'RECOVERY_NOT_NEEDED',
+      postWaitMs: 0,
+    };
+  }
+
+  const postRecoveryWaitMs = Number(runtime?.entryPostRecoveryWaitMs ?? profile?.errorModal?.postRecoveryWaitMs ?? 4000);
+  const refreshButtonPattern = String(profile?.errorModal?.refreshButtonPattern || 'refresh').trim();
+  const refreshButton = page.getByRole('button', { name: new RegExp(refreshButtonPattern || 'refresh', 'i') }).first();
+
+  if (typeof logWarn === 'function') {
+    logWarn(`dreamina.entry.recover | reason=${recoverable.reason} | source=${recoverable.source} | value=${recoverable.value}`);
+  }
+  if (typeof capture === 'function') {
+    await capture(page, 'dreamina-entry-recover-before', prefix, config).catch(() => {});
+  }
+
+  let action = 'page-reload';
+  if (await isVisible(refreshButton)) {
+    await refreshButton.click().catch(() => {});
+    action = 'click-refresh';
+  } else {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: Number(runtime?.entryGotoTimeoutMs || runtime?.entryNavigationTimeoutMs || 30000) }).catch(() => {});
+    action = 'page-reload';
+  }
+
+  if (postRecoveryWaitMs > 0) {
+    await page.waitForTimeout(postRecoveryWaitMs).catch(() => {});
+  }
+
+  if (typeof capture === 'function') {
+    await capture(page, 'dreamina-entry-recover-after', prefix, config).catch(() => {});
+  }
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.entry.recover.done | action=${action} | postWaitMs=${postRecoveryWaitMs}`);
+  }
+
+  return {
+    recovered: true,
+    action,
+    reason: recoverable.reason || classifiedFailure?.siteReason || 'DREAMINA_ENTRY_ERROR_MODAL',
+    postWaitMs: postRecoveryWaitMs,
+  };
+}
 function classifyEntryFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();

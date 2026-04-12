@@ -1,14 +1,31 @@
 {
-  "site": "dreamina",
-  "stage": "entry",
-  "entryUrl": "https://www.dreamina.com/",
-  "readySignals": {
-    "selectors": [],
-    "texts": [],
-    "urlIncludes": ["dreamina.com"]
-  },
-  "healthSignals": {
-    "errorTexts": ["Try again", "Something went wrong"],
-    "whiteScreenMinTextLength": 0
-  }
+    "site":  "dreamina",
+    "stage":  "entry",
+    "entryUrl":  "https://www.dreamina.com/",
+    "readySignals":  {
+                         "selectors":  [
+
+                                       ],
+                         "texts":  [
+
+                                   ],
+                         "urlIncludes":  [
+                                             "dreamina.com"
+                                         ]
+                     },
+    "healthSignals":  {
+                          "errorTexts":  [
+                                             "Try again",
+                                             "Something went wrong"
+                                         ],
+                          "whiteScreenMinTextLength":  0
+                      },
+    "errorModal":  {
+                       "texts":  [
+                                     "Something went wrong",
+                                     "Refresh the page and try again"
+                                 ],
+                       "refreshButtonPattern":  "refresh",
+                       "postRecoveryWaitMs":  4000
+                   }
 }
