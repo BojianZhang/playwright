@@ -485,12 +485,11 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
 }
 
 /**
- * 确认第五阶段 UI 登录后信号。
+ * Confirm bridge-oriented UI signals for the current post-auth transition stage.
  *
- * 当前草案实现：
- * - 优先查 UI selector
- * - 再查 UI text
- * - 返回统一结构
+ * Note:
+ * - Current Dreamina implementation still relies heavily on birthday-panel bridge signals.
+ * - These signals indicate transition readiness, not a fully mature logged-in dashboard/user-panel state.
  */
 function isDreaminaBridgeSignal(value = '') {
   const text = String(value || '').trim().toLowerCase();
@@ -511,7 +510,7 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
   if (selectorHit.ok) {
     return {
       ok: true,
-      state: 'USER_PANEL_VISIBLE',
+      state: 'BRIDGE_UI_SELECTOR_VISIBLE',
       source: 'selector',
       value: selectorHit.selector,
       strength: 'strong',
@@ -524,7 +523,7 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
   if (textHit.ok) {
     return {
       ok: true,
-      state: 'DASHBOARD_VISIBLE',
+      state: 'BRIDGE_UI_TEXT_VISIBLE',
       source: 'text',
       value: textHit.text,
       strength: 'weak',
@@ -545,13 +544,13 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
 }
 
 /**
- * ???????????
+ * Confirm post-auth result for Dreamina.
  *
- * ?????????
- * - ?? successSignals ??????? registration-complete
- * - ???? sessionInspection ? uiConfirmation ???????????????
- * - ???? failureSignals ???????
- * - ???? unknown
+ * Strategy:
+ * - successSignals can confirm registration-complete
+ * - sessionInspection + uiConfirmation can provide an additional success path
+ * - failureSignals can confirm explicit failure
+ * - otherwise return unknown
  */
 async function confirmPostAuthResult(page, runtime = {}, context = {}) {
   const profile = loadDreaminaPostAuthReadyProfile();
@@ -713,9 +712,9 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 }
 
 /**
- * ?????????????? Dreamina ?? reason?
+ * Classify Dreamina post-auth failure reason.
  *
- * ?????????????????????????????
+ * Map raw stage reason/state to a Dreamina-specific siteReason.
  */
 function classifyPostAuthFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
