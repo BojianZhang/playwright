@@ -794,6 +794,39 @@ async function tryDreaminaCharByCharInput(page, locator, code, runtime = {}, con
   }
 }
 
+async function tryDreaminaDirectFill(page, locator, code, logInfo) {
+  const value = String(code || '').trim();
+  if (!value) return { ok: false, mode: 'dreamina-direct-fill', value: 'EMPTY_CODE', stateChanged: null };
+  try {
+    await locator.click({ force: true }).catch(() => {});
+    await locator.focus().catch(() => {});
+    await page.waitForTimeout(300).catch(() => {});
+    await locator.fill(value).catch(async () => {
+      await locator.type(value, { delay: 40 }).catch(() => {});
+    });
+    await page.waitForTimeout(900).catch(() => {});
+
+    const state = await readDreaminaVerificationInputState(page);
+    const inputValue = String(state?.inputValue || '').trim();
+    const boxTexts = Array.isArray(state?.boxTexts) ? state.boxTexts : [];
+    const ok = inputValue === value || boxTexts.join('').includes(value.slice(0, 3)) || boxTexts.some(item => String(item || '').includes(value[0] || ''));
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.verification.directFill | inputValue=${inputValue || '[EMPTY]'} | boxTexts=${boxTexts.join('|') || '[EMPTY]'} | target=${value}`);
+    }
+
+    return {
+      ok,
+      mode: 'dreamina-direct-fill',
+      value: inputValue || value,
+      stateChanged: ok || Boolean(inputValue) || boxTexts.some(Boolean),
+      boxTexts,
+    };
+  } catch (error) {
+    return { ok: false, mode: 'dreamina-direct-fill', value: error?.message || 'UNKNOWN', stateChanged: false };
+  }
+}
+
 async function tryDreaminaHiddenInputFill(page, locator, code, logInfo) {
   const value = String(code || '').trim();
   if (!value) return { ok: false, mode: 'dreamina-hidden-input', value: 'EMPTY_CODE', stateChanged: null };
