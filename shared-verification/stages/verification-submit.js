@@ -304,7 +304,14 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 如果当前轮返回 wrong code，并且后面还有剩余轮次，则先把当前验证码记入 usedCodes，
     // 再尝试触发 resend，随后进入 verification 阶段内下一轮重试。
-    if (String(confirmResult?.state || '') === 'WRONG_VERIFICATION_CODE' && attemptIndex < verificationRetryMaxAttempts) {
+    const confirmState = String(confirmResult?.state || '').trim().toUpperCase();
+    const verificationAllowResend = runtime?.verificationAllowResend !== false;
+    const shouldResend = verificationAllowResend && attemptIndex < verificationRetryMaxAttempts && (
+      confirmState === 'WRONG_VERIFICATION_CODE' ||
+      confirmState === 'VERIFICATION_CODE_RATE_LIMITED'
+    );
+
+    if (shouldResend) {
       if (String(fetchCodeResult?.code || '').trim()) {
         usedCodes.add(String(fetchCodeResult.code).trim());
       }

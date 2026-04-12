@@ -1058,6 +1058,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
   }
 
   const normalizedCode = String(code || '').trim();
+  const enableLegacyFallbacks = Boolean(runtime?.verificationEnableLegacyFallbacks);
   if (!normalizedCode) {
     return {
       ok: false,
@@ -1114,6 +1115,21 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       attempts,
       activationResult,
       charSteps: [],
+    };
+  }
+
+  if (!enableLegacyFallbacks) {
+    return {
+      ok: false,
+      state: 'VERIFICATION_CODE_FILL_FAILED',
+      mode: directFillResult.mode || 'dreamina-direct-fill',
+      source: 'verification-input',
+      value: directFillResult.value || 'DIRECT_FILL_NOT_ACCEPTED',
+      stateChanged: typeof directFillResult?.stateChanged === 'boolean' ? directFillResult.stateChanged : false,
+      attempts,
+      activationResult,
+      charSteps: [],
+      transitionHint: directFillResult?.transitionHint || null,
     };
   }
 
