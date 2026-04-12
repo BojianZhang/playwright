@@ -969,6 +969,8 @@ async function runDreaminaRegisterCli(argv = []) {
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
         firstLoadGraceWaitMs: 12000,
+        dreaminaAuthMode: 'signup',
+        credentialSignupSwitchWaitMs: 1200,
         readyTextSignals: [
           'Continue with email',
           'Sign in',

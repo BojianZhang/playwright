@@ -109,6 +109,55 @@ async function findFirstVisibleByTexts(page, texts = []) {
   };
 }
 
+async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const preferSignup = runtime?.dreaminaAuthMode !== 'signin';
+  if (!preferSignup) {
+    return {
+      ok: true,
+      state: 'AUTH_MODE_SIGNIN_ALLOWED',
+      switched: false,
+    };
+  }
+
+  const signInHeader = await findFirstVisibleByTexts(page, ['Sign in', 'Welcome back']);
+  const signUpEntry = await findFirstVisibleByTexts(page, ['Sign up', "Don't have an account?"]);
+  const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
+  const passwordInput = page.locator("input[type='password']").first();
+
+  if ((!signInHeader.ok && signUpEntry.ok) || (!signInHeader.ok && await isVisible(emailInput) && await isVisible(passwordInput))) {
+    return {
+      ok: true,
+      state: 'AUTH_MODE_ALREADY_SIGNUP_LIKE',
+      switched: false,
+    };
+  }
+
+  if (!signUpEntry.ok) {
+    return {
+      ok: false,
+      state: 'SIGNUP_SWITCH_NOT_FOUND',
+      switched: false,
+    };
+  }
+
+  await signUpEntry.locator.click({ timeout: 1500 }).catch(async () => {
+    await signUpEntry.locator.click({ force: true, timeout: 1500 });
+  });
+  await page.waitForTimeout(Number(runtime?.credentialSignupSwitchWaitMs || 1200));
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.ensureSignupMode | switched via=${signUpEntry.text}`);
+  }
+
+  return {
+    ok: true,
+    state: 'AUTH_MODE_SWITCHED_TO_SIGNUP',
+    switched: true,
+    source: signUpEntry.text,
+  };
+}
+
 /**
  * 等待 Dreamina credential form ready。
  *
@@ -119,6 +168,14 @@ async function findFirstVisibleByTexts(page, texts = []) {
 async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const profile = loadDreaminaCredentialProfile();
+  const authModeResult = await ensureDreaminaSignupMode(page, runtime, context);
+  if (!authModeResult?.ok) {
+    return {
+      ok: false,
+      state: authModeResult?.state || 'FORM_NOT_READY',
+      authModeResult,
+    };
+  }
   const primaryWaitMs = Number(runtime?.credentialFormPrimaryWaitMs || 300);
   const secondaryWaitMs = Number(runtime?.credentialFormSecondaryWaitMs || 900);
   const waitSteps = [...new Set([0, primaryWaitMs, secondaryWaitMs].filter(ms => Number(ms) >= 0))];
@@ -165,6 +222,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
         passwordField,
         submit,
         waitStepMs: waitMs,
+        authModeResult,
       };
     }
 
@@ -180,6 +238,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
     passwordField: { ok: false, selector: '', locator: null },
     submit: { ok: false, source: '', value: '', locator: null },
     waitStepMs: 0,
+    authModeResult,
   };
 }
 
@@ -640,6 +699,8 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
     siteReason = 'DREAMINA_RATE_LIMITED';
   } else if (reason === 'INLINE_ERROR_VISIBLE') {
     siteReason = 'DREAMINA_INLINE_ERROR_VISIBLE';
+  } else if (reason === 'SIGNUP_SWITCH_NOT_FOUND') {
+    siteReason = 'DREAMINA_SIGNUP_SWITCH_NOT_FOUND';
   } else if (reason === 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_NO_STATE_CHANGE';
   } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
@@ -658,6 +719,7 @@ module.exports = {
   isVisible,
   findFirstVisibleBySelectors,
   findFirstVisibleByTexts,
+  ensureDreaminaSignupMode,
   waitForDreaminaCredentialFormReady,
   fillDreaminaCredentialEmail,
   fillDreaminaCredentialPassword,
