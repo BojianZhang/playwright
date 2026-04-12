@@ -50,8 +50,20 @@
   },
   "nextStageSignals": {
     "postAuthReady": {
-      "texts": [],
-      "selectors": []
+      "texts": [
+        "When’s your birthday?",
+        "When's your birthday?",
+        "Your birthday won’t be shown publicly.",
+        "Your birthday won't be shown publicly.",
+        "Year",
+        "Month",
+        "Day"
+      ],
+      "selectors": [
+        "div.lv_new_sign_in_panel_wide-birthday-title",
+        "div.lv_new_sign_in_panel_wide-birthday-subtitle",
+        "button.lv_new_sign_in_panel_wide-birthday-next"
+      ]
     }
   }
 }

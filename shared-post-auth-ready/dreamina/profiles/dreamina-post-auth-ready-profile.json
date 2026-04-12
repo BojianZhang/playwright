@@ -2,8 +2,17 @@
   "site": "dreamina",
   "stage": "post-auth-ready",
   "postAuthReady": {
-    "selectors": [],
-    "texts": [],
+    "selectors": [
+      "div.lv_new_sign_in_panel_wide-birthday-title",
+      "div.lv_new_sign_in_panel_wide-birthday-subtitle",
+      "button.lv_new_sign_in_panel_wide-birthday-next"
+    ],
+    "texts": [
+      "When’s your birthday?",
+      "When's your birthday?",
+      "Your birthday won’t be shown publicly.",
+      "Your birthday won't be shown publicly."
+    ],
     "urlIncludes": ["/app", "/workspace", "/home"]
   },
   "sessionSignals": {
@@ -12,12 +21,25 @@
     "sessionStorageKeys": []
   },
   "uiSignals": {
-    "selectors": [],
-    "texts": []
+    "selectors": [
+      "button.lv_new_sign_in_panel_wide-birthday-next"
+    ],
+    "texts": [
+      "Year",
+      "Month",
+      "Day",
+      "Next"
+    ]
   },
   "successSignals": {
-    "selectors": [],
-    "texts": []
+    "selectors": [
+      "button.lv_new_sign_in_panel_wide-birthday-next"
+    ],
+    "texts": [
+      "Year",
+      "Month",
+      "Day"
+    ]
   },
   "failureSignals": {
     "selectors": [],
