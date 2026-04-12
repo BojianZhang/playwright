@@ -109,44 +109,36 @@ async function findFirstVisibleByTexts(page, texts = []) {
   };
 }
 
-async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
-  const { logInfo = null } = context;
-  const preferSignup = runtime?.dreaminaAuthMode !== 'signin';
-  if (!preferSignup) {
-    return {
-      ok: true,
-      state: 'AUTH_MODE_SIGNIN_ALLOWED',
-      switched: false,
-      authMode: 'signin',
-      signalStrength: 'weak',
-    };
-  }
+function resolveDreaminaCredentialIntent(runtime = {}, context = {}) {
+  return String(runtime?.dreaminaAuthMode || '').trim().toLowerCase() === 'signin'
+    ? { intent: 'signin', source: 'runtime' }
+    : { intent: 'register', source: runtime?.dreaminaAuthMode ? 'runtime' : 'default' };
+}
 
+async function confirmDreaminaSigninMode(page) {
   const signInHeader = await findFirstVisibleByTexts(page, ['Sign in', 'Welcome back']);
-  const signUpEntry = await findFirstVisibleByTexts(page, ['Sign up', "Don't have an account?"]);
-  const signUpHeader = await findFirstVisibleByTexts(page, ['Sign up']);
   const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
   const passwordInput = page.locator("input[type='password']").first();
   const emailVisible = await isVisible(emailInput);
   const passwordVisible = await isVisible(passwordInput);
+  return {
+    ok: signInHeader.ok && emailVisible && passwordVisible,
+    state: signInHeader.ok && emailVisible && passwordVisible ? 'AUTH_MODE_SIGNIN_CONFIRMED' : 'AUTH_MODE_SIGNIN_NOT_STABLE',
+    authMode: signInHeader.ok ? 'signin' : 'unknown',
+    signalStrength: signInHeader.ok ? 'strong' : 'weak',
+    source: signInHeader.ok ? signInHeader.text : '',
+  };
+}
 
-  if ((signUpHeader.ok && emailVisible && passwordVisible) || (!signInHeader.ok && emailVisible && passwordVisible)) {
-    return {
-      ok: true,
-      state: 'AUTH_MODE_ALREADY_SIGNUP_LIKE',
-      switched: false,
-      authMode: 'signup',
-      signalStrength: signUpHeader.ok ? 'strong' : 'weak',
-      source: signUpHeader.ok ? signUpHeader.text : 'fields-visible',
-    };
-  }
-
-  if (!signUpEntry.ok) {
+async function clickDreaminaRegisterEntry(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const signUpEntry = await findFirstVisibleByTexts(page, ['Sign up', "Don't have an account?"]);
+  if (!signUpEntry.ok || !signUpEntry.locator) {
     return {
       ok: false,
       state: 'SIGNUP_SWITCH_NOT_FOUND',
       switched: false,
-      authMode: signInHeader.ok ? 'signin' : 'unknown',
+      authMode: 'unknown',
       signalStrength: 'weak',
     };
   }
@@ -156,21 +148,57 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
   });
   await page.waitForTimeout(Number(runtime?.credentialSignupSwitchWaitMs || 1200));
 
-  const postSwitchHeader = await findFirstVisibleByTexts(page, ['Sign up']);
-  const postSwitchEmailVisible = await isVisible(emailInput);
-  const postSwitchPasswordVisible = await isVisible(passwordInput);
-
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.credential.ensureSignupMode | switched via=${signUpEntry.text} | signupHeader=${postSwitchHeader.ok ? 'Y' : 'N'} | email=${postSwitchEmailVisible ? 'Y' : 'N'} | password=${postSwitchPasswordVisible ? 'Y' : 'N'}`);
+    logInfo(`dreamina.credential.clickRegisterEntry | clicked via=${signUpEntry.text}`);
   }
 
   return {
-    ok: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible),
-    state: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible) ? 'AUTH_MODE_SWITCHED_TO_SIGNUP' : 'AUTH_MODE_SIGNUP_NOT_STABLE',
+    ok: true,
+    state: 'AUTH_MODE_SIGNUP_CLICKED',
     switched: true,
+    authMode: 'signup',
+    signalStrength: 'weak',
     source: signUpEntry.text,
-    authMode: postSwitchHeader.ok || (postSwitchEmailVisible && postSwitchPasswordVisible) ? 'signup' : 'unknown',
-    signalStrength: postSwitchHeader.ok ? 'strong' : 'weak',
+  };
+}
+
+async function confirmDreaminaRegisterMode(page) {
+  const signUpHeader = await findFirstVisibleByTexts(page, ['Sign up']);
+  const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
+  const passwordInput = page.locator("input[type='password']").first();
+  const emailVisible = await isVisible(emailInput);
+  const passwordVisible = await isVisible(passwordInput);
+  return {
+    ok: signUpHeader.ok && emailVisible && passwordVisible,
+    state: signUpHeader.ok && emailVisible && passwordVisible ? 'AUTH_MODE_SWITCHED_TO_SIGNUP' : 'AUTH_MODE_SIGNUP_NOT_STABLE',
+    authMode: signUpHeader.ok ? 'signup' : 'unknown',
+    signalStrength: signUpHeader.ok ? 'strong' : 'weak',
+    source: signUpHeader.ok ? signUpHeader.text : '',
+  };
+}
+
+async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const intentResult = resolveDreaminaCredentialIntent(runtime, context);
+  if (intentResult.intent === 'signin') {
+    const signinMode = await confirmDreaminaSigninMode(page);
+    return {
+      ...signinMode,
+      switched: false,
+    };
+  }
+
+  const clicked = await clickDreaminaRegisterEntry(page, runtime, context);
+  if (!clicked.ok) return clicked;
+  const confirmed = await confirmDreaminaRegisterMode(page);
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.ensureSignupMode | intent=${intentResult.intent} | signupConfirmed=${confirmed.ok ? 'Y' : 'N'}`);
+  }
+
+  return {
+    ...confirmed,
+    switched: true,
   };
 }
 
@@ -184,6 +212,7 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
 async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const profile = loadDreaminaCredentialProfile();
+  const intentResult = resolveDreaminaCredentialIntent(runtime, context);
   const authModeResult = await ensureDreaminaSignupMode(page, runtime, context);
   if (!authModeResult?.ok) {
     return {
@@ -239,6 +268,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
         submit,
         waitStepMs: waitMs,
         authModeResult,
+        intentResult,
       };
     }
 
@@ -255,6 +285,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
     submit: { ok: false, source: '', value: '', locator: null },
     waitStepMs: 0,
     authModeResult,
+    intentResult,
   };
 }
 
@@ -815,6 +846,10 @@ module.exports = {
   isVisible,
   findFirstVisibleBySelectors,
   findFirstVisibleByTexts,
+  resolveDreaminaCredentialIntent,
+  clickDreaminaRegisterEntry,
+  confirmDreaminaRegisterMode,
+  confirmDreaminaSigninMode,
   ensureDreaminaSignupMode,
   waitForDreaminaCredentialFormReady,
   fillDreaminaCredentialEmail,
