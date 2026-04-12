@@ -738,16 +738,18 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
     await page.waitForTimeout(160).catch(() => {});
     let afterState = await readDreaminaBirthdayMonthValue(page, profile);
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+    let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
     if (panelAfter.ok && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) {
       await page.waitForTimeout(320).catch(() => {});
       afterState = await readDreaminaBirthdayMonthValue(page, profile);
       panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+      selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
     }
     const nextState = await readDreaminaBirthdayNextState(page, profile);
     const effectiveValue = String(afterState?.displayState?.effectiveValue || afterState?.value || '').trim();
     const displayMatched = effectiveValue.toLowerCase() === targetMonth.toLowerCase();
     const panelClosed = !panelAfter.ok;
-    const ok = optionPick.ok && displayMatched;
+    const ok = optionPick.ok && ((selectedState.selected && displayMatched) || (displayMatched && nextState.enabled) || (selectedState.selected && nextState.enabled));
 
     attempts.push({
       mode: 'dropdown-select',
@@ -759,12 +761,13 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       optionMatched: optionPick.ok ? optionPick.text : '',
       clickTarget: optionPick.clickTarget || '',
       clickMode: optionPick.clickMode || '',
+      selected: Boolean(selectedState?.selected),
       nextEnabled: Boolean(nextState?.enabled),
       ok,
     });
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
@@ -780,6 +783,7 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
         panelClosed,
         displayMatched,
         effectiveValue,
+        selected: Boolean(selectedState?.selected),
       },
     };
   } catch (error) {
@@ -819,40 +823,38 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
       if (!text) continue;
       if (!normalizedCandidates.includes(text.toLowerCase())) continue;
 
-      const contentCandidate = option.locator('.lv-select-option-content, .lv-select-option-content-text, span, div').first();
-      const contentVisible = await isVisible(contentCandidate);
+      const contentCandidates = [
+        option.locator('.lv-select-option-content-text').first(),
+        option.locator('.lv-select-option-content').first(),
+        option.locator('span').first(),
+        option.locator('div').first(),
+      ];
       let clickTarget = 'option';
-      let clickMode = 'click';
+      let clickMode = 'force-click';
+      let clicked = false;
 
-      if (contentVisible) {
-        await contentCandidate.hover().catch(() => {});
-        const clicked = await contentCandidate.click({ timeout: 1200 }).then(() => true).catch(() => false);
+      for (const candidate of contentCandidates) {
+        if (!(await isVisible(candidate))) continue;
+        await candidate.hover().catch(() => {});
+        clicked = await candidate.click({ timeout: 1200 }).then(() => true).catch(() => false);
         if (clicked) {
           clickTarget = 'content';
           clickMode = 'hover-click';
-        } else {
-          await option.hover().catch(() => {});
-          const optionClicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
-          if (optionClicked) {
-            clickTarget = 'wrapper';
-            clickMode = 'hover-click';
-          } else {
-            await option.click({ force: true, timeout: 1200 }).catch(() => {});
-            clickTarget = 'option';
-            clickMode = 'force-click';
-          }
+          break;
         }
-      } else {
+      }
+
+      if (!clicked) {
         await option.hover().catch(() => {});
-        const optionClicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
-        if (optionClicked) {
+        clicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
+        if (clicked) {
           clickTarget = 'option';
           clickMode = 'hover-click';
-        } else {
-          await option.click({ force: true, timeout: 1200 }).catch(() => {});
-          clickTarget = 'option';
-          clickMode = 'force-click';
         }
+      }
+
+      if (!clicked) {
+        await option.click({ force: true, timeout: 1200 }).catch(() => {});
       }
 
       const panelStillVisible = await isVisible(option);
@@ -877,6 +879,41 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
     clickTarget: '',
     clickMode: '',
     panelStillVisible: false,
+  };
+}
+
+async function readDreaminaDropdownOptionSelectedState(page, profile, targetValue = '') {
+  const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
+  const normalizedTarget = String(targetValue || '').trim().toLowerCase();
+  for (const selector of optionSelectors) {
+    const options = page.locator(selector);
+    const count = await options.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const option = options.nth(index);
+      const text = String(await option.innerText().catch(() => '')).trim();
+      if (!text || text.toLowerCase() !== normalizedTarget) continue;
+      const className = String(await option.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+      const wrapperClass = String(await option.locator('[class*="selected"], .lv-select-option-wrapper-selected').first().evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+      const selected = /selected|checked|active/i.test(`${className} ${wrapperClass}`);
+      return {
+        ok: true,
+        targetValue,
+        selected,
+        selector,
+        className,
+        wrapperClass,
+        matchedText: text,
+      };
+    }
+  }
+  return {
+    ok: false,
+    targetValue,
+    selected: false,
+    selector: '',
+    className: '',
+    wrapperClass: '',
+    matchedText: '',
   };
 }
 
@@ -945,14 +982,22 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
     await page.waitForTimeout(180).catch(() => {});
-    const afterState = await readDreaminaBirthdayDayValue(page, profile);
+    let afterState = await readDreaminaBirthdayDayValue(page, profile);
+    let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+    let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
+    if (panelAfter.ok && !String(afterState?.value || '').trim()) {
+      await page.waitForTimeout(320).catch(() => {});
+      afterState = await readDreaminaBirthdayDayValue(page, profile);
+      panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+      selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
+    }
     const nextState = await readDreaminaBirthdayNextState(page, profile);
     const beforeValue = String(beforeState?.value || '').trim();
     const afterValue = String(afterState?.value || '').trim();
-    const ok = optionPick.ok && afterValue === dayValue;
+    const ok = optionPick.ok && ((selectedState.selected && afterValue === dayValue) || (afterValue === dayValue && nextState.enabled) || (selectedState.selected && nextState.enabled));
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillDay | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${dayValue} | panel=${panelState.ok ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillDay | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${dayValue} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelAfter.ok ? 'N' : 'Y'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
@@ -968,7 +1013,11 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
         beforeValue,
         afterValue,
         panelVisible: Boolean(panelState?.ok),
+        panelClosed: !panelAfter.ok,
         optionMatched: optionPick.ok ? optionPick.text : '',
+        clickTarget: optionPick.clickTarget || '',
+        clickMode: optionPick.clickMode || '',
+        selected: Boolean(selectedState?.selected),
         nextEnabled: Boolean(nextState?.enabled),
         ok,
       }],
