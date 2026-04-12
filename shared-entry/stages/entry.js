@@ -88,6 +88,7 @@ async function runEntryStage(options = {}) {
   const openEntryPage = resolveAdapterMethod(adapter, 'openEntryPage');
   const checkEntryHealth = resolveAdapterMethod(adapter, 'checkEntryHealth');
   const waitForEntryReady = resolveAdapterMethod(adapter, 'waitForEntryReady');
+  const confirmEntryReadyWithRecovery = resolveAdapterMethod(adapter, 'confirmEntryReadyWithRecovery');
   const classifyEntryFailure = resolveAdapterMethod(adapter, 'classifyEntryFailure');
 
   // 第一步：如果存在 openEntryPage，就先执行入口页打开或校正。
@@ -162,7 +163,7 @@ async function runEntryStage(options = {}) {
   }
 
   // 第三步：如果没有 waitForEntryReady 方法，则返回结构化失败。
-  if (!waitForEntryReady) {
+  if (!confirmEntryReadyWithRecovery && !waitForEntryReady) {
     return normalizeEntryStageResult({
       success: false,
       state: 'ENTRY_ADAPTER_METHOD_MISSING',
@@ -174,15 +175,17 @@ async function runEntryStage(options = {}) {
       stateChanged: null,
       retryCount: 0,
       detail: {
-        missingMethod: 'waitForEntryReady',
+        missingMethod: 'confirmEntryReadyWithRecovery|waitForEntryReady',
         entryOpenResult,
         entryHealthResult,
       },
     });
   }
 
-  // 第四步：执行入口 ready 判断。
-  const entryReadyResult = await waitForEntryReady(page, runtime, context);
+  // 第四步：执行入口 ready 判断；优先使用带 recover 的主链确认。
+  const entryReadyResult = confirmEntryReadyWithRecovery
+    ? await confirmEntryReadyWithRecovery(page, runtime, context)
+    : await waitForEntryReady(page, runtime, context);
 
   // 如果入口 ready 成功，就直接返回成功结构。
   if (entryReadyResult?.ok) {

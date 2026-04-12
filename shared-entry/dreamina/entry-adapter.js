@@ -373,10 +373,9 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
 /**
  * 等待并确认 Dreamina 入口页 ready。
  *
- * 当前草案实现：
- * - selector ready
- * - text ready
- * - url ready
+ * 当前实现：
+ * - 直接转调 staged login-entry wait 主体
+ * - 兼容保留 waitForEntryReady 方法名，避免外层调用点立刻断裂
  */
 async function waitForEntryReady(page, runtime = {}, context = {}) {
   return await waitForDreaminaLoginEntryReady(page, runtime, context);

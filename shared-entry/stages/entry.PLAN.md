@@ -66,8 +66,8 @@
 
 ## 4. 确认入口 ready
 调用：
-- `adapter.waitForEntryReady(...)`
-
+- 优先 `adapter.confirmEntryReadyWithRecovery(...)`
+- 兼容回退 `adapter.waitForEntryReady(...)`
 ## 5. 失败时分类
 调用：
 - `adapter.classifyEntryFailure(...)`
