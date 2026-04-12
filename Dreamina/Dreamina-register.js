@@ -878,6 +878,61 @@ function selectCliProxy(proxies = [], proxyIndex = 0) {
   return list[normalizedIndex] || null;
 }
 
+function shouldSkipProxyHealthRecord(record = {}) {
+  if (!record || typeof record !== 'object') return false;
+  const status = String(record.status || '').trim().toLowerCase();
+  const bucket = String(record.lastBucket || '').trim().toLowerCase();
+  const reason = String(record.lastReason || '').trim().toUpperCase();
+  const failCount = Number(record.failCount || 0);
+
+  if (status === 'bad') return true;
+  if (status === 'unstable') return true;
+  if (failCount >= 3 && bucket === 'entry') return true;
+  if (failCount >= 4 && /READY_SIGNAL_MISSING|ENTRY_NOT_READY|ENTRY_HEALTH_FAILED/.test(reason)) return true;
+  return false;
+}
+
+function resolveCliProxySelection(proxies = [], requestedProxyIndex = 0) {
+  const list = Array.isArray(proxies) ? proxies.filter(Boolean) : [];
+  if (!list.length) {
+    return {
+      proxy: null,
+      requestedProxyIndex,
+      selectedProxyIndex: -1,
+      skippedProxyIds: [],
+    };
+  }
+
+  const health = loadProxyHealth();
+  const requestedIndex = Math.max(0, Math.min(Number(requestedProxyIndex) || 0, list.length - 1));
+  const skippedProxyIds = [];
+
+  for (let offset = 0; offset < list.length; offset++) {
+    const index = (requestedIndex + offset) % list.length;
+    const candidate = list[index];
+    const proxyId = String(summarizeProxy(candidate).id || candidate.id || candidate.raw || '').trim();
+    const record = proxyId ? health[proxyId] : null;
+    if (shouldSkipProxyHealthRecord(record)) {
+      if (proxyId) skippedProxyIds.push(proxyId);
+      continue;
+    }
+
+    return {
+      proxy: candidate,
+      requestedProxyIndex: requestedIndex,
+      selectedProxyIndex: index,
+      skippedProxyIds,
+    };
+  }
+
+  return {
+    proxy: list[requestedIndex] || null,
+    requestedProxyIndex: requestedIndex,
+    selectedProxyIndex: requestedIndex,
+    skippedProxyIds,
+  };
+}
+
 function loadLocalAccounts() {
   const accountFilePath = path.join(__dirname, 'local-accounts.json');
   if (!fs.existsSync(accountFilePath)) return [];
@@ -919,10 +974,11 @@ function appendBadProxyRecord(proxy = null, reason = '') {
   fs.appendFileSync(filePath, `${prefix}${line}\n`, 'utf8');
 }
 
-function resolveProxyDisposition(result = {}) {
+function resolveProxyDisposition(result = {}, currentRecord = null) {
   const finalStage = String(result?.finalStage || '').trim().toLowerCase();
   const finalReason = String(result?.finalReason || result?.finalState || '').trim().toUpperCase();
   const finalState = String(result?.finalState || '').trim().toUpperCase();
+  const previousFailCount = Number(currentRecord?.failCount || 0);
 
   if (finalStage === 'proxy-precheck' && /407|PROXY_CONNECTIVITY_FAILED|DREAMINA_PROXY_CONNECTIVITY_FAILED/.test(finalReason)) {
     return {
@@ -936,6 +992,14 @@ function resolveProxyDisposition(result = {}) {
     return {
       status: 'bad',
       reason: finalReason || finalState || 'ENTRY_FAILED',
+      bucket: 'entry',
+    };
+  }
+
+  if (finalStage === 'entry' && /DREAMINA_READY_SIGNAL_MISSING|ENTRY_NOT_READY/.test(finalReason) && previousFailCount >= 2) {
+    return {
+      status: 'unstable',
+      reason: finalReason || finalState || 'ENTRY_UNSTABLE',
       bucket: 'entry',
     };
   }
@@ -961,9 +1025,9 @@ function recordProxyHealth(result = {}, proxy = null) {
   const proxyId = String(summarizeProxy(proxy).id || proxy.id || proxy.raw || '').trim();
   if (!proxyId) return null;
 
-  const disposition = resolveProxyDisposition(result);
   const health = loadProxyHealth();
   const current = health[proxyId] && typeof health[proxyId] === 'object' ? health[proxyId] : {};
+  const disposition = resolveProxyDisposition(result, current);
   const next = {
     proxyId,
     status: disposition.status,
@@ -1051,7 +1115,8 @@ async function runDreaminaRegisterCli(argv = []) {
   const { proxyIndex, accountIndex, headed, slowMo } = parseCliArgs(argv);
   const proxies = loadLocalProxies();
   const accounts = loadLocalAccounts();
-  const proxy = selectCliProxy(proxies, proxyIndex);
+  const proxySelection = resolveCliProxySelection(proxies, proxyIndex);
+  const proxy = proxySelection.proxy;
   const account = selectCliAccount(accounts, accountIndex);
 
   if (!proxy) {
@@ -1070,6 +1135,8 @@ async function runDreaminaRegisterCli(argv = []) {
       meta: {
         cli: true,
         proxyIndex,
+        selectedProxyIndex: proxySelection.selectedProxyIndex,
+        skippedProxyIds: proxySelection.skippedProxyIds,
         accountIndex,
       },
     };
@@ -1094,6 +1161,8 @@ async function runDreaminaRegisterCli(argv = []) {
       meta: {
         cli: true,
         proxyIndex,
+        selectedProxyIndex: proxySelection.selectedProxyIndex,
+        skippedProxyIds: proxySelection.skippedProxyIds,
         accountIndex,
       },
     };
@@ -1122,6 +1191,9 @@ async function runDreaminaRegisterCli(argv = []) {
         headed,
         slowMo,
         accountIndex,
+        requestedProxyIndex: proxySelection.requestedProxyIndex,
+        selectedProxyIndex: proxySelection.selectedProxyIndex,
+        skippedProxyIds: proxySelection.skippedProxyIds,
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
@@ -1174,6 +1246,9 @@ async function runDreaminaRegisterCli(argv = []) {
     if (proxyHealthRecord) {
       result.meta = {
         ...(result.meta || {}),
+        requestedProxyIndex: proxySelection.requestedProxyIndex,
+        selectedProxyIndex: proxySelection.selectedProxyIndex,
+        skippedProxyIds: proxySelection.skippedProxyIds,
         proxyDisposition: proxyHealthRecord,
       };
     }
@@ -1215,6 +1290,8 @@ module.exports = {
   loadLocalAccounts,
   selectCliAccount,
   loadProxyHealth,
+  shouldSkipProxyHealthRecord,
+  resolveCliProxySelection,
   resolveProxyDisposition,
   recordProxyHealth,
   createDreaminaCliRuntime,
