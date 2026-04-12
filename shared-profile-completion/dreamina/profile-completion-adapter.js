@@ -458,9 +458,18 @@ async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, c
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
 async function readDreaminaBirthdayYearValue(page, profile) {
-  // 遍历 profile 中定义的 yearSelectors，找到第一个当前可见 year 输入。
+  const roleLocator = page.getByRole('textbox', { name: 'Year' }).first();
+  if (await isVisible(roleLocator)) {
+    const currentValue = await roleLocator.inputValue().catch(() => '');
+    return {
+      ok: true,
+      selector: 'role:textbox[name="Year"]',
+      value: String(currentValue || '').trim(),
+      locator: roleLocator,
+    };
+  }
+
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
-  // 如果当前没有可见 year 输入，就返回统一未命中结构。
   if (!hit.ok || !hit.locator) {
     return {
       ok: false,
@@ -469,9 +478,7 @@ async function readDreaminaBirthdayYearValue(page, profile) {
     };
   }
 
-  // 读取当前 year 输入值；若读取失败，则回退空字符串。
   const currentValue = await hit.locator.inputValue().catch(() => '');
-  // 返回统一 year 读取结构。
   return {
     ok: true,
     selector: hit.selector,
@@ -601,6 +608,21 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
 async function readDreaminaBirthdayMonthDisplayState(page, profile) {
+  const roleLocator = page.getByText('Month').first();
+  if (await isVisible(roleLocator)) {
+    const displayText = String(await roleLocator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    return {
+      ok: true,
+      selector: 'text:Month',
+      inputValue: '',
+      displayText,
+      placeholder: 'Month',
+      effectiveValue: /^month$/i.test(displayText) ? '' : displayText,
+      emptyState: /^month$/i.test(displayText) || !displayText,
+      locator: roleLocator,
+    };
+  }
+
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
   if (!hit.ok || !hit.locator) {
     return {
@@ -731,10 +753,31 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
 
   const attempts = [];
   try {
-    await beforeState.locator.click({ force: true }).catch(() => {});
+    const monthDropdown = page.getByText('Month').first();
+    if (await isVisible(monthDropdown)) {
+      await monthDropdown.click().catch(() => {});
+    } else {
+      await beforeState.locator.click({ force: true }).catch(() => {});
+    }
     await page.waitForTimeout(180).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false };
+    const roleOption = page.getByRole('option', { name: targetMonth }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = {
+        ok: true,
+        text: targetMonth,
+        clickTarget: 'role-option',
+        clickMode: 'click',
+        panelStillVisible: false,
+        selected: false,
+      };
+    } else {
+      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
+    }
     await page.waitForTimeout(160).catch(() => {});
     let afterState = await readDreaminaBirthdayMonthValue(page, profile);
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
@@ -924,9 +967,18 @@ async function readDreaminaDropdownOptionSelectedState(page, profile, targetValu
 }
 
 async function readDreaminaBirthdayDayValue(page, profile) {
-  // 遍历 profile 中定义的 daySelectors，找到第一个当前可见 day 输入。
+  const roleLocator = page.getByText('Day', { exact: true }).first();
+  if (await isVisible(roleLocator)) {
+    const displayText = String(await roleLocator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    return {
+      ok: true,
+      selector: 'text:Day',
+      value: /^day$/i.test(displayText) ? '' : displayText,
+      locator: roleLocator,
+    };
+  }
+
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
-  // 如果当前没有可见 day 输入，就返回统一未命中结构。
   if (!hit.ok || !hit.locator) {
     return {
       ok: false,
@@ -935,9 +987,7 @@ async function readDreaminaBirthdayDayValue(page, profile) {
     };
   }
 
-  // 读取当前 day 输入值；若读取失败，则回退空字符串。
   const currentValue = await hit.locator.inputValue().catch(() => '');
-  // 返回统一 day 读取结构。
   return {
     ok: true,
     selector: hit.selector,
@@ -983,10 +1033,31 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
   }
 
   try {
-    await beforeState.locator.click({ force: true }).catch(() => {});
+    const dayDropdown = page.getByText('Day', { exact: true }).first();
+    if (await isVisible(dayDropdown)) {
+      await dayDropdown.click().catch(() => {});
+    } else {
+      await beforeState.locator.click({ force: true }).catch(() => {});
+    }
     await page.waitForTimeout(180).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false };
+    const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = {
+        ok: true,
+        text: dayValue,
+        clickTarget: 'role-option',
+        clickMode: 'click',
+        panelStillVisible: false,
+        selected: false,
+      };
+    } else {
+      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
+    }
     await page.waitForTimeout(180).catch(() => {});
     let afterState = await readDreaminaBirthdayDayValue(page, profile);
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
