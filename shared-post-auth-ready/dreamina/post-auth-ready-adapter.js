@@ -532,52 +532,16 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
     matchedSelectors,
     matchedTexts,
   };
-}, context = {}) {
-  // 读取 Dreamina 第五阶段 profile。
-  const profile = loadDreaminaPostAuthReadyProfile();
-
-  // 先查 selector。
-  const selectorHit = await findFirstVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
-  if (selectorHit.ok) {
-    return {
-      ok: true,
-      state: 'USER_PANEL_VISIBLE',
-      source: 'selector',
-      value: selectorHit.selector,
-      strength: 'strong',
-    };
-  }
-
-  // 再查 text。
-  const textHit = await findFirstVisibleByTexts(page, profile?.uiSignals?.texts || []);
-  if (textHit.ok) {
-    return {
-      ok: true,
-      state: 'DASHBOARD_VISIBLE',
-      source: 'text',
-      value: textHit.text,
-      strength: 'weak',
-    };
-  }
-
-  // 当前未确认 UI 登录后信号。
-  return {
-    ok: false,
-    state: 'POST_AUTH_UI_NOT_CONFIRMED',
-    source: '',
-    value: '',
-    strength: '',
-  };
 }
 
 /**
- * 收口第五阶段最终结果。
+ * ???????????
  *
- * 当前草案实现策略：
- * - 如果 successSignals 命中，直接认定 registration-complete
- * - 否则如果 sessionInspection 和 uiConfirmation 都强成立，也可作为中强成功草案
- * - 否则如果 failureSignals 命中，返回失败
- * - 最后返回 unknown
+ * ?????????
+ * - ?? successSignals ??????? registration-complete
+ * - ???? sessionInspection ? uiConfirmation ???????????????
+ * - ???? failureSignals ???????
+ * - ???? unknown
  */
 async function confirmPostAuthResult(page, runtime = {}, context = {}) {
   const profile = loadDreaminaPostAuthReadyProfile();
@@ -684,109 +648,12 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
     matchedSelectors: [],
     matchedTexts: [],
   };
-}, context = {}) {
-  // 读取 Dreamina 第五阶段 profile。
-  const profile = loadDreaminaPostAuthReadyProfile();
-  // 解构前序步骤结果。
-  const { sessionInspection = null, uiConfirmation = null } = context;
-
-  // 优先查 success selector。
-  const successSelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
-  if (successSelector.ok) {
-    return {
-      ok: true,
-      state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
-      source: 'selector',
-      value: successSelector.selector,
-      strength: 'strong',
-      settleStage: 'primary-success',
-      stateChanged: true,
-      retryCount: 0,
-    };
-  }
-
-  // 再查 success text。
-  const successText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
-  if (successText.ok) {
-    return {
-      ok: true,
-      state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
-      source: 'text',
-      value: successText.text,
-      strength: 'weak',
-      settleStage: 'secondary-success',
-      stateChanged: true,
-      retryCount: 0,
-    };
-  }
-
-  // 如果 sessionInspection 与 uiConfirmation 都成立，可以作为阶段 5 第一版的联合成功草案。
-  if (sessionInspection?.ok && uiConfirmation?.ok) {
-    return {
-      ok: true,
-      state: 'POST_AUTH_SUCCESS',
-      nextStage: 'registration-complete',
-      source: 'session+ui',
-      value: [sessionInspection.value, uiConfirmation.value].filter(Boolean).join(' | '),
-      strength: sessionInspection?.strength === 'strong' || uiConfirmation?.strength === 'strong' ? 'medium' : 'weak',
-      settleStage: 'session-check',
-      stateChanged: true,
-      retryCount: 0,
-    };
-  }
-
-  // 再查 failure selector。
-  const failureSelector = await findFirstVisibleBySelectors(page, profile?.failureSignals?.selectors || []);
-  if (failureSelector.ok) {
-    return {
-      ok: false,
-      state: 'POST_AUTH_FAILED',
-      nextStage: '',
-      source: 'selector',
-      value: failureSelector.selector,
-      strength: 'strong',
-      settleStage: 'primary-failure',
-      stateChanged: null,
-      retryCount: 0,
-    };
-  }
-
-  // 最后查 failure text。
-  const failureText = await findFirstVisibleByTexts(page, profile?.failureSignals?.texts || []);
-  if (failureText.ok) {
-    return {
-      ok: false,
-      state: 'POST_AUTH_FAILED',
-      nextStage: '',
-      source: 'text',
-      value: failureText.text,
-      strength: 'weak',
-      settleStage: 'secondary-failure',
-      stateChanged: null,
-      retryCount: 0,
-    };
-  }
-
-  // 如果都没命中，则按 unknown 返回。
-  return {
-    ok: false,
-    state: 'POST_AUTH_RESULT_UNKNOWN',
-    nextStage: '',
-    source: '',
-    value: '',
-    strength: '',
-    settleStage: 'none',
-    stateChanged: null,
-    retryCount: 0,
-  };
 }
 
 /**
- * 将第五阶段原始失败状态收敛成 Dreamina 专属 reason。
+ * ?????????????? Dreamina ?? reason?
  *
- * 当前草案实现先覆盖最常见几类状态，后续再根据真实日志细化。
+ * ?????????????????????????????
  */
 function classifyPostAuthFailure(input = {}) {
   // 提取原始 reason/state，并统一转成大写。
