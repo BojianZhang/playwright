@@ -922,14 +922,16 @@ function resolveCliProxySelection(proxies = [], requestedProxyIndex = 0) {
       requestedProxyIndex: requestedIndex,
       selectedProxyIndex: index,
       skippedProxyIds,
+      exhaustedHealthyCandidates: false,
     };
   }
 
   return {
-    proxy: list[requestedIndex] || null,
+    proxy: null,
     requestedProxyIndex: requestedIndex,
-    selectedProxyIndex: requestedIndex,
+    selectedProxyIndex: -1,
     skippedProxyIds,
+    exhaustedHealthyCandidates: skippedProxyIds.length >= list.length,
   };
 }
 
@@ -1120,12 +1122,13 @@ async function runDreaminaRegisterCli(argv = []) {
   const account = selectCliAccount(accounts, accountIndex);
 
   if (!proxy) {
+    const noHealthyProxy = Boolean(proxySelection?.exhaustedHealthyCandidates);
     const emptyResult = {
       success: false,
       site: 'dreamina',
       finalStage: 'preconditions',
-      finalState: 'DREAMINA_REGISTER_PROXY_MISSING',
-      finalReason: 'DREAMINA_REGISTER_PROXY_MISSING',
+      finalState: noHealthyProxy ? 'DREAMINA_REGISTER_NO_HEALTHY_PROXY_AVAILABLE' : 'DREAMINA_REGISTER_PROXY_MISSING',
+      finalReason: noHealthyProxy ? 'DREAMINA_REGISTER_NO_HEALTHY_PROXY_AVAILABLE' : 'DREAMINA_REGISTER_PROXY_MISSING',
       nextStage: '',
       account: {},
       proxy: null,
@@ -1137,10 +1140,11 @@ async function runDreaminaRegisterCli(argv = []) {
         proxyIndex,
         selectedProxyIndex: proxySelection.selectedProxyIndex,
         skippedProxyIds: proxySelection.skippedProxyIds,
+        exhaustedHealthyCandidates: proxySelection.exhaustedHealthyCandidates,
         accountIndex,
       },
     };
-    console.log('[Dreamina Register] 未找到可用代理');
+    console.log(noHealthyProxy ? '[Dreamina Register] 当前没有健康代理可用，请补充新代理或清理 bad/unstable 代理记录' : '[Dreamina Register] 未找到可用代理');
     console.log(JSON.stringify(emptyResult, null, 2));
     return emptyResult;
   }
@@ -1249,6 +1253,7 @@ async function runDreaminaRegisterCli(argv = []) {
         requestedProxyIndex: proxySelection.requestedProxyIndex,
         selectedProxyIndex: proxySelection.selectedProxyIndex,
         skippedProxyIds: proxySelection.skippedProxyIds,
+        exhaustedHealthyCandidates: proxySelection.exhaustedHealthyCandidates,
         proxyDisposition: proxyHealthRecord,
       };
     }
