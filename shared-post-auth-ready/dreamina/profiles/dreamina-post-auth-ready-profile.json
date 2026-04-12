@@ -1,61 +1,105 @@
 {
-  "site": "dreamina",
-  "stage": "post-auth-ready",
-  "mode": "bridge",
-  "notes": [
-    "Current Dreamina post-auth-ready remains in bridge/transition mode.",
-    "Birthday-related signals are temporary bridge-only signals after profile-completion submit, not the final long-term definition of post-auth-ready.",
-    "Long-term target is to replace these bridge signals with real post-login/session/user-state signals."
-  ],
-  "postAuthReady": {
-    "selectors": [
-      "div.lv_new_sign_in_panel_wide-birthday-title",
-      "div.lv_new_sign_in_panel_wide-birthday-subtitle",
-      "button.lv_new_sign_in_panel_wide-birthday-next"
-    ],
-    "texts": [
-      "When's your birthday?",
-      "Your birthday won't be shown publicly."
-    ],
-    "urlIncludes": [
-      "/app",
-      "/workspace",
-      "/home"
-    ]
-  },
-  "sessionSignals": {
-    "cookieKeys": [],
-    "localStorageKeys": [],
-    "sessionStorageKeys": []
-  },
-  "uiSignals": {
-    "selectors": [
-      "button.lv_new_sign_in_panel_wide-birthday-next"
-    ],
-    "texts": [
-      "Year",
-      "Month",
-      "Day",
-      "Next"
-    ]
-  },
-  "successSignals": {
-    "selectors": [],
-    "texts": []
-  },
-  "failureSignals": {
-    "selectors": [],
-    "texts": []
-  },
-  "bridgeSignals": {
-    "selectors": [
-      "button.lv_new_sign_in_panel_wide-birthday-next"
-    ],
-    "texts": [
-      "Year",
-      "Month",
-      "Day",
-      "Next"
-    ]
-  }
+    "site":  "dreamina",
+    "stage":  "post-auth-ready",
+    "mode":  "bridge",
+    "notes":  [
+                  "Current Dreamina post-auth-ready remains in bridge/transition mode.",
+                  "Birthday-related signals are temporary bridge-only signals after profile-completion submit, not the final long-term definition of post-auth-ready.",
+                  "Long-term target is to replace these bridge signals with real post-login/session/user-state signals.",
+                  "Compatibility note: existing postAuthReady/uiSignals fields are still kept for current adapter behavior; bridgeReady/bridgeUiSignals/weakSupportSignals express the more honest layered semantics."
+              ],
+    "postAuthReady":  {
+                          "selectors":  [
+                                            "div.lv_new_sign_in_panel_wide-birthday-title",
+                                            "div.lv_new_sign_in_panel_wide-birthday-subtitle",
+                                            "button.lv_new_sign_in_panel_wide-birthday-next"
+                                        ],
+                          "texts":  [
+                                        "When\u0027s your birthday?",
+                                        "Your birthday won\u0027t be shown publicly."
+                                    ],
+                          "urlIncludes":  [
+                                              "/app",
+                                              "/workspace",
+                                              "/home"
+                                          ]
+                      },
+    "sessionSignals":  {
+                           "cookieKeys":  [
+
+                                          ],
+                           "localStorageKeys":  [
+
+                                                ],
+                           "sessionStorageKeys":  [
+
+                                                  ]
+                       },
+    "uiSignals":  {
+                      "selectors":  [
+                                        "button.lv_new_sign_in_panel_wide-birthday-next"
+                                    ],
+                      "texts":  [
+                                    "Year",
+                                    "Month",
+                                    "Day",
+                                    "Next"
+                                ]
+                  },
+    "successSignals":  {
+                           "selectors":  [
+
+                                         ],
+                           "texts":  [
+
+                                     ]
+                       },
+    "failureSignals":  {
+                           "selectors":  [
+
+                                         ],
+                           "texts":  [
+
+                                     ]
+                       },
+    "bridgeSignals":  {
+                          "selectors":  [
+                                            "button.lv_new_sign_in_panel_wide-birthday-next"
+                                        ],
+                          "texts":  [
+                                        "Year",
+                                        "Month",
+                                        "Day",
+                                        "Next"
+                                    ]
+                      },
+    "bridgeReady":  {
+                        "selectors":  [
+                                          "div.lv_new_sign_in_panel_wide-birthday-title",
+                                          "div.lv_new_sign_in_panel_wide-birthday-subtitle",
+                                          "button.lv_new_sign_in_panel_wide-birthday-next"
+                                      ],
+                        "texts":  [
+                                      "When\u0027s your birthday?",
+                                      "Your birthday won\u0027t be shown publicly."
+                                  ]
+                    },
+    "bridgeUiSignals":  {
+                            "selectors":  [
+                                              "button.lv_new_sign_in_panel_wide-birthday-next"
+                                          ],
+                            "texts":  [
+                                          "Year",
+                                          "Month",
+                                          "Day",
+                                          "Next"
+                                      ]
+                        },
+    "weakSupportSignals":  {
+                               "urlIncludes":  [
+                                                   "/app",
+                                                   "/workspace",
+                                                   "/home"
+                                               ]
+                           }
 }
