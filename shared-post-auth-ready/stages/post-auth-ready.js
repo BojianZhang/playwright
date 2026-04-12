@@ -169,14 +169,14 @@ async function runPostAuthReadyStage(options = {}) {
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
     if (typeof logInfo === 'function') {
-      logInfo(`postAuth.ready.success | state=${resultConfirmation.state || 'REGISTRATION_COMPLETE'} | source=${resultConfirmation.source || ''} | value=${resultConfirmation.value || ''}`);
+      logInfo(`postAuth.ready.success | state=${resultConfirmation.state || 'POST_AUTH_READY_ONLY'} | source=${resultConfirmation.source || ''} | value=${resultConfirmation.value || ''}`);
     }
 
     return normalizePostAuthReadyStageResult({
       success: true,
-      state: String(resultConfirmation?.state || 'REGISTRATION_COMPLETE'),
-      reason: String(resultConfirmation?.state || 'REGISTRATION_COMPLETE'),
-      nextStage: String(resultConfirmation?.nextStage || 'registration-complete'),
+      state: String(resultConfirmation?.state || 'POST_AUTH_READY_ONLY'),
+      reason: String(resultConfirmation?.state || 'POST_AUTH_READY_ONLY'),
+      nextStage: String(resultConfirmation?.nextStage || 'account-delivery'),
       signalStrength: String(resultConfirmation?.strength || ''),
       settleStage: String(resultConfirmation?.settleStage || 'none'),
       detectionSource: String(resultConfirmation?.source || ''),

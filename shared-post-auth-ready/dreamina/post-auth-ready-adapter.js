@@ -492,6 +492,16 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
  * - 再查 UI text
  * - 返回统一结构
  */
+function isDreaminaBridgeSignal(value = '') {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return false;
+  return text.includes('birthday')
+    || text === 'year'
+    || text === 'month'
+    || text === 'day'
+    || text === 'next';
+}
+
 async function confirmPostAuthUi(page, runtime = {}, context = {}) {
   const profile = loadDreaminaPostAuthReadyProfile();
   const matchedSelectors = await findAllVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
@@ -553,10 +563,11 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 
   const successSelector = matchedSuccessSelectors[0] ? { ok: true, selector: matchedSuccessSelectors[0] } : { ok: false, selector: '' };
   if (successSelector.ok) {
+    const isBridge = isDreaminaBridgeSignal(successSelector.selector);
     return {
       ok: true,
-      state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
+      state: isBridge ? 'POST_AUTH_READY_ONLY' : 'REGISTRATION_COMPLETE',
+      nextStage: isBridge ? 'account-delivery' : 'registration-complete',
       source: 'selector',
       value: successSelector.selector,
       strength: 'strong',
@@ -570,10 +581,11 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 
   const successText = matchedSuccessTexts[0] ? { ok: true, text: matchedSuccessTexts[0] } : { ok: false, text: '' };
   if (successText.ok) {
+    const isBridge = isDreaminaBridgeSignal(successText.text);
     return {
       ok: true,
-      state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
+      state: isBridge ? 'POST_AUTH_READY_ONLY' : 'REGISTRATION_COMPLETE',
+      nextStage: isBridge ? 'account-delivery' : 'registration-complete',
       source: 'text',
       value: successText.text,
       strength: 'weak',
@@ -588,12 +600,28 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
   if (sessionInspection?.ok && uiConfirmation?.ok) {
     return {
       ok: true,
-      state: 'POST_AUTH_SUCCESS',
+      state: 'REGISTRATION_COMPLETE',
       nextStage: 'registration-complete',
       source: 'session+ui',
       value: [sessionInspection.value, uiConfirmation.value].filter(Boolean).join(' | '),
       strength: sessionInspection?.strength === 'strong' || uiConfirmation?.strength === 'strong' ? 'medium' : 'weak',
       settleStage: 'session-check',
+      stateChanged: true,
+      retryCount: 0,
+      matchedSelectors: Array.isArray(uiConfirmation?.matchedSelectors) ? uiConfirmation.matchedSelectors : [],
+      matchedTexts: Array.isArray(uiConfirmation?.matchedTexts) ? uiConfirmation.matchedTexts : [],
+    };
+  }
+
+  if (uiConfirmation?.ok) {
+    return {
+      ok: true,
+      state: 'POST_AUTH_READY_ONLY',
+      nextStage: 'account-delivery',
+      source: uiConfirmation.source || '',
+      value: uiConfirmation.value || '',
+      strength: uiConfirmation.strength || 'weak',
+      settleStage: 'ui-bridge',
       stateChanged: true,
       retryCount: 0,
       matchedSelectors: Array.isArray(uiConfirmation?.matchedSelectors) ? uiConfirmation.matchedSelectors : [],
@@ -665,6 +693,7 @@ function classifyPostAuthFailure(input = {}) {
   if (reason === 'POST_AUTH_NOT_READY') siteReason = 'DREAMINA_POST_AUTH_NOT_READY';
   else if (reason === 'SESSION_SIGNAL_NOT_FOUND' || reason === 'SESSION_INSPECTION_UNKNOWN') siteReason = 'DREAMINA_SESSION_SIGNAL_NOT_FOUND';
   else if (reason === 'POST_AUTH_UI_NOT_CONFIRMED') siteReason = 'DREAMINA_POST_AUTH_UI_NOT_CONFIRMED';
+  else if (reason === 'POST_AUTH_READY_ONLY') siteReason = 'DREAMINA_POST_AUTH_READY_ONLY';
   else if (reason === 'POST_AUTH_FAILED') siteReason = 'DREAMINA_POST_AUTH_FAILED';
   else if (reason === 'POST_AUTH_RESULT_UNKNOWN') siteReason = 'DREAMINA_POST_AUTH_RESULT_UNKNOWN';
 
