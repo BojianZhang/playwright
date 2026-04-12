@@ -16,18 +16,45 @@
 - 从页面尚未进入登录业务阶段开始
 - 到确认站点入口页已经健康可操作，并可推进到 `credential-submit` 为止
 
+它负责：
+- 首页/入口页打开
+- 首页/入口页白屏识别
+- 首页/入口页死页识别
+- 首页/入口页 ready 信号识别
+- 首页级 retry / reload / page recreate
+- 仅限“把页面恢复到登录入口可操作”的 overlay / recover / staged wait
+
 它不负责：
 - credential submit
 - verification submit
 - profile completion
 - post-auth-ready
 - account-delivery
+- session 最终交付确认
 - 外部系统写入
 - runner 层代理调度、结果落盘
 
 ---
 
-# 二、统一输入
+# 二、第一迁移包（最小落地版）
+
+entry 第一迁移包当前只建议先承接 4 个最小能力：
+
+1. `detectDreaminaWhiteScreen(...)` → 通用 white-screen skeleton
+2. `detectDreaminaFirstLoadDeadPage(...)` → 通用 dead-page skeleton
+3. `hasDreaminaHomePositiveSignals(...)` → 通用 positive-ready skeleton
+4. `shouldRecreateDreaminaPage(...)` → 通用 page-recreate helper
+
+这 4 个能力都属于：
+- 页面入口健康治理
+- 页面入口 ready 判断
+- 页面入口异常恢复前置判断
+
+它们**不会改变 entry 阶段职责边界**，只会增强 entry 阶段的健康治理厚度。
+
+---
+
+# 三、统一输入
 
 `runEntryStage(options)` 当前输入：
 
@@ -46,7 +73,7 @@
 ## `adapter`
 - 类型：object | null
 - 含义：当前站点的阶段 1 适配器
-- 作用：承接站点专属的 open / ready / failure classify 逻辑
+- 作用：承接站点专属的 open / ready / failure classify / recover 逻辑
 
 ## `runtime`
 - 类型：object
@@ -66,7 +93,7 @@
 
 ---
 
-# 三、统一输出
+# 四、统一输出
 
 `runEntryStage(...)` 应返回统一结构：
 
@@ -88,7 +115,7 @@
 
 ---
 
-# 四、字段逐项说明
+# 五、字段逐项说明
 
 ## `success`
 - 类型：`boolean`
@@ -167,10 +194,14 @@
   - `entryOpenResult`
   - `entryReadyResult`
   - `classified`
+  - `whiteScreen`
+  - `deadPage`
+  - `readySignal`
+  - `recoveryResult`
 
 ---
 
-# 五、一句话总结
+# 六、一句话总结
 
 `entry` 的稳定契约不是“打开了个页面”，而是：
 **把站点入口页治理到健康可操作，并干净地交给 `credential-submit`。**
