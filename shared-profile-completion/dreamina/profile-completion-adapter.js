@@ -823,51 +823,56 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
       if (!text) continue;
       if (!normalizedCandidates.includes(text.toLowerCase())) continue;
 
-      const contentCandidates = [
-        option.locator('.lv-select-option-content-text').first(),
-        option.locator('.lv-select-option-content').first(),
-        option.locator('span').first(),
-        option.locator('div').first(),
+      const exactTextLocators = [
+        option.locator(`text="${text}"`).first(),
+        option.getByText(text, { exact: true }).first(),
       ];
-      let clickTarget = 'option';
-      let clickMode = 'force-click';
-      let clicked = false;
 
-      for (const candidate of contentCandidates) {
-        if (!(await isVisible(candidate))) continue;
-        await candidate.hover().catch(() => {});
-        clicked = await candidate.click({ timeout: 1200 }).then(() => true).catch(() => false);
-        if (clicked) {
-          clickTarget = 'content';
-          clickMode = 'hover-click';
-          break;
+      const clickPlans = [];
+      for (const exactTextLocator of exactTextLocators) {
+        if (!(await isVisible(exactTextLocator))) continue;
+        clickPlans.push({ label: 'exact-text', locator: exactTextLocator });
+        clickPlans.push({ label: 'exact-text-parent', locator: exactTextLocator.locator('xpath=..').first() });
+        clickPlans.push({ label: 'exact-text-grandparent', locator: exactTextLocator.locator('xpath=../..').first() });
+      }
+      clickPlans.push({ label: 'content-text', locator: option.locator('.lv-select-option-content-text').first() });
+      clickPlans.push({ label: 'content', locator: option.locator('.lv-select-option-content').first() });
+      clickPlans.push({ label: 'option', locator: option });
+
+      for (const plan of clickPlans) {
+        if (!plan.locator || !(await isVisible(plan.locator))) continue;
+        await plan.locator.hover().catch(() => {});
+        const clicked = await plan.locator.click({ timeout: 1200 }).then(() => true).catch(() => false);
+        if (!clicked) {
+          await plan.locator.click({ force: true, timeout: 1200 }).catch(() => {});
+        }
+        await page.waitForTimeout(120).catch(() => {});
+        const selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, text);
+        const panelStillVisible = await isVisible(option);
+        if (typeof logInfo === 'function') {
+          logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text} | clickTarget=${plan.label} | selected=${selectedState.selected ? 'Y' : 'N'} | panelStillVisible=${panelStillVisible ? 'Y' : 'N'}`);
+        }
+        if (selectedState.selected || !panelStillVisible) {
+          return {
+            ok: true,
+            selector,
+            text,
+            clickTarget: plan.label,
+            clickMode: clicked ? 'hover-click' : 'force-click',
+            panelStillVisible,
+            selected: Boolean(selectedState.selected),
+          };
         }
       }
 
-      if (!clicked) {
-        await option.hover().catch(() => {});
-        clicked = await option.click({ timeout: 1200 }).then(() => true).catch(() => false);
-        if (clicked) {
-          clickTarget = 'option';
-          clickMode = 'hover-click';
-        }
-      }
-
-      if (!clicked) {
-        await option.click({ force: true, timeout: 1200 }).catch(() => {});
-      }
-
-      const panelStillVisible = await isVisible(option);
-      if (typeof logInfo === 'function') {
-        logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text} | clickTarget=${clickTarget} | clickMode=${clickMode} | panelStillVisible=${panelStillVisible ? 'Y' : 'N'}`);
-      }
       return {
         ok: true,
         selector,
         text,
-        clickTarget,
-        clickMode,
-        panelStillVisible,
+        clickTarget: 'option',
+        clickMode: 'no-selected-state',
+        panelStillVisible: true,
+        selected: false,
       };
     }
   }
@@ -879,6 +884,7 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
     clickTarget: '',
     clickMode: '',
     panelStillVisible: false,
+    selected: false,
   };
 }
 
