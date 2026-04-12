@@ -17,6 +17,11 @@
     "monthSelectors": [
       "input[placeholder='Month']"
     ],
+    "monthOptionSelectors": [
+      "li[role='option'].lv-select-option",
+      "li.lv-select-option",
+      "[role='listbox'] li[role='option']"
+    ],
     "daySelectors": [
       "input[placeholder='Day']"
     ],

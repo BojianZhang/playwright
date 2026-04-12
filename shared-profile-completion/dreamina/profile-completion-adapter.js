@@ -305,8 +305,8 @@ function getBirthdayMonthCandidates(runtime = {}) {
     : [];
   // 如果 runtime 里给了合法 month 候选，就优先使用自定义集合。
   if (customMonths.length > 0) return customMonths;
-  // 否则回退到默认英文月份集合。
-  return ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  // Dreamina 当前 birthday month 实际是数字下拉项，默认返回 1~12。
+  return ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
 }
 
 /**
@@ -600,21 +600,23 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
   }
 
   try {
-    // 先点击 month 输入控件，尽量确保焦点落在正确输入框上。
+    // 先点击 month 输入控件，尽量触发 Dreamina 数字月份下拉。
     await beforeState.locator.click({ force: true }).catch(() => {});
-    // 再显式 focus，降低只 click 不聚焦的概率。
     await beforeState.locator.focus().catch(() => {});
-    // 尝试全选旧值。
-    await beforeState.locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
-    // 删除旧值，避免新旧月份拼接。
-    await beforeState.locator.press('Backspace').catch(() => {});
-    // 优先尝试用 fill 直接写入 month。
-    await beforeState.locator.fill(monthValue).catch(async () => {
-      // 如果 fill 失败，再回退到 type。
-      await beforeState.locator.type(monthValue, { delay: 40 }).catch(() => {});
-    });
-    // 给页面一小段时间消化输入事件。
-    await page.waitForTimeout(120).catch(() => {});
+    await page.waitForTimeout(180).catch(() => {});
+
+    // 优先按下拉项点击数字月份；找不到时才回退文本输入。
+    const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, monthValue, logInfo);
+    if (!optionPick.ok) {
+      await beforeState.locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+      await beforeState.locator.press('Backspace').catch(() => {});
+      await beforeState.locator.fill(monthValue).catch(async () => {
+        await beforeState.locator.type(monthValue, { delay: 40 }).catch(() => {});
+      });
+      await page.waitForTimeout(120).catch(() => {});
+    } else {
+      await page.waitForTimeout(180).catch(() => {});
+    }
 
     // 读取填写后的 month 输入状态。
     const afterState = await readDreaminaBirthdayMonthValue(page, profile);
@@ -625,11 +627,11 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
     // 判断 month 是否已经被正确写入。
     const ok = afterValue === monthValue;
     // 判断页面/输入值是否发生了变化。
-    const stateChanged = afterValue !== beforeValue;
+    const stateChanged = afterValue !== beforeValue || optionPick.ok;
 
     // 如果有日志函数，记录本轮 month 填写情况。
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | selector=${beforeState.selector || ''} | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${monthValue}`);
+      logInfo(`dreamina.profileCompletion.fillMonth | selector=${beforeState.selector || ''} | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${monthValue} | option=${optionPick.ok ? optionPick.text : '[NONE]'}`);
     }
 
     // 返回统一 month 填写结果。
@@ -659,6 +661,37 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
  * - 在填写前后读取 day 输入框当前值
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
+async function trySelectDreaminaBirthdayMonthOption(page, profile, monthValue, logInfo = null) {
+  const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
+  for (const selector of optionSelectors) {
+    const options = page.locator(selector);
+    const count = await options.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const option = options.nth(index);
+      const visible = await isVisible(option);
+      if (!visible) continue;
+      const text = String(await option.innerText().catch(() => '')).trim();
+      if (!text) continue;
+      if (text.toLowerCase() !== String(monthValue || '').trim().toLowerCase()) continue;
+      await option.click({ force: true }).catch(() => {});
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text}`);
+      }
+      return {
+        ok: true,
+        selector,
+        text,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    selector: '',
+    text: '',
+  };
+}
+
 async function readDreaminaBirthdayDayValue(page, profile) {
   // 遍历 profile 中定义的 daySelectors，找到第一个当前可见 day 输入。
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
