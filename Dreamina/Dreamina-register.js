@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { chromium } = require('playwright');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
 
@@ -614,6 +616,7 @@ async function runDreaminaRegisterFlow(options = {}) {
 function parseCliArgs(argv = []) {
   const args = Array.isArray(argv) ? argv : [];
   let proxyIndex = 0;
+  let accountIndex = 0;
   let headed = false;
   let slowMo = 0;
 
@@ -622,6 +625,11 @@ function parseCliArgs(argv = []) {
     if (!token) continue;
     if (token === '--proxy-index') {
       proxyIndex = Number(args[index + 1] || 0);
+      index += 1;
+      continue;
+    }
+    if (token === '--account-index') {
+      accountIndex = Number(args[index + 1] || 0);
       index += 1;
       continue;
     }
@@ -645,6 +653,7 @@ function parseCliArgs(argv = []) {
 
   return {
     proxyIndex: Number.isFinite(proxyIndex) ? proxyIndex : 0,
+    accountIndex: Number.isFinite(accountIndex) ? accountIndex : 0,
     headed,
     slowMo: Number.isFinite(slowMo) ? slowMo : 0,
   };
@@ -655,6 +664,28 @@ function selectCliProxy(proxies = [], proxyIndex = 0) {
   if (!list.length) return null;
   const normalizedIndex = Math.max(0, Math.min(Number(proxyIndex) || 0, list.length - 1));
   return list[normalizedIndex] || null;
+}
+
+function loadLocalAccounts() {
+  const accountFilePath = path.join(__dirname, 'local-accounts.json');
+  if (!fs.existsSync(accountFilePath)) return [];
+
+  const raw = fs.readFileSync(accountFilePath, 'utf8');
+  const parsed = JSON.parse(String(raw || '').replace(/^\uFEFF/, ''));
+  return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'object') : [];
+}
+
+function selectCliAccount(accounts = [], accountIndex = 0) {
+  const list = Array.isArray(accounts) ? accounts.filter(Boolean) : [];
+  if (!list.length) return null;
+  const normalizedIndex = Math.max(0, Math.min(Number(accountIndex) || 0, list.length - 1));
+  const account = list[normalizedIndex] || null;
+  if (!account) return null;
+
+  return {
+    email: String(account.email || '').trim(),
+    password: String(account.password || ''),
+  };
 }
 
 async function createDreaminaCliRuntime(options = {}) {
@@ -693,9 +724,11 @@ async function createDreaminaCliRuntime(options = {}) {
 }
 
 async function runDreaminaRegisterCli(argv = []) {
-  const { proxyIndex, headed, slowMo } = parseCliArgs(argv);
+  const { proxyIndex, accountIndex, headed, slowMo } = parseCliArgs(argv);
   const proxies = loadLocalProxies();
+  const accounts = loadLocalAccounts();
   const proxy = selectCliProxy(proxies, proxyIndex);
+  const account = selectCliAccount(accounts, accountIndex);
 
   if (!proxy) {
     const emptyResult = {
@@ -713,9 +746,34 @@ async function runDreaminaRegisterCli(argv = []) {
       meta: {
         cli: true,
         proxyIndex,
+        accountIndex,
       },
     };
     console.log('[Dreamina Register] 未找到可用代理');
+    console.log(JSON.stringify(emptyResult, null, 2));
+    return emptyResult;
+  }
+
+  if (!account?.email || !account?.password) {
+    const emptyResult = {
+      success: false,
+      site: 'dreamina',
+      finalStage: 'preconditions',
+      finalState: 'DREAMINA_REGISTER_ACCOUNT_MISSING',
+      finalReason: 'DREAMINA_REGISTER_ACCOUNT_MISSING',
+      nextStage: '',
+      account: account || {},
+      proxy,
+      deliveryPayload: null,
+      stageResults: {},
+      proxyPrecheckSummary: null,
+      meta: {
+        cli: true,
+        proxyIndex,
+        accountIndex,
+      },
+    };
+    console.log('[Dreamina Register] 未找到可用账号，请检查 Dreamina/local-accounts.json');
     console.log(JSON.stringify(emptyResult, null, 2));
     return emptyResult;
   }
@@ -733,11 +791,12 @@ async function runDreaminaRegisterCli(argv = []) {
       context: cliRuntime.context,
       page: cliRuntime.page,
       proxy,
-      account: {},
+      account,
       runtime: {
         cli: true,
         headed,
         slowMo,
+        accountIndex,
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
@@ -777,7 +836,7 @@ async function runDreaminaRegisterCli(argv = []) {
       logInfo: null,
     });
 
-    console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
+    console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | AccountIndex=${accountIndex} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
     console.log(JSON.stringify(result, null, 2));
     return result;
   } finally {
@@ -811,6 +870,8 @@ module.exports = {
   runDreaminaRegisterFlow,
   parseCliArgs,
   selectCliProxy,
+  loadLocalAccounts,
+  selectCliAccount,
   createDreaminaCliRuntime,
   runDreaminaRegisterCli,
 };
