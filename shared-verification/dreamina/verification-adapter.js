@@ -450,59 +450,55 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
  * - 不允许退回通用 textbox / 任意 input / 任意 div 的宽泛策略
  */
 async function resolveDreaminaVerificationInput(page, runtime = {}, context = {}) {
-  // 读取 Dreamina 第三阶段 profile。
   const profile = loadDreaminaVerificationProfile();
-  // 按 profile 中的 codeInput.selectors 顺序寻找第一个可见输入目标。
   const selectorHit = await findFirstVisibleBySelectors(page, profile?.codeInput?.selectors || []);
-  // 如果没有命中任何输入目标，就直接返回失败结构。
   if (!selectorHit.ok) {
     return {
-      // 当前没有成功解析到输入目标。
       ok: false,
-      // 当前阶段内状态码：验证码输入目标未找到。
       state: 'VERIFICATION_INPUT_NOT_FOUND',
-      // 没有命中的 locator。
       locator: null,
-      // 没有检测来源。
       source: '',
-      // 没有命中的 selector。
       selector: '',
-      // 没有可读取的输入目标元信息。
       inputMeta: null,
-      // 没有强度信息。
+      interactionMeta: null,
       strength: '',
     };
   }
 
-  // 命中输入目标后，读取目标元素的基础元信息，便于调试和后续策略判断。
+  const boundingBox = await selectorHit.locator.boundingBox().catch(() => null);
+  const isEnabled = await selectorHit.locator.isEnabled().catch(() => false);
   const inputMeta = {
-    // 读取目标元素的标签名。
     tagName: await selectorHit.locator.evaluate(node => String(node?.tagName || '')).catch(() => ''),
-    // 读取目标元素的 className。
     className: await selectorHit.locator.evaluate(node => String(node?.className || '')).catch(() => ''),
-    // 读取目标元素的 type 属性。
     type: await selectorHit.locator.getAttribute('type').catch(() => ''),
-    // 读取目标元素的 maxlength 属性。
     maxLength: await selectorHit.locator.getAttribute('maxlength').catch(() => ''),
-    // 读取目标元素的 autocomplete 属性。
     autocomplete: await selectorHit.locator.getAttribute('autocomplete').catch(() => ''),
   };
+  const interactionMeta = {
+    disabled: await selectorHit.locator.isDisabled().catch(() => false),
+    readonly: Boolean(await selectorHit.locator.getAttribute('readonly').catch(() => '')),
+    tabindex: String(await selectorHit.locator.getAttribute('tabindex').catch(() => '') || ''),
+    role: String(await selectorHit.locator.getAttribute('role').catch(() => '') || ''),
+    visible: await isVisible(selectorHit.locator),
+    enabled: isEnabled,
+    editable: isEnabled && !Boolean(await selectorHit.locator.getAttribute('readonly').catch(() => '')),
+    boundingBox: boundingBox ? {
+      x: boundingBox.x,
+      y: boundingBox.y,
+      width: boundingBox.width,
+      height: boundingBox.height,
+    } : null,
+    className: inputMeta.className,
+  };
 
-  // 返回成功解析到验证码输入目标的结构。
   return {
-    // 表示输入目标解析成功。
     ok: true,
-    // 当前阶段内状态码：验证码输入目标已解析。
     state: 'VERIFICATION_INPUT_RESOLVED',
-    // 返回真实命中的 locator，供后续填码使用。
     locator: selectorHit.locator,
-    // 当前解析来源固定记为 verification-input。
     source: 'verification-input',
-    // 返回命中的 selector 字符串。
     selector: selectorHit.selector,
-    // 返回输入目标元信息。
     inputMeta,
-    // 当前白名单命中按强信号处理。
+    interactionMeta,
     strength: 'strong',
   };
 }
@@ -515,24 +511,41 @@ async function resolveDreaminaVerificationInput(page, runtime = {}, context = {}
  * - 避免只看 click/fill 是否报错，而不看页面真实状态
  */
 async function readDreaminaVerificationInputState(page) {
-  // 在页面上下文里读取 Dreamina 验证码输入框与验证码格子的当前状态。
   return await page.evaluate(() => {
-    // 优先寻找 Dreamina 真实 6 位验证码 input。
     const input = document.querySelector("input[maxlength='6'][autocomplete='one-time-code'], input[autocomplete='one-time-code'][inputmode='numeric'], .verification_code_input-wrapper input[maxlength='6']");
-    // 收集页面上验证码格子的文本内容，作为 wrapper 模式下的补充判断依据。
+    const wrapper = document.querySelector('.verification_code_input-wrapper, [class*="verification_code_input-wrapper"]');
+    const focusCell = document.querySelector('.verification_code_input-number-focus, [class*="verification_code_input-number-focus"]');
     const boxes = Array.from(document.querySelectorAll(".verification_code_input-number, [class*='verification_code_input-number']"));
-    // 返回统一状态结构。
+    const active = document.activeElement;
+    const activeInsideWrapper = Boolean(wrapper && active && wrapper.contains(active));
     return {
-      // 当前 input 的 value。
       inputValue: input instanceof HTMLInputElement ? String(input.value || '') : '',
-      // 当前激活元素的标签名。
-      activeTag: document.activeElement ? document.activeElement.tagName : '',
-      // 当前激活元素的 className。
-      activeClass: document.activeElement ? String(document.activeElement.className || '') : '',
-      // 当前验证码格子的文本集合。
+      activeTag: active ? active.tagName : '',
+      activeClass: active ? String(active.className || '') : '',
+      activeRole: active instanceof Element ? String(active.getAttribute('role') || '') : '',
+      activePlaceholder: active instanceof Element ? String(active.getAttribute('placeholder') || '') : '',
+      activeAriaLabel: active instanceof Element ? String(active.getAttribute('aria-label') || '') : '',
+      activeInsideVerificationWrapper: activeInsideWrapper,
+      wrapperVisible: Boolean(wrapper),
+      wrapperClass: wrapper ? String(wrapper.className || '') : '',
+      focusCellVisible: Boolean(focusCell),
+      focusCellText: focusCell ? String(focusCell.textContent || '').trim() : '',
       boxTexts: boxes.map(node => String(node.textContent || '').trim()),
     };
-  }).catch(() => ({ inputValue: '', activeTag: '', activeClass: '', boxTexts: [] }));
+  }).catch(() => ({
+    inputValue: '',
+    activeTag: '',
+    activeClass: '',
+    activeRole: '',
+    activePlaceholder: '',
+    activeAriaLabel: '',
+    activeInsideVerificationWrapper: false,
+    wrapperVisible: false,
+    wrapperClass: '',
+    focusCellVisible: false,
+    focusCellText: '',
+    boxTexts: [],
+  }));
 }
 
 /**
@@ -543,16 +556,127 @@ async function readDreaminaVerificationInputState(page) {
  * - 或验证码格子的拼接文本前缀与验证码一致
  */
 function hasDreaminaVerificationValue(state = {}, code = '') {
-  // 把目标验证码统一成字符串。
   const expectedValue = String(code || '').trim();
-  // 如果目标验证码为空，直接返回 false。
   if (!expectedValue) return false;
-  // 读取 inputValue。
   const inputValue = String(state?.inputValue || '').trim();
-  // 把 boxTexts 拼接起来，适配 Dreamina wrapper 格子输入场景。
   const joinedBoxText = Array.isArray(state?.boxTexts) ? state.boxTexts.join('') : '';
-  // 只要 inputValue 全等，或者格子文本前缀等于验证码，就视为成功承载验证码。
   return inputValue === expectedValue || joinedBoxText.slice(0, expectedValue.length) === expectedValue;
+}
+
+function isDreaminaVerificationActivated(state = {}) {
+  return Boolean(
+    String(state?.activeTag || '').trim() && String(state?.activeTag || '').trim().toUpperCase() !== 'BODY'
+      && (state?.activeInsideVerificationWrapper
+        || /verification_code_input|lv-input/i.test(String(state?.activeClass || ''))
+        || String(state?.activePlaceholder || '').trim().length > 0)
+  );
+}
+
+async function activateDreaminaVerificationInput(page, locator, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const attempts = [];
+
+  const snapshotAttempt = async (mode) => {
+    const state = await readDreaminaVerificationInputState(page);
+    attempts.push({
+      mode,
+      activeTag: String(state?.activeTag || ''),
+      activeClass: String(state?.activeClass || ''),
+      activeRole: String(state?.activeRole || ''),
+      activePlaceholder: String(state?.activePlaceholder || ''),
+      activeAriaLabel: String(state?.activeAriaLabel || ''),
+      activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
+      wrapperVisible: Boolean(state?.wrapperVisible),
+      focusCellVisible: Boolean(state?.focusCellVisible),
+      activated: isDreaminaVerificationActivated(state),
+    });
+    return state;
+  };
+
+  try {
+    await locator.click({ force: true }).catch(() => {});
+    await locator.focus().catch(() => {});
+    await page.waitForTimeout(120).catch(() => {});
+    const directState = await snapshotAttempt('direct-input');
+    if (isDreaminaVerificationActivated(directState)) {
+      return {
+        ok: true,
+        state: 'VERIFICATION_INPUT_ACTIVATED',
+        mode: 'direct-input',
+        activeTag: directState.activeTag,
+        activeClass: directState.activeClass,
+        activeMatchesInput: true,
+        activeInsideWrapper: Boolean(directState.activeInsideVerificationWrapper),
+        stateChanged: true,
+        attempts,
+      };
+    }
+  } catch {}
+
+  const wrapperCandidates = [
+    page.locator('.verification_code_input-wrapper').first(),
+    page.locator("[class*='verification_code_input-wrapper']").first(),
+  ];
+  for (const candidate of wrapperCandidates) {
+    if (!candidate || !(await isVisible(candidate))) continue;
+    await candidate.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(120).catch(() => {});
+    const wrapperState = await snapshotAttempt('wrapper');
+    if (isDreaminaVerificationActivated(wrapperState)) {
+      return {
+        ok: true,
+        state: 'VERIFICATION_INPUT_ACTIVATED',
+        mode: 'wrapper',
+        activeTag: wrapperState.activeTag,
+        activeClass: wrapperState.activeClass,
+        activeMatchesInput: /input/i.test(String(wrapperState.activeTag || '')),
+        activeInsideWrapper: Boolean(wrapperState.activeInsideVerificationWrapper),
+        stateChanged: true,
+        attempts,
+      };
+    }
+  }
+
+  const focusCandidates = [
+    page.locator('.verification_code_input-number-focus').first(),
+    page.locator("[class*='verification_code_input-number-focus']").first(),
+  ];
+  for (const candidate of focusCandidates) {
+    if (!candidate || !(await isVisible(candidate))) continue;
+    await candidate.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(120).catch(() => {});
+    const focusState = await snapshotAttempt('focus-cell');
+    if (isDreaminaVerificationActivated(focusState)) {
+      return {
+        ok: true,
+        state: 'VERIFICATION_INPUT_ACTIVATED',
+        mode: 'focus-cell',
+        activeTag: focusState.activeTag,
+        activeClass: focusState.activeClass,
+        activeMatchesInput: /input/i.test(String(focusState.activeTag || '')),
+        activeInsideWrapper: Boolean(focusState.activeInsideVerificationWrapper),
+        stateChanged: true,
+        attempts,
+      };
+    }
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.verification.activateInput | failed | attempts=${attempts.length}`);
+  }
+
+  const lastAttempt = attempts[attempts.length - 1] || {};
+  return {
+    ok: false,
+    state: 'VERIFICATION_INPUT_ACTIVATION_FAILED',
+    mode: String(lastAttempt.mode || ''),
+    activeTag: String(lastAttempt.activeTag || ''),
+    activeClass: String(lastAttempt.activeClass || ''),
+    activeMatchesInput: false,
+    activeInsideWrapper: Boolean(lastAttempt.activeInsideVerificationWrapper),
+    stateChanged: false,
+    attempts,
+  };
 }
 
 /**
@@ -783,9 +907,7 @@ async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context
 }
 
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
-  // 从上下文里读取前一步解析出来的输入目标结果。
   const { codeInputResolution = null, logInfo = null } = context;
-  // 如果输入目标本身都不存在，就直接失败，不再继续输入动作。
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
       ok: false,
@@ -795,12 +917,11 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       value: 'NO_RESOLVED_INPUT',
       stateChanged: null,
       attempts: [],
+      activationResult: null,
     };
   }
 
-  // 统一验证码字符串，避免后面多次重复 trim。
   const normalizedCode = String(code || '').trim();
-  // 如果验证码本身为空，也直接失败，不做无意义输入动作。
   if (!normalizedCode) {
     return {
       ok: false,
@@ -810,10 +931,25 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       value: 'EMPTY_CODE',
       stateChanged: null,
       attempts: [],
+      activationResult: null,
     };
   }
 
-  const attempts = [];
+  const activationResult = await activateDreaminaVerificationInput(page, codeInputResolution.locator, runtime, context);
+  if (!activationResult?.ok) {
+    return {
+      ok: false,
+      state: 'VERIFICATION_INPUT_ACTIVATION_FAILED',
+      mode: activationResult?.mode || '',
+      source: 'verification-input',
+      value: activationResult?.activeTag || 'ACTIVE_ELEMENT_STUCK_ON_BODY',
+      stateChanged: false,
+      attempts: activationResult?.attempts || [],
+      activationResult,
+    };
+  }
+
+  const attempts = Array.isArray(activationResult?.attempts) ? [...activationResult.attempts] : [];
   const recordAttempt = async (label, result) => {
     const state = await readDreaminaVerificationInputState(page);
     attempts.push({
@@ -824,11 +960,11 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
       activeTag: String(state?.activeTag || ''),
       activeClass: String(state?.activeClass || ''),
+      activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
       stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
     });
   };
 
-  // 第一层：优先尝试 Dreamina hidden input 路径。
   const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
   await recordAttempt('dreamina-hidden-input', hiddenInputResult);
   if (hiddenInputResult.ok) {
@@ -840,10 +976,10 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       value: hiddenInputResult.value,
       stateChanged: hiddenInputResult.stateChanged,
       attempts,
+      activationResult,
     };
   }
 
-  // 第二层：hidden input 没成功时，尝试 Dreamina wrapper keyboard 路径。
   const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
   await recordAttempt('dreamina-wrapper-keyboard', wrapperResult);
   if (wrapperResult.ok) {
@@ -855,10 +991,10 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       value: wrapperResult.value,
       stateChanged: wrapperResult.stateChanged,
       attempts,
+      activationResult,
     };
   }
 
-  // 第三层：当前面两条 Dreamina 专用路径都没成功时，再走普通 fallback 路径。
   const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
   await recordAttempt('fallback-keyboard-type', fallbackResult);
   if (fallbackResult.ok) {
@@ -870,6 +1006,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
       value: fallbackResult.value,
       stateChanged: fallbackResult.stateChanged,
       attempts,
+      activationResult,
     };
   }
 
@@ -881,6 +1018,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     value: fallbackResult.value || wrapperResult.value || hiddenInputResult.value || 'UNKNOWN',
     stateChanged: false,
     attempts,
+    activationResult,
   };
 }
 
@@ -1146,6 +1284,7 @@ function classifyDreaminaVerificationFailure(input = {}) {
   // 如果当前 reason 是验证码输入目标未找到，则映射到 Dreamina 专属语义。
   else if (reason === 'VERIFICATION_INPUT_NOT_FOUND') siteReason = 'DREAMINA_VERIFICATION_INPUT_NOT_FOUND';
   // 如果当前 reason 是验证码输入失败，则映射到 Dreamina 专属语义。
+  else if (reason === 'VERIFICATION_INPUT_ACTIVATION_FAILED') siteReason = 'DREAMINA_VERIFICATION_INPUT_ACTIVATION_FAILED';
   else if (reason === 'VERIFICATION_CODE_FILL_FAILED') siteReason = 'DREAMINA_VERIFICATION_CODE_FILL_FAILED';
   // 如果当前 reason 是验证码错误，则映射到 Dreamina 专属语义。
   else if (reason === 'WRONG_VERIFICATION_CODE') siteReason = 'DREAMINA_WRONG_VERIFICATION_CODE';
