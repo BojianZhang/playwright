@@ -43,6 +43,21 @@
 
 ---
 
+# 当前状态（Dreamina）
+
+- Dreamina verification 当前默认主路径为 `dreamina-direct-fill`
+- 成功判定优先看页面是否进入 `profile-completion`
+- 当前验证码轮次优先；除非明确 `WRONG_VERIFICATION_CODE` 或 `VERIFICATION_CODE_RATE_LIMITED`，否则不应轻易 resend
+- legacy fallback 路径当前仅保留作 debug / diagnostics
+
+## 当前不再推荐自动参与 Dreamina 主链的旧路径
+- `dreamina-char-by-char`
+- `dreamina-hidden-input`
+- `dreamina-wrapper-keyboard`
+- `fallback-keyboard-type`
+
+---
+
 # 结构
 
 - `stages/verification-submit.js`
@@ -63,13 +78,4 @@
 - 静态规则放 profile
 - 日志判读单独文档化
 - 第三阶段的成功定义不是“注册成功”，而是“验证码通过并推进到 profile-completion”
-
----
-
-# 后续
-
-当前先落 Dreamina。
-后续如果接 OpenAI / Claude 等站点，继续沿用：
-- 公共阶段模块
-- 站点 adapter
-- profile 三件套
+- Dreamina 当前以最稳定主路径优先，旧 fallback 默认不自动参与

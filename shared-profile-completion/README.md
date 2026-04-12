@@ -43,6 +43,16 @@
 
 ---
 
+# 当前状态（Dreamina）
+
+- Dreamina profile-completion 当前默认主路径为 `fillDreaminaBirthdayContinuousFlow`
+- birthday 采用连续业务流：`Year -> Month -> Day -> Next`
+- 当前不再推荐以 Month/Day 的字段即时读取结果作为主成功判定
+- split fill 路径当前保留作 fallback / diagnostics
+- 当前 `continuous-flow` 承担 Dreamina birthday 阶段的 `Next` 点击责任
+
+---
+
 # 结构
 
 - `stages/profile-completion-submit.js`
@@ -63,13 +73,4 @@
 - 静态规则放 profile
 - 日志判读单独文档化
 - 第四阶段的成功定义不是“整个注册完成”，而是“资料补全完成并推进到 post-auth-ready”
-
----
-
-# 后续
-
-当前先落 Dreamina。
-后续如果接其他站点，继续沿用：
-- 公共阶段模块
-- 站点 adapter
-- profile 三件套
+- Dreamina 当前以参考脚本的连续业务流优先，而不是字段级强判定优先

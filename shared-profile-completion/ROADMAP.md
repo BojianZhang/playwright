@@ -1,59 +1,46 @@
 # shared-profile-completion ROADMAP
 
-这个文件记录阶段 4（profile completion submit）的后续推进方向。
+这个文件记录阶段 4（profile completion submit）的当前状态与后续推进方向。
 
 ---
 
-# 当前目标
+# 当前阶段
 
-先把 Dreamina 的阶段 4 结构搭起来，并明确边界：
-- 等 profile-completion ready
-- 生成 birthday / profile 填写计划
-- 填写资料
-- 提交后确认进入 post-auth-ready 或命中阶段 4 失败
+Dreamina profile-completion 已从“字段级拆分验证期”进入“continuous-flow 主路径冻结期”。
+
+当前已确认：
+- birthday 页面可识别
+- birthday plan 可生成，满足随机且年满 18 周岁
+- Year 可稳定输入
+- 当前主路径已切换为 `Year -> Month -> Day -> Next`
+- Next 点击责任已收口到 `continuous-flow`
 
 ---
 
-# 当前状态
+# 当前主路径
 
-当前已完成：
-- 阶段 4 架构与边界文档定义
-- 第四阶段统一输入输出契约草案
-- 第四阶段字段说明与 profile 草案
+## Dreamina 默认主路径
+- `fillDreaminaBirthdayContinuousFlow(...)`
+- 业务流：`Year -> Month -> Day -> Next`
+- 当前中间不再依赖 Month/Day 的字段即时读取作为主成功判定
 
-旧主链里已经存在可参考的阶段 4 真实能力：
-- birthday 输入可达性判断
-- birthday 随机生成
-- birthday 填写
-- next 提交
-- post-auth-ready 前的阶段确认
+## 当前 split-fill 的定位
+- `fillDreaminaBirthdayYear / Month / Day`
+- 仅保留作 fallback / diagnostics
+- 不再作为 Dreamina 默认主路径
 
 ---
 
 # 下一步
 
-## 1. 完成 Dreamina adapter 第一版
-补全：
-- profile-completion ready
-- build fill plan
-- fill year / month / day
-- submit result confirm
-- classify failure
+## 1. 收口 post-auth-ready 前的确认逻辑
+- 明确 stage 4 成功后的下一屏信号
+- 降低 `PROFILE_COMPLETION_RESULT_UNKNOWN`
 
-## 2. 接通公共阶段骨架
-让 `stages/profile-completion-submit.js` 真正调用 Dreamina adapter。
+## 2. 继续补文档与 contract
+- README / CONTRACT / PARAMS / FIELDS 继续追平代码
 
-## 3. 对齐旧主链行为口径
-旧 `task-register.js` 只做行为参考，不直接耦合。
-
-## 4. 跑真实日志
-根据日志再校准：
-- ready signals
-- birthday input selectors
-- submit result signals
-- post-auth-ready reachability
-
-> 当前第四阶段在“第一版主链闭环”基础上，已完成一轮结果表达层精修；收口结论见：`REFINEMENT-CLOSEOUT.md`
-
-## 5. 再决定是否扩更多站点
-等 Dreamina 阶段 4 跑通后，再验证抽象层是否足够通用。
+## 3. 继续验证更多 birthday 页面形态
+- 不同语言
+- 不同组件展开表现
+- 不同默认值/预填态

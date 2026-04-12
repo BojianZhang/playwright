@@ -1,46 +1,33 @@
-# Dreamina 阶段 4（profile completion submit）说明
+# Dreamina profile-completion
 
-这个文件解释 Dreamina 在阶段 4 的边界。
-
----
-
-# 阶段输入
-- `page` 已存在且可操作
-- 页面已经进入 Dreamina birthday / profile-completion 上下文
-- 当前阶段只处理资料补全这一段，不再负责验证码阶段，也不再负责 post-auth-ready 最终确认
-
----
-
-# 负责什么
-- profile-completion ready 判断
-- birthday / 基础资料填写计划生成
-- year / month / day 等资料项填写
-- next / submit 点击
-- 提交结果确认
-- 提交失败分类
-- 成功时确认进入 `post-auth-ready`
-
----
-
-# 不负责什么
-- 首页打开
-- 登录入口切换
-- credential submit
-- verification submit
-- post-auth-ready 最终确认
-- session / storage
-- runner 层调度、代理惩罚、结果落盘
-
----
-
-# 文件关系
+对应文件：
 - `profile-completion-adapter.js`
-  - Dreamina 阶段 4 适配器
-- `profiles/dreamina-profile-completion-profile.json`
-  - 程序读取的配置
-- `profiles/dreamina-profile-completion-profile.md`
-  - 字段说明文档
-- `profiles/dreamina-profile-completion-profile.example.md`
-  - 带注释模板
-- `log/*`
-  - 阶段 4 日志模板与示例
+
+---
+
+# 当前推荐实现
+
+Dreamina birthday 当前推荐通过 `fillDreaminaBirthdayContinuousFlow(...)` 执行：
+- 锁定 birthday dialog
+- 输入 Year
+- 选择 Month
+- 选择 Day
+- 点击 Next
+
+中间不再依赖字段级强判定作为主路径成功条件。
+
+---
+
+# 当前设计原则
+
+- 直接沿用已跑通的参考业务流程
+- birthday 阶段按连续动作链处理
+- 不再在 Month / Day 上做过度内耗式即时判定
+- `continuous-flow` 当前承担 `Next` 点击责任
+
+---
+
+# Split fill 的新定位
+
+`fillDreaminaBirthdayYear / Month / Day` 当前仅保留作 fallback / diagnostics，
+不再作为 Dreamina 默认主路径。
