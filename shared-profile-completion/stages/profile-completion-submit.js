@@ -125,6 +125,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   const fillYear = resolveAdapterMethod(adapter, ['fillBirthdayYear', 'fillDreaminaBirthdayYear']);
   const fillMonth = resolveAdapterMethod(adapter, ['fillBirthdayMonth', 'fillDreaminaBirthdayMonth']);
   const fillDay = resolveAdapterMethod(adapter, ['fillBirthdayDay', 'fillDreaminaBirthdayDay']);
+  const fillBirthdayContinuous = resolveAdapterMethod(adapter, ['fillBirthdayContinuousFlow', 'fillDreaminaBirthdayContinuousFlow']);
   const submitProfileCompletion = resolveAdapterMethod(adapter, ['submitProfileCompletion', 'submitDreaminaProfileCompletion']);
   const confirmSubmitResult = resolveAdapterMethod(adapter, ['confirmProfileCompletionSubmitResult', 'confirmDreaminaProfileCompletionSubmitResult']);
   const classifyFailure = resolveAdapterMethod(adapter, ['classifyProfileCompletionFailure', 'classifyDreaminaProfileCompletionFailure']);
@@ -176,49 +177,85 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
-  // 第三步：填写 year。
-  const yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
-  // 如果 year 填写失败，就直接收口，不继续写 month/day。
-  if (!yearFillResult?.ok) {
-    const classified = classifyFailure ? classifyFailure({ reason: yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED' }) : null;
-    return normalizeProfileCompletionStageResult({
-      success: false,
-      state: yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
-      reason: classified?.siteReason || classified?.reason || yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
-      detectionSource: yearFillResult?.source || '',
-      stateChanged: typeof yearFillResult?.stateChanged === 'boolean' ? yearFillResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, yearFillResult, classified },
-    });
+  let yearFillResult = null;
+  let monthFillResult = null;
+  let dayFillResult = null;
+  let birthdayContinuousResult = null;
+
+  if (fillBirthdayContinuous) {
+    birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
   }
 
-  // 第四步：填写 month。
-  const monthFillResult = await fillMonth(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult });
-  // 如果 month 填写失败，就直接收口。
-  if (!monthFillResult?.ok) {
-    const classified = classifyFailure ? classifyFailure({ reason: monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED' }) : null;
-    return normalizeProfileCompletionStageResult({
-      success: false,
-      state: monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
-      reason: classified?.siteReason || classified?.reason || monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
-      detectionSource: monthFillResult?.source || '',
-      stateChanged: typeof monthFillResult?.stateChanged === 'boolean' ? monthFillResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, yearFillResult, monthFillResult, classified },
-    });
-  }
+  if (birthdayContinuousResult?.ok) {
+    yearFillResult = {
+      ok: true,
+      state: 'BIRTHDAY_YEAR_FILLED',
+      source: 'profile-input',
+      value: birthdayContinuousResult?.detail?.year || '',
+      stateChanged: true,
+    };
+    monthFillResult = {
+      ok: true,
+      state: 'BIRTHDAY_MONTH_FILLED',
+      source: 'profile-input',
+      value: birthdayContinuousResult?.detail?.month || '',
+      stateChanged: true,
+      mode: 'continuous-flow',
+      attempts: [],
+      nextState: birthdayContinuousResult?.detail?.nextState || null,
+    };
+    dayFillResult = {
+      ok: true,
+      state: 'BIRTHDAY_DAY_FILLED',
+      source: 'profile-input',
+      value: birthdayContinuousResult?.detail?.day || '',
+      stateChanged: true,
+      mode: 'continuous-flow',
+      attempts: [],
+      nextState: birthdayContinuousResult?.detail?.nextState || null,
+    };
+  } else {
+    // 第三步：填写 year。
+    yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult });
+    if (!yearFillResult?.ok) {
+      const classified = classifyFailure ? classifyFailure({ reason: yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED' }) : null;
+      return normalizeProfileCompletionStageResult({
+        success: false,
+        state: yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
+        reason: classified?.siteReason || classified?.reason || yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
+        detectionSource: yearFillResult?.source || '',
+        stateChanged: typeof yearFillResult?.stateChanged === 'boolean' ? yearFillResult.stateChanged : null,
+        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, classified },
+      });
+    }
 
-  // 第五步：填写 day。
-  const dayFillResult = await fillDay(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult });
-  // 如果 day 填写失败，就直接收口。
-  if (!dayFillResult?.ok) {
-    const classified = classifyFailure ? classifyFailure({ reason: dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED' }) : null;
-    return normalizeProfileCompletionStageResult({
-      success: false,
-      state: dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
-      reason: classified?.siteReason || classified?.reason || dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
-      detectionSource: dayFillResult?.source || '',
-      stateChanged: typeof dayFillResult?.stateChanged === 'boolean' ? dayFillResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, classified },
-    });
+    // 第四步：填写 month。
+    monthFillResult = await fillMonth(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult });
+    if (!monthFillResult?.ok) {
+      const classified = classifyFailure ? classifyFailure({ reason: monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED' }) : null;
+      return normalizeProfileCompletionStageResult({
+        success: false,
+        state: monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
+        reason: classified?.siteReason || classified?.reason || monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
+        detectionSource: monthFillResult?.source || '',
+        stateChanged: typeof monthFillResult?.stateChanged === 'boolean' ? monthFillResult.stateChanged : null,
+        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, classified },
+      });
+    }
+
+    // 第五步：填写 day。
+    dayFillResult = await fillDay(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult });
+    if (!dayFillResult?.ok) {
+      const classified = classifyFailure ? classifyFailure({ reason: dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED' }) : null;
+      return normalizeProfileCompletionStageResult({
+        success: false,
+        state: dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
+        reason: classified?.siteReason || classified?.reason || dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
+        detectionSource: dayFillResult?.source || '',
+        stateChanged: typeof dayFillResult?.stateChanged === 'boolean' ? dayFillResult.stateChanged : null,
+        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, dayFillResult, classified },
+      });
+    }
   }
 
   // 第六步：提交 profile completion。

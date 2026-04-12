@@ -851,7 +851,7 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
   const beforeState = await readDreaminaBirthdayMonthValue(page, profile);
   const attempts = [];
   try {
-    const monthDropdown = page.getByText('Month').first();
+    const monthDropdown = page.getByText('Month').last();
     if (await isVisible(monthDropdown)) {
       await monthDropdown.click().catch(() => {});
     } else if (beforeState?.locator) {
@@ -1105,7 +1105,7 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
 
   const beforeState = await readDreaminaBirthdayDayValue(page, profile);
   try {
-    const dayDropdown = page.getByText('Day', { exact: true }).first();
+    const dayDropdown = page.getByText('Day', { exact: true }).last();
     if (await isVisible(dayDropdown)) {
       await dayDropdown.click().catch(() => {});
     } else if (beforeState?.locator) {
@@ -1699,6 +1699,7 @@ module.exports = {
   fillDreaminaBirthdayYear,
   fillDreaminaBirthdayMonth,
   fillDreaminaBirthdayDay,
+  fillDreaminaBirthdayContinuousFlow,
   submitDreaminaProfileCompletion,
   confirmDreaminaProfileCompletionSubmitResult,
   classifyDreaminaProfileCompletionFailure,
