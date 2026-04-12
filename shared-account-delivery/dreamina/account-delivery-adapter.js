@@ -635,6 +635,7 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
     };
   }
 
+  if (accountSummary?.ok && deliveryPayload?.ok) {
   // Current Dreamina bridge path:
   // if summary and payload are both ready, treat it as a minimal-delivery success draft.
     if (typeof logInfo === 'function') {
