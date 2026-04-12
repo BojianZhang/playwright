@@ -181,6 +181,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
   let monthFillResult = null;
   let dayFillResult = null;
   let birthdayContinuousResult = null;
+  const hasContinuousFlow = Boolean(fillBirthdayContinuous);
+  const hasSplitFlow = Boolean(fillYear && fillMonth && fillDay);
 
   if (fillBirthdayContinuous) {
     birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
