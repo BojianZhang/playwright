@@ -1,32 +1,103 @@
 {
-  "site": "dreamina",
-  "stage": "account-delivery",
-  "mode": "minimal-delivery",
-  "notes": [
-    "Current Dreamina account-delivery is a minimal payload / bridge layer.",
-    "It currently focuses on structuring a deliverable object instead of asserting a fully mature external delivery contract.",
-    "Long-term target is to add stronger delivery-ready, success, and failure signals."
-  ],
-  "deliveryReady": {
-    "selectors": [],
-    "texts": [],
-    "urlIncludes": ["/app", "/workspace", "/home"]
-  },
-  "summarySignals": {
-    "accountFields": ["email"],
-    "sessionKeys": [],
-    "uiSignals": []
-  },
-  "payloadRules": {
-    "requiredFields": ["email"],
-    "optionalFields": ["password"]
-  },
-  "successSignals": {
-    "selectors": [],
-    "texts": []
-  },
-  "failureSignals": {
-    "selectors": [],
-    "texts": []
-  }
+    "site":  "dreamina",
+    "stage":  "account-delivery",
+    "mode":  "minimal-delivery",
+    "notes":  [
+                  "Current Dreamina account-delivery is a minimal payload / bridge layer.",
+                  "It currently focuses on structuring a deliverable object instead of asserting a fully mature external delivery contract.",
+                  "Long-term target is to add stronger delivery-ready, success, and failure signals.",
+                  "Compatibility note: existing deliveryReady/summarySignals/payloadRules fields are still kept for current adapter behavior; minimalDeliveryReady/minimalDeliveryContract/futureDeliveryContract express the more honest layered semantics."
+              ],
+    "deliveryReady":  {
+                          "selectors":  [
+
+                                        ],
+                          "texts":  [
+
+                                    ],
+                          "urlIncludes":  [
+                                              "/app",
+                                              "/workspace",
+                                              "/home"
+                                          ]
+                      },
+    "summarySignals":  {
+                           "accountFields":  [
+                                                 "email"
+                                             ],
+                           "sessionKeys":  [
+
+                                           ],
+                           "uiSignals":  [
+
+                                         ]
+                       },
+    "payloadRules":  {
+                         "requiredFields":  [
+                                                "email"
+                                            ],
+                         "optionalFields":  [
+                                                "password"
+                                            ]
+                     },
+    "successSignals":  {
+                           "selectors":  [
+
+                                         ],
+                           "texts":  [
+
+                                     ]
+                       },
+    "failureSignals":  {
+                           "selectors":  [
+
+                                         ],
+                           "texts":  [
+
+                                     ]
+                       },
+    "minimalDeliveryReady":  {
+                                 "accountFields":  [
+                                                       "email"
+                                                   ],
+                                 "weakSupport":  {
+                                                     "urlIncludes":  [
+                                                                         "/app",
+                                                                         "/workspace",
+                                                                         "/home"
+                                                                     ]
+                                                 }
+                             },
+    "minimalDeliveryContract":  {
+                                    "requiredFields":  [
+                                                           "email"
+                                                       ],
+                                    "optionalFields":  [
+                                                           "password"
+                                                       ]
+                                },
+    "futureDeliveryContract":  {
+                                   "sessionKeys":  [
+
+                                                   ],
+                                   "uiSignals":  [
+
+                                                 ],
+                                   "successSignals":  {
+                                                          "selectors":  [
+
+                                                                        ],
+                                                          "texts":  [
+
+                                                                    ]
+                                                      },
+                                   "failureSignals":  {
+                                                          "selectors":  [
+
+                                                                        ],
+                                                          "texts":  [
+
+                                                                    ]
+                                                      }
+                               }
 }
