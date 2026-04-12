@@ -12,6 +12,24 @@
 
 ---
 
+# 当前实现状态（Dreamina）
+
+当前 Dreamina 的第 6 阶段**仍偏 minimal delivery / bridge 模式**，还不是完全成熟的强交付确认层。
+
+现状说明：
+- 当前 Dreamina 主要目标，是把账号整理成一个最小可传递的结构化交付对象，避免主链在最后一段失去统一出口。
+- 当前 profile 中 `requiredFields` 仍较少，success/failure signals 也还不完整。
+- 因此当前第 6 阶段更准确的理解应是：
+  - **先完成 minimal payload 收口**
+  - **再逐步补齐真实 delivery-ready / delivery-complete 强信号**
+
+这意味着：
+- 当前第 6 阶段可以继续整理 `account / session / storage / url / ui` 摘要。
+- 但当前的 `delivery-complete` 不应被误解为“外部系统已经同步完成”或“强交付条件已完全成熟”。
+- 后续应逐步补足更真实的 success/failure signals 与 required delivery contract。
+
+---
+
 # 边界
 
 ## 阶段输入
@@ -61,12 +79,13 @@
 - 静态规则放 profile
 - 日志判读单独文档化
 - 第六阶段的成功定义不是“外部系统也已经写入”，而是“当前账号已经整理成可交付结构，并进入 delivery-complete”
+- Dreamina 当前先采用 minimal delivery contract，后续再逐步增强为更强的 delivery confirmation
 
 ---
 
 # 后续
 
-当前先落 Dreamina 草案。
+当前先落 Dreamina minimal delivery 模式。
 后续如果接其他站点，继续沿用：
 - 公共阶段模块
 - 站点 adapter

@@ -287,7 +287,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       reason: classified?.siteReason || classified?.reason || submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED',
       detectionSource: submitResult?.source || '',
       stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, submitResult, classified },
+      detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, dayFillResult, submitResult, classified },
     });
   }
 

@@ -1,6 +1,12 @@
 {
   "site": "dreamina",
   "stage": "post-auth-ready",
+  "mode": "bridge",
+  "notes": [
+    "Current Dreamina post-auth-ready remains in bridge/transition mode.",
+    "Birthday-related signals are temporary bridge-only signals after profile-completion submit, not the final long-term definition of post-auth-ready.",
+    "Long-term target is to replace these bridge signals with real post-login/session/user-state signals."
+  ],
   "postAuthReady": {
     "selectors": [
       "div.lv_new_sign_in_panel_wide-birthday-title",
@@ -8,9 +14,7 @@
       "button.lv_new_sign_in_panel_wide-birthday-next"
     ],
     "texts": [
-      "When’s your birthday?",
       "When's your birthday?",
-      "Your birthday won’t be shown publicly.",
       "Your birthday won't be shown publicly."
     ],
     "urlIncludes": [
