@@ -196,7 +196,7 @@ async function runEntryStage(options = {}) {
       reason: String(entryReadyResult.state || 'ENTRY_READY'),
       nextStage: 'credential-submit',
       signalStrength: String(entryReadyResult.strength || ''),
-      settleStage: String(entryReadyResult.settleStage || 'primary-success'),
+      settleStage: String(entryReadyResult.settleStage || (entryReadyResult?.recoveryResult?.recovered ? 'recovery-success' : 'primary-success')), 
       detectionSource: String(entryReadyResult.source || ''),
       stateChanged: typeof entryReadyResult.stateChanged === 'boolean' ? entryReadyResult.stateChanged : null,
       retryCount: Number.isFinite(Number(entryReadyResult.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
@@ -204,6 +204,7 @@ async function runEntryStage(options = {}) {
         entryOpenResult,
         entryHealthResult,
         entryReadyResult,
+        recoveryResult: entryReadyResult?.recoveryResult || null,
         classified: null,
       },
     });
@@ -221,7 +222,7 @@ async function runEntryStage(options = {}) {
     reason: classified?.siteReason || String(entryReadyResult?.state || 'ENTRY_NOT_READY'),
     nextStage: '',
     signalStrength: String(entryReadyResult?.strength || ''),
-    settleStage: String(entryReadyResult?.settleStage || 'primary-failure'),
+    settleStage: String(entryReadyResult?.settleStage || (entryReadyResult?.recoveryResult?.recovered ? 'recovery-failure' : 'primary-failure')), 
     detectionSource: String(entryReadyResult?.source || ''),
     stateChanged: typeof entryReadyResult?.stateChanged === 'boolean' ? entryReadyResult.stateChanged : null,
     retryCount: Number.isFinite(Number(entryReadyResult?.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
@@ -229,6 +230,7 @@ async function runEntryStage(options = {}) {
       entryOpenResult,
       entryHealthResult,
       entryReadyResult,
+      recoveryResult: entryReadyResult?.recoveryResult || null,
       classified,
     },
   });
