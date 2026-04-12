@@ -42,6 +42,23 @@ function loadDreaminaVerificationProfile(options = {}) {
   return dreaminaVerificationProfileCache;
 }
 
+function resolveDreaminaVerificationRuntime(runtime = {}, profile = null) {
+  const verificationProfile = profile || loadDreaminaVerificationProfile();
+  const profileApiKey = String(verificationProfile?.mailProvider?.firstmail?.apiKey || '').trim();
+  if (String(runtime?.FIRSTMAIL_API_KEY || '').trim()) {
+    return runtime;
+  }
+
+  if (!profileApiKey) {
+    return runtime;
+  }
+
+  return {
+    ...runtime,
+    FIRSTMAIL_API_KEY: profileApiKey,
+  };
+}
+
 /**
  * 判断 locator 当前是否可见。
  *
@@ -270,8 +287,10 @@ async function waitForDreaminaVerificationStageReady(page, runtime = {}, context
 async function fetchDreaminaVerificationCode(page, account, runtime = {}, context = {}) {
   // 从上下文中读取日志函数；没有就保持为 null。
   const { logInfo = null, log = null, verificationReady = null, usedCodes = new Set(), attemptIndex = 1 } = context;
+  const profile = loadDreaminaVerificationProfile();
+  const effectiveRuntime = resolveDreaminaVerificationRuntime(runtime, profile);
   // 读取 provider 名称；当前默认使用 firstmail。
-  const provider = String(runtime?.verificationCodeProvider || 'firstmail').trim().toLowerCase();
+  const provider = String(effectiveRuntime?.verificationCodeProvider || 'firstmail').trim().toLowerCase();
   // 把 usedCodes 统一转成 Set，保证后续 has 判断稳定可用。
   const usedCodeSet = usedCodes instanceof Set ? usedCodes : new Set(Array.isArray(usedCodes) ? usedCodes : []);
 
@@ -298,7 +317,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
   try {
     // 如果存在日志函数，先记一条第三阶段拉码开始日志，同时把 usedCodes 数量也记录出来。
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'} | attemptIndex=${attemptIndex} | usedCodes=${usedCodeSet.size}`);
+      logInfo(`dreamina.verification.fetchCode | provider=${provider} | account=${account?.email || ''} | readyState=${verificationReady?.state || 'NA'} | attemptIndex=${attemptIndex} | usedCodes=${usedCodeSet.size} | apiKeySource=${String(runtime?.FIRSTMAIL_API_KEY || '').trim() ? 'runtime' : (String(profile?.mailProvider?.firstmail?.apiKey || '').trim() ? 'profile' : 'missing')}`);
     }
 
     // 调用现有 firstmail provider 能力，复用已经稳定的 latest 轮询与验证码提取逻辑。
@@ -306,7 +325,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       // 传入当前账号上下文，provider 依赖邮箱账号拉取验证码。
       account,
       // 直接复用 runtime 作为 provider 配置来源，保证第三阶段不重复发明配置结构。
-      config: runtime,
+      config: effectiveRuntime,
       // 传入 log 函数，兼容旧 provider 的日志接口。
       log,
       // 传入当前账号标签，用于 provider 内部日志定位。
@@ -1057,6 +1076,7 @@ function classifyDreaminaVerificationFailure(input = {}) {
 module.exports = {
   // 导出 profile 读取函数。
   loadDreaminaVerificationProfile,
+  resolveDreaminaVerificationRuntime,
   // 导出可见性判断工具。
   isVisible,
   // 导出 selector 命中工具。

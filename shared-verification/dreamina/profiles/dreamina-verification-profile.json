@@ -54,5 +54,10 @@
         "button.lv_new_sign_in_panel_wide-birthday-next"
       ]
     }
+  },
+  "mailProvider": {
+    "firstmail": {
+      "apiKey": ""
+    }
   }
 }
