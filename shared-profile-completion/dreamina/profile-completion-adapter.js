@@ -299,14 +299,71 @@ function normalizeBirthdayYearRange(runtime = {}) {
  * - 允许后续通过 runtime 自定义 month 值集合
  */
 function getBirthdayMonthCandidates(runtime = {}) {
-  // 优先从 runtime 读取自定义 month 候选数组。
   const customMonths = Array.isArray(runtime?.birthdayMonthCandidates)
     ? runtime.birthdayMonthCandidates.map(item => String(item || '').trim()).filter(Boolean)
     : [];
-  // 如果 runtime 里给了合法 month 候选，就优先使用自定义集合。
   if (customMonths.length > 0) return customMonths;
-  // Dreamina 当前 birthday month 实际是数字下拉项，默认返回 1~12。
   return ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+}
+
+function buildDreaminaMonthVariants(monthInput = '') {
+  const raw = String(monthInput || '').trim();
+  if (!raw) {
+    return {
+      raw: '',
+      numeric: '',
+      numericNoPad: '',
+      shortName: '',
+      fullName: '',
+      monthIndex: null,
+      candidates: [],
+    };
+  }
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const monthShortNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  let monthIndex = null;
+  const numericMatch = raw.match(/^0?(\d{1,2})$/);
+  if (numericMatch) {
+    const parsed = Number(numericMatch[1]);
+    if (parsed >= 1 && parsed <= 12) monthIndex = parsed;
+  }
+
+  if (monthIndex == null) {
+    const byFull = monthNames.findIndex(name => name.toLowerCase() === raw.toLowerCase());
+    if (byFull >= 0) monthIndex = byFull + 1;
+  }
+  if (monthIndex == null) {
+    const byShort = monthShortNames.findIndex(name => name.toLowerCase() === raw.toLowerCase());
+    if (byShort >= 0) monthIndex = byShort + 1;
+  }
+
+  const numeric = monthIndex != null ? String(monthIndex).padStart(2, '0') : raw;
+  const numericNoPad = monthIndex != null ? String(monthIndex) : raw.replace(/^0+/, '') || raw;
+  const fullName = monthIndex != null ? monthNames[monthIndex - 1] : '';
+  const shortName = monthIndex != null ? monthShortNames[monthIndex - 1] : '';
+
+  const candidates = [...new Set([
+    raw,
+    numeric,
+    numericNoPad,
+    fullName,
+    shortName,
+  ].map(item => String(item || '').trim()).filter(Boolean))];
+
+  return {
+    raw,
+    numeric,
+    numericNoPad,
+    shortName,
+    fullName,
+    monthIndex,
+    candidates,
+  };
 }
 
 /**
@@ -380,12 +437,14 @@ async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, c
     };
   }
 
+  const monthVariants = buildDreaminaMonthVariants(month);
+
   // 构造第四阶段统一 birthday plan。
   const birthdayPlan = {
     // 本轮要填写的 year。
     year,
     // 本轮要填写的 month。
-    month,
+    month: monthVariants,
     // 本轮要填写的 day。
     day,
   };
@@ -536,24 +595,52 @@ async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) 
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
 async function readDreaminaBirthdayMonthValue(page, profile) {
-  // 遍历 profile 中定义的 monthSelectors，找到第一个当前可见 month 输入。
   const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
-  // 如果当前没有可见 month 输入，就返回统一未命中结构。
   if (!hit.ok || !hit.locator) {
     return {
       ok: false,
       selector: '',
       value: '',
+      placeholder: '',
+      textContent: '',
+      ariaLabel: '',
+      role: '',
+      tagName: '',
+      className: '',
+      readMode: '',
+      interactionHints: { opensPicker: false, optionPanelVisible: false },
     };
   }
 
-  // 读取当前 month 输入值；若读取失败，则回退空字符串。
   const currentValue = await hit.locator.inputValue().catch(() => '');
-  // 返回统一 month 读取结构。
+  const textContent = String(await hit.locator.textContent().catch(() => '')).trim();
+  const placeholder = String(await hit.locator.getAttribute('placeholder').catch(() => '')).trim();
+  const ariaLabel = String(await hit.locator.getAttribute('aria-label').catch(() => '')).trim();
+  const role = String(await hit.locator.getAttribute('role').catch(() => '')).trim();
+  const tagName = String(await hit.locator.evaluate(node => String(node?.tagName || '')).catch(() => '')).trim();
+  const className = String(await hit.locator.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+  const optionPanelVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+
+  const normalizedInputValue = String(currentValue || '').trim();
+  const normalizedTextValue = String(textContent || '').trim();
+  const value = normalizedInputValue || normalizedTextValue;
+  const readMode = normalizedInputValue ? 'input-value' : (normalizedTextValue ? 'text-content' : 'empty');
+
   return {
     ok: true,
     selector: hit.selector,
-    value: String(currentValue || '').trim(),
+    value,
+    placeholder,
+    textContent: normalizedTextValue,
+    ariaLabel,
+    role,
+    tagName,
+    className,
+    readMode,
+    interactionHints: {
+      opensPicker: /select|picker|dropdown|month/i.test(`${className} ${role} ${placeholder} ${ariaLabel}`),
+      optionPanelVisible: Boolean(optionPanelVisible?.ok),
+    },
     locator: hit.locator,
   };
 }
@@ -568,27 +655,26 @@ async function readDreaminaBirthdayMonthValue(page, profile) {
  * - 读回 month 值确认是否真正写入成功
  */
 async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {}) {
-  // 从上下文中读取日志函数；没有则保持 null。
   const { logInfo = null } = context;
-  // 读取 Dreamina 第四阶段 profile。
   const profile = loadDreaminaProfileCompletionProfile();
-  // 取出本轮 plan 里要填写的 month，并统一 trim。
-  const monthValue = String(plan?.birthdayPlan?.month || '').trim();
+  const monthPlan = plan?.birthdayPlan?.month || null;
+  const monthCandidates = Array.isArray(monthPlan?.candidates)
+    ? monthPlan.candidates.map(item => String(item || '').trim()).filter(Boolean)
+    : [String(monthPlan || '').trim()].filter(Boolean);
 
-  // 如果 month 本身为空，就直接失败，不做无意义输入动作。
-  if (!monthValue) {
+  if (monthCandidates.length === 0) {
     return {
       ok: false,
       state: 'BIRTHDAY_MONTH_FILL_FAILED',
       source: 'profile-input',
       value: 'EMPTY_MONTH_PLAN',
       stateChanged: null,
+      mode: '',
+      attempts: [],
     };
   }
 
-  // 先读取填写前的 month 输入状态。
   const beforeState = await readDreaminaBirthdayMonthValue(page, profile);
-  // 如果当前找不到 month 输入控件，就直接失败。
   if (!beforeState.ok || !beforeState.locator) {
     return {
       ok: false,
@@ -596,60 +682,111 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       source: 'profile-input',
       value: 'MONTH_INPUT_NOT_FOUND',
       stateChanged: null,
+      mode: '',
+      attempts: [],
     };
   }
 
+  const attempts = [];
+  const matchesCandidate = (value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalizedCandidates.includes(normalized);
+  };
+  const normalizedCandidates = monthCandidates.map(item => String(item || '').trim().toLowerCase()).filter(Boolean);
+
+  const recordAttempt = (mode, candidate, beforeValue, afterState, extra = {}) => {
+    attempts.push({
+      mode,
+      candidate,
+      beforeValue,
+      afterValue: String(afterState?.value || '').trim(),
+      opensPicker: Boolean(afterState?.interactionHints?.opensPicker),
+      optionPanelVisible: Boolean(afterState?.interactionHints?.optionPanelVisible),
+      selector: String(afterState?.selector || beforeState?.selector || ''),
+      tagName: String(afterState?.tagName || ''),
+      className: String(afterState?.className || ''),
+      readMode: String(afterState?.readMode || ''),
+      ok: matchesCandidate(afterState?.value),
+      ...extra,
+    });
+  };
+
   try {
-    // 先点击 month 输入控件，尽量触发 Dreamina 数字月份下拉。
     await beforeState.locator.click({ force: true }).catch(() => {});
     await beforeState.locator.focus().catch(() => {});
     await page.waitForTimeout(180).catch(() => {});
 
-    // 优先按下拉项点击数字月份；找不到时才回退文本输入。
-    const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, monthValue, logInfo);
-    if (!optionPick.ok) {
+    const optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidates, logInfo);
+    const afterOptionState = await readDreaminaBirthdayMonthValue(page, profile);
+    recordAttempt('picker-select', optionPick.ok ? optionPick.text : monthCandidates[0], beforeState.value, afterOptionState, {
+      optionMatched: optionPick.ok ? optionPick.text : '',
+    });
+    if (optionPick.ok && matchesCandidate(afterOptionState?.value)) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.profileCompletion.fillMonth | mode=picker-select | before=${beforeState.value || '[EMPTY]'} | after=${afterOptionState.value || '[EMPTY]'} | candidates=${monthCandidates.join('/')}`);
+      }
+      return {
+        ok: true,
+        state: 'BIRTHDAY_MONTH_FILLED',
+        source: 'profile-input',
+        value: String(afterOptionState?.value || '').trim(),
+        stateChanged: String(afterOptionState?.value || '').trim() !== String(beforeState?.value || '').trim() || optionPick.ok,
+        mode: 'picker-select',
+        attempts,
+      };
+    }
+
+    for (const candidate of monthCandidates) {
+      await beforeState.locator.click({ force: true }).catch(() => {});
+      await beforeState.locator.focus().catch(() => {});
       await beforeState.locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
       await beforeState.locator.press('Backspace').catch(() => {});
-      await beforeState.locator.fill(monthValue).catch(async () => {
-        await beforeState.locator.type(monthValue, { delay: 40 }).catch(() => {});
+      await beforeState.locator.fill(candidate).catch(async () => {
+        await beforeState.locator.type(candidate, { delay: 40 }).catch(() => {});
       });
-      await page.waitForTimeout(120).catch(() => {});
-    } else {
-      await page.waitForTimeout(180).catch(() => {});
+      await page.waitForTimeout(150).catch(() => {});
+      const afterState = await readDreaminaBirthdayMonthValue(page, profile);
+      const mode = /^\d+$/.test(candidate) ? 'direct-numeric' : (candidate.length <= 3 ? 'short-name' : 'full-name');
+      recordAttempt(mode, candidate, beforeState.value, afterState);
+      if (matchesCandidate(afterState?.value)) {
+        if (typeof logInfo === 'function') {
+          logInfo(`dreamina.profileCompletion.fillMonth | mode=${mode} | before=${beforeState.value || '[EMPTY]'} | after=${afterState.value || '[EMPTY]'} | candidate=${candidate}`);
+        }
+        return {
+          ok: true,
+          state: 'BIRTHDAY_MONTH_FILLED',
+          source: 'profile-input',
+          value: String(afterState?.value || '').trim(),
+          stateChanged: String(afterState?.value || '').trim() !== String(beforeState?.value || '').trim(),
+          mode,
+          attempts,
+        };
+      }
     }
 
-    // 读取填写后的 month 输入状态。
-    const afterState = await readDreaminaBirthdayMonthValue(page, profile);
-    // 取出填写前的值。
-    const beforeValue = String(beforeState?.value || '').trim();
-    // 取出填写后的值。
-    const afterValue = String(afterState?.value || '').trim();
-    // 判断 month 是否已经被正确写入。
-    const ok = afterValue === monthValue;
-    // 判断页面/输入值是否发生了变化。
-    const stateChanged = afterValue !== beforeValue || optionPick.ok;
-
-    // 如果有日志函数，记录本轮 month 填写情况。
+    const lastAttempt = attempts[attempts.length - 1] || null;
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | selector=${beforeState.selector || ''} | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${monthValue} | option=${optionPick.ok ? optionPick.text : '[NONE]'}`);
+      logInfo(`dreamina.profileCompletion.fillMonth | failed | candidates=${monthCandidates.join('/')} | lastAfter=${lastAttempt?.afterValue || '[EMPTY]'} | picker=${beforeState?.interactionHints?.opensPicker ? 'Y' : 'N'}`);
     }
 
-    // 返回统一 month 填写结果。
     return {
-      ok,
-      state: ok ? 'BIRTHDAY_MONTH_FILLED' : 'BIRTHDAY_MONTH_FILL_FAILED',
+      ok: false,
+      state: 'BIRTHDAY_MONTH_FILL_FAILED',
       source: 'profile-input',
-      value: afterValue,
-      stateChanged,
+      value: lastAttempt?.afterValue || '',
+      stateChanged: false,
+      mode: lastAttempt?.mode || '',
+      attempts,
     };
   } catch (error) {
-    // 如果整个填写过程抛异常，就按统一失败结构返回。
     return {
       ok: false,
       state: 'BIRTHDAY_MONTH_FILL_FAILED',
       source: 'profile-input',
       value: error?.message || 'UNKNOWN',
       stateChanged: false,
+      mode: '',
+      attempts,
     };
   }
 }
@@ -661,8 +798,12 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
  * - 在填写前后读取 day 输入框当前值
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
-async function trySelectDreaminaBirthdayMonthOption(page, profile, monthValue, logInfo = null) {
+async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidates = [], logInfo = null) {
   const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
+  const normalizedCandidates = Array.isArray(monthCandidates)
+    ? monthCandidates.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+
   for (const selector of optionSelectors) {
     const options = page.locator(selector);
     const count = await options.count().catch(() => 0);
@@ -672,7 +813,7 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthValue, l
       if (!visible) continue;
       const text = String(await option.innerText().catch(() => '')).trim();
       if (!text) continue;
-      if (text.toLowerCase() !== String(monthValue || '').trim().toLowerCase()) continue;
+      if (!normalizedCandidates.includes(text.toLowerCase())) continue;
       await option.click({ force: true }).catch(() => {});
       if (typeof logInfo === 'function') {
         logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text}`);
@@ -839,6 +980,9 @@ async function readDreaminaProfileCompletionSnapshot(page, profile) {
     yearValue: String(yearState?.value || '').trim(),
     monthValue: String(monthState?.value || '').trim(),
     dayValue: String(dayState?.value || '').trim(),
+    monthTagName: String(monthState?.tagName || '').trim(),
+    monthClassName: String(monthState?.className || '').trim(),
+    monthReadMode: String(monthState?.readMode || '').trim(),
     submitVisible: Boolean(submitSelector?.ok),
     submitSelector: String(submitSelector?.selector || ''),
     nextStageVisible: Boolean(nextStageSelector?.ok),
@@ -1272,7 +1416,9 @@ function classifyDreaminaProfileCompletionFailure(input = {}) {
       ? 'DREAMINA_BIRTHDAY_MONTH_INPUT_MISSING'
       : value === 'EMPTY_MONTH_PLAN'
         ? 'DREAMINA_BIRTHDAY_MONTH_PLAN_EMPTY'
-        : 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
+        : value === ''
+          ? 'DREAMINA_BIRTHDAY_MONTH_VALUE_NOT_APPLIED'
+          : 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
   } else if (reason === 'BIRTHDAY_DAY_FILL_FAILED' || reason === 'BIRTHDAY_DAY_FILL_NOT_IMPLEMENTED') {
     siteReason = value === 'DAY_INPUT_NOT_FOUND'
       ? 'DREAMINA_BIRTHDAY_DAY_INPUT_MISSING'
