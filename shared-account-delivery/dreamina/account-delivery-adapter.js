@@ -316,7 +316,7 @@ async function readDreaminaPageTextPreview(page, runtime = {}) {
  */
 async function collectAccountDeliverySummary(page, account, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
-  const { logInfo = null, sessionInspection = null, uiConfirmation = null } = context;
+  const { logInfo = null, sessionInspection = null, uiConfirmation = null, postAuthResultConfirmation = null } = context;
   // 读取第六阶段 profile。
   const profile = loadDreaminaAccountDeliveryProfile();
   // 读取当前 URL。
@@ -352,12 +352,12 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
   // 组装 UI 摘要。
   const uiSnapshot = {
     expectedSignals: profile?.summarySignals?.uiSignals || [],
-    matchedSelectors: uiConfirmation?.matchedSelectors || [],
-    matchedTexts: uiConfirmation?.matchedTexts || [],
-    source: String(uiConfirmation?.source || ''),
-    value: String(uiConfirmation?.value || ''),
-    state: String(uiConfirmation?.state || ''),
-    strength: String(uiConfirmation?.strength || ''),
+    matchedSelectors: uiConfirmation?.matchedSelectors || postAuthResultConfirmation?.matchedSelectors || [],
+    matchedTexts: uiConfirmation?.matchedTexts || postAuthResultConfirmation?.matchedTexts || [],
+    source: String(uiConfirmation?.source || postAuthResultConfirmation?.source || ''),
+    value: String(uiConfirmation?.value || postAuthResultConfirmation?.value || ''),
+    state: String(uiConfirmation?.state || postAuthResultConfirmation?.state || ''),
+    strength: String(uiConfirmation?.strength || postAuthResultConfirmation?.strength || ''),
     currentUrl,
     textPreview,
   };
@@ -449,7 +449,7 @@ function normalizeDeliveryFieldValue(value) {
  */
 async function buildAccountDeliveryPayload(page, account, runtime = {}, context = {}) {
   // 从上下文中取日志函数；没有则保持 null。
-  const { logInfo = null, accountSummary = null } = context;
+  const { logInfo = null, accountSummary = null, postAuthResultConfirmation = null } = context;
   // 读取第六阶段 profile。
   const profile = loadDreaminaAccountDeliveryProfile();
   // 读取 required / optional 规则。
@@ -473,7 +473,7 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
   payload.currentUrl = String(page.url ? page.url() : '').trim();
   payload.accountSummary = {
     ...(accountSummary?.accountSnapshot || {}),
-    registrationState: String(context?.resultConfirmation?.state || ''),
+    registrationState: String(postAuthResultConfirmation?.state || ''),
     finalStage: 'account-delivery',
   };
   payload.sessionSummary = accountSummary?.sessionSnapshot || null;
