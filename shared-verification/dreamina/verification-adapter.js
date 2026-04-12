@@ -1148,6 +1148,20 @@ async function detectDreaminaProfileCompletionReady(page, profile, context = {})
     };
   }
 
+  const titleSelectorHit = await findFirstVisibleBySelectors(page, [
+    'div.lv_new_sign_in_panel_wide-birthday-title',
+    'div.lv_new_sign_in_panel_wide-birthday-subtitle',
+  ]);
+  if (titleSelectorHit.ok) {
+    return {
+      ok: true,
+      source: 'birthday-title-selector',
+      value: titleSelectorHit.selector,
+      strength: 'strong',
+      signalGroup: 'title-selector',
+    };
+  }
+
   const titleHit = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.profileCompletion?.titleTexts || []);
   if (titleHit.ok) {
     return {

@@ -57,7 +57,9 @@
         "Next"
       ],
       "selectors": [
-        "button.lv_new_sign_in_panel_wide-birthday-next"
+        "button.lv_new_sign_in_panel_wide-birthday-next",
+        "div.lv_new_sign_in_panel_wide-birthday-title",
+        "div.lv_new_sign_in_panel_wide-birthday-subtitle"
       ]
     }
   },
