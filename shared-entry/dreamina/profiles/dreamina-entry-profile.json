@@ -52,5 +52,23 @@
                                   "seconds":  10,
                                   "intervalMs":  1500
                               }
-                          ]
+                          ],
+    "overlays":  {
+                     "enabled":  true,
+                     "buttonNames":  [
+                                         "Accept all",
+                                         "Accept",
+                                         "I agree",
+                                         "Got it",
+                                         "Close",
+                                         "Skip",
+                                         "Not now",
+                                         "Maybe later"
+                                     ],
+                     "buttonNamePattern":  "accept all|accept|i agree|got it|close|skip|not now|maybe later",
+                     "extraSelectors":  [
+
+                                        ],
+                     "postOverlayWaitMs":  1500
+                 }
 }

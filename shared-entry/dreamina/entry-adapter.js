@@ -187,6 +187,70 @@ async function checkEntryHealth(page, runtime = {}, context = {}) {
 
 
 /**
+ * Dreamina entry overlay 预处理。
+ *
+ * 第一轮最小版：
+ * - 支持 buttonNames
+ * - 支持 buttonNamePattern
+ * - 支持 extraSelectors
+ * - 返回结构化 overlay 处理结果
+ */
+async function preprocessDreaminaEntryOverlays(page, runtime = {}, context = {}) {
+  const { logInfo = null, prefix = '', config = {}, capture = null } = context;
+  const profile = loadDreaminaEntryProfile();
+  const overlays = profile?.overlays || {};
+
+  if (overlays.enabled === false) {
+    return { handled: false, matchedType: '', matchedValue: '', postWaitMs: 0 };
+  }
+
+  const buttonNames = Array.isArray(overlays.buttonNames) ? overlays.buttonNames : [];
+  const buttonNamePattern = String(overlays.buttonNamePattern || '').trim();
+  const extraSelectors = Array.isArray(overlays.extraSelectors) ? overlays.extraSelectors : [];
+  const postOverlayWaitMs = Number(runtime?.entryPostOverlayWaitMs ?? overlays.postOverlayWaitMs ?? 1500);
+
+  async function handleOverlay(locator, matchedType, matchedValue) {
+    if (typeof capture === 'function') {
+      await capture(page, 'dreamina-entry-overlay-before', prefix, config).catch(() => {});
+    }
+    await locator.click().catch(() => {});
+    if (postOverlayWaitMs > 0) {
+      await page.waitForTimeout(postOverlayWaitMs).catch(() => {});
+    }
+    if (typeof capture === 'function') {
+      await capture(page, 'dreamina-entry-overlay-after', prefix, config).catch(() => {});
+    }
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.entry.overlay | matchedType=${matchedType} | matchedValue=${matchedValue} | postWaitMs=${postOverlayWaitMs}`);
+    }
+    return { handled: true, matchedType, matchedValue, postWaitMs: postOverlayWaitMs };
+  }
+
+  for (const name of buttonNames) {
+    const locator = page.getByRole('button', { name: String(name || '') }).first();
+    if (await isVisible(locator)) {
+      return await handleOverlay(locator, 'button-name', name);
+    }
+  }
+
+  if (buttonNamePattern) {
+    const locator = page.getByRole('button', { name: new RegExp(buttonNamePattern, 'i') }).first();
+    if (await isVisible(locator)) {
+      return await handleOverlay(locator, 'button-pattern', buttonNamePattern);
+    }
+  }
+
+  for (const selector of extraSelectors) {
+    const locator = page.locator(String(selector || '')).first();
+    if (await isVisible(locator)) {
+      return await handleOverlay(locator, 'selector', selector);
+    }
+  }
+
+  return { handled: false, matchedType: '', matchedValue: '', postWaitMs: 0 };
+}
+
+/**
  * 解析 Dreamina 登录入口 staged wait 配置。
  */
 function resolveDreaminaLoginSignalStages(runtime = {}, profile = {}) {
@@ -265,6 +329,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
     for (let i = 0; i < seconds; i++) {
       round += 1;
 
+      await preprocessDreaminaEntryOverlays(page, runtime, context);
       const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
       if (signal.found) {
         if (typeof logInfo === 'function') {
@@ -314,54 +379,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
  * - url ready
  */
 async function waitForEntryReady(page, runtime = {}, context = {}) {
-  // 从上下文中取日志函数；没有则保持 null。
-  const { logInfo = null } = context;
-  // 读取 profile。
-  const profile = loadDreaminaEntryProfile();
-  // 构造等待步列表。
-  const steps = [...new Set([0, Number(runtime?.entryPrimaryWaitMs || 500), Number(runtime?.entrySecondaryWaitMs || 1200)].filter(ms => Number(ms) >= 0))];
-
-  // 记录最后一次执行到的等待步。
-  let lastWaitStepMs = 0;
-  // 依次执行等待步。
-  for (const waitStepMs of steps) {
-    // 更新等待步。
-    lastWaitStepMs = waitStepMs;
-    // 大于 0 时等待。
-    if (waitStepMs > 0) await page.waitForTimeout(waitStepMs).catch(() => {});
-
-    // 第一层：selector ready。
-    const selectorHit = await findFirstVisibleBySelectors(page, profile?.readySignals?.selectors || []);
-    if (selectorHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=selector | value=${selectorHit.selector} | strength=strong | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'ENTRY_READY', source: 'selector', value: selectorHit.selector, strength: 'strong', waitStepMs };
-    }
-
-    // 第二层：text ready。
-    const textHit = await findFirstVisibleByTexts(page, profile?.readySignals?.texts || []);
-    if (textHit.ok) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=text | value=${textHit.text} | strength=weak | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'ENTRY_READY', source: 'text', value: textHit.text, strength: 'weak', waitStepMs };
-    }
-
-    // 第三层：url ready。
-    const currentUrl = String(page.url ? page.url() : '').trim();
-    const urlHit = (profile?.readySignals?.urlIncludes || []).find(fragment => currentUrl.includes(String(fragment || '')));
-    if (urlHit) {
-      if (typeof logInfo === 'function') logInfo(`dreamina.entry.ready | source=url | value=${urlHit} | strength=weak | waitStepMs=${waitStepMs}`);
-      return { ok: true, state: 'ENTRY_READY', source: 'url', value: urlHit, strength: 'weak', waitStepMs };
-    }
-  }
-
-  // 所有等待步都未命中时，返回 not-ready。
-  return {
-    ok: false,
-    state: 'ENTRY_NOT_READY',
-    source: '',
-    value: '',
-    strength: '',
-    waitStepMs: lastWaitStepMs,
-  };
+  return await waitForDreaminaLoginEntryReady(page, runtime, context);
 }
 
 /**
@@ -513,6 +531,7 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
       logInfo(`dreamina.entry.ready.recheck | action=${recoveryResult.action} | reason=${recoveryResult.reason}`);
     }
 
+    await preprocessDreaminaEntryOverlays(page, runtime, context);
     const readyAfterRecovery = await waitForEntryReady(page, runtime, {
       ...context,
       runtime,
@@ -572,6 +591,7 @@ module.exports = {
   openEntryPage,
   checkEntryHealth,
   waitForEntryReady,
+  preprocessDreaminaEntryOverlays,
   resolveDreaminaLoginSignalStages,
   detectDreaminaLoginEntrySignals,
   waitForDreaminaLoginEntryReady,
