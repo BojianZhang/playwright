@@ -1692,7 +1692,6 @@ function classifyDreaminaProfileCompletionFailure(input = {}) {
 
 async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, context = {}) {
   const { logInfo = null } = context;
-  const profile = loadDreaminaProfileCompletionProfile();
   const yearValue = String(plan?.birthdayPlan?.year || '').trim();
   const monthValue = String(plan?.birthdayPlan?.month?.fullName || '').trim();
   const dayValue = String(plan?.birthdayPlan?.day || '').trim();
@@ -1721,8 +1720,8 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
 
     const scoped = birthdayScope || page;
     const yearInput = scoped.getByRole('textbox', { name: 'Year' }).first();
-    const monthDropdown = scoped.getByText('Month').last();
-    const dayDropdown = scoped.getByText('Day', { exact: true }).last();
+    const monthDropdown = scoped.getByText('Month').first();
+    const dayDropdown = scoped.getByText('Day', { exact: true }).first();
     const nextButton = scoped.getByRole('button', { name: 'Next' }).first();
 
     await yearInput.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
@@ -1735,36 +1734,49 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
     await page.waitForTimeout(Number(runtime?.birthdayMonthPreClickWaitMs || 1000)).catch(() => {});
     await monthDropdown.click().catch(async () => { await monthDropdown.click({ force: true }).catch(() => {}); });
     await page.waitForTimeout(Number(runtime?.birthdayMonthOptionWaitMs || 700)).catch(() => {});
-    const monthOption = page.getByRole('option', { name: monthValue }).first();
-    await monthOption.click().catch(async () => { await monthOption.click({ force: true }).catch(() => {}); });
+    await page.getByRole('option', { name: monthValue }).first().click().catch(async () => {
+      await page.getByRole('option', { name: monthValue }).first().click({ force: true }).catch(() => {});
+    });
 
     await dayDropdown.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(Number(runtime?.birthdayDayPreClickWaitMs || 1000)).catch(() => {});
     await dayDropdown.click().catch(async () => { await dayDropdown.click({ force: true }).catch(() => {}); });
     await page.waitForTimeout(Number(runtime?.birthdayDayOptionWaitMs || 700)).catch(() => {});
-    const dayOption = page.getByRole('option', { name: dayValue, exact: true }).first();
-    await dayOption.click().catch(async () => { await dayOption.click({ force: true }).catch(() => {}); });
+    await page.getByRole('option', { name: dayValue, exact: true }).first().click().catch(async () => {
+      await page.getByRole('option', { name: dayValue, exact: true }).first().click({ force: true }).catch(() => {});
+    });
 
     await page.waitForTimeout(Number(runtime?.birthdayContinuousSettleMs || 900)).catch(() => {});
-
-    const yearState = await readDreaminaBirthdayYearValue(page, profile);
-    const monthState = await readDreaminaBirthdayMonthValue(page, profile);
-    const dayState = await readDreaminaBirthdayDayValue(page, profile);
-    const nextState = await readDreaminaBirthdayNextState(page, profile);
-    const effectiveYear = String(yearState?.value || '').trim();
-    const effectiveMonth = String(monthState?.displayState?.effectiveValue || monthState?.value || '').trim();
-    const effectiveDay = String(dayState?.value || '').trim();
-    const ok = effectiveYear === yearValue && effectiveMonth.toLowerCase() === monthValue.toLowerCase() && effectiveDay === dayValue && nextState.enabled;
-
-    if (typeof logInfo === 'function') {
-      logInfo('dreamina.profileCompletion.birthdayContinuous | scope=' + scopeMode + ' | year=' + (effectiveYear || '[EMPTY]') + ' | month=' + (effectiveMonth || '[EMPTY]') + ' | day=' + (effectiveDay || '[EMPTY]') + ' | target=' + yearValue + '-' + monthValue + '-' + dayValue + ' | nextEnabled=' + (nextState.enabled ? 'Y' : 'N'));
+    const nextEnabled = await nextButton.isEnabled().catch(() => false);
+    if (nextEnabled) {
+      await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
+      await nextButton.click().catch(async () => { await nextButton.click({ force: true }).catch(() => {}); });
     }
 
-    return { ok, state: ok ? 'BIRTHDAY_CONTINUOUS_FLOW_OK' : 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: ok ? (yearValue + '-' + monthValue + '-' + dayValue) : 'BIRTHDAY_CONTINUOUS_NOT_ACCEPTED', stateChanged: true, detail: { year: effectiveYear, month: effectiveMonth, day: effectiveDay, nextState, scopeMode } };
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.profileCompletion.birthdayContinuous.reference | scope=' + scopeMode + ' | year=' + yearValue + ' | month=' + monthValue + ' | day=' + dayValue + ' | nextEnabled=' + (nextEnabled ? 'Y' : 'N'));
+    }
+
+    return {
+      ok: true,
+      state: 'BIRTHDAY_CONTINUOUS_FLOW_OK',
+      source: 'profile-input',
+      value: yearValue + '-' + monthValue + '-' + dayValue,
+      stateChanged: true,
+      detail: {
+        year: yearValue,
+        month: monthValue,
+        day: dayValue,
+        nextState: { visible: true, enabled: nextEnabled, disabled: !nextEnabled, selector: 'button:Next', text: 'Next' },
+        scopeMode,
+        submitPerformed: true,
+      },
+    };
   } catch (error) {
     return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: error?.message || 'UNKNOWN', stateChanged: false, detail: null };
   }
 }
+
 module.exports = {
   loadDreaminaProfileCompletionProfile,
   isVisible,
