@@ -734,6 +734,43 @@ async function tryDreaminaFallbackFill(page, locator, code, logInfo) {
  * - 不退回宽泛输入目标匹配
  * - 不因为单一路径失败就直接判整阶段失败
  */
+async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const resendCandidates = [
+    page.getByText('Resend code', { exact: false }).first(),
+    page.getByRole('button', { name: /resend code/i }).first(),
+    page.getByRole('link', { name: /resend code/i }).first(),
+  ];
+
+  for (const candidate of resendCandidates) {
+    if (!(await isVisible(candidate))) continue;
+    await candidate.click({ timeout: 1500 }).catch(async () => {
+      await candidate.click({ force: true, timeout: 1500 });
+    });
+    await page.waitForTimeout(Number(runtime?.verificationResendWaitMs || 1500));
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.verification.resendCode | triggered');
+    }
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_RESEND_TRIGGERED',
+      source: 'text',
+      value: 'Resend code',
+      strength: 'strong',
+      stateChanged: true,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'VERIFICATION_CODE_RESEND_NOT_AVAILABLE',
+    source: '',
+    value: '',
+    strength: '',
+    stateChanged: false,
+  };
+}
+
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
   // 从上下文里读取前一步解析出来的输入目标结果。
   const { codeInputResolution = null, logInfo = null } = context;
@@ -1088,6 +1125,7 @@ module.exports = {
   waitForDreaminaVerificationStageReady,
   // 导出验证码获取能力。
   fetchDreaminaVerificationCode,
+  triggerDreaminaVerificationCodeResend,
   // 导出验证码输入目标解析能力。
   resolveDreaminaVerificationInput,
   // 导出验证码输入能力。

@@ -122,6 +122,7 @@ async function runVerificationSubmitStage(options = {}) {
   const waitForStageReady = resolveAdapterMethod(adapter, ['waitForVerificationStageReady', 'waitForDreaminaVerificationStageReady']);
   // 解析“获取验证码”的方法。
   const fetchCode = resolveAdapterMethod(adapter, ['fetchVerificationCode', 'fetchDreaminaVerificationCode']);
+  const triggerCodeResend = resolveAdapterMethod(adapter, ['triggerVerificationCodeResend', 'triggerDreaminaVerificationCodeResend']);
   // 解析“找到验证码输入目标”的方法。
   const resolveCodeInput = resolveAdapterMethod(adapter, ['resolveVerificationInput', 'resolveDreaminaVerificationInput']);
   // 解析“输入验证码”的方法。
@@ -198,6 +199,29 @@ async function runVerificationSubmitStage(options = {}) {
     });
     // 如果验证码拿不到，第三阶段也无法继续。
     if (!fetchCodeResult?.ok) {
+      const duplicateSkipped = String(fetchCodeResult?.value || '').startsWith('DUPLICATE_CODE_SKIPPED:');
+      if (duplicateSkipped && attemptIndex < verificationRetryMaxAttempts) {
+        const resendResult = triggerCodeResend
+          ? await triggerCodeResend(page, runtime, {
+              ...context,
+              verificationReady,
+              fetchCodeResult,
+              usedCodes,
+              attemptIndex,
+            })
+          : null;
+
+        retrySummary.push({
+          attemptIndex,
+          resendState: resendResult?.state || (triggerCodeResend ? 'VERIFICATION_CODE_RESEND_NOT_AVAILABLE' : 'VERIFICATION_CODE_RESEND_UNSUPPORTED'),
+          action: 'resend-and-refetch',
+        });
+
+        if (resendResult?.ok) {
+          continue;
+        }
+      }
+
       // 先尝试按站点语义分类失败原因。
       const classified = classifyFailure ? classifyFailure({ reason: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE' }) : null;
       // 返回统一失败结果。

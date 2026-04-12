@@ -1128,6 +1128,8 @@ async function runDreaminaRegisterCli(argv = []) {
         firstLoadGraceWaitMs: 12000,
         dreaminaAuthMode: 'signup',
         credentialSignupSwitchWaitMs: 1200,
+        verificationRetryMaxAttempts: 3,
+        verificationResendWaitMs: 1800,
         readyTextSignals: [
           'Continue with email',
           'Sign in',
