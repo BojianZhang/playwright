@@ -759,31 +759,43 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
     } else {
       await beforeState.locator.click({ force: true }).catch(() => {});
     }
-    await page.waitForTimeout(180).catch(() => {});
+    await page.waitForTimeout(850).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false };
-    const roleOption = page.getByRole('option', { name: targetMonth }).first();
-    if (await isVisible(roleOption)) {
-      await roleOption.click().then(() => {}).catch(async () => {
-        await roleOption.click({ force: true }).catch(() => {});
-      });
-      optionPick = {
-        ok: true,
-        text: targetMonth,
-        clickTarget: 'role-option',
-        clickMode: 'click',
-        panelStillVisible: false,
-        selected: false,
-      };
-    } else {
-      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
-    }
-    await page.waitForTimeout(160).catch(() => {});
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
+    const tryRoleClick = async () => {
+      const roleOption = page.getByRole('option', { name: targetMonth }).first();
+      if (await isVisible(roleOption)) {
+        await roleOption.click().then(() => {}).catch(async () => {
+          await roleOption.click({ force: true }).catch(() => {});
+        });
+        return {
+          ok: true,
+          text: targetMonth,
+          clickTarget: 'role-option',
+          clickMode: 'click',
+          panelStillVisible: false,
+          selected: false,
+          retried: false,
+        };
+      }
+      return null;
+    };
+
+    optionPick = await tryRoleClick() || await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
+    await page.waitForTimeout(900).catch(() => {});
     let afterState = await readDreaminaBirthdayMonthValue(page, profile);
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
-    if (panelAfter.ok && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) {
-      await page.waitForTimeout(320).catch(() => {});
+    if ((!selectedState.selected && (!afterState?.displayState?.effectiveValue || /^month$/i.test(String(afterState?.displayState?.effectiveValue || '')))) || panelAfter.ok) {
+      if (await isVisible(monthDropdown)) {
+        await monthDropdown.click().catch(() => {});
+      }
+      await page.waitForTimeout(650).catch(() => {});
+      const retryPick = await tryRoleClick();
+      if (retryPick?.ok) {
+        optionPick = { ...retryPick, retried: true };
+      }
+      await page.waitForTimeout(950).catch(() => {});
       afterState = await readDreaminaBirthdayMonthValue(page, profile);
       panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
       selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, targetMonth);
@@ -804,13 +816,14 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
       optionMatched: optionPick.ok ? optionPick.text : '',
       clickTarget: optionPick.clickTarget || '',
       clickMode: optionPick.clickMode || '',
+      retried: Boolean(optionPick.retried),
       selected: Boolean(selectedState?.selected),
       nextEnabled: Boolean(nextState?.enabled),
       ok,
     });
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+      logInfo(`dreamina.profileCompletion.fillMonth | mode=dropdown-select | before=${beforeState?.displayState?.effectiveValue || beforeState.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | panel=${panelState.ok ? 'Y' : 'N'} | panelClosed=${panelClosed ? 'Y' : 'N'} | option=${optionPick.ok ? optionPick.text : '[NONE]'} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | retried=${optionPick.retried ? 'Y' : 'N'} | selected=${selectedState.selected ? 'Y' : 'N'} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
     }
 
     return {
@@ -1039,31 +1052,43 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
     } else {
       await beforeState.locator.click({ force: true }).catch(() => {});
     }
-    await page.waitForTimeout(180).catch(() => {});
+    await page.waitForTimeout(850).catch(() => {});
     const panelState = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
-    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false };
-    const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
-    if (await isVisible(roleOption)) {
-      await roleOption.click().then(() => {}).catch(async () => {
-        await roleOption.click({ force: true }).catch(() => {});
-      });
-      optionPick = {
-        ok: true,
-        text: dayValue,
-        clickTarget: 'role-option',
-        clickMode: 'click',
-        panelStillVisible: false,
-        selected: false,
-      };
-    } else {
-      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
-    }
-    await page.waitForTimeout(180).catch(() => {});
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
+    const tryRoleClick = async () => {
+      const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
+      if (await isVisible(roleOption)) {
+        await roleOption.click().then(() => {}).catch(async () => {
+          await roleOption.click({ force: true }).catch(() => {});
+        });
+        return {
+          ok: true,
+          text: dayValue,
+          clickTarget: 'role-option',
+          clickMode: 'click',
+          panelStillVisible: false,
+          selected: false,
+          retried: false,
+        };
+      }
+      return null;
+    };
+
+    optionPick = await tryRoleClick() || await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
+    await page.waitForTimeout(900).catch(() => {});
     let afterState = await readDreaminaBirthdayDayValue(page, profile);
     let panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
     let selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
-    if (panelAfter.ok && !String(afterState?.value || '').trim()) {
-      await page.waitForTimeout(320).catch(() => {});
+    if ((!selectedState.selected && !String(afterState?.value || '').trim()) || panelAfter.ok) {
+      if (await isVisible(dayDropdown)) {
+        await dayDropdown.click().catch(() => {});
+      }
+      await page.waitForTimeout(650).catch(() => {});
+      const retryPick = await tryRoleClick();
+      if (retryPick?.ok) {
+        optionPick = { ...retryPick, retried: true };
+      }
+      await page.waitForTimeout(950).catch(() => {});
       afterState = await readDreaminaBirthdayDayValue(page, profile);
       panelAfter = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
       selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, dayValue);
@@ -1094,6 +1119,7 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
         optionMatched: optionPick.ok ? optionPick.text : '',
         clickTarget: optionPick.clickTarget || '',
         clickMode: optionPick.clickMode || '',
+        retried: Boolean(optionPick.retried),
         selected: Boolean(selectedState?.selected),
         nextEnabled: Boolean(nextState?.enabled),
         ok,
