@@ -506,6 +506,7 @@ async function captureDreaminaCredentialSubmitSnapshot(page, context = {}) {
   const continueText = continueBySelector.ok ? continueBySelector.selector : (continueByText.ok ? continueByText.text : '');
   const continueEnabled = continueLocator ? await continueLocator.isEnabled().catch(() => false) : false;
   const errorModal = await findFirstVisibleByTexts(page, ['Something went wrong', 'Refresh']);
+  const homeSignals = await findFirstVisibleByTexts(page, ['Explore', 'Create', 'Assets', 'Canvas', 'Start Creating With']);
   const bodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
 
   return {
@@ -525,8 +526,28 @@ async function captureDreaminaCredentialSubmitSnapshot(page, context = {}) {
     hasRateLimited: Boolean(rateLimited.ok),
     hasInlineError: Boolean(inlineErrors.ok),
     hasErrorModal: Boolean(errorModal.ok),
+    hasHomeSignals: Boolean(homeSignals.ok),
     bodyTextLength: bodyText.length,
     bodyPreview: bodyText.slice(0, 200),
+  };
+}
+
+async function observeDreaminaCredentialFollowup(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const followupWaitMs = Number(runtime?.credentialSubmitFollowupObserveMs || 900);
+  if (followupWaitMs > 0) {
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.followup | observe start | ms=${followupWaitMs}`);
+    await page.waitForTimeout(followupWaitMs);
+  }
+  const snapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.followup | snapshot | authMode=${snapshot.authMode} | authTitle=${snapshot.authTitle || 'none'} | verification=${snapshot.verificationVisible ? 'Y' : 'N'} | home=${snapshot.hasHomeSignals ? 'Y' : 'N'}`);
+  }
+  return {
+    ok: true,
+    state: 'CREDENTIAL_SUBMIT_FOLLOWUP_OBSERVED',
+    waitMs: followupWaitMs,
+    snapshot,
   };
 }
 
@@ -968,6 +989,8 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
+  const followupObservation = await observeDreaminaCredentialFollowup(page, runtime, context).catch(() => null);
+  const followupSnapshot = followupObservation?.snapshot || null;
   const signupOverlayDismissedWithoutOutcome = Boolean(
     afterSnapshot
     && afterSnapshot.authMode === 'signup'
@@ -981,8 +1004,36 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     && !afterSnapshot.hasInlineError
     && !afterSnapshot.hasErrorModal
   );
+  const followupStillDismissedWithoutOutcome = Boolean(
+    followupSnapshot
+    && followupSnapshot.authMode === 'signup'
+    && !followupSnapshot.emailVisible
+    && !followupSnapshot.passwordVisible
+    && !followupSnapshot.continueVisible
+    && !followupSnapshot.verificationVisible
+    && !followupSnapshot.hasExistingAccount
+    && !followupSnapshot.hasRejected
+    && !followupSnapshot.hasRateLimited
+    && !followupSnapshot.hasInlineError
+    && !followupSnapshot.hasErrorModal
+  );
   if (signupOverlayDismissedWithoutOutcome) {
-    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=${settlementResult?.stage || 'none'}`);
+    if (followupSnapshot?.verificationVisible) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup recovered verification after initial dismiss | stage=${settlementResult?.stage || 'none'}`);
+      return {
+        ok: true,
+        state: 'CREDENTIAL_SUBMIT_OK',
+        nextStage: 'verification',
+        source: 'followup-snapshot',
+        value: 'FOLLOWUP_VERIFICATION_VISIBLE',
+        strength: 'weak',
+        settleStage: settlementResult?.stage || 'followup-check',
+      };
+    }
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=${settlementResult?.stage || 'none'} | followup=${followupStillDismissedWithoutOutcome ? 'same-dismissed' : 'changed'}`);
+    }
     return {
       ok: false,
       state: 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME',
@@ -991,6 +1042,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       value: 'SIGNUP_OVERLAY_DISMISSED_NO_RESULT',
       strength: 'weak',
       settleStage: settlementResult?.stage || 'snapshot-check',
+      followupObservation,
     };
   }
 
