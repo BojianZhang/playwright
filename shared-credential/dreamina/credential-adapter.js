@@ -989,6 +989,36 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
+  const signupContinueDisabledWithoutOutcome = Boolean(
+    afterSnapshot
+    && afterSnapshot.authMode === 'signup'
+    && afterSnapshot.emailVisible
+    && afterSnapshot.passwordVisible
+    && afterSnapshot.continueVisible
+    && !afterSnapshot.continueEnabled
+    && !afterSnapshot.verificationVisible
+    && !afterSnapshot.hasExistingAccount
+    && !afterSnapshot.hasRejected
+    && !afterSnapshot.hasRateLimited
+    && !afterSnapshot.hasInlineError
+    && !afterSnapshot.hasErrorModal
+    && afterSnapshot.hasHomeSignals
+  );
+  if (signupContinueDisabledWithoutOutcome) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.confirmResult | signup continue disabled without verification or explicit failure | stage=${settlementResult?.stage || 'none'}`);
+    }
+    return {
+      ok: false,
+      state: 'CREDENTIAL_SUBMIT_STUCK_SIGNUP_CONTINUE_DISABLED',
+      nextStage: '',
+      source: 'snapshot',
+      value: 'SIGNUP_CONTINUE_DISABLED_NO_RESULT',
+      strength: 'weak',
+      settleStage: settlementResult?.stage || 'snapshot-check',
+    };
+  }
+
   const followupObservation = await observeDreaminaCredentialFollowup(page, runtime, context).catch(() => null);
   const followupSnapshot = followupObservation?.snapshot || null;
   const signupOverlayDismissedWithoutOutcome = Boolean(
@@ -1095,6 +1125,8 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
     siteReason = 'DREAMINA_CREDENTIAL_STALLED_ON_SIGNUP';
   } else if (reason === 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME') {
     siteReason = 'DREAMINA_CREDENTIAL_DISMISSED_WITHOUT_OUTCOME';
+  } else if (reason === 'CREDENTIAL_SUBMIT_STUCK_SIGNUP_CONTINUE_DISABLED') {
+    siteReason = 'DREAMINA_CREDENTIAL_STUCK_SIGNUP_CONTINUE_DISABLED';
   } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN';
   }

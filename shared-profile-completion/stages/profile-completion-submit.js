@@ -224,13 +224,13 @@ async function runProfileCompletionSubmitStage(options = {}) {
   if (fillBirthdayContinuous) {
     const fillTimer = createStageTimer();
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'fill-birthday-continuous' });
-  logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
+    logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
       context: buildStageLogContext(options),
     });
     birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
     if (birthdayContinuousResult?.ok) {
       syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
-    logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
+      logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
         context: buildStageLogContext(options),
         extra: [
           birthdayContinuousResult?.state ? `state=${birthdayContinuousResult.state}` : '',
@@ -271,7 +271,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     };
   } else if (hasSplitFlow) {
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'fill-birthday-split-fallback' });
-  logStageProgress('profile-completion-submit', 'continuous flow 不可用，进入 split fallback', {
+    logStageProgress('profile-completion-submit', 'continuous flow 不可用，进入 split fallback', {
       context: buildStageLogContext(options),
     });
     yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult });
@@ -370,6 +370,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     yearFillResult,
     monthFillResult,
     dayFillResult,
+    birthdayContinuousResult,
     submitResult,
   });
 
@@ -398,7 +399,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
 
   const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'PROFILE_COMPLETION_RESULT_UNKNOWN' }) : null;
   syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
-    logStageFail('profile-completion-submit', '资料补全结果失败', {
+  logStageFail('profile-completion-submit', '资料补全结果失败', {
     context: buildStageLogContext(options),
     extra: [
       confirmResult?.state ? `state=${confirmResult.state}` : '',
