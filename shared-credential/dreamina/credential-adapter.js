@@ -162,6 +162,38 @@ async function clickDreaminaRegisterEntry(page, runtime = {}, context = {}) {
   };
 }
 
+async function clickDreaminaSigninEntry(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const signInEntry = await findFirstVisibleByTexts(page, ['Sign in', 'Welcome back', 'Enter your password to sign in to your account']);
+  if (!signInEntry.ok || !signInEntry.locator) {
+    return {
+      ok: false,
+      state: 'SIGNIN_SWITCH_NOT_FOUND',
+      switched: false,
+      authMode: 'unknown',
+      signalStrength: 'weak',
+    };
+  }
+
+  await signInEntry.locator.click({ timeout: 1500 }).catch(async () => {
+    await signInEntry.locator.click({ force: true, timeout: 1500 });
+  });
+  await page.waitForTimeout(Number(runtime?.credentialSigninSwitchWaitMs || 1200));
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.clickSigninEntry | clicked via=${signInEntry.text}`);
+  }
+
+  return {
+    ok: true,
+    state: 'AUTH_MODE_SIGNIN_CLICKED',
+    switched: true,
+    authMode: 'signin',
+    signalStrength: 'weak',
+    source: signInEntry.text,
+  };
+}
+
 async function confirmDreaminaRegisterMode(page) {
   const signUpHeader = await findFirstVisibleByTexts(page, ['Sign up']);
   const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
@@ -194,6 +226,30 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
 
   if (typeof logInfo === 'function') {
     logInfo(`dreamina.credential.ensureSignupMode | intent=${intentResult.intent} | signupConfirmed=${confirmed.ok ? 'Y' : 'N'}`);
+  }
+
+  return {
+    ...confirmed,
+    switched: true,
+  };
+}
+
+async function ensureDreaminaSigninMode(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const confirmedBeforeSwitch = await confirmDreaminaSigninMode(page);
+  if (confirmedBeforeSwitch?.ok) {
+    return {
+      ...confirmedBeforeSwitch,
+      switched: false,
+    };
+  }
+
+  const clicked = await clickDreaminaSigninEntry(page, runtime, context);
+  if (!clicked.ok) return clicked;
+  const confirmed = await confirmDreaminaSigninMode(page);
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.ensureSigninMode | signinConfirmed=${confirmed.ok ? 'Y' : 'N'}`);
   }
 
   return {
@@ -807,6 +863,35 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
   const settlementResult = submitResult?.settlementResult || null; // 先拿 submit 阶段已经跑过的 settlement 结果，避免确认层再重复组织等待
 
   if (settlementResult?.quickFailure?.hit) { // 如果 settlement 已经命中高价值失败，这里直接复用，不再重复检查同一批失败
+    if (settlementResult.quickFailure.state === 'ACCOUNT_ALREADY_EXISTS') {
+      const signinMode = await ensureDreaminaSigninMode(page, runtime, context);
+      if (signinMode?.ok) {
+        const passwordRefreshed = await refreshDreaminaPasswordFieldAfterPrecheck(page, runtime, context).catch(() => null);
+        const passwordField = passwordRefreshed?.passwordField?.ok
+          ? passwordRefreshed.passwordField.locator
+          : page.locator("input[type='password']").first();
+        const emailField = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
+        await emailField.fill(String(context?.account?.email || '')).catch(() => {});
+        await passwordField.fill(String(context?.account?.password || '')).catch(() => {});
+        const signinSubmitResult = await submitDreaminaCredentialForm(page, runtime, {
+          ...context,
+          formReady: null,
+        });
+        const signinSettlement = signinSubmitResult?.settlementResult || null;
+        if (signinSettlement?.verificationReady?.ok) {
+          if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | exists fallback signin hit verification | stage=${signinSettlement.stage}`);
+          return {
+            ok: true,
+            state: 'EXISTS_ACCOUNT_SIGNIN_OK',
+            nextStage: 'post-auth-ready',
+            source: 'signin-fallback',
+            value: 'ACCOUNT_ALREADY_EXISTS_LOGIN_OK',
+            strength: 'strong',
+            settleStage: signinSettlement.stage,
+          };
+        }
+      }
+    }
     if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement failure hit=${settlementResult.quickFailure.state} | stage=${settlementResult.stage}`); // 记录失败是在第几层等待命中的
     return {
       ok: false,
@@ -929,6 +1014,8 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
     siteReason = 'DREAMINA_CREDENTIAL_NO_STATE_CHANGE_AFTER_ALL_STRATEGIES';
   } else if (reason === 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP') {
     siteReason = 'DREAMINA_CREDENTIAL_STALLED_ON_SIGNUP';
+  } else if (reason === 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME') {
+    siteReason = 'DREAMINA_CREDENTIAL_DISMISSED_WITHOUT_OUTCOME';
   } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN';
   }
@@ -986,6 +1073,8 @@ module.exports = {
   confirmDreaminaRegisterMode,
   confirmDreaminaSigninMode,
   ensureDreaminaSignupMode,
+  clickDreaminaSigninEntry,
+  ensureDreaminaSigninMode,
   precheckDreaminaAccountExists,
   refreshDreaminaPasswordFieldAfterPrecheck,
   waitForDreaminaCredentialFormReady,
