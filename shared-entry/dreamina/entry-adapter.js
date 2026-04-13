@@ -257,9 +257,9 @@ function resolveDreaminaLoginSignalStages(runtime = {}, profile = {}) {
   const fromRuntime = Array.isArray(runtime?.entryLoginSignalStages) ? runtime.entryLoginSignalStages : null;
   const fromProfile = Array.isArray(profile?.loginSignalStages) ? profile.loginSignalStages : null;
   const fallback = [
-    { seconds: 8, intervalMs: 500 },
-    { seconds: 10, intervalMs: 1000 },
-    { seconds: 10, intervalMs: 1500 },
+    { seconds: 6, intervalMs: 500 },
+    { seconds: 6, intervalMs: 1000 },
+    { seconds: 4, intervalMs: 1500 },
   ];
 
   const stages = fromRuntime && fromRuntime.length

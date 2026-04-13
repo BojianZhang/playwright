@@ -224,6 +224,10 @@ async function runPostAuthReadyStage(options = {}) {
       });
       if (!promotedObservation && observed?.cookieSummary?.matchedValue) {
         promotedObservation = observed;
+        if (typeof logInfo === 'function') {
+          logInfo(`postAuth.session.hard-detected | waitMs=${targetWaitMs} | source=${observed.source || ''} | value=${observed.value || ''}`);
+        }
+        break;
       }
     }
     if (promotedObservation) {
