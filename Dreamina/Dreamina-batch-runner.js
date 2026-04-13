@@ -49,6 +49,9 @@ const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dream
 const KNOWN_REGISTERED_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-registered.json');
 const LOCAL_ACCOUNTS_FILE = path.join(__dirname, 'local-accounts.json');
 const REGISTERED_ACCOUNTS_FILE = path.join(__dirname, 'registered-accounts.json');
+const SESSION_RECORDS_DIR = path.join(__dirname, 'session-records');
+const SESSION_RECORDS_LATEST_TXT = path.join(SESSION_RECORDS_DIR, 'latest.txt');
+const SESSION_RECORDS_LATEST_JSONL = path.join(SESSION_RECORDS_DIR, 'latest.jsonl');
 
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -262,19 +265,79 @@ function readJsonArrayFile(filePath) {
   }
 }
 
+function buildSessionArchiveLine(record = {}) {
+  return [
+    String(record?.email || '').trim(),
+    String(record?.countryCode || '').trim(),
+    String(record?.countryName || '').trim(),
+    String(record?.sessionId || '').trim(),
+  ].join('----');
+}
+
+async function appendFirstSessionRecord(record = {}) {
+  const sessionId = String(record?.sessionId || '').trim();
+  const email = String(record?.email || '').trim();
+  if (!email || !sessionId) {
+    return { recorded: false, reason: 'SESSION_ID_MISSING' };
+  }
+
+  ensureDir(SESSION_RECORDS_DIR);
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '');
+  const batchTxt = path.join(SESSION_RECORDS_DIR, `dreamina-session-batch-${stamp}.txt`);
+  const batchJsonl = path.join(SESSION_RECORDS_DIR, `dreamina-session-batch-${stamp}.jsonl`);
+  const line = `${buildSessionArchiveLine(record)}\n`;
+  const jsonl = `${JSON.stringify(record)}\n`;
+
+  await fs.promises.appendFile(batchTxt, line, 'utf8');
+  await fs.promises.appendFile(batchJsonl, jsonl, 'utf8');
+  await fs.promises.writeFile(SESSION_RECORDS_LATEST_TXT, line, 'utf8');
+  await fs.promises.writeFile(SESSION_RECORDS_LATEST_JSONL, jsonl, 'utf8');
+
+  return {
+    recorded: true,
+    reason: 'FIRST_SESSION_RECORDED',
+    txtFile: batchTxt,
+    jsonlFile: batchJsonl,
+  };
+}
+
 async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
   const normalizedEmail = String(account?.email || result?.account?.email || '').trim().toLowerCase();
   if (!normalizedEmail) return { removed: false, appended: false, reason: 'EMPTY_EMAIL' };
 
   const localAccounts = readJsonArrayFile(LOCAL_ACCOUNTS_FILE);
   const registeredAccounts = readJsonArrayFile(REGISTERED_ACCOUNTS_FILE);
+  const deliveryPayload = result?.deliveryPayload && typeof result.deliveryPayload === 'object' ? result.deliveryPayload : null;
+  const sessionSummary = deliveryPayload?.sessionSummary && typeof deliveryPayload.sessionSummary === 'object' ? deliveryPayload.sessionSummary : null;
+  const accountSummary = deliveryPayload?.accountSummary && typeof deliveryPayload.accountSummary === 'object' ? deliveryPayload.accountSummary : null;
+  const sessionId = String(sessionSummary?.sessionId || sessionSummary?.cookieSummary?.matchedValue || '').trim();
+  const sessionExtracted = Boolean(sessionId);
+  const currentUrl = String(deliveryPayload?.currentUrl || '').trim();
+  const countryCode = String(
+    accountSummary?.countryCode
+    || account?.countryCode
+    || account?.proxyCountryCode
+    || account?.country
+    || ''
+  ).trim();
+  const countryName = String(
+    accountSummary?.countryName
+    || account?.countryName
+    || account?.proxyCountryName
+    || account?.countryLabel
+    || ''
+  ).trim();
+  const nowIso = new Date().toISOString();
 
   const matchedLocal = localAccounts.find(item => String(item?.email || '').trim().toLowerCase() === normalizedEmail) || null;
   const nextLocalAccounts = localAccounts.filter(item => String(item?.email || '').trim().toLowerCase() !== normalizedEmail);
-  const alreadyRegistered = registeredAccounts.some(item => String(item?.email || '').trim().toLowerCase() === normalizedEmail);
+  const registeredIndex = registeredAccounts.findIndex(item => String(item?.email || '').trim().toLowerCase() === normalizedEmail);
 
   let appended = false;
-  if (!alreadyRegistered) {
+  let updated = false;
+  let firstSessionRecord = { recorded: false, reason: 'NOT_ATTEMPTED' };
+
+  if (registeredIndex < 0) {
     registeredAccounts.push({
       email: matchedLocal?.email || account?.email || result?.account?.email || '',
       password: matchedLocal?.password || account?.password || '',
@@ -282,29 +345,76 @@ async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
       status: result?.success ? 'registered' : 'exists',
       finalReason: String(result?.finalReason || result?.finalState || ''),
       finalState: String(result?.finalState || ''),
-      sessionExtracted: false,
+      sessionExtracted,
       firstSessionRecorded: false,
       firstSessionRecordedAt: '',
-      countryCode: '',
-      countryName: '',
-      sessionId: '',
-      lastSessionExtractedAt: '',
-      movedAt: new Date().toISOString(),
+      countryCode,
+      countryName,
+      sessionId,
+      currentUrl,
+      sessionSource: String(sessionSummary?.source || '').trim(),
+      lastSessionExtractedAt: sessionExtracted ? nowIso : '',
+      movedAt: nowIso,
     });
     appended = true;
+  } else {
+    const existing = registeredAccounts[registeredIndex] || {};
+    const next = {
+      ...existing,
+      email: existing.email || matchedLocal?.email || account?.email || result?.account?.email || '',
+      password: existing.password || matchedLocal?.password || account?.password || '',
+      finalReason: String(result?.finalReason || existing.finalReason || result?.finalState || ''),
+      finalState: String(result?.finalState || existing.finalState || ''),
+      status: result?.success ? 'registered' : (existing.status || 'exists'),
+      source: existing.source || (result?.success ? 'register-success' : 'account-exists'),
+      countryCode: String(existing.countryCode || countryCode || '').trim(),
+      countryName: String(existing.countryName || countryName || '').trim(),
+      currentUrl: currentUrl || String(existing.currentUrl || '').trim(),
+      sessionSource: String(sessionSummary?.source || existing.sessionSource || '').trim(),
+    };
+
+    if (sessionExtracted) {
+      next.sessionExtracted = true;
+      next.sessionId = sessionId;
+      next.lastSessionExtractedAt = nowIso;
+    }
+
+    registeredAccounts[registeredIndex] = next;
+    updated = true;
+  }
+
+  const targetRecord = registeredAccounts[registeredIndex < 0 ? registeredAccounts.length - 1 : registeredIndex] || null;
+  if (targetRecord && sessionExtracted && !targetRecord.firstSessionRecorded) {
+    firstSessionRecord = await appendFirstSessionRecord({
+      email: targetRecord.email,
+      countryCode: targetRecord.countryCode || '',
+      countryName: targetRecord.countryName || '',
+      sessionId: targetRecord.sessionId || sessionId,
+      sessionSource: targetRecord.sessionSource || '',
+      recordedAt: nowIso,
+    });
+    if (firstSessionRecord.recorded) {
+      targetRecord.firstSessionRecorded = true;
+      targetRecord.firstSessionRecordedAt = nowIso;
+    }
   }
 
   const removed = nextLocalAccounts.length !== localAccounts.length;
   if (removed) {
     await fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(nextLocalAccounts, null, 2)}\n`, 'utf8');
   }
-  if (appended) {
+  if (appended || updated || firstSessionRecord.recorded) {
     await fs.promises.writeFile(REGISTERED_ACCOUNTS_FILE, `${JSON.stringify(registeredAccounts, null, 2)}\n`, 'utf8');
   }
 
   return {
     removed,
     appended,
+    updated,
+    sessionExtracted,
+    sessionId,
+    firstSessionRecorded: Boolean(firstSessionRecord.recorded),
+    firstSessionRecord,
     reason: removed ? 'MOVED_TO_REGISTERED_POOL' : 'NOT_FOUND_IN_LOCAL_POOL',
   };
 }
@@ -548,7 +658,13 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
       context: runtimeBundle.context,
       page: runtimeBundle.page,
       proxy,
-      account,
+      account: {
+        ...account,
+        proxyCountryCode: String(proxy?.countryCode || proxy?.proxyCountryCode || '').trim(),
+        proxyCountryName: String(proxy?.countryName || proxy?.proxyCountryName || '').trim(),
+        countryCode: String(account?.countryCode || proxy?.countryCode || proxy?.proxyCountryCode || '').trim(),
+        countryName: String(account?.countryName || proxy?.countryName || proxy?.proxyCountryName || '').trim(),
+      },
       runtime: {
         batch: true,
         cli: false,
@@ -556,6 +672,8 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         slowMo,
         workerId,
         attempt,
+        proxyCountryCode: String(proxy?.countryCode || proxy?.proxyCountryCode || '').trim(),
+        proxyCountryName: String(proxy?.countryName || proxy?.proxyCountryName || '').trim(),
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,

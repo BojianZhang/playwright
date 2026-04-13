@@ -348,9 +348,15 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
   for (const field of accountFields) {
     accountSnapshot[field] = account?.[field] ?? '';
   }
+  accountSnapshot.countryCode = account?.countryCode ?? account?.proxyCountryCode ?? account?.country ?? '';
+  accountSnapshot.countryName = account?.countryName ?? account?.proxyCountryName ?? account?.countryLabel ?? '';
 
   // 统计当前已有值的 account fields。
-  const presentAccountFields = accountFields.filter(field => String(accountSnapshot?.[field] ?? '').trim());
+  const presentAccountFields = [...new Set([
+    ...accountFields.filter(field => String(accountSnapshot?.[field] ?? '').trim()),
+    ...(String(accountSnapshot?.countryCode || '').trim() ? ['countryCode'] : []),
+    ...(String(accountSnapshot?.countryName || '').trim() ? ['countryName'] : []),
+  ])];
 
   // 收口 session 摘要；优先复用第五阶段已经拿到的 sessionInspection 结果。
   const sessionSnapshot = {
@@ -362,6 +368,8 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
     value: String(sessionInspection?.value || ''),
     state: String(sessionInspection?.state || ''),
     strength: String(sessionInspection?.strength || ''),
+    sessionId: String(sessionInspection?.cookieSummary?.matchedValue || '').trim(),
+    hasHardSession: Boolean(String(sessionInspection?.cookieSummary?.matchedValue || '').trim()),
     cookieSummary: sessionInspection?.cookieSummary || null,
     localStorageSummary: sessionInspection?.localStorageSummary || null,
     sessionStorageSummary: sessionInspection?.sessionStorageSummary || null,

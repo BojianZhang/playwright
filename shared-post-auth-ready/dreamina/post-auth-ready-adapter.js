@@ -332,10 +332,11 @@ async function readDreaminaCookies(page, context = {}) {
   if (!browserContext || typeof browserContext.cookies !== 'function') return [];
   // 读取当前上下文可见 cookie 列表。
   const cookies = await browserContext.cookies().catch(() => []);
-  // 返回轻量规范化后的 cookie 摘要列表，保留 name/domain 供第五阶段做域约束判断。
+  // 返回轻量规范化后的 cookie 摘要列表，保留 name/domain，并仅对真正的站点 sessionid 保留 value 供后续资产回写使用。
   return (cookies || []).map(item => ({
     name: String(item?.name || '').trim(),
     domain: String(item?.domain || '').trim(),
+    value: String(item?.name || '').trim().toLowerCase() === 'sessionid' ? String(item?.value || '').trim() : '',
   })).filter(item => item.name);
 }
 
@@ -486,6 +487,7 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
         ...cookieSummary,
         matchedRule: 'sessionid',
         matchedDomain: matchedSessionCookie.domain,
+        matchedValue: String(matchedSessionCookie.value || '').trim(),
         seenCookies,
         softCookieSummary,
       },

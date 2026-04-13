@@ -193,13 +193,54 @@ async function runPostAuthReadyStage(options = {}) {
     ? await inspectPostAuthSession(page, runtime, { ...context, postAuthReady })
     : null;
 
+  const sessionObservationTrace = [];
+  let effectiveSessionInspection = sessionInspection;
+  if (inspectPostAuthSession) {
+    const observationSteps = Array.isArray(runtime?.postAuthSessionObservationStepsMs) && runtime.postAuthSessionObservationStepsMs.length
+      ? runtime.postAuthSessionObservationStepsMs
+      : [500, 1500, 3000, 5000];
+    let accumulatedWaitMs = 0;
+    let promotedObservation = null;
+    for (const rawStepMs of observationSteps) {
+      const targetWaitMs = Math.max(0, Number(rawStepMs || 0));
+      const deltaWaitMs = Math.max(0, targetWaitMs - accumulatedWaitMs);
+      if (deltaWaitMs > 0) {
+        await page.waitForTimeout(deltaWaitMs).catch(() => {});
+      }
+      accumulatedWaitMs = targetWaitMs;
+      const observed = await inspectPostAuthSession(page, runtime, { ...context, postAuthReady, observation: true, observationWaitMs: targetWaitMs });
+      sessionObservationTrace.push({
+        waitMs: targetWaitMs,
+        state: String(observed?.state || ''),
+        source: String(observed?.source || ''),
+        value: String(observed?.value || ''),
+        strength: String(observed?.strength || ''),
+        hasHardSession: Boolean(observed?.cookieSummary?.matchedValue),
+        sessionId: String(observed?.cookieSummary?.matchedValue || ''),
+        cookiePresentKeys: observed?.cookieSummary?.presentKeys || [],
+        softCookiePresentKeys: observed?.cookieSummary?.softCookieSummary?.presentKeys || [],
+        matchedDomain: String(observed?.cookieSummary?.matchedDomain || ''),
+        currentUrl: String(page.url ? page.url() : ''),
+      });
+      if (!promotedObservation && observed?.cookieSummary?.matchedValue) {
+        promotedObservation = observed;
+      }
+    }
+    if (promotedObservation) {
+      effectiveSessionInspection = promotedObservation;
+      if (typeof logInfo === 'function') {
+        logInfo(`postAuth.session.promoted | source=${promotedObservation.source || ''} | value=${promotedObservation.value || ''} | matchedDomain=${promotedObservation?.cookieSummary?.matchedDomain || ''}`);
+      }
+    }
+  }
+
   // 第三步：检查 UI 登录后信号；如果 adapter 还没实现，就保留 null。
   syncStageStep(options, { stage: 'post-auth-ready', step: 'confirm-ui-signal' });
   logStageProgress('post-auth-ready', '检查 UI 登录后信号', {
     context: buildStageLogContext(options),
   });
   const uiConfirmation = confirmPostAuthUi
-    ? await confirmPostAuthUi(page, runtime, { ...context, postAuthReady, sessionInspection })
+    ? await confirmPostAuthUi(page, runtime, { ...context, postAuthReady, sessionInspection: effectiveSessionInspection })
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
@@ -208,7 +249,7 @@ async function runPostAuthReadyStage(options = {}) {
     context: buildStageLogContext(options),
   });
   const resultConfirmation = confirmPostAuthResult
-    ? await confirmPostAuthResult(page, runtime, { ...context, postAuthReady, sessionInspection, uiConfirmation })
+    ? await confirmPostAuthResult(page, runtime, { ...context, postAuthReady, sessionInspection: effectiveSessionInspection, uiConfirmation })
     : {
         ok: false,
         state: 'POST_AUTH_RESULT_UNKNOWN',
@@ -246,7 +287,9 @@ async function runPostAuthReadyStage(options = {}) {
       retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
       detail: {
         postAuthReady,
-        sessionInspection,
+        sessionInspection: effectiveSessionInspection,
+        initialSessionInspection: sessionInspection,
+        sessionObservationTrace,
         uiConfirmation,
         resultConfirmation,
         classified: null,
@@ -285,7 +328,9 @@ async function runPostAuthReadyStage(options = {}) {
     retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
     detail: {
       postAuthReady,
-      sessionInspection,
+      sessionInspection: effectiveSessionInspection,
+      initialSessionInspection: sessionInspection,
+      sessionObservationTrace,
       uiConfirmation,
       resultConfirmation,
       classified,

@@ -5,11 +5,36 @@ const path = require('path');
 
 const LOCAL_PROXY_LIST_PATH = path.join(__dirname, 'local-proxies.txt');
 
+const COUNTRY_NAME_BY_CODE = {
+  BR: '巴西',
+  CA: '加拿大',
+  US: '美国',
+  JP: '日本',
+  GB: '英国',
+  DE: '德国',
+  FR: '法国',
+  SG: '新加坡',
+  HK: '中国香港',
+  TW: '中国台湾',
+  KR: '韩国',
+  AU: '澳大利亚',
+};
+
 function maskProxyPassword(password) {
   const value = String(password || '');
   if (!value) return '';
   if (value.length <= 2) return '*'.repeat(value.length);
   return `${value.slice(0, 1)}***${value.slice(-1)}`;
+}
+
+function resolveCountryMetaFromUsername(username = '') {
+  const normalizedUsername = String(username || '').trim();
+  const match = normalizedUsername.match(/(?:^|-)cc-([A-Za-z]{2})(?:-|$)/i);
+  const countryCode = String(match?.[1] || '').trim().toUpperCase();
+  return {
+    countryCode,
+    countryName: countryCode ? String(COUNTRY_NAME_BY_CODE[countryCode] || countryCode).trim() : '',
+  };
 }
 
 function parseProxyLine(line, index = 0) {
@@ -39,6 +64,8 @@ function parseProxyLine(line, index = 0) {
     };
   }
 
+  const countryMeta = resolveCountryMetaFromUsername(username);
+
   return {
     ok: true,
     index,
@@ -51,6 +78,11 @@ function parseProxyLine(line, index = 0) {
       username,
       password,
       raw,
+      countryCode: countryMeta.countryCode,
+      countryName: countryMeta.countryName,
+      countryLabel: countryMeta.countryName || countryMeta.countryCode,
+      proxyCountryCode: countryMeta.countryCode,
+      proxyCountryName: countryMeta.countryName,
     },
   };
 }
@@ -80,6 +112,8 @@ function summarizeProxy(proxy = {}) {
     port: Number(proxy.port),
     username: String(proxy.username || '').trim(),
     passwordMasked: maskProxyPassword(proxy.password),
+    countryCode: String(proxy.countryCode || proxy.proxyCountryCode || '').trim(),
+    countryName: String(proxy.countryName || proxy.proxyCountryName || '').trim(),
   };
 }
 
@@ -90,4 +124,5 @@ module.exports = {
   loadLocalProxyLines,
   loadLocalProxies,
   summarizeProxy,
+  resolveCountryMetaFromUsername,
 };
