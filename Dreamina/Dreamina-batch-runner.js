@@ -47,6 +47,8 @@ function ensureDir(dirPath) {
 
 const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-exists.json');
 const KNOWN_REGISTERED_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-registered.json');
+const LOCAL_ACCOUNTS_FILE = path.join(__dirname, 'local-accounts.json');
+const REGISTERED_ACCOUNTS_FILE = path.join(__dirname, 'registered-accounts.json');
 
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -218,6 +220,55 @@ function buildKnownExistsSkipResult(account = {}, proxy = {}, reason = 'KNOWN_EX
     },
     stageSummary: 'precheck-skip=KNOWN_EXISTS_ACCOUNT_SKIPPED',
     slowestStage: '',
+  };
+}
+
+function readJsonArrayFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
+  const normalizedEmail = String(account?.email || result?.account?.email || '').trim().toLowerCase();
+  if (!normalizedEmail) return { removed: false, appended: false, reason: 'EMPTY_EMAIL' };
+
+  const localAccounts = readJsonArrayFile(LOCAL_ACCOUNTS_FILE);
+  const registeredAccounts = readJsonArrayFile(REGISTERED_ACCOUNTS_FILE);
+
+  const matchedLocal = localAccounts.find(item => String(item?.email || '').trim().toLowerCase() === normalizedEmail) || null;
+  const nextLocalAccounts = localAccounts.filter(item => String(item?.email || '').trim().toLowerCase() !== normalizedEmail);
+  const alreadyRegistered = registeredAccounts.some(item => String(item?.email || '').trim().toLowerCase() === normalizedEmail);
+
+  let appended = false;
+  if (!alreadyRegistered) {
+    registeredAccounts.push({
+      email: matchedLocal?.email || account?.email || result?.account?.email || '',
+      password: matchedLocal?.password || account?.password || '',
+      source: result?.success ? 'register-success' : 'account-exists',
+      finalReason: String(result?.finalReason || result?.finalState || ''),
+      finalState: String(result?.finalState || ''),
+      movedAt: new Date().toISOString(),
+    });
+    appended = true;
+  }
+
+  const removed = nextLocalAccounts.length !== localAccounts.length;
+  if (removed) {
+    await fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(nextLocalAccounts, null, 2)}\n`, 'utf8');
+  }
+  if (appended) {
+    await fs.promises.writeFile(REGISTERED_ACCOUNTS_FILE, `${JSON.stringify(registeredAccounts, null, 2)}\n`, 'utf8');
+  }
+
+  return {
+    removed,
+    appended,
+    reason: removed ? 'REMOVED_FROM_LOCAL_POOL' : 'NOT_FOUND_IN_LOCAL_POOL',
   };
 }
 
@@ -395,6 +446,11 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   }
 
   await writeBatchAccountRecordFile(batchContext, record);
+
+  if ((result?.success || existsFailure) && normalizedEmail) {
+    const migration = await migrateAccountOutOfLocalPool(extra?.account || result?.account || {}, result);
+    record.accountPoolMigration = migration;
+  }
 }
 
 function buildBatchOverviewLines(batchContext) {
