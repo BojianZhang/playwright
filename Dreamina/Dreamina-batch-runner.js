@@ -297,7 +297,7 @@ async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
   return {
     removed,
     appended,
-    reason: removed ? 'REMOVED_FROM_LOCAL_POOL' : 'NOT_FOUND_IN_LOCAL_POOL',
+    reason: removed ? 'MOVED_TO_REGISTERED_POOL' : 'NOT_FOUND_IN_LOCAL_POOL',
   };
 }
 
@@ -735,7 +735,7 @@ async function workerLoop(workerId, batchContext) {
           lastReason: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
           lastState: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
         });
-        console.log(`[Dreamina Batch] 跳过已知已注册账号（代理预检前） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
+        console.log(`[Dreamina Batch] 跳过已知已注册账号（代理预检前，账号已在 registered-accounts.json 保留） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
         const skippedResult = buildKnownExistsSkipResult(account, null);
         await updateBatchSummary(batchContext, skippedResult, {
           workerId,
@@ -880,7 +880,7 @@ async function runDreaminaBatch(argv = []) {
 
   console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
   if (!cli.ignoreKnownExists && pruneResult.removedCount > 0) {
-    console.log(`[Dreamina Batch] 启动前已从待注册池移除已知已注册账号 | removed=${pruneResult.removedCount}`);
+    console.log(`[Dreamina Batch] 启动前已将已知已注册账号迁出待注册池，并保留到 registered-accounts.json | moved=${pruneResult.removedCount}`);
   }
 
   const panelInterval = setInterval(() => {
