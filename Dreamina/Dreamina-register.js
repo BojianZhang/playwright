@@ -1029,6 +1029,14 @@ function buildSlowestStageText(result = {}) {
   return `${winner.label}=${Math.max(0, Math.round(winner.durationMs))}ms${winner.state ? ` | state=${winner.state}` : ''}`;
 }
 
+
+function buildFailureSummaryText(result = {}) {
+  if (result?.success) return '';
+  const stage = String(result?.finalStage || 'UNKNOWN_STAGE');
+  const reason = String(result?.finalReason || result?.finalState || 'UNKNOWN_REASON');
+  return `FailureStage=${stage} | FailureReason=${reason}`;
+}
+
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -1494,7 +1502,9 @@ async function runDreaminaRegisterCli(argv = []) {
     const stageSummary = buildStageSummaryText(result?.stageResults || {});
     const timingSummary = buildTimingSummaryText(result);
     const slowestStage = buildSlowestStageText(result);
+    const failureSummary = buildFailureSummaryText(result);
     console.log(`[Dreamina Register] Success=${result.success ? 'Y' : 'N'} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'}`);
+    if (failureSummary) console.log(`[Dreamina Register] ${failureSummary}`);
     console.log(`[Dreamina Register] StageSummary: ${stageSummary}`);
     if (timingSummary) console.log(`[Dreamina Register] TimingSummary: ${timingSummary}`);
     if (slowestStage) console.log(`[Dreamina Register] SlowestStage: ${slowestStage}`);
