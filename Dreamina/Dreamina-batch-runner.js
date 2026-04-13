@@ -30,9 +30,8 @@ const { chromium } = require('playwright');
 const {
   runDreaminaRegisterFlow,
   loadLocalAccounts,
-  loadLocalProxies,
-  summarizeProxy,
 } = require('./Dreamina-register');
+const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
 
 const {
   updateWorkerStatus,
