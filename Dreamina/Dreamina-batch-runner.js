@@ -169,11 +169,13 @@ function createBatchRunContext(options = {}) {
   const resultsDir = path.join(__dirname, 'batch-results');
   const successDir = path.join(resultsDir, 'success');
   const failedDir = path.join(resultsDir, 'failed');
+  const existsDir = path.join(resultsDir, 'exists');
   const latestDir = path.join(resultsDir, 'latest');
 
   ensureDir(resultsDir);
   ensureDir(successDir);
   ensureDir(failedDir);
+  ensureDir(existsDir);
   ensureDir(latestDir);
 
   const pendingQueue = [...(options.accounts || [])];
@@ -271,7 +273,7 @@ function isExistsBusinessFailure(result = {}) {
   return reason === 'DREAMINA_ACCOUNT_ALREADY_EXISTS' || reason === 'ACCOUNT_ALREADY_EXISTS';
 }
 
-function updateBatchSummary(batchContext, result = {}, extra = {}) {
+async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   const finalReason = String(result?.finalReason || result?.finalState || 'UNKNOWN');
   const finalStage = String(result?.finalStage || 'UNKNOWN');
   const slowestStage = String(result?.slowestStage || 'UNKNOWN');
@@ -305,6 +307,8 @@ function updateBatchSummary(batchContext, result = {}, extra = {}) {
   } else {
     batchContext.accounts.failed.push(record);
   }
+
+  await writeBatchAccountRecordFile(batchContext, record);
 }
 
 function buildBatchOverviewLines(batchContext) {
@@ -430,6 +434,24 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
   }
 }
 
+
+async function writeBatchAccountRecordFile(batchContext, record = {}) {
+  const account = sanitizeFileName(record?.account || 'unknown-account');
+  const stage = sanitizeFileName(record?.finalStage || 'unknown-stage');
+  const reason = sanitizeFileName(record?.finalReason || record?.finalState || 'unknown-reason');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const bucket = String(record?.bucket || 'failed');
+  const targetDir = bucket === 'exists'
+    ? batchContext.paths.existsDir
+    : bucket === 'success'
+      ? batchContext.paths.successDir
+      : batchContext.paths.failedDir;
+  const filePath = path.join(targetDir, `dreamina-batch-${account}-${stage}-${reason}-${stamp}.json`);
+  await fs.promises.writeFile(filePath, JSON.stringify(record, null, 2), 'utf8');
+  record.batchRecordFile = filePath;
+  return filePath;
+}
+
 async function writeBatchSummaryFile(batchContext) {
   batchContext.finishedAt = Date.now();
   batchContext.durationMs = Math.max(0, batchContext.finishedAt - batchContext.startedAt);
@@ -544,7 +566,7 @@ async function workerLoop(workerId, batchContext) {
         slowMo: batchContext.config.slowMo,
       });
 
-      updateBatchSummary(batchContext, result, {
+      await updateBatchSummary(batchContext, result, {
         workerId,
         account,
         proxy,
@@ -560,7 +582,7 @@ async function workerLoop(workerId, batchContext) {
         },
       };
 
-      updateBatchSummary(batchContext, failedResult, {
+      await updateBatchSummary(batchContext, failedResult, {
         workerId,
         account,
         proxy,
