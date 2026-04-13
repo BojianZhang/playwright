@@ -956,7 +956,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     && !afterSnapshot.hasErrorModal
   );
   if (signupOverlayStillOpen) {
-    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'}`);
+    if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | signup overlay still open after submit | stage=);
     return {
       ok: false,
       state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
@@ -968,7 +968,33 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
-  if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`); // 记录已经经过 settlement 但仍未能判定，方便后续补 signal 而不是误怀疑等待
+  const signupOverlayDismissedWithoutOutcome = Boolean(
+    afterSnapshot
+    && afterSnapshot.authMode === 'signup'
+    && !afterSnapshot.emailVisible
+    && !afterSnapshot.passwordVisible
+    && !afterSnapshot.continueVisible
+    && !afterSnapshot.verificationVisible
+    && !afterSnapshot.hasExistingAccount
+    && !afterSnapshot.hasRejected
+    && !afterSnapshot.hasRateLimited
+    && !afterSnapshot.hasInlineError
+    && !afterSnapshot.hasErrorModal
+  );
+  if (signupOverlayDismissedWithoutOutcome) {
+    if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=);
+    return {
+      ok: false,
+      state: 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME',
+      nextStage: '',
+      source: 'snapshot',
+      value: 'SIGNUP_OVERLAY_DISMISSED_NO_RESULT',
+      strength: 'weak',
+      settleStage: settlementResult?.stage || 'snapshot-check',
+    };
+  }
+
+  if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | unknown after settlement | stage=); // ��¼�Ѿ����� settlement ����δ���ж������������ signal ���������ɵȴ�
   return {
     ok: false,
     state: 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
@@ -978,7 +1004,6 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     strength: '',
     settleStage: settlementResult?.stage || 'none',
   };
-}
 
 /**
  * 对 Dreamina 阶段 2 失败做分类。
