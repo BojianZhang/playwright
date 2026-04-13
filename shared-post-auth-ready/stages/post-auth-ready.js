@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -94,6 +96,8 @@ async function runPostAuthReadyStage(options = {}) {
     context = {},
   } = options;
 
+  const stageTimer = createStageTimer();
+
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
 
@@ -152,7 +156,7 @@ async function runPostAuthReadyStage(options = {}) {
         postAuthReady?.state ? `state=${postAuthReady.state}` : '',
         postAuthReady?.source ? `source=${postAuthReady.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
 
     return normalizePostAuthReadyStageResult({
@@ -257,7 +261,7 @@ async function runPostAuthReadyStage(options = {}) {
       resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
       resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
       classified?.siteReason ? `classified=${classified.siteReason}` : '',
-    ].filter(Boolean).join(' | '),
+    ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
   });
   return normalizePostAuthReadyStageResult({
     success: false,

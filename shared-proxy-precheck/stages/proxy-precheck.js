@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 function resolveAdapterMethod(adapter, methodName) {
@@ -51,6 +53,8 @@ async function runProxyPrecheckChain(options = {}) {
     context = {},
   } = options;
 
+  const stageTimer = createStageTimer();
+
   const checkProxyConnectivity = resolveAdapterMethod(adapter, 'checkProxyConnectivity');
   const checkProxyExitIp = resolveAdapterMethod(adapter, 'checkProxyExitIp');
   const checkDreaminaPrimaryTarget = resolveAdapterMethod(adapter, 'checkDreaminaPrimaryTarget');
@@ -72,7 +76,7 @@ async function runProxyPrecheckChain(options = {}) {
         connectivity?.state ? `state=${connectivity.state}` : '',
         connectivity?.source ? `source=${connectivity.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProxyPrecheckResult({
       success: false,
@@ -122,7 +126,7 @@ async function runProxyPrecheckChain(options = {}) {
         resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
         resultConfirmation?.proxyGrade ? `proxyGrade=${resultConfirmation.proxyGrade}` : '',
         resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProxyPrecheckResult({
       success: true,

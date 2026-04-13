@@ -6,6 +6,8 @@ const {
   logStageFail,
   logStageRetry,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -116,6 +118,8 @@ async function runVerificationSubmitStage(options = {}) {
     // 附加上下文，例如日志函数和阶段共享结果。
     context = {},
   } = options;
+
+  const stageTimer = createStageTimer();
 
   // 如果 adapter 缺失，说明当前阶段根本没有站点实现，直接按统一结构返回失败。
   if (!adapter) {

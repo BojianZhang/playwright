@@ -10,6 +10,8 @@ const {
   logStageSuccess,
   logStageFail,
   summarizeStageResult,
+  createStageTimer,
+  formatDurationMs,
 } = require('../shared-stage-logger');
 
 // ==============================
@@ -668,6 +670,7 @@ async function runDreaminaStage(stageKey, registerContext) {
     ...registerContext.stageResults,
   };
 
+  const stageTimer = createStageTimer();
   logStageStart(stageName, '阶段开始', {
     logger: logInfo,
     context: stageLogContext,
@@ -704,6 +707,7 @@ async function runDreaminaStage(stageKey, registerContext) {
         resultSummary.nextStage ? `next=${resultSummary.nextStage}` : '',
         resultSummary.signalStrength ? `strength=${resultSummary.signalStrength}` : '',
         resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
+        `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
   } else {
@@ -715,6 +719,7 @@ async function runDreaminaStage(stageKey, registerContext) {
         resultSummary.detectionSource ? `source=${resultSummary.detectionSource}` : '',
         resultSummary.settleStage ? `settle=${resultSummary.settleStage}` : '',
         resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
+        `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
   }

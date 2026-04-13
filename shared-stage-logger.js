@@ -97,6 +97,27 @@ function buildMessage({ stage, status = 'info', message = '', extra = '', contex
   return `${pieces.filter(Boolean).join(' ')}${contextSuffix}`;
 }
 
+
+function nowMs() {
+  return Date.now();
+}
+
+function createStageTimer() {
+  const startedAt = nowMs();
+  return {
+    startedAt,
+    elapsedMs() {
+      return Math.max(0, nowMs() - startedAt);
+    },
+  };
+}
+
+function formatDurationMs(durationMs) {
+  const value = Number(durationMs);
+  if (!Number.isFinite(value)) return '';
+  return `${Math.max(0, Math.round(value))}ms`;
+}
+
 function toPlainMessage(input = '') {
   return String(input || '').replace(/\x1b\[[0-9;]*m/g, '');
 }
@@ -175,6 +196,9 @@ module.exports = {
   buildStageTag,
   buildMessage,
   toPlainMessage,
+  nowMs,
+  createStageTimer,
+  formatDurationMs,
   summarizeStageResult,
   buildStageLogContext,
   logStageStart,

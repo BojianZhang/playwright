@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -88,6 +90,8 @@ async function runEntryStage(options = {}) {
     context = {},
   } = options;
 
+  const stageTimer = createStageTimer();
+
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
 
@@ -124,7 +128,7 @@ async function runEntryStage(options = {}) {
         entryOpenResult?.state ? `state=${entryOpenResult.state}` : '',
         entryOpenResult?.source ? `source=${entryOpenResult.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeEntryStageResult({
       success: false,
@@ -170,7 +174,7 @@ async function runEntryStage(options = {}) {
         entryHealthResult?.state ? `state=${entryHealthResult.state}` : '',
         entryHealthResult?.source ? `source=${entryHealthResult.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
 
     return normalizeEntryStageResult({
@@ -266,7 +270,7 @@ async function runEntryStage(options = {}) {
       entryReadyResult?.state ? `state=${entryReadyResult.state}` : '',
       entryReadyResult?.source ? `source=${entryReadyResult.source}` : '',
       classified?.siteReason ? `classified=${classified.siteReason}` : '',
-    ].filter(Boolean).join(' | '),
+    ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
   });
   return normalizeEntryStageResult({
     success: false,

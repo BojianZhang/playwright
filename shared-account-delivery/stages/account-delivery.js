@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -90,6 +92,8 @@ async function runAccountDeliveryStage(options = {}) {
     context = {},
   } = options;
 
+  const stageTimer = createStageTimer();
+
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
 
@@ -148,7 +152,7 @@ async function runAccountDeliveryStage(options = {}) {
         deliveryReady?.state ? `state=${deliveryReady.state}` : '',
         deliveryReady?.source ? `source=${deliveryReady.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
 
     return normalizeAccountDeliveryStageResult({
@@ -283,7 +287,7 @@ async function runAccountDeliveryStage(options = {}) {
       resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
       resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
       classified?.siteReason ? `classified=${classified.siteReason}` : '',
-    ].filter(Boolean).join(' | '),
+    ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
   });
   return normalizeAccountDeliveryStageResult({
     success: false,

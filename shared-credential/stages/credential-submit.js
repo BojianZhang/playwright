@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -87,6 +89,8 @@ async function runCredentialSubmitStage(options = {}) {
     context = {},
   } = options;
 
+  const stageTimer = createStageTimer();
+
   if (!adapter) {
     logStageFail('credential-submit', 'adapter 缺失', {
       context: buildStageLogContext(options),
@@ -156,7 +160,7 @@ async function runCredentialSubmitStage(options = {}) {
       extra: [
         formReady?.state ? `state=${formReady.state}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeCredentialStageResult({
       success: false,
@@ -192,7 +196,7 @@ async function runCredentialSubmitStage(options = {}) {
       extra: [
         emailResult?.state ? `state=${emailResult.state}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeCredentialStageResult({
       success: false,
@@ -229,7 +233,7 @@ async function runCredentialSubmitStage(options = {}) {
       extra: [
         passwordResult?.state ? `state=${passwordResult.state}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeCredentialStageResult({
       success: false,
@@ -266,7 +270,7 @@ async function runCredentialSubmitStage(options = {}) {
       extra: [
         submitResult?.state ? `state=${submitResult.state}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeCredentialStageResult({
       success: false,
@@ -305,7 +309,7 @@ async function runCredentialSubmitStage(options = {}) {
         confirmResult?.state ? `state=${confirmResult.state}` : '',
         confirmResult?.nextStage ? `next=${confirmResult.nextStage}` : '',
         confirmResult?.source ? `source=${confirmResult.source}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeCredentialStageResult({
       success: true,
@@ -338,7 +342,7 @@ async function runCredentialSubmitStage(options = {}) {
       confirmResult?.state ? `state=${confirmResult.state}` : '',
       confirmResult?.source ? `source=${confirmResult.source}` : '',
       classified?.siteReason ? `classified=${classified.siteReason}` : '',
-    ].filter(Boolean).join(' | '),
+    ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
   });
   return normalizeCredentialStageResult({
     success: false,

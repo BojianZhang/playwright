@@ -5,6 +5,8 @@ const {
   logStageSuccess,
   logStageFail,
   buildStageLogContext,
+  createStageTimer,
+  formatDurationMs,
 } = require('../../shared-stage-logger');
 
 /**
@@ -72,6 +74,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
     runtime = {},
     context = {},
   } = options;
+
+  const stageTimer = createStageTimer();
 
   if (!adapter) {
     logStageFail('profile-completion-submit', 'adapter 缺失', {
@@ -153,7 +157,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         profileReady?.state ? `state=${profileReady.state}` : '',
         profileReady?.source ? `source=${profileReady.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProfileCompletionStageResult({
       success: false,
@@ -186,7 +190,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         birthdayFillPlan?.state ? `state=${birthdayFillPlan.state}` : '',
         birthdayFillPlan?.source ? `source=${birthdayFillPlan.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProfileCompletionStageResult({
       success: false,
@@ -319,7 +323,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         submitResult?.state ? `state=${submitResult.state}` : '',
         submitResult?.source ? `source=${submitResult.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProfileCompletionStageResult({
       success: false,
@@ -351,7 +355,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         confirmResult?.state ? `state=${confirmResult.state}` : '',
         confirmResult?.nextStage ? `next=${confirmResult.nextStage}` : '',
         confirmResult?.source ? `source=${confirmResult.source}` : '',
-      ].filter(Boolean).join(' | '),
+      ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
     return normalizeProfileCompletionStageResult({
       success: true,
@@ -373,7 +377,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       confirmResult?.state ? `state=${confirmResult.state}` : '',
       confirmResult?.source ? `source=${confirmResult.source}` : '',
       classified?.siteReason ? `classified=${classified.siteReason}` : '',
-    ].filter(Boolean).join(' | '),
+    ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
   });
   return normalizeProfileCompletionStageResult({
     success: false,
