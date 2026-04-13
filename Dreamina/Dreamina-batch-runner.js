@@ -290,8 +290,8 @@ async function appendFirstSessionRecord(record = {}) {
 
   await fs.promises.appendFile(batchTxt, line, 'utf8');
   await fs.promises.appendFile(batchJsonl, jsonl, 'utf8');
-  await fs.promises.writeFile(SESSION_RECORDS_LATEST_TXT, line, 'utf8');
-  await fs.promises.writeFile(SESSION_RECORDS_LATEST_JSONL, jsonl, 'utf8');
+  await fs.promises.appendFile(SESSION_RECORDS_LATEST_TXT, line, 'utf8');
+  await fs.promises.appendFile(SESSION_RECORDS_LATEST_JSONL, jsonl, 'utf8');
 
   return {
     recorded: true,
