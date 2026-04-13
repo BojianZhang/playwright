@@ -46,6 +46,7 @@ function ensureDir(dirPath) {
 }
 
 const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-exists.json');
+const KNOWN_REGISTERED_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-registered.json');
 
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -190,9 +191,14 @@ async function writeKnownExistsAccounts(batchContext) {
   const payload = {
     updatedAt: new Date().toISOString(),
     count: accounts.length,
+    semantic: 'known-registered-or-non-repeatable-accounts',
+    compatibilityFile: path.basename(KNOWN_EXISTS_FILE),
+    canonicalFile: path.basename(KNOWN_REGISTERED_FILE),
     accounts,
   };
-  await fs.promises.writeFile(KNOWN_EXISTS_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  const content = JSON.stringify(payload, null, 2);
+  await fs.promises.writeFile(KNOWN_EXISTS_FILE, content, 'utf8');
+  await fs.promises.writeFile(KNOWN_REGISTERED_FILE, content, 'utf8');
 }
 
 function buildKnownExistsSkipResult(account = {}, proxy = {}, reason = 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
@@ -254,6 +260,7 @@ function createBatchRunContext(options = {}) {
       running: [],
       success: [],
       failed: [],
+      exists: [],
       skipped: [],
     },
 
@@ -312,6 +319,11 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     ),
     stageSummary: String(result?.stageSummary || ''),
     slowestStage: String(result?.slowestStage || ''),
+    deliveryPayload: result?.deliveryPayload || null,
+    stageResults: {
+      postAuthReady: result?.stageResults?.postAuthReady || null,
+      accountDelivery: result?.stageResults?.accountDelivery || null,
+    },
   };
 }
 
@@ -339,18 +351,21 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   const finalStage = String(result?.finalStage || 'UNKNOWN');
   const slowestStage = String(result?.slowestStage || 'UNKNOWN');
   const existsFailure = isExistsBusinessFailure(result);
+  const normalizedEmail = String(result?.account?.email || extra?.account?.email || '').trim().toLowerCase();
 
   if (result?.success) {
     batchContext.summary.successCount += 1;
+    if (normalizedEmail) {
+      batchContext.knownExistsAccounts.add(normalizedEmail);
+    }
   } else if (result?.skipped && finalReason === 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
     batchContext.summary.skippedCount += 1;
     batchContext.summary.knownExistsSkippedCount += 1;
   } else if (existsFailure) {
     batchContext.summary.existsCount += 1;
     incrementBucket(batchContext.summary.existsReasonBuckets, finalReason);
-    const email = String(result?.account?.email || extra?.account?.email || '').trim().toLowerCase();
-    if (email) {
-      batchContext.knownExistsAccounts.add(email);
+    if (normalizedEmail) {
+      batchContext.knownExistsAccounts.add(normalizedEmail);
     }
   } else {
     batchContext.summary.failedCount += 1;
@@ -371,7 +386,7 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   if (result?.success) {
     batchContext.accounts.success.push(record);
   } else if (existsFailure) {
-    batchContext.accounts.skipped.push(record);
+    batchContext.accounts.exists.push(record);
   } else if (result?.skipped) {
     batchContext.accounts.skipped.push(record);
   } else {
@@ -544,14 +559,15 @@ async function writeBatchSummaryFile(batchContext) {
     },
     failureReasonBuckets: batchContext.summary.failureReasonBuckets,
     existsReasonBuckets: batchContext.summary.existsReasonBuckets,
-    existsMeaning: 'exists=本次实际提交注册后，被平台明确判定为账号已存在；skipped/knownExistsSkipped=运行前已知该账号存在，因此本次直接跳过未提交注册',
+    existsMeaning: 'exists=本次实际提交注册后，被平台明确判定为账号已存在；skipped/knownExistsSkipped=运行前已知该账号已注册或不可重复注册，因此本次直接跳过未提交注册',
     finalStageBuckets: batchContext.summary.finalStageBuckets,
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
-    confirmedExistsAccounts: batchContext.accounts.skipped.filter(item => String(item?.finalReason || item?.finalState || '').includes('ACCOUNT_ALREADY_EXISTS')),
+    confirmedExistsAccounts: batchContext.accounts.exists,
     knownExistsSkippedAccounts: batchContext.accounts.skipped.filter(item => String(item?.finalReason || item?.finalState || '') === 'KNOWN_EXISTS_ACCOUNT_SKIPPED'),
     skippedAccounts: batchContext.accounts.skipped,
+    existsAccounts: batchContext.accounts.exists,
   };
 
   await fs.promises.writeFile(batchContext.paths.summaryFile, JSON.stringify(summary, null, 2), 'utf8');
@@ -633,7 +649,7 @@ async function workerLoop(workerId, batchContext) {
           lastReason: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
           lastState: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
         });
-        console.log(`[Dreamina Batch] 跳过已知 exists 账号（代理预检前） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
+        console.log(`[Dreamina Batch] 跳过已知已注册账号（代理预检前） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
         const skippedResult = buildKnownExistsSkipResult(account, null);
         await updateBatchSummary(batchContext, skippedResult, {
           workerId,
