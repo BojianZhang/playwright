@@ -716,6 +716,15 @@ async function runDreaminaStage(stageKey, registerContext) {
         context: stageContext,
       });
 
+  const stageDurationMs = stageTimer.elapsedMs();
+  if (result && typeof result === 'object') {
+    result.durationMs = stageDurationMs;
+    result.detail = {
+      ...(result.detail || {}),
+      durationMs: stageDurationMs,
+    };
+  }
+
   // 把阶段结果写回 stageResults。
   registerContext.stageResults[stageKey] = result;
 
@@ -729,7 +738,7 @@ async function runDreaminaStage(stageKey, registerContext) {
         resultSummary.nextStage ? `next=${resultSummary.nextStage}` : '',
         resultSummary.signalStrength ? `strength=${resultSummary.signalStrength}` : '',
         resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
-        `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
+        `durationMs=${formatDurationMs(stageDurationMs)}`,
       ].filter(Boolean).join(' | '),
     });
     syncWorkerStageStatus(registerContext, {
@@ -748,7 +757,7 @@ async function runDreaminaStage(stageKey, registerContext) {
         resultSummary.detectionSource ? `source=${resultSummary.detectionSource}` : '',
         resultSummary.settleStage ? `settle=${resultSummary.settleStage}` : '',
         resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
-        `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
+        `durationMs=${formatDurationMs(stageDurationMs)}`,
       ].filter(Boolean).join(' | '),
     });
     syncWorkerStageStatus(registerContext, {
@@ -968,6 +977,32 @@ function buildStageSummaryText(stageResults = {}) {
     if (!item) return `${label}=SKIP`;
     return `${label}=${String(item.state || (item.success ? 'OK' : 'UNKNOWN') || 'UNKNOWN')}`;
   }).join(', ');
+}
+
+
+function buildTimingSummaryText(result = {}) {
+  const stageKeyMap = [
+    ['proxyPrecheck', 'proxyPrecheck'],
+    ['entry', 'entry'],
+    ['credential', 'credential'],
+    ['verification', 'verification'],
+    ['profileCompletion', 'profileCompletion'],
+    ['postAuthReady', 'postAuthReady'],
+    ['accountDelivery', 'accountDelivery'],
+  ];
+  const parts = stageKeyMap.map(([key, label]) => {
+    const item = result?.stageResults?.[key];
+    const duration = item?.detail?.durationMs ?? item?.durationMs ?? null;
+    if (Number.isFinite(Number(duration))) {
+      return `${label}=${Math.max(0, Math.round(Number(duration)))}ms`;
+    }
+    return '';
+  }).filter(Boolean);
+  const total = Number(result?.meta?.durationMs || 0);
+  if (Number.isFinite(total) && total > 0) {
+    parts.push(`total=${Math.max(0, Math.round(total))}ms`);
+  }
+  return parts.join(', ');
 }
 
 function sanitizeFileName(value = '') {
@@ -1433,8 +1468,10 @@ async function runDreaminaRegisterCli(argv = []) {
       accountEmail: account.email,
     });
     const stageSummary = buildStageSummaryText(result?.stageResults || {});
+    const timingSummary = buildTimingSummaryText(result);
     console.log(`[Dreamina Register] Success=${result.success ? 'Y' : 'N'} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'}`);
     console.log(`[Dreamina Register] StageSummary: ${stageSummary}`);
+    if (timingSummary) console.log(`[Dreamina Register] TimingSummary: ${timingSummary}`);
     console.log(`[Dreamina Register] Result file: ${resultFile}`);
     result.meta = {
       ...(result.meta || {}),
