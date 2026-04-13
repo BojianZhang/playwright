@@ -994,7 +994,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
-  if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | unknown after settlement | stage=); // ��¼�Ѿ����� settlement ����δ���ж������������ signal ���������ɵȴ�
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`); // ��¼�Ѿ����� settlement ����δ���ж������������ signal ���������ɵȴ�
   return {
     ok: false,
     state: 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
