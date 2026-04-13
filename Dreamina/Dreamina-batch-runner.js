@@ -542,8 +542,9 @@ async function writeBatchSummaryFile(batchContext) {
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
-    existsAccounts: batchContext.accounts.skipped,
-    skippedAccounts: [],
+    confirmedExistsAccounts: batchContext.accounts.skipped.filter(item => String(item?.finalReason || item?.finalState || '').includes('ACCOUNT_ALREADY_EXISTS')),
+    knownExistsSkippedAccounts: batchContext.accounts.skipped.filter(item => String(item?.finalReason || item?.finalState || '') === 'KNOWN_EXISTS_ACCOUNT_SKIPPED'),
+    skippedAccounts: batchContext.accounts.skipped,
   };
 
   await fs.promises.writeFile(batchContext.paths.summaryFile, JSON.stringify(summary, null, 2), 'utf8');
@@ -709,8 +710,11 @@ function buildBatchFinalSummaryLines(summary = {}) {
   const failedAccounts = Array.isArray(summary?.failedAccounts)
     ? summary.failedAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
     : '';
-  const existsAccounts = Array.isArray(summary?.existsAccounts)
-    ? summary.existsAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
+  const confirmedExistsAccounts = Array.isArray(summary?.confirmedExistsAccounts)
+    ? summary.confirmedExistsAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
+    : '';
+  const knownExistsSkippedAccounts = Array.isArray(summary?.knownExistsSkippedAccounts)
+    ? summary.knownExistsSkippedAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
     : '';
   const topSlowestStage = Object.entries(summary?.slowestStageBuckets || {})
     .sort((a, b) => b[1] - a[1])[0]?.[0] || '';
@@ -730,8 +734,11 @@ function buildBatchFinalSummaryLines(summary = {}) {
   if (failedAccounts) {
     lines.push(`[Dreamina Batch] FailedAccounts: ${failedAccounts}`);
   }
-  if (existsAccounts) {
-    lines.push(`[Dreamina Batch] ExistsAccounts: ${existsAccounts}`);
+  if (confirmedExistsAccounts) {
+    lines.push(`[Dreamina Batch] ConfirmedExistsAccounts: ${confirmedExistsAccounts}`);
+  }
+  if (knownExistsSkippedAccounts) {
+    lines.push(`[Dreamina Batch] KnownExistsSkippedAccounts: ${knownExistsSkippedAccounts}`);
   }
   if (topSlowestStage) {
     lines.push(`[Dreamina Batch] TopSlowestStage: ${topSlowestStage}`);
