@@ -319,6 +319,7 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     ),
     stageSummary: String(result?.stageSummary || ''),
     slowestStage: String(result?.slowestStage || ''),
+    detail: result?.detail || null,
     deliveryPayload: result?.deliveryPayload || null,
     stageResults: {
       postAuthReady: result?.stageResults?.postAuthReady || null,
@@ -471,7 +472,7 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         verificationRetryMaxAttempts: 3,
         verificationResendWaitMs: 1800,
         skipCredentialExistsPrecheckAfterEmail: true,
-        firstmailApiMaxPollAttempts: 2,
+        firstmailApiMaxPollAttempts: 6,
         waitMailIntervalMs: 2500,
         firstmailRecentMessageScanLimit: 8,
         firstmailPollJitterMinMs: 0,
