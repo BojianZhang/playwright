@@ -399,11 +399,13 @@ async function fillDreaminaCredentialEmail(page, account, runtime = {}, context 
  * - 只负责 fill，不负责提交
  */
 async function fillDreaminaCredentialPassword(page, account, runtime = {}, context = {}) {
-  const { logInfo = null, formReady = null } = context;
+  const { logInfo = null, formReady = null, passwordRefreshResult = null } = context;
   const profile = loadDreaminaCredentialProfile();
-  const passwordField = formReady?.passwordField?.ok
-    ? formReady.passwordField
-    : await findFirstVisibleBySelectors(page, profile?.fields?.password?.selectors || []);
+  const passwordField = passwordRefreshResult?.passwordField?.ok
+    ? passwordRefreshResult.passwordField
+    : formReady?.passwordField?.ok
+      ? formReady.passwordField
+      : await findFirstVisibleBySelectors(page, profile?.fields?.password?.selectors || []);
 
   if (!passwordField.ok || !passwordField.locator) {
     return {
@@ -908,6 +910,42 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
   };
 }
 
+async function refreshDreaminaPasswordFieldAfterPrecheck(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaCredentialProfile();
+  const passwordSelectors = profile?.fields?.password?.selectors || [];
+  const primaryWaitMs = Number(runtime?.credentialPasswordRefreshPrimaryWaitMs || 300);
+  const secondaryWaitMs = Number(runtime?.credentialPasswordRefreshSecondaryWaitMs || 1200);
+  const waitSteps = [...new Set([0, primaryWaitMs, secondaryWaitMs].filter(ms => Number(ms) >= 0))];
+
+  let lastResult = null;
+  for (const waitMs of waitSteps) {
+    if (waitMs > 0) {
+      await page.waitForTimeout(waitMs);
+    }
+    const passwordField = await findFirstVisibleBySelectors(page, passwordSelectors);
+    lastResult = {
+      ok: false,
+      state: 'PASSWORD_FIELD_REFRESH_NOT_READY',
+      waitStepMs: waitMs,
+      passwordField,
+    };
+    if (passwordField.ok) {
+      return {
+        ok: true,
+        state: 'PASSWORD_FIELD_REFRESHED',
+        waitStepMs: waitMs,
+        passwordField,
+      };
+    }
+  }
+
+  return lastResult || {
+    ok: false,
+    state: 'PASSWORD_FIELD_REFRESH_NOT_READY',
+    passwordField: { ok: false, selector: '', locator: null },
+  };
+}
+
 module.exports = {
   loadDreaminaCredentialProfile,
   isVisible,
@@ -919,6 +957,7 @@ module.exports = {
   confirmDreaminaSigninMode,
   ensureDreaminaSignupMode,
   precheckDreaminaAccountExists,
+  refreshDreaminaPasswordFieldAfterPrecheck,
   waitForDreaminaCredentialFormReady,
   fillDreaminaCredentialEmail,
   fillDreaminaCredentialPassword,

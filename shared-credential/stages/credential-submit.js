@@ -91,6 +91,7 @@ async function runCredentialSubmitStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  let passwordRefreshResult = null;
 
   if (!adapter) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-fail' });
@@ -108,6 +109,7 @@ async function runCredentialSubmitStage(options = {}) {
   const waitForFormReady = resolveAdapterMethod(adapter, ['waitForCredentialFormReady', 'waitForDreaminaCredentialFormReady']);
   const fillEmail = resolveAdapterMethod(adapter, ['fillCredentialEmail', 'fillDreaminaCredentialEmail']);
   const precheckExists = resolveAdapterMethod(adapter, ['precheckAccountExistsAfterEmail', 'precheckDreaminaAccountExistsAfterEmail', 'precheckAccountExists', 'precheckDreaminaAccountExists']);
+  const refreshPasswordField = resolveAdapterMethod(adapter, ['refreshPasswordFieldAfterPrecheck', 'refreshDreaminaPasswordFieldAfterPrecheck']);
   const fillPassword = resolveAdapterMethod(adapter, ['fillCredentialPassword', 'fillDreaminaCredentialPassword']);
   const submitForm = resolveAdapterMethod(adapter, ['submitCredentialForm', 'submitDreaminaCredentialForm']);
   const confirmSubmitResult = resolveAdapterMethod(adapter, ['confirmCredentialSubmitResult', 'confirmDreaminaCredentialSubmitResult']);
@@ -262,7 +264,7 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '填写密码', {
     context: buildStageLogContext(options),
   });
-  const passwordResult = await fillPassword(page, account, runtime, { ...context, formReady });
+  const passwordResult = await fillPassword(page, account, runtime, { ...context, formReady, passwordRefreshResult });
   if (passwordResult?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', '密码填写成功', {
