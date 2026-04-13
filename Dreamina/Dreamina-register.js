@@ -1080,6 +1080,7 @@ async function writeCliResultFile(result = {}, meta = {}) {
     finalStage: String(result?.finalStage || ''),
     finalState: String(result?.finalState || ''),
     finalReason: String(result?.finalReason || ''),
+    stageSummary: buildStageSummaryText(result?.stageResults || {}),
     slowestStage: buildSlowestStageText(result),
     durationMs: Number(result?.meta?.durationMs || 0),
     resultFile: filePath,
