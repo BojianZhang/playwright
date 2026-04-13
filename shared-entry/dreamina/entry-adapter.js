@@ -292,30 +292,30 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
   const emailInput = page.getByRole('textbox', { name: emailInputRoleName }).first();
   if (await isVisible(emailInput)) {
     matchedSelectors.push(`role=textbox[name=${emailInputRoleName}]`);
-    return { found: true, label: 'email-input', source: 'role', value: emailInputRoleName, matchedTexts, matchedSelectors };
+    return { found: true, clickable: false, label: 'email-input', source: 'role', value: emailInputRoleName, matchedTexts, matchedSelectors };
   }
 
   const continueWithEmail = page.getByText(continueWithEmailText, { exact: false }).first();
   if (await isVisible(continueWithEmail)) {
     matchedTexts.push(continueWithEmailText);
-    return { found: true, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors };
+    return { found: true, clickable: true, locator: continueWithEmail, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors };
   }
 
   for (const text of entryTexts) {
     const locator = page.getByText(String(text || ''), { exact: false }).first();
     if (await isVisible(locator)) {
       matchedTexts.push(String(text || ''));
-      return { found: true, label: 'entry-text', source: 'text', value: text, matchedTexts, matchedSelectors };
+      return { found: true, clickable: true, locator, label: 'entry-text', source: 'text', value: text, matchedTexts, matchedSelectors };
     }
   }
 
   const roleLocator = page.getByRole('button', { name: new RegExp(entryRolePattern || 'sign in|log in|login|sign up', 'i') }).first();
   if (await isVisible(roleLocator)) {
     matchedSelectors.push(`role=button[name~=${entryRolePattern}]`);
-    return { found: true, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors };
+    return { found: true, clickable: true, locator: roleLocator, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors };
   }
 
-  return { found: false, label: '', source: '', value: '', matchedTexts, matchedSelectors };
+  return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors };
 }
 
 /**
@@ -339,6 +339,33 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       await preprocessDreaminaEntryOverlays(page, runtime, context);
       const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
       if (signal.found) {
+        if (signal.clickable && signal.locator) {
+          await signal.locator.click({ timeout: 1500 }).catch(async () => {
+            await signal.locator.click({ force: true, timeout: 1500 }).catch(() => {});
+          });
+          await page.waitForTimeout(Number(runtime?.entryPostCtaClickWaitMs || 1200)).catch(() => {});
+          const recheckSignal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+          if (recheckSignal.found && recheckSignal.label === 'email-input') {
+            if (typeof logInfo === 'function') {
+              logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
+            }
+            return {
+              ok: true,
+              state: 'ENTRY_READY',
+              source: recheckSignal.source || signal.source || '',
+              value: recheckSignal.value || recheckSignal.label || signal.value || '',
+              strength: 'strong',
+              waitStepMs: elapsedMs,
+              detail: {
+                loginSignal: recheckSignal,
+                ctaSignal: signal,
+                round,
+                elapsedMs,
+              },
+            };
+          }
+        }
+
         if (typeof logInfo === 'function') {
           logInfo(`dreamina.entry.loginSignal.ready | label=${signal.label} | source=${signal.source} | value=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
         }
