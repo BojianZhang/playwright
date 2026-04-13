@@ -9,6 +9,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+const { syncStageStep } = require('../../shared-stage-runtime');
 
 /**
  * verification-submit.js
@@ -123,6 +124,7 @@ async function runVerificationSubmitStage(options = {}) {
 
   // 如果 adapter 缺失，说明当前阶段根本没有站点实现，直接按统一结构返回失败。
   if (!adapter) {
+    syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
     logStageFail('verification-submit', 'adapter 缺失', {
       context: buildStageLogContext(options),
       extra: 'reason=VERIFICATION_STAGE_ADAPTER_MISSING',
@@ -150,6 +152,7 @@ async function runVerificationSubmitStage(options = {}) {
 
   // 如果阶段 3 必需方法不完整，就直接失败，不让主链继续跑到半截。
   if (!waitForStageReady || !fetchCode || !resolveCodeInput || !fillCode || !confirmSubmitResult) {
+    syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
     logStageFail('verification-submit', 'adapter 必需方法缺失', {
       context: buildStageLogContext(options),
       extra: [
@@ -176,11 +179,13 @@ async function runVerificationSubmitStage(options = {}) {
 
   // 第一步：确认当前页面已经进入 verification 阶段。
   const readyTimer = createStageTimer();
+  syncStageStep(options, { stage: 'verification-submit', step: 'wait-verification-ready' });
   logStageProgress('verification-submit', '等待验证码阶段 ready', {
     context: buildStageLogContext(options),
   });
   const verificationReady = await waitForStageReady(page, runtime, context);
   if (verificationReady?.ok) {
+    syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
     logStageSuccess('verification-submit', '验证码阶段 ready', {
       context: buildStageLogContext(options),
       extra: [
@@ -195,6 +200,7 @@ async function runVerificationSubmitStage(options = {}) {
   if (!verificationReady?.ok) {
     // 先尝试走站点失败分类，让 reason 更贴近站点语义。
     const classified = classifyFailure ? classifyFailure({ reason: verificationReady?.state || 'VERIFICATION_STAGE_NOT_READY' }) : null;
+    syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
     logStageFail('verification-submit', '验证码阶段未就绪', {
       context: buildStageLogContext(options),
       extra: [
@@ -232,13 +238,15 @@ async function runVerificationSubmitStage(options = {}) {
 
   // 从第一次尝试开始，最多执行 verificationRetryMaxAttempts 轮 verification 内部尝试。
   for (let attemptIndex = 1; attemptIndex <= verificationRetryMaxAttempts; attemptIndex++) {
-    logStageProgress('verification-submit', '开始验证码提交流程', {
+    syncStageStep(options, { stage: 'verification-submit', step: 'verification-attempt-loop' });
+  logStageProgress('verification-submit', '开始验证码提交流程', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: `round=${attemptIndex}/${verificationRetryMaxAttempts}`,
     });
     // 第二步：获取验证码。
     const fetchTimer = createStageTimer();
-    logStageProgress('verification-submit', '拉取验证码', {
+    syncStageStep(options, { stage: 'verification-submit', step: 'fetch-code' });
+  logStageProgress('verification-submit', '拉取验证码', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: `round=${attemptIndex}/${verificationRetryMaxAttempts}`,
     });
@@ -257,7 +265,8 @@ async function runVerificationSubmitStage(options = {}) {
       matchMode: String(fetchCodeResult?.matchMode || ''),
     });
     if (fetchCodeResult?.ok) {
-      logStageSuccess('verification-submit', '验证码拉取成功', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
+    logStageSuccess('verification-submit', '验证码拉取成功', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           fetchCodeResult?.state ? `state=${fetchCodeResult.state}` : '',
@@ -270,7 +279,8 @@ async function runVerificationSubmitStage(options = {}) {
     }
     // 如果验证码拿不到，第三阶段也无法继续。
     if (!fetchCodeResult?.ok) {
-      logStageFail('verification-submit', '验证码拉取失败', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
+    logStageFail('verification-submit', '验证码拉取失败', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           fetchCodeResult?.state ? `state=${fetchCodeResult.state}` : '',
@@ -328,12 +338,14 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 第三步：解析验证码输入目标。
     const resolveTimer = createStageTimer();
-    logStageProgress('verification-submit', '定位验证码输入框', {
+    syncStageStep(options, { stage: 'verification-submit', step: 'resolve-code-input' });
+  logStageProgress('verification-submit', '定位验证码输入框', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
     });
     codeInputResolution = await resolveCodeInput(page, runtime, { ...context, verificationReady, fetchCodeResult, usedCodes, attemptIndex });
     if (codeInputResolution?.ok) {
-      logStageSuccess('verification-submit', '验证码输入框定位成功', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
+    logStageSuccess('verification-submit', '验证码输入框定位成功', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           codeInputResolution?.state ? `state=${codeInputResolution.state}` : '',
@@ -346,7 +358,8 @@ async function runVerificationSubmitStage(options = {}) {
     if (!codeInputResolution?.ok) {
       // 先尝试按站点语义分类失败原因。
       const classified = classifyFailure ? classifyFailure({ reason: codeInputResolution?.state || 'VERIFICATION_INPUT_NOT_FOUND' }) : null;
-      logStageFail('verification-submit', '验证码输入框定位失败', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
+    logStageFail('verification-submit', '验证码输入框定位失败', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           codeInputResolution?.state ? `state=${codeInputResolution.state}` : '',
@@ -369,13 +382,15 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 第四步：执行验证码输入动作。
     const fillTimer = createStageTimer();
-    logStageProgress('verification-submit', '输入验证码', {
+    syncStageStep(options, { stage: 'verification-submit', step: 'fill-code' });
+  logStageProgress('verification-submit', '输入验证码', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: fetchCodeResult?.code ? `code=${String(fetchCodeResult.code).trim()}` : '',
     });
     fillResult = await fillCode(page, fetchCodeResult.code, runtime, { ...context, verificationReady, fetchCodeResult, codeInputResolution, usedCodes, attemptIndex });
     if (fillResult?.ok) {
-      logStageSuccess('verification-submit', '验证码输入成功', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
+    logStageSuccess('verification-submit', '验证码输入成功', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           fillResult?.state ? `state=${fillResult.state}` : '',
@@ -389,7 +404,8 @@ async function runVerificationSubmitStage(options = {}) {
     if (!fillResult?.ok) {
       // 先尝试按站点语义分类失败原因。
       const classified = classifyFailure ? classifyFailure({ reason: fillResult?.state || 'VERIFICATION_CODE_FILL_FAILED' }) : null;
-      logStageFail('verification-submit', '验证码输入失败', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
+    logStageFail('verification-submit', '验证码输入失败', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           fillResult?.state ? `state=${fillResult.state}` : '',
@@ -412,7 +428,8 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 第五步：确认验证码提交结果。
     const confirmTimer = createStageTimer();
-    logStageProgress('verification-submit', '确认验证码提交结果', {
+    syncStageStep(options, { stage: 'verification-submit', step: 'confirm-submit-result' });
+  logStageProgress('verification-submit', '确认验证码提交结果', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
     });
     confirmResult = await confirmSubmitResult(page, runtime, {
@@ -427,7 +444,8 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 如果确认结果成功，说明当前阶段可以推进到下一阶段。
     if (confirmResult?.ok) {
-      logStageSuccess('verification-submit', '验证码提交成功', {
+      syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
+    logStageSuccess('verification-submit', '验证码提交成功', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           confirmResult?.state ? `state=${confirmResult.state}` : '',
@@ -501,6 +519,7 @@ async function runVerificationSubmitStage(options = {}) {
 
     // 走到这里说明当前确认结果没有成功，且不应继续 verification 内重试，需要进入失败分类。
     const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'VERIFICATION_RESULT_UNKNOWN' }) : null;
+    syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
     logStageFail('verification-submit', '验证码提交结果失败', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: [
@@ -526,7 +545,8 @@ async function runVerificationSubmitStage(options = {}) {
   }
 
   // 理论上不应走到这里；如果真的走到这里，按 unknown 兜底返回，避免主链无返回。
-  logStageFail('verification-submit', '验证码阶段落入未知兜底分支', {
+  syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
+    logStageFail('verification-submit', '验证码阶段落入未知兜底分支', {
     context: buildStageLogContext(options, { retry: verificationRetryMaxAttempts - 1 }),
     extra: confirmResult?.state ? `state=${confirmResult.state}` : 'state=VERIFICATION_RESULT_UNKNOWN',
   });

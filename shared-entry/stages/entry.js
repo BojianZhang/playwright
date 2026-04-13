@@ -8,6 +8,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+const { syncStageStep } = require('../../shared-stage-runtime');
 
 /**
  * 从 adapter 上解析指定方法。
@@ -103,6 +104,7 @@ async function runEntryStage(options = {}) {
   const classifyEntryFailure = resolveAdapterMethod(adapter, 'classifyEntryFailure');
 
   // 第一步：如果存在 openEntryPage，就先执行入口页打开或校正。
+  syncStageStep(options, { stage: 'entry', step: 'open-entry-page' });
   logStageProgress('entry', '打开入口页 / 校正入口上下文', {
     context: buildStageLogContext(options),
   });
@@ -122,6 +124,7 @@ async function runEntryStage(options = {}) {
       ? classifyEntryFailure({ state: entryOpenResult.state || 'ENTRY_OPEN_FAILED', source: entryOpenResult.source, value: entryOpenResult.value })
       : null;
 
+    syncStageStep(options, { stage: 'entry', step: 'stage-fail' });
     logStageFail('entry', '入口页打开失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -149,6 +152,7 @@ async function runEntryStage(options = {}) {
   }
 
   // 第二步：如果存在健康检查方法，就执行健康检查；否则给一个跳过占位结果。
+  syncStageStep(options, { stage: 'entry', step: 'check-entry-health' });
   logStageProgress('entry', '检查入口页健康状态', {
     context: buildStageLogContext(options),
   });
@@ -168,6 +172,7 @@ async function runEntryStage(options = {}) {
       ? classifyEntryFailure({ state: entryHealthResult.state || 'ENTRY_HEALTH_FAILED', source: entryHealthResult.source, value: entryHealthResult.value })
       : null;
 
+    syncStageStep(options, { stage: 'entry', step: 'stage-fail' });
     logStageFail('entry', '入口页健康检查失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -217,6 +222,7 @@ async function runEntryStage(options = {}) {
   }
 
   // 第四步：执行入口 ready 判断；优先使用带 recover 的主链确认。
+  syncStageStep(options, { stage: 'entry', step: 'confirm-entry-ready' });
   logStageProgress('entry', '等待入口 ready / 恢复入口信号', {
     context: buildStageLogContext(options),
   });
@@ -226,6 +232,7 @@ async function runEntryStage(options = {}) {
 
   // 如果入口 ready 成功，就直接返回成功结构。
   if (entryReadyResult?.ok) {
+    syncStageStep(options, { stage: 'entry', step: 'stage-success' });
     logStageSuccess('entry', '入口阶段成功', {
       context: buildStageLogContext(options),
       extra: [
@@ -264,7 +271,8 @@ async function runEntryStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
-  logStageFail('entry', '入口阶段失败', {
+  syncStageStep(options, { stage: 'entry', step: 'stage-fail' });
+    logStageFail('entry', '入口阶段失败', {
     context: buildStageLogContext(options),
     extra: [
       entryReadyResult?.state ? `state=${entryReadyResult.state}` : '',

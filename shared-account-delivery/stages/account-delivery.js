@@ -8,6 +8,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+const { syncStageStep } = require('../../shared-stage-runtime');
 
 /**
  * 从 adapter 上解析指定方法。
@@ -106,6 +107,7 @@ async function runAccountDeliveryStage(options = {}) {
 
   // 如果最基本的入口 ready 方法不存在，直接返回结构化失败。
   if (!waitForAccountDeliveryReady) {
+    syncStageStep(options, { stage: 'account-delivery', step: 'stage-fail' });
     logStageFail('account-delivery', 'adapter 必需方法缺失', {
       context: buildStageLogContext(options),
       extra: 'missing=waitForAccountDeliveryReady',
@@ -127,11 +129,13 @@ async function runAccountDeliveryStage(options = {}) {
   }
 
   // 第一步：等待第六阶段入口 ready。
+  syncStageStep(options, { stage: 'account-delivery', step: 'wait-account-delivery-ready' });
   logStageProgress('account-delivery', '等待 account-delivery 阶段入口', {
     context: buildStageLogContext(options),
   });
   const deliveryReady = await waitForAccountDeliveryReady(page, runtime, context);
   if (deliveryReady?.ok) {
+    syncStageStep(options, { stage: 'account-delivery', step: 'stage-success' });
     logStageSuccess('account-delivery', 'account-delivery 阶段入口就绪', {
       context: buildStageLogContext(options),
       extra: [
@@ -146,6 +150,7 @@ async function runAccountDeliveryStage(options = {}) {
       ? classifyAccountDeliveryFailure({ state: deliveryReady?.state || 'ACCOUNT_DELIVERY_NOT_READY', source: deliveryReady?.source, value: deliveryReady?.value })
       : null;
 
+    syncStageStep(options, { stage: 'account-delivery', step: 'stage-fail' });
     logStageFail('account-delivery', 'account-delivery 阶段入口失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -182,6 +187,7 @@ async function runAccountDeliveryStage(options = {}) {
   const postAuthResultConfirmation = postAuthDetail?.resultConfirmation || null;
 
   // 第二步：收集账号最终交付摘要；如果 adapter 还没实现，就保留 null。
+  syncStageStep(options, { stage: 'account-delivery', step: 'collect-account-summary' });
   logStageProgress('account-delivery', '收集账号最终交付摘要', {
     context: buildStageLogContext(options),
   });
@@ -197,6 +203,7 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 第三步：组装 delivery payload；如果 adapter 还没实现，就保留 null。
+  syncStageStep(options, { stage: 'account-delivery', step: 'build-delivery-payload' });
   logStageProgress('account-delivery', '构建 delivery payload', {
     context: buildStageLogContext(options),
   });
@@ -213,6 +220,7 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
+  syncStageStep(options, { stage: 'account-delivery', step: 'confirm-account-delivery-result' });
   logStageProgress('account-delivery', '确认 account-delivery 最终结果', {
     context: buildStageLogContext(options),
   });
@@ -239,6 +247,7 @@ async function runAccountDeliveryStage(options = {}) {
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
+    syncStageStep(options, { stage: 'account-delivery', step: 'stage-success' });
     logStageSuccess('account-delivery', 'account-delivery 阶段成功', {
       context: buildStageLogContext(options),
       extra: [
@@ -281,7 +290,8 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
-  logStageFail('account-delivery', 'account-delivery 阶段失败', {
+  syncStageStep(options, { stage: 'account-delivery', step: 'stage-fail' });
+    logStageFail('account-delivery', 'account-delivery 阶段失败', {
     context: buildStageLogContext(options),
     extra: [
       resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',

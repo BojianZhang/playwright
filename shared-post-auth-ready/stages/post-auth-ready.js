@@ -8,6 +8,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+const { syncStageStep } = require('../../shared-stage-runtime');
 
 /**
  * 从 adapter 上解析指定方法。
@@ -110,6 +111,7 @@ async function runPostAuthReadyStage(options = {}) {
 
   // 如果最基本的入口 ready 方法不存在，直接返回结构化失败。
   if (!waitForPostAuthReady) {
+    syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-fail' });
     logStageFail('post-auth-ready', 'adapter 必需方法缺失', {
       context: buildStageLogContext(options),
       extra: 'missing=waitForPostAuthReady',
@@ -131,11 +133,13 @@ async function runPostAuthReadyStage(options = {}) {
   }
 
   // 第一步：等待第五阶段入口 ready。
+  syncStageStep(options, { stage: 'post-auth-ready', step: 'wait-post-auth-ready' });
   logStageProgress('post-auth-ready', '等待 post-auth-ready 阶段入口', {
     context: buildStageLogContext(options),
   });
   const postAuthReady = await waitForPostAuthReady(page, runtime, context);
   if (postAuthReady?.ok) {
+    syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-success' });
     logStageSuccess('post-auth-ready', 'post-auth-ready 阶段入口就绪', {
       context: buildStageLogContext(options),
       extra: [
@@ -150,6 +154,7 @@ async function runPostAuthReadyStage(options = {}) {
       ? classifyPostAuthFailure({ state: postAuthReady?.state || 'POST_AUTH_NOT_READY', source: postAuthReady?.source, value: postAuthReady?.value })
       : null;
 
+    syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-fail' });
     logStageFail('post-auth-ready', 'post-auth-ready 阶段入口失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -180,6 +185,7 @@ async function runPostAuthReadyStage(options = {}) {
   }
 
   // 第二步：检查 session / storage / cookie 可用态；如果 adapter 还没实现，就保留 null。
+  syncStageStep(options, { stage: 'post-auth-ready', step: 'inspect-session' });
   logStageProgress('post-auth-ready', '检查 session / storage / cookie 可用态', {
     context: buildStageLogContext(options),
   });
@@ -188,6 +194,7 @@ async function runPostAuthReadyStage(options = {}) {
     : null;
 
   // 第三步：检查 UI 登录后信号；如果 adapter 还没实现，就保留 null。
+  syncStageStep(options, { stage: 'post-auth-ready', step: 'confirm-ui-signal' });
   logStageProgress('post-auth-ready', '检查 UI 登录后信号', {
     context: buildStageLogContext(options),
   });
@@ -196,6 +203,7 @@ async function runPostAuthReadyStage(options = {}) {
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
+  syncStageStep(options, { stage: 'post-auth-ready', step: 'confirm-post-auth-result' });
   logStageProgress('post-auth-ready', '确认 post-auth-ready 最终结果', {
     context: buildStageLogContext(options),
   });
@@ -213,6 +221,7 @@ async function runPostAuthReadyStage(options = {}) {
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
+    syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-success' });
     logStageSuccess('post-auth-ready', 'post-auth-ready 阶段成功', {
       context: buildStageLogContext(options),
       extra: [
@@ -255,7 +264,8 @@ async function runPostAuthReadyStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
-  logStageFail('post-auth-ready', 'post-auth-ready 阶段失败', {
+  syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-fail' });
+    logStageFail('post-auth-ready', 'post-auth-ready 阶段失败', {
     context: buildStageLogContext(options),
     extra: [
       resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',

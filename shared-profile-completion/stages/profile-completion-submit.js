@@ -8,6 +8,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+const { syncStageStep } = require('../../shared-stage-runtime');
 
 /**
  * profile-completion-submit.js
@@ -78,6 +79,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   const stageTimer = createStageTimer();
 
   if (!adapter) {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
     logStageFail('profile-completion-submit', 'adapter 缺失', {
       context: buildStageLogContext(options),
       extra: 'reason=PROFILE_COMPLETION_STAGE_ADAPTER_MISSING',
@@ -105,6 +107,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   // Base required capabilities must exist.
   // Fill path can be either continuous-flow or split-flow.
   if (!waitForProfileReady || !buildProfilePlan || !submitProfileCompletion || !confirmSubmitResult || (!hasContinuousFlowMethod && !hasSplitFlowMethods)) {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
     logStageFail('profile-completion-submit', 'adapter 必需方法缺失', {
       context: buildStageLogContext(options),
       extra: [
@@ -136,11 +139,13 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const readyTimer = createStageTimer();
+  syncStageStep(options, { stage: 'profile-completion-submit', step: 'wait-profile-ready' });
   logStageProgress('profile-completion-submit', '等待资料补全阶段 ready', {
     context: buildStageLogContext(options),
   });
   const profileReady = await waitForProfileReady(page, runtime, context);
   if (profileReady?.ok) {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
     logStageSuccess('profile-completion-submit', '资料补全阶段 ready', {
       context: buildStageLogContext(options),
       extra: [
@@ -153,6 +158,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
   if (!profileReady?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: profileReady?.state || 'PROFILE_COMPLETION_NOT_READY' }) : null;
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
     logStageFail('profile-completion-submit', '资料补全阶段未就绪', {
       context: buildStageLogContext(options),
       extra: [
@@ -172,11 +178,13 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const planTimer = createStageTimer();
+  syncStageStep(options, { stage: 'profile-completion-submit', step: 'build-profile-plan' });
   logStageProgress('profile-completion-submit', '生成资料填写计划', {
     context: buildStageLogContext(options),
   });
   const birthdayFillPlan = await buildProfilePlan(page, account, runtime, { ...context, profileReady });
   if (birthdayFillPlan?.ok) {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
     logStageSuccess('profile-completion-submit', '资料填写计划生成成功', {
       context: buildStageLogContext(options),
       extra: [
@@ -188,6 +196,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
   if (!birthdayFillPlan?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED' }) : null;
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
     logStageFail('profile-completion-submit', '资料填写计划生成失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -214,12 +223,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
 
   if (fillBirthdayContinuous) {
     const fillTimer = createStageTimer();
-    logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'fill-birthday-continuous' });
+  logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
       context: buildStageLogContext(options),
     });
     birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
     if (birthdayContinuousResult?.ok) {
-      logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
+      syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
+    logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
         context: buildStageLogContext(options),
         extra: [
           birthdayContinuousResult?.state ? `state=${birthdayContinuousResult.state}` : '',
@@ -259,7 +270,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
       nextState: birthdayContinuousResult?.detail?.nextState || null,
     };
   } else if (hasSplitFlow) {
-    logStageProgress('profile-completion-submit', 'continuous flow 不可用，进入 split fallback', {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'fill-birthday-split-fallback' });
+  logStageProgress('profile-completion-submit', 'continuous flow 不可用，进入 split fallback', {
       context: buildStageLogContext(options),
     });
     yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult });
@@ -310,6 +322,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const submitTimer = createStageTimer();
+  syncStageStep(options, { stage: 'profile-completion-submit', step: 'submit-profile-completion' });
   logStageProgress('profile-completion-submit', '提交资料补全结果', {
     context: buildStageLogContext(options),
   });
@@ -326,6 +339,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     : await submitProfileCompletion(page, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, birthdayContinuousResult });
   if (!submitResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED' }) : null;
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
     logStageFail('profile-completion-submit', '资料补全提交失败', {
       context: buildStageLogContext(options),
       extra: [
@@ -345,6 +359,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const confirmTimer = createStageTimer();
+  syncStageStep(options, { stage: 'profile-completion-submit', step: 'confirm-submit-result' });
   logStageProgress('profile-completion-submit', '确认资料补全提交结果', {
     context: buildStageLogContext(options),
   });
@@ -359,6 +374,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   });
 
   if (confirmResult?.ok) {
+    syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
     logStageSuccess('profile-completion-submit', '资料补全提交成功', {
       context: buildStageLogContext(options),
       extra: [
@@ -381,7 +397,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'PROFILE_COMPLETION_RESULT_UNKNOWN' }) : null;
-  logStageFail('profile-completion-submit', '资料补全结果失败', {
+  syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
+    logStageFail('profile-completion-submit', '资料补全结果失败', {
     context: buildStageLogContext(options),
     extra: [
       confirmResult?.state ? `state=${confirmResult.state}` : '',
