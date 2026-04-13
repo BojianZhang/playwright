@@ -28,6 +28,13 @@
                            "cookieKeys":  [
                                               "sessionid"
                                           ],
+                           "softCookieKeys":  [
+                                                  "msToken",
+                                                  "ttwid",
+                                                  "passport_csrf_token",
+                                                  "passport_csrf_token_default",
+                                                  "s_v_web_id"
+                                              ],
                            "localStorageKeys":  [
 
                                                 ],
@@ -55,16 +62,42 @@
                                              "button[aria-label*='Avatar']",
                                              "[data-testid*='avatar']"
                                          ],
+                           "workspaceSelectors":  [
+                                                      "a[href*='/ai-tool/home']",
+                                                      "a[href*='/ai-tool/workspace']",
+                                                      "a[href*='/workspace']",
+                                                      "a[href*='/home']"
+                                                  ],
                            "texts":  [
                                          "Workspace",
                                          "Home",
+                                         "Explore",
+                                         "Create",
+                                         "Assets",
+                                         "AI Agent",
+                                         "AI Image",
+                                         "AI Video",
                                          "Canvas",
                                          "Avatar"
                                      ],
+                           "workspaceTexts":  [
+                                                   "Explore",
+                                                   "Create",
+                                                   "Assets",
+                                                   "AI Agent",
+                                                   "AI Image",
+                                                   "AI Video"
+                                               ],
                            "textTiers":  {
                                               "strong":  [
                                                              "Workspace",
-                                                             "Home"
+                                                             "Home",
+                                                             "Explore",
+                                                             "Create",
+                                                             "Assets",
+                                                             "AI Agent",
+                                                             "AI Image",
+                                                             "AI Video"
                                                          ],
                                               "medium":  [
                                                              "Canvas"

@@ -374,6 +374,16 @@ function buildDreaminaSuccessTextTierMap(profile = {}) {
   return map;
 }
 
+function buildDreaminaSoftCookieSummary(profile = {}, cookies = []) {
+  const softCookieKeys = [...new Set((profile?.sessionSignals?.softCookieKeys || []).map(item => String(item || '').trim()).filter(Boolean))];
+  const presentKeys = softCookieKeys.filter(key => (cookies || []).some(cookie => String(cookie?.name || '').trim() === key));
+  return {
+    expectedKeys: softCookieKeys,
+    presentKeys,
+    matchedRule: presentKeys[0] || '',
+  };
+}
+
 /**
  * 读取当前页面 localStorage key 列表。
  *
@@ -453,6 +463,7 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
 
   // 根据 profile 规则构造 cookie 摘要。
   const cookieSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.cookieKeys || [], cookieKeys);
+  const softCookieSummary = buildDreaminaSoftCookieSummary(profile, cookies);
   // 根据 profile 规则构造 localStorage 摘要。
   const localStorageSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.localStorageKeys || [], localStorageKeys);
   // 根据 profile 规则构造 sessionStorage 摘要。
@@ -476,6 +487,29 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
         matchedRule: 'sessionid',
         matchedDomain: matchedSessionCookie.domain,
         seenCookies,
+        softCookieSummary,
+      },
+      seenCookies,
+      localStorageSummary,
+      sessionStorageSummary,
+    };
+  }
+
+  if (softCookieSummary.presentKeys.length > 0) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.postAuth.session | source=soft-cookie | value=${softCookieSummary.presentKeys.join('|')} | strength=medium`);
+    }
+    return {
+      ok: true,
+      state: 'SESSION_SIGNAL_SOFT_DETECTED',
+      source: 'soft-cookie',
+      value: softCookieSummary.presentKeys.join('|'),
+      strength: 'medium',
+      stateChanged: null,
+      cookieSummary: {
+        ...cookieSummary,
+        seenCookies,
+        softCookieSummary,
       },
       seenCookies,
       localStorageSummary,
@@ -498,6 +532,7 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
       cookieSummary: {
         ...cookieSummary,
         seenCookies,
+        softCookieSummary,
       },
       seenCookies,
       localStorageSummary,
@@ -520,6 +555,7 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
       cookieSummary: {
         ...cookieSummary,
         seenCookies,
+        softCookieSummary,
       },
       seenCookies,
       localStorageSummary,
@@ -538,6 +574,7 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
     cookieSummary: {
       ...cookieSummary,
       seenCookies,
+      softCookieSummary,
     },
     seenCookies,
     localStorageSummary,
@@ -564,8 +601,27 @@ function isDreaminaBridgeSignal(value = '') {
 
 async function confirmPostAuthUi(page, runtime = {}, context = {}) {
   const profile = loadDreaminaPostAuthReadyProfile();
-  const matchedSelectors = await findAllVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
-  const matchedTexts = await findAllVisibleByTexts(page, profile?.uiSignals?.texts || []);
+  const matchedSelectors = await findAllVisibleBySelectors(page, [
+    ...(profile?.uiSignals?.selectors || []),
+    ...(profile?.successSignals?.workspaceSelectors || []),
+  ]);
+  const matchedTexts = await findAllVisibleByTexts(page, [
+    ...(profile?.uiSignals?.texts || []),
+    ...(profile?.successSignals?.workspaceTexts || []),
+  ]);
+
+  const workspaceSelectorHit = matchedSelectors.find(selector => (profile?.successSignals?.workspaceSelectors || []).includes(selector));
+  if (workspaceSelectorHit) {
+    return {
+      ok: true,
+      state: 'WORKSPACE_UI_SELECTOR_VISIBLE',
+      source: 'selector',
+      value: workspaceSelectorHit,
+      strength: 'strong',
+      matchedSelectors,
+      matchedTexts,
+    };
+  }
 
   const selectorHit = matchedSelectors[0] ? { ok: true, selector: matchedSelectors[0] } : { ok: false, selector: '' };
   if (selectorHit.ok) {
@@ -575,6 +631,19 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
       source: 'selector',
       value: selectorHit.selector,
       strength: 'strong',
+      matchedSelectors,
+      matchedTexts,
+    };
+  }
+
+  const workspaceTextHit = matchedTexts.find(text => (profile?.successSignals?.workspaceTexts || []).includes(text));
+  if (workspaceTextHit) {
+    return {
+      ok: true,
+      state: 'WORKSPACE_UI_TEXT_VISIBLE',
+      source: 'text',
+      value: workspaceTextHit,
+      strength: 'medium',
       matchedSelectors,
       matchedTexts,
     };

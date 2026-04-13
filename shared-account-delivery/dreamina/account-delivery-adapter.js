@@ -88,6 +88,16 @@ async function findFirstVisibleByTexts(page, texts = []) {
 async function detectDreaminaAccountDeliveryReadyBySelector(page, profile) {
   // 从 profile 中读取第六阶段入口 selector 列表。
   const selectorHit = await findFirstVisibleBySelectors(page, profile?.deliveryReady?.selectors || []);
+  const workspaceSelectorHit = await findFirstVisibleBySelectors(page, profile?.deliveryReady?.workspaceSelectors || []);
+  if (workspaceSelectorHit.ok) {
+    return {
+      ok: true,
+      source: 'selector',
+      value: workspaceSelectorHit.selector,
+      strength: 'strong',
+    };
+  }
+
   // 如果没有命中 selector，就返回统一未命中结构。
   if (!selectorHit.ok) {
     return {
@@ -147,6 +157,16 @@ async function detectDreaminaAccountDeliveryReadyByAccountContext(account, profi
  */
 async function detectDreaminaAccountDeliveryReadyByText(page, profile) {
   // 从 profile 中读取第六阶段入口文本列表。
+  const workspaceTextHit = await findFirstVisibleByTexts(page, profile?.deliveryReady?.workspaceTexts || []);
+  if (workspaceTextHit.ok) {
+    return {
+      ok: true,
+      source: 'text',
+      value: workspaceTextHit.text,
+      strength: 'medium',
+    };
+  }
+
   const textHit = await findFirstVisibleByTexts(page, profile?.deliveryReady?.texts || []);
   // 如果没有命中文本，就返回统一未命中结构。
   if (!textHit.ok) {
@@ -559,6 +579,10 @@ async function detectDreaminaAccountDeliverySuccessSignals(page, profile, contex
     const normalizedText = normalizeDreaminaSignalText(successText.text);
     const textTier = textTierMap.get(normalizedText) || 'unknown';
     const sessionSignalPresent = Boolean(accountSummary?.sessionSnapshot?.value || deliveryPayload?.payload?.sessionSummary?.value);
+    const softSessionPresent = Boolean(
+      accountSummary?.sessionSnapshot?.cookieSummary?.softCookieSummary?.presentKeys?.length
+      || deliveryPayload?.payload?.sessionSummary?.cookieSummary?.softCookieSummary?.presentKeys?.length
+    );
     const nonBridgeUiSignal = Boolean(
       accountSummary?.uiSnapshot?.matchedSelectors?.some(selector => !String(selector || '').includes('birthday-next'))
       || accountSummary?.uiSnapshot?.matchedTexts?.some(text => {
@@ -568,7 +592,7 @@ async function detectDreaminaAccountDeliverySuccessSignals(page, profile, contex
     );
     const strongPostAuth = String(postAuthResultConfirmation?.state || '').trim() === 'REGISTRATION_COMPLETE'
       && String(postAuthResultConfirmation?.source || '').trim() !== 'text';
-    const supportSignalPresent = sessionSignalPresent || nonBridgeUiSignal || strongPostAuth;
+    const supportSignalPresent = sessionSignalPresent || softSessionPresent || nonBridgeUiSignal || strongPostAuth;
     const hasStrongText = textTier === 'strong';
     const hasMediumText = textTier === 'medium';
     const riskyText = textTier === 'risky';

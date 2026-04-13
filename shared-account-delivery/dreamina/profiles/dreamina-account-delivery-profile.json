@@ -17,12 +17,32 @@
                                             "button[aria-label*='Avatar']",
                                             "[data-testid*='avatar']"
                                         ],
+                          "workspaceSelectors":  [
+                                                   "a[href*='/ai-tool/home']",
+                                                   "a[href*='/ai-tool/workspace']",
+                                                   "a[href*='/workspace']",
+                                                   "a[href*='/home']"
+                                               ],
                           "texts":  [
                                         "Workspace",
                                         "Home",
+                                        "Explore",
+                                        "Create",
+                                        "Assets",
+                                        "AI Agent",
+                                        "AI Image",
+                                        "AI Video",
                                         "Avatar",
                                         "Canvas"
                                     ],
+                          "workspaceTexts":  [
+                                                "Explore",
+                                                "Create",
+                                                "Assets",
+                                                "AI Agent",
+                                                "AI Image",
+                                                "AI Video"
+                                            ],
                           "urlIncludes":  [
                                               "/app",
                                               "/workspace",
@@ -36,9 +56,22 @@
                            "sessionKeys":  [
                                                "sessionid"
                                            ],
+                           "softSessionKeys":  [
+                                                   "msToken",
+                                                   "ttwid",
+                                                   "passport_csrf_token",
+                                                   "passport_csrf_token_default",
+                                                   "s_v_web_id"
+                                               ],
                            "uiSignals":  [
                                              "Workspace",
                                              "Home",
+                                             "Explore",
+                                             "Create",
+                                             "Assets",
+                                             "AI Agent",
+                                             "AI Image",
+                                             "AI Video",
                                              "Avatar",
                                              "Canvas"
                                          ]
@@ -60,16 +93,42 @@
                                              "button[aria-label*='Avatar']",
                                              "[data-testid*='avatar']"
                                          ],
+                           "workspaceSelectors":  [
+                                                      "a[href*='/ai-tool/home']",
+                                                      "a[href*='/ai-tool/workspace']",
+                                                      "a[href*='/workspace']",
+                                                      "a[href*='/home']"
+                                                  ],
                            "texts":  [
                                          "Workspace",
                                          "Home",
+                                         "Explore",
+                                         "Create",
+                                         "Assets",
+                                         "AI Agent",
+                                         "AI Image",
+                                         "AI Video",
                                          "Canvas",
                                          "Avatar"
                                      ],
+                           "workspaceTexts":  [
+                                                   "Explore",
+                                                   "Create",
+                                                   "Assets",
+                                                   "AI Agent",
+                                                   "AI Image",
+                                                   "AI Video"
+                                               ],
                            "textTiers":  {
                                               "strong":  [
                                                              "Workspace",
-                                                             "Home"
+                                                             "Home",
+                                                             "Explore",
+                                                             "Create",
+                                                             "Assets",
+                                                             "AI Agent",
+                                                             "AI Image",
+                                                             "AI Video"
                                                          ],
                                               "medium":  [
                                                              "Canvas"
@@ -111,9 +170,22 @@
                                    "sessionKeys":  [
                                                        "sessionid"
                                                    ],
+                                   "softSessionKeys":  [
+                                                           "msToken",
+                                                           "ttwid",
+                                                           "passport_csrf_token",
+                                                           "passport_csrf_token_default",
+                                                           "s_v_web_id"
+                                                       ],
                                    "uiSignals":  [
                                                      "Workspace",
                                                      "Home",
+                                                     "Explore",
+                                                     "Create",
+                                                     "Assets",
+                                                     "AI Agent",
+                                                     "AI Image",
+                                                     "AI Video",
                                                      "Avatar",
                                                      "Canvas"
                                                  ],
