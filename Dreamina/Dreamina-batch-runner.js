@@ -45,6 +45,8 @@ function ensureDir(dirPath) {
   }
 }
 
+const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-exists.json');
+
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -164,6 +166,50 @@ function buildBatchRunId() {
  * - 统计汇总
  * - 结果目录
  */
+
+function readKnownExistsAccounts() {
+  try {
+    if (!fs.existsSync(KNOWN_EXISTS_FILE)) {
+      return new Set();
+    }
+    const raw = JSON.parse(fs.readFileSync(KNOWN_EXISTS_FILE, 'utf8'));
+    const items = Array.isArray(raw?.accounts) ? raw.accounts : [];
+    return new Set(items.map(item => String(item || '').trim().toLowerCase()).filter(Boolean));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+async function writeKnownExistsAccounts(batchContext) {
+  const accounts = Array.from(batchContext.knownExistsAccounts || []).sort();
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    count: accounts.length,
+    accounts,
+  };
+  await fs.promises.writeFile(KNOWN_EXISTS_FILE, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function buildKnownExistsSkipResult(account = {}, proxy = {}, reason = 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
+  return {
+    success: false,
+    skipped: true,
+    finalStage: 'precheck-skip',
+    finalState: reason,
+    finalReason: reason,
+    account: {
+      email: account?.email || '',
+    },
+    proxy: summarizeProxy(proxy || {}),
+    meta: {
+      durationMs: 0,
+      skippedBeforeRun: true,
+    },
+    stageSummary: 'precheck-skip=KNOWN_EXISTS_ACCOUNT_SKIPPED',
+    slowestStage: '',
+  };
+}
+
 function createBatchRunContext(options = {}) {
   const runId = buildBatchRunId();
   const resultsDir = path.join(__dirname, 'batch-results');
@@ -179,6 +225,7 @@ function createBatchRunContext(options = {}) {
   ensureDir(latestDir);
 
   const pendingQueue = [...(options.accounts || [])];
+  const knownExistsAccounts = readKnownExistsAccounts();
 
   return {
     runId,
@@ -215,6 +262,7 @@ function createBatchRunContext(options = {}) {
       failedCount: 0,
       skippedCount: 0,
       existsCount: 0,
+      knownExistsSkippedCount: 0,
       failureReasonBuckets: {},
       existsReasonBuckets: {},
       finalStageBuckets: {},
@@ -281,9 +329,16 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
 
   if (result?.success) {
     batchContext.summary.successCount += 1;
+  } else if (result?.skipped && finalReason === 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
+    batchContext.summary.skippedCount += 1;
+    batchContext.summary.knownExistsSkippedCount += 1;
   } else if (existsFailure) {
     batchContext.summary.existsCount += 1;
     incrementBucket(batchContext.summary.existsReasonBuckets, finalReason);
+    const email = String(result?.account?.email || extra?.account?.email || '').trim().toLowerCase();
+    if (email) {
+      batchContext.knownExistsAccounts.add(email);
+    }
   } else {
     batchContext.summary.failedCount += 1;
     incrementBucket(batchContext.summary.failureReasonBuckets, finalReason);
@@ -298,11 +353,13 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   const record = buildBatchAccountRecord(result, {
     ...extra,
     batchContext,
-    bucket: result?.success ? 'success' : (existsFailure ? 'exists' : 'failed'),
+    bucket: result?.success ? 'success' : (existsFailure ? 'exists' : (result?.skipped ? 'skipped' : 'failed')),
   });
   if (result?.success) {
     batchContext.accounts.success.push(record);
   } else if (existsFailure) {
+    batchContext.accounts.skipped.push(record);
+  } else if (result?.skipped) {
     batchContext.accounts.skipped.push(record);
   } else {
     batchContext.accounts.failed.push(record);
@@ -441,7 +498,7 @@ async function writeBatchAccountRecordFile(batchContext, record = {}) {
   const reason = sanitizeFileName(record?.finalReason || record?.finalState || 'unknown-reason');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const bucket = String(record?.bucket || 'failed');
-  const targetDir = bucket === 'exists'
+  const targetDir = bucket === 'exists' || bucket === 'skipped'
     ? batchContext.paths.existsDir
     : bucket === 'success'
       ? batchContext.paths.successDir
@@ -469,9 +526,11 @@ async function writeBatchSummaryFile(batchContext) {
       failed: batchContext.summary.failedCount,
       exists: batchContext.summary.existsCount,
       skipped: batchContext.summary.skippedCount,
+      knownExistsSkipped: batchContext.summary.knownExistsSkippedCount,
     },
     failureReasonBuckets: batchContext.summary.failureReasonBuckets,
     existsReasonBuckets: batchContext.summary.existsReasonBuckets,
+    existsMeaning: 'exists=本次实际提交注册后，被平台明确判定为账号已存在；skipped/knownExistsSkipped=运行前已知该账号存在，因此本次直接跳过未提交注册',
     finalStageBuckets: batchContext.summary.finalStageBuckets,
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     successAccounts: batchContext.accounts.success,
@@ -482,6 +541,7 @@ async function writeBatchSummaryFile(batchContext) {
 
   await fs.promises.writeFile(batchContext.paths.summaryFile, JSON.stringify(summary, null, 2), 'utf8');
   await fs.promises.writeFile(batchContext.paths.latestSummaryFile, JSON.stringify(summary, null, 2), 'utf8');
+  await writeKnownExistsAccounts(batchContext);
 
   let indexData = [];
   try {
@@ -498,8 +558,15 @@ async function writeBatchSummaryFile(batchContext) {
     timestamp: new Date().toISOString(),
     runId: batchContext.runId,
     success: summary.success,
-    systemStatus: summary.counts.failed > 0 ? 'failed' : 'healthy-with-exists-or-success',
+    systemStatus: summary.counts.failed > 0 ? 'failed' : 'healthy',
+    existsStatus: summary.counts.exists > 0 ? 'has-confirmed-existing-accounts' : (summary.counts.knownExistsSkipped > 0 ? 'skipped-known-existing-accounts' : 'none'),
     durationMs: summary.durationMs,
+    totalAccounts: summary.counts.total,
+    successCount: summary.counts.success,
+    existsCount: summary.counts.exists,
+    knownExistsSkippedCount: summary.counts.knownExistsSkipped,
+    failedCount: summary.counts.failed,
+    skippedCount: summary.counts.skipped,
     counts: summary.counts,
     topExistsReason,
     topFailureReason,
@@ -621,6 +688,9 @@ function buildBatchFinalSummaryLines(summary = {}) {
 
   if (existsBuckets) {
     lines.push(`[Dreamina Batch] ExistsBuckets: ${existsBuckets}`);
+  }
+  if ((summary?.counts?.knownExistsSkipped || 0) > 0) {
+    lines.push(`[Dreamina Batch] KnownExistsSkipped: ${summary.counts.knownExistsSkipped}`);
   }
   if (failureBuckets) {
     lines.push(`[Dreamina Batch] FailureBuckets: ${failureBuckets}`);
