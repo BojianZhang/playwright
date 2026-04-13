@@ -99,18 +99,14 @@ async function runProxyPrecheckChain(options = {}) {
     });
   }
 
-  logStageProgress('proxy-precheck', '检查代理出口 IP', {
+  logStageProgress('proxy-precheck', '并行检查代理出口 IP / Dreamina 主目标 / Dreamina 副目标', {
     context: buildStageLogContext({ proxy, runtime, context }),
   });
-  const exitIp = checkProxyExitIp ? await checkProxyExitIp(proxy, runtime, { ...context, connectivity }) : null;
-  logStageProgress('proxy-precheck', '检查 Dreamina 主目标连通性', {
-    context: buildStageLogContext({ proxy, runtime, context }),
-  });
-  const primaryTarget = checkDreaminaPrimaryTarget ? await checkDreaminaPrimaryTarget(proxy, runtime, { ...context, connectivity, exitIp }) : null;
-  logStageProgress('proxy-precheck', '检查 Dreamina 副目标连通性', {
-    context: buildStageLogContext({ proxy, runtime, context }),
-  });
-  const secondaryTarget = checkDreaminaSecondaryTarget ? await checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget }) : null;
+  const [exitIp, primaryTarget, secondaryTarget] = await Promise.all([
+    checkProxyExitIp ? checkProxyExitIp(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
+    checkDreaminaPrimaryTarget ? checkDreaminaPrimaryTarget(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
+    checkDreaminaSecondaryTarget ? checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
+  ]);
 
   logStageProgress('proxy-precheck', '确认代理预检结果', {
     context: buildStageLogContext({ proxy, runtime, context }),

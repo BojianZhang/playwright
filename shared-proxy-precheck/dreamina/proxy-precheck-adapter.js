@@ -107,8 +107,8 @@ function requestViaHttpProxy(proxy = {}, url, method = 'GET', timeoutMs = 15000)
 
 async function checkProxyConnectivity(proxy, runtime = {}, context = {}) {
   const profile = loadDreaminaProxyPrecheckProfile();
-  const primary = profile?.targets?.primary || {};
-  const response = await requestViaHttpProxy(proxy, String(primary.url || ''), String(primary.method || 'GET').toUpperCase(), Number(runtime?.proxyConnectivityTimeoutMs || primary.timeoutMs || 15000));
+  const exitIp = profile?.targets?.exitIp || {};
+  const response = await requestViaHttpProxy(proxy, String(exitIp.url || ''), String(exitIp.method || 'GET').toUpperCase(), Number(runtime?.proxyConnectivityTimeoutMs || exitIp.timeoutMs || 10000));
   return {
     ok: Boolean(response.success),
     state: response.success ? 'PROXY_CONNECTIVITY_OK' : 'PROXY_CONNECTIVITY_FAILED',
