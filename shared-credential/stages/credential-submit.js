@@ -107,6 +107,7 @@ async function runCredentialSubmitStage(options = {}) {
 
   const waitForFormReady = resolveAdapterMethod(adapter, ['waitForCredentialFormReady', 'waitForDreaminaCredentialFormReady']);
   const fillEmail = resolveAdapterMethod(adapter, ['fillCredentialEmail', 'fillDreaminaCredentialEmail']);
+  const precheckExists = resolveAdapterMethod(adapter, ['precheckAccountExistsAfterEmail', 'precheckDreaminaAccountExistsAfterEmail', 'precheckAccountExists', 'precheckDreaminaAccountExists']);
   const fillPassword = resolveAdapterMethod(adapter, ['fillCredentialPassword', 'fillDreaminaCredentialPassword']);
   const submitForm = resolveAdapterMethod(adapter, ['submitCredentialForm', 'submitDreaminaCredentialForm']);
   const confirmSubmitResult = resolveAdapterMethod(adapter, ['confirmCredentialSubmitResult', 'confirmDreaminaCredentialSubmitResult']);
@@ -217,6 +218,38 @@ async function runCredentialSubmitStage(options = {}) {
         classified,
       },
     });
+  }
+
+
+  if (precheckExists) {
+    syncStageStep(options, { stage: 'credential-submit', step: 'precheck-exists-after-email' });
+    logStageProgress('credential-submit', '提交前检查账号是否已存在', {
+      context: buildStageLogContext(options),
+    });
+    const precheckResult = await precheckExists(page, account, runtime, { ...context, formReady, emailResult });
+    if (precheckResult?.ok && precheckResult?.state === 'ACCOUNT_ALREADY_EXISTS_PRECHECK') {
+      syncStageStep(options, { stage: 'credential-submit', step: 'stage-fail' });
+      logStageFail('credential-submit', '提交前 exists 检查命中已存在账号', {
+        context: buildStageLogContext(options),
+        extra: [
+          `state=${precheckResult.state}`,
+          `reason=${precheckResult.reason || 'DREAMINA_ACCOUNT_ALREADY_EXISTS_PRECHECK'}`,
+          precheckResult?.source ? `source=${precheckResult.source}` : '',
+          `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
+        ].filter(Boolean).join(' | '),
+      });
+      return normalizeCredentialStageResult({
+        success: false,
+        state: precheckResult.state,
+        reason: precheckResult.reason || 'DREAMINA_ACCOUNT_ALREADY_EXISTS_PRECHECK',
+        detectionSource: precheckResult.source || 'precheck',
+        detail: {
+          formReady,
+          emailResult,
+          precheckResult,
+        },
+      });
+    }
   }
 
   /**

@@ -25,7 +25,6 @@ const { runProxyPrecheckChain } = require('../shared-proxy-precheck/stages/proxy
 const { runEntryStage } = require('../shared-entry/stages/entry');
 
 // 阶段 2：credential submit 公共骨架。
-const { runExistsPrecheckStage } = require('../shared-credential/stages/exists-precheck');
 const { runCredentialSubmitStage } = require('../shared-credential/stages/credential-submit');
 // 阶段 3：verification submit 公共骨架。
 const { runVerificationSubmitStage } = require('../shared-verification/stages/verification-submit');
@@ -431,11 +430,6 @@ function buildDreaminaStageRegistry() {
       adapter: dreaminaEntryAdapter,
     },
     // 阶段 2：credential-submit
-    existsPrecheck: {
-      stage: 'exists-precheck',
-      run: runExistsPrecheckStage,
-      adapter: dreaminaCredentialAdapter,
-    },
     credential: {
       stage: 'credential-submit',
       run: runCredentialSubmitStage,
@@ -849,7 +843,7 @@ async function runDreaminaRegisterFlow(options = {}) {
   logStageProgress('entry', 'Dreamina 注册主链启动', {
     logger: logInfo,
     context: registerContext?.stageLogContext || {},
-    extra: 'stageOrder=proxyPrecheck->entry->existsPrecheck->credential->verification->profileCompletion->postAuthReady->accountDelivery',
+    extra: 'stageOrder=proxyPrecheck->entry->credential->verification->profileCompletion->postAuthReady->accountDelivery',
   });
 
   // 在正式进入 Dreamina 六阶段主链前，先做极轻的启动前校验。
@@ -885,7 +879,6 @@ async function runDreaminaRegisterFlow(options = {}) {
   const stageOrder = [
     'proxyPrecheck',
     'entry',
-    'existsPrecheck',
     'credential',
     'verification',
     'profileCompletion',
