@@ -97,10 +97,34 @@ function buildWorkerStatusLines() {
   });
 }
 
+function buildWorkerOverviewPanel() {
+  const snapshot = snapshotWorkerStatuses();
+  const running = snapshot.filter(item => String(item.status || '').includes('running')).length;
+  const idle = snapshot.filter(item => String(item.status || '') === 'idle').length;
+  const success = snapshot.filter(item => String(item.status || '') === 'success').length;
+  const failed = snapshot.filter(item => /fail|exception/.test(String(item.status || ''))).length;
+  const header = `WORKER_OVERVIEW | total=${snapshot.length} | running=${running} | idle=${idle} | success=${success} | failed=${failed}`;
+  const lines = snapshot.map(item => {
+    return [
+      `#${item.workerId}`,
+      item.status || 'idle',
+      item.account ? item.account : '-',
+      item.stage ? `stage=${item.stage}` : 'stage=-',
+      item.step ? `step=${item.step}` : 'step=-',
+      item.attempt ? `attempt=${item.attempt}` : 'attempt=0',
+      `stage=${formatDurationMs(item.stageDurationMs)}`,
+      `total=${formatDurationMs(item.totalDurationMs)}`,
+      item.lastReason ? `reason=${item.lastReason}` : '',
+    ].filter(Boolean).join(' | ');
+  });
+  return [header, ...lines];
+}
+
 module.exports = {
   updateWorkerStatus,
   markWorkerIdle,
   snapshotWorkerStatuses,
   buildWorkerStatusLines,
+  buildWorkerOverviewPanel,
   formatDurationMs,
 };

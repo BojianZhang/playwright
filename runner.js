@@ -6,7 +6,7 @@ const tls = require('tls');
 const { runRegisterTask } = require('./task-register');
 const { loadWindowLayoutProfile, summarizeProfile: summarizeWindowLayoutProfile } = require('./window-layout-profile-loader');
 const { logSystem, logAccount, logProxy, logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
-const { updateWorkerStatus, markWorkerIdle, buildWorkerStatusLines } = require('./worker-status-tracker');
+const { updateWorkerStatus, markWorkerIdle, buildWorkerStatusLines, buildWorkerOverviewPanel } = require('./worker-status-tracker');
 
 const baseDir = __dirname;
 const accountsPath = path.join(baseDir, 'accounts.txt');
@@ -1005,7 +1005,8 @@ function removeProxyFromList(filePath, targetRaw) {
   }
 
   const workerStatusInterval = setInterval(() => {
-    for (const line of buildWorkerStatusLines()) {
+    const panelLines = buildWorkerOverviewPanel();
+    for (const line of panelLines) {
       logInfo(line);
       appendLine(runLogFile, `[WORKER_STATUS] ${line}`);
     }
