@@ -325,15 +325,40 @@ async function waitForPostAuthReady(page, runtime = {}, context = {}) {
  * - 只读取 cookie key 摘要，不触碰敏感值内容
  * - 给第五阶段 session readiness 提供最轻量的存储侧观察能力
  */
-async function readDreaminaCookieKeys(page, context = {}) {
+async function readDreaminaCookies(page, context = {}) {
   // 尝试从 page.context() 里读取浏览器上下文对象。
   const browserContext = typeof page?.context === 'function' ? page.context() : null;
   // 如果拿不到 context 或 context 不支持 cookies 方法，就回退空数组。
   if (!browserContext || typeof browserContext.cookies !== 'function') return [];
-  // 读取当前上下文可见 cookie 列表，只保留 name。
+  // 读取当前上下文可见 cookie 列表。
   const cookies = await browserContext.cookies().catch(() => []);
-  // 返回去重后的 cookie key 列表。
+  // 返回轻量规范化后的 cookie 摘要列表，保留 name/domain 供第五阶段做域约束判断。
+  return (cookies || []).map(item => ({
+    name: String(item?.name || '').trim(),
+    domain: String(item?.domain || '').trim(),
+  })).filter(item => item.name);
+}
+
+function isDreaminaCapCutSessionCookie(cookie = {}) {
+  const name = String(cookie?.name || '').trim().toLowerCase();
+  const domain = String(cookie?.domain || '').trim().toLowerCase();
+  if (name !== 'sessionid') return false;
+  return domain === '.capcut.com'
+    || domain === 'dreamina.capcut.com'
+    || domain.endsWith('.capcut.com');
+}
+
+function extractDreaminaCookieKeys(cookies = []) {
   return [...new Set((cookies || []).map(item => String(item?.name || '').trim()).filter(Boolean))];
+}
+
+function extractDreaminaSeenCookies(cookies = []) {
+  return [...new Set((cookies || []).map(item => {
+    const name = String(item?.name || '').trim();
+    const domain = String(item?.domain || '').trim();
+    if (!name) return '';
+    return domain ? `${name}@${domain}` : name;
+  }).filter(Boolean))];
 }
 
 /**
@@ -402,8 +427,12 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
   // 读取 Dreamina 第五阶段 profile。
   const profile = loadDreaminaPostAuthReadyProfile();
 
-  // 读取当前 cookie key 列表。
-  const cookieKeys = await readDreaminaCookieKeys(page, context);
+  // 读取当前 cookie 摘要列表。
+  const cookies = await readDreaminaCookies(page, context);
+  // 只把 cookie name 提炼成 key 列表，供统一摘要复用。
+  const cookieKeys = extractDreaminaCookieKeys(cookies);
+  // 额外保留当前真实可见的 cookie name@domain 列表，便于排查 session 命中缺失。
+  const seenCookies = extractDreaminaSeenCookies(cookies);
   // 读取当前 localStorage key 列表。
   const localStorageKeys = await readDreaminaLocalStorageKeys(page);
   // 读取当前 sessionStorage key 列表。
@@ -416,19 +445,26 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
   // 根据 profile 规则构造 sessionStorage 摘要。
   const sessionStorageSummary = buildDreaminaStorageSummary(profile?.sessionSignals?.sessionStorageKeys || [], sessionStorageKeys);
 
-  // 优先以 cookie 命中作为 session 基础信号。
-  if (cookieSummary.presentKeys.length > 0) {
+  // 优先以 Dreamina/CapCut 域下的 sessionid cookie 命中作为 session 硬信号。
+  const matchedSessionCookie = (cookies || []).find(isDreaminaCapCutSessionCookie);
+  if (matchedSessionCookie && cookieSummary.presentKeys.includes('sessionid')) {
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.postAuth.session | source=cookie | value=${cookieSummary.matchedRule} | strength=medium`);
+      logInfo(`dreamina.postAuth.session | source=cookie | value=sessionid@${matchedSessionCookie.domain} | strength=strong`);
     }
     return {
       ok: true,
       state: 'SESSION_SIGNAL_DETECTED',
       source: 'cookie',
-      value: cookieSummary.matchedRule,
-      strength: 'medium',
+      value: `sessionid@${matchedSessionCookie.domain}`,
+      strength: 'strong',
       stateChanged: null,
-      cookieSummary,
+      cookieSummary: {
+        ...cookieSummary,
+        matchedRule: 'sessionid',
+        matchedDomain: matchedSessionCookie.domain,
+        seenCookies,
+      },
+      seenCookies,
       localStorageSummary,
       sessionStorageSummary,
     };
@@ -446,7 +482,11 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
       value: localStorageSummary.matchedRule,
       strength: 'medium',
       stateChanged: null,
-      cookieSummary,
+      cookieSummary: {
+        ...cookieSummary,
+        seenCookies,
+      },
+      seenCookies,
       localStorageSummary,
       sessionStorageSummary,
     };
@@ -464,7 +504,11 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
       value: sessionStorageSummary.matchedRule,
       strength: 'weak',
       stateChanged: null,
-      cookieSummary,
+      cookieSummary: {
+        ...cookieSummary,
+        seenCookies,
+      },
+      seenCookies,
       localStorageSummary,
       sessionStorageSummary,
     };
@@ -478,7 +522,11 @@ async function inspectPostAuthSession(page, runtime = {}, context = {}) {
     value: '',
     strength: '',
     stateChanged: null,
-    cookieSummary,
+    cookieSummary: {
+      ...cookieSummary,
+      seenCookies,
+    },
+    seenCookies,
     localStorageSummary,
     sessionStorageSummary,
   };
@@ -567,13 +615,17 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
     return {
       ok: true,
       state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
+      nextStage: 'account-delivery',
       source: 'selector',
       value: successSelector.selector,
       strength: 'strong',
       settleStage: 'primary-success',
       stateChanged: true,
       retryCount: 0,
+      winningSuccessSignal: {
+        type: 'selector',
+        value: successSelector.selector,
+      },
       matchedSelectors: matchedSuccessSelectors,
       matchedTexts: matchedSuccessTexts,
     };
@@ -581,19 +633,36 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 
   const successText = matchedSuccessTexts[0] ? { ok: true, text: matchedSuccessTexts[0] } : { ok: false, text: '' };
   if (successText.ok) {
-    return {
-      ok: true,
-      state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
-      source: 'text',
-      value: successText.text,
-      strength: 'weak',
-      settleStage: 'secondary-success',
-      stateChanged: true,
-      retryCount: 0,
-      matchedSelectors: matchedSuccessSelectors,
-      matchedTexts: matchedSuccessTexts,
-    };
+    const normalizedText = String(successText.text || '').trim().toLowerCase();
+    const riskyText = ['avatar'].includes(normalizedText);
+    const bridgeOnlyUi = Boolean(
+      uiConfirmation?.matchedSelectors?.length
+      && uiConfirmation.matchedSelectors.every(selector => String(selector || '').includes('birthday-next'))
+      && (uiConfirmation?.matchedTexts || []).every(text => ['year', 'month', 'day', 'next'].includes(String(text || '').trim().toLowerCase()))
+    );
+    const strongSession = Boolean(sessionInspection?.ok && sessionInspection?.value);
+    const nonBridgeSelector = matchedSuccessSelectors.some(selector => !String(selector || '').includes('birthday-next'));
+    const nonRiskText = matchedSuccessTexts.some(text => !['avatar'].includes(String(text || '').trim().toLowerCase()));
+
+    if (!bridgeOnlyUi && (strongSession || nonBridgeSelector || nonRiskText || !riskyText)) {
+      return {
+        ok: true,
+        state: 'REGISTRATION_COMPLETE',
+        nextStage: 'account-delivery',
+        source: 'text',
+        value: successText.text,
+        strength: riskyText ? 'weak' : 'medium',
+        settleStage: 'secondary-success',
+        stateChanged: true,
+        retryCount: 0,
+        winningSuccessSignal: {
+          type: 'text',
+          value: successText.text,
+        },
+        matchedSelectors: matchedSuccessSelectors,
+        matchedTexts: matchedSuccessTexts,
+      };
+    }
   }
 
   const bridgeSelector = matchedBridgeSelectors[0] ? { ok: true, selector: matchedBridgeSelectors[0] } : { ok: false, selector: '' };
@@ -634,13 +703,17 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
     return {
       ok: true,
       state: 'REGISTRATION_COMPLETE',
-      nextStage: 'registration-complete',
+      nextStage: 'account-delivery',
       source: 'session+ui',
       value: [sessionInspection.value, uiConfirmation.value].filter(Boolean).join(' | '),
       strength: sessionInspection?.strength === 'strong' || uiConfirmation?.strength === 'strong' ? 'medium' : 'weak',
       settleStage: 'session-check',
       stateChanged: true,
       retryCount: 0,
+      winningSuccessSignal: {
+        type: 'session+ui',
+        value: [sessionInspection.value, uiConfirmation.value].filter(Boolean).join(' | '),
+      },
       matchedSelectors: Array.isArray(uiConfirmation?.matchedSelectors) ? uiConfirmation.matchedSelectors : [],
       matchedTexts: Array.isArray(uiConfirmation?.matchedTexts) ? uiConfirmation.matchedTexts : [],
     };

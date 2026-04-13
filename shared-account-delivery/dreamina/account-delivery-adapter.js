@@ -517,7 +517,8 @@ async function buildAccountDeliveryPayload(page, account, runtime = {}, context 
  * - 优先用站点成功 signals 收敛 delivery-complete
  * - 这层属于第六阶段自己的最终成功确认，不涉及外部系统写入
  */
-async function detectDreaminaAccountDeliverySuccessSignals(page, profile) {
+async function detectDreaminaAccountDeliverySuccessSignals(page, profile, context = {}) {
+  const { accountSummary = null, deliveryPayload = null, postAuthResultConfirmation = null } = context;
   // 优先查 success selector。
   const successSelector = await findFirstVisibleBySelectors(page, profile?.successSignals?.selectors || []);
   // 如果 selector 命中，按强成功返回。
@@ -528,20 +529,48 @@ async function detectDreaminaAccountDeliverySuccessSignals(page, profile) {
       source: 'selector',
       value: successSelector.selector,
       strength: 'strong',
+      winningSuccessSignal: {
+        type: 'selector',
+        value: successSelector.selector,
+      },
+      matchedSelectors: [successSelector.selector],
+      matchedTexts: [],
     };
   }
 
   // 再查 success text。
   const successText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
-  // 如果文本命中，按弱成功返回。
+  // 文本命中时，先对高风险泛词做收紧，避免仅靠 Avatar 这类词单独宣布交付完成。
   if (successText.ok) {
-    return {
-      hit: true,
-      state: 'DELIVERY_COMPLETE',
-      source: 'text',
-      value: successText.text,
-      strength: 'weak',
-    };
+    const normalizedText = String(successText.text || '').trim().toLowerCase();
+    const riskyText = normalizedText === 'avatar';
+    const sessionSignalPresent = Boolean(accountSummary?.sessionSnapshot?.value || deliveryPayload?.payload?.sessionSummary?.value);
+    const nonBridgeUiSignal = Boolean(
+      accountSummary?.uiSnapshot?.matchedSelectors?.some(selector => !String(selector || '').includes('birthday-next'))
+      || accountSummary?.uiSnapshot?.matchedTexts?.some(text => {
+        const normalized = String(text || '').trim().toLowerCase();
+        return normalized && !['year', 'month', 'day', 'next'].includes(normalized);
+      })
+    );
+    const strongPostAuth = String(postAuthResultConfirmation?.state || '').trim() === 'REGISTRATION_COMPLETE'
+      && String(postAuthResultConfirmation?.source || '').trim() !== 'text';
+    const supportSignalPresent = sessionSignalPresent || nonBridgeUiSignal || strongPostAuth;
+
+    if (supportSignalPresent) {
+      return {
+        hit: true,
+        state: 'DELIVERY_COMPLETE',
+        source: 'text',
+        value: successText.text,
+        strength: riskyText ? 'weak' : 'medium',
+        winningSuccessSignal: {
+          type: 'text',
+          value: successText.text,
+        },
+        matchedSelectors: [],
+        matchedTexts: [successText.text],
+      };
+    }
   }
 
   // 都未命中时，返回统一未命中结构。
@@ -617,7 +646,11 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
   const confirmGraceWaitMs = Number(runtime?.accountDeliveryConfirmGraceWaitMs || 600);
 
   // 第一轮：先看明确成功信号。
-  const successSignal = await detectDreaminaAccountDeliverySuccessSignals(page, profile);
+  const successSignal = await detectDreaminaAccountDeliverySuccessSignals(page, profile, {
+    accountSummary,
+    deliveryPayload,
+    postAuthResultConfirmation: context?.postAuthResultConfirmation || null,
+  });
   if (successSignal.hit) {
     if (typeof logInfo === 'function') {
       logInfo(`dreamina.accountDelivery.result | state=DELIVERY_COMPLETE | source=${successSignal.source} | value=${successSignal.value} | settleStage=primary-success`);
@@ -632,6 +665,9 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
       settleStage: 'primary-success',
       stateChanged: true,
       retryCount: 0,
+      winningSuccessSignal: successSignal.winningSuccessSignal || null,
+      matchedSelectors: successSignal.matchedSelectors || [],
+      matchedTexts: successSignal.matchedTexts || [],
     };
   }
 
@@ -679,7 +715,11 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
   }
 
   // 第二轮：保护等待后再次检查成功信号。
-  const successSignalAfterGrace = await detectDreaminaAccountDeliverySuccessSignals(page, profile);
+  const successSignalAfterGrace = await detectDreaminaAccountDeliverySuccessSignals(page, profile, {
+    accountSummary,
+    deliveryPayload,
+    postAuthResultConfirmation: context?.postAuthResultConfirmation || null,
+  });
   if (successSignalAfterGrace.hit) {
     if (typeof logInfo === 'function') {
       logInfo(`dreamina.accountDelivery.result | state=DELIVERY_COMPLETE | source=${successSignalAfterGrace.source} | value=${successSignalAfterGrace.value} | settleStage=secondary-success`);
@@ -694,6 +734,9 @@ async function confirmAccountDeliveryResult(page, account, runtime = {}, context
       settleStage: 'secondary-success',
       stateChanged: true,
       retryCount: 0,
+      winningSuccessSignal: successSignalAfterGrace.winningSuccessSignal || null,
+      matchedSelectors: successSignalAfterGrace.matchedSelectors || [],
+      matchedTexts: successSignalAfterGrace.matchedTexts || [],
     };
   }
 
