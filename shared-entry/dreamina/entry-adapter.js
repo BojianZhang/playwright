@@ -286,29 +286,36 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
   const emailInputRoleName = String(loginSignals?.emailInputRoleName || 'Enter email').trim();
   const continueWithEmailText = String(loginSignals?.continueWithEmailText || 'Continue with email').trim();
 
+  const matchedTexts = [];
+  const matchedSelectors = [];
+
   const emailInput = page.getByRole('textbox', { name: emailInputRoleName }).first();
   if (await isVisible(emailInput)) {
-    return { found: true, label: 'email-input', source: 'role', value: emailInputRoleName };
+    matchedSelectors.push(`role=textbox[name=${emailInputRoleName}]`);
+    return { found: true, label: 'email-input', source: 'role', value: emailInputRoleName, matchedTexts, matchedSelectors };
   }
 
   const continueWithEmail = page.getByText(continueWithEmailText, { exact: false }).first();
   if (await isVisible(continueWithEmail)) {
-    return { found: true, label: 'continue-with-email', source: 'text', value: continueWithEmailText };
+    matchedTexts.push(continueWithEmailText);
+    return { found: true, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors };
   }
 
   for (const text of entryTexts) {
     const locator = page.getByText(String(text || ''), { exact: false }).first();
     if (await isVisible(locator)) {
-      return { found: true, label: 'entry-text', source: 'text', value: text };
+      matchedTexts.push(String(text || ''));
+      return { found: true, label: 'entry-text', source: 'text', value: text, matchedTexts, matchedSelectors };
     }
   }
 
   const roleLocator = page.getByRole('button', { name: new RegExp(entryRolePattern || 'sign in|log in|login|sign up', 'i') }).first();
   if (await isVisible(roleLocator)) {
-    return { found: true, label: 'entry-role', source: 'role', value: entryRolePattern };
+    matchedSelectors.push(`role=button[name~=${entryRolePattern}]`);
+    return { found: true, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors };
   }
 
-  return { found: false, label: '', source: '', value: '' };
+  return { found: false, label: '', source: '', value: '', matchedTexts, matchedSelectors };
 }
 
 /**
@@ -356,6 +363,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
     }
   }
 
+  const debugSnapshot = await captureDreaminaEntryDebugSnapshot(page);
   return {
     ok: false,
     state: 'ENTRY_NOT_READY',
@@ -367,6 +375,9 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       loginSignal: null,
       round,
       elapsedMs,
+      debugSnapshot,
+      matchedTexts: [],
+      matchedSelectors: [],
     },
   };
 }
@@ -498,6 +509,49 @@ async function recoverEntry(page, classifiedFailure = {}, context = {}) {
  * 3. 尝试执行 entry recover
  * 4. recover 成功后再做一次 ready recheck
  */
+async function captureDreaminaEntryDebugSnapshot(page) {
+  return await page.evaluate(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const visible = (element) => {
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+    };
+
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+      .filter(visible)
+      .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label') || ''))
+      .filter(Boolean)
+      .slice(0, 20);
+
+    const inputs = Array.from(document.querySelectorAll('input, textarea, [role="textbox"]'))
+      .filter(visible)
+      .map((element) => ({
+        tag: String(element.tagName || '').toLowerCase(),
+        type: normalize(element.getAttribute('type') || ''),
+        name: normalize(element.getAttribute('name') || ''),
+        placeholder: normalize(element.getAttribute('placeholder') || ''),
+        ariaLabel: normalize(element.getAttribute('aria-label') || ''),
+      }))
+      .slice(0, 20);
+
+    return {
+      url: String(window.location.href || ''),
+      title: normalize(document.title || ''),
+      bodyPreview: normalize(document.body?.innerText || '').slice(0, 800),
+      visibleButtons: buttons,
+      visibleInputs: inputs,
+    };
+  }).catch(() => ({
+    url: String(page?.url ? page.url() : ''),
+    title: '',
+    bodyPreview: '',
+    visibleButtons: [],
+    visibleInputs: [],
+  }));
+}
+
 async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
 
@@ -550,6 +604,18 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
     }
   }
 
+  const failureSnapshot = await captureDreaminaEntryDebugSnapshot(page);
+  const mergedDetail = {
+    ...(readyResult?.detail && typeof readyResult.detail === 'object' ? readyResult.detail : {}),
+    debugSnapshot: failureSnapshot,
+    matchedTexts: Array.isArray(readyResult?.detail?.matchedTexts) ? readyResult.detail.matchedTexts : [],
+    matchedSelectors: Array.isArray(readyResult?.detail?.matchedSelectors) ? readyResult.detail.matchedSelectors : [],
+  };
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.entry.failure.snapshot | url=${failureSnapshot.url || ''} | title=${failureSnapshot.title || ''} | buttons=${(failureSnapshot.visibleButtons || []).slice(0, 6).join(' / ')}`);
+  }
+
   return {
     ok: false,
     state: readyResult?.state || 'ENTRY_NOT_READY',
@@ -559,6 +625,7 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
     strength: readyResult?.strength || '',
     waitStepMs: Number(readyResult?.waitStepMs || 0),
     recoveryResult: recoveryResult || null,
+    detail: mergedDetail,
   };
 }
 function classifyEntryFailure(input = {}) {
