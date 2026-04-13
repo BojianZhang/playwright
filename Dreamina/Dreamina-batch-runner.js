@@ -540,6 +540,37 @@ async function workerLoop(workerId, batchContext) {
   }
 }
 
+
+function buildBatchFinalSummaryLines(summary = {}) {
+  const lines = [];
+  const failureBuckets = Object.entries(summary?.failureReasonBuckets || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' | ');
+  const successAccounts = Array.isArray(summary?.successAccounts)
+    ? summary.successAccounts.map(item => item.account).filter(Boolean).join(', ')
+    : '';
+  const failedAccounts = Array.isArray(summary?.failedAccounts)
+    ? summary.failedAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
+    : '';
+  const topSlowestStage = Object.entries(summary?.slowestStageBuckets || {})
+    .sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+
+  if (failureBuckets) {
+    lines.push(`[Dreamina Batch] FailureBuckets: ${failureBuckets}`);
+  }
+  if (successAccounts) {
+    lines.push(`[Dreamina Batch] SuccessAccounts: ${successAccounts}`);
+  }
+  if (failedAccounts) {
+    lines.push(`[Dreamina Batch] FailedAccounts: ${failedAccounts}`);
+  }
+  if (topSlowestStage) {
+    lines.push(`[Dreamina Batch] TopSlowestStage: ${topSlowestStage}`);
+  }
+  return lines;
+}
+
 async function runDreaminaBatch(argv = []) {
   const cli = parseBatchCliArgs(argv);
   const accounts = selectBatchAccounts(loadLocalAccounts(), cli);
@@ -577,6 +608,9 @@ async function runDreaminaBatch(argv = []) {
   const summary = await writeBatchSummaryFile(batchContext);
 
   console.log(`[Dreamina Batch] success=${summary.success ? 'Y' : 'N'} | total=${summary.counts.total} | successCount=${summary.counts.success} | failedCount=${summary.counts.failed} | skippedCount=${summary.counts.skipped}`);
+  for (const line of buildBatchFinalSummaryLines(summary)) {
+    console.log(line);
+  }
   console.log(`[Dreamina Batch] summaryFile=${batchContext.paths.summaryFile}`);
   console.log(`[Dreamina Batch] latestSummaryFile=${batchContext.paths.latestSummaryFile}`);
   console.log(`[Dreamina Batch] indexFile=${batchContext.paths.indexFile}`);
