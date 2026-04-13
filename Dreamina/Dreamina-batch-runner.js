@@ -212,7 +212,9 @@ function createBatchRunContext(options = {}) {
       successCount: 0,
       failedCount: 0,
       skippedCount: 0,
+      existsCount: 0,
       failureReasonBuckets: {},
+      existsReasonBuckets: {},
       finalStageBuckets: {},
       slowestStageBuckets: {},
     },
@@ -221,6 +223,7 @@ function createBatchRunContext(options = {}) {
       resultsDir,
       successDir,
       failedDir,
+      existsDir,
       latestDir,
       summaryFile: path.join(resultsDir, `${runId}.json`),
       latestSummaryFile: path.join(latestDir, 'dreamina-batch-latest.json'),
@@ -234,6 +237,7 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     account: result?.account?.email || extra?.account?.email || '',
     workerId: extra?.workerId || 0,
     proxyId: extra?.proxy?.id || summarizeProxy(extra?.proxy || {}).id || '',
+    bucket: String(extra?.bucket || (result?.success ? 'success' : 'failed')),
     success: Boolean(result?.success),
     finalStage: String(result?.finalStage || ''),
     finalState: String(result?.finalState || ''),
@@ -241,6 +245,13 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     durationMs: Number(result?.meta?.durationMs || 0),
     resultFile: String(result?.meta?.resultFile || ''),
     latestResultFile: String(result?.meta?.latestResultFile || ''),
+    batchBucketPath: String(
+      extra?.bucket === 'exists'
+        ? (extra?.batchContext?.paths?.existsDir || '')
+        : extra?.bucket === 'success'
+          ? (extra?.batchContext?.paths?.successDir || '')
+          : (extra?.batchContext?.paths?.failedDir || '')
+    ),
     stageSummary: String(result?.stageSummary || ''),
     slowestStage: String(result?.slowestStage || ''),
   };
@@ -254,13 +265,23 @@ function incrementBucket(target = {}, key = '') {
 /**
  * 从单账号结果中抽批次级汇总字段。
  */
+
+function isExistsBusinessFailure(result = {}) {
+  const reason = String(result?.finalReason || result?.finalState || '').trim();
+  return reason === 'DREAMINA_ACCOUNT_ALREADY_EXISTS' || reason === 'ACCOUNT_ALREADY_EXISTS';
+}
+
 function updateBatchSummary(batchContext, result = {}, extra = {}) {
   const finalReason = String(result?.finalReason || result?.finalState || 'UNKNOWN');
   const finalStage = String(result?.finalStage || 'UNKNOWN');
   const slowestStage = String(result?.slowestStage || 'UNKNOWN');
+  const existsFailure = isExistsBusinessFailure(result);
 
   if (result?.success) {
     batchContext.summary.successCount += 1;
+  } else if (existsFailure) {
+    batchContext.summary.existsCount += 1;
+    incrementBucket(batchContext.summary.existsReasonBuckets, finalReason);
   } else {
     batchContext.summary.failedCount += 1;
     incrementBucket(batchContext.summary.failureReasonBuckets, finalReason);
@@ -272,9 +293,15 @@ function updateBatchSummary(batchContext, result = {}, extra = {}) {
     incrementBucket(batchContext.summary.slowestStageBuckets, stageLabel);
   }
 
-  const record = buildBatchAccountRecord(result, extra);
+  const record = buildBatchAccountRecord(result, {
+    ...extra,
+    batchContext,
+    bucket: result?.success ? 'success' : (existsFailure ? 'exists' : 'failed'),
+  });
   if (result?.success) {
     batchContext.accounts.success.push(record);
+  } else if (existsFailure) {
+    batchContext.accounts.skipped.push(record);
   } else {
     batchContext.accounts.failed.push(record);
   }
@@ -285,8 +312,9 @@ function buildBatchOverviewLines(batchContext) {
   const running = batchContext.accounts.running.length;
   const success = batchContext.summary.successCount;
   const failed = batchContext.summary.failedCount;
+  const exists = batchContext.summary.existsCount;
   const skipped = batchContext.summary.skippedCount;
-  const header = `BATCH_OVERVIEW | total=${batchContext.accounts.total} | pending=${pending} | running=${running} | success=${success} | failed=${failed} | skipped=${skipped}`;
+  const header = `BATCH_OVERVIEW | total=${batchContext.accounts.total} | pending=${pending} | running=${running} | success=${success} | failed=${failed} | exists=${exists} | skipped=${skipped}`;
 
   const failureBuckets = Object.entries(batchContext.summary.failureReasonBuckets || {})
     .map(([key, value]) => `${key}=${value}`)
@@ -417,14 +445,17 @@ async function writeBatchSummaryFile(batchContext) {
       total: batchContext.accounts.total,
       success: batchContext.summary.successCount,
       failed: batchContext.summary.failedCount,
+      exists: batchContext.summary.existsCount,
       skipped: batchContext.summary.skippedCount,
     },
     failureReasonBuckets: batchContext.summary.failureReasonBuckets,
+    existsReasonBuckets: batchContext.summary.existsReasonBuckets,
     finalStageBuckets: batchContext.summary.finalStageBuckets,
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
-    skippedAccounts: batchContext.accounts.skipped,
+    existsAccounts: batchContext.accounts.skipped,
+    skippedAccounts: [],
   };
 
   await fs.promises.writeFile(batchContext.paths.summaryFile, JSON.stringify(summary, null, 2), 'utf8');
@@ -447,6 +478,7 @@ async function writeBatchSummaryFile(batchContext) {
     durationMs: summary.durationMs,
     counts: summary.counts,
     topFailureReason,
+    topExistsReason: Object.entries(summary.existsReasonBuckets || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '',
     topSlowestStage,
     summaryFile: batchContext.paths.summaryFile,
   });
@@ -547,11 +579,18 @@ function buildBatchFinalSummaryLines(summary = {}) {
     .sort((a, b) => b[1] - a[1])
     .map(([key, value]) => `${key}=${value}`)
     .join(' | ');
+  const existsBuckets = Object.entries(summary?.existsReasonBuckets || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' | ');
   const successAccounts = Array.isArray(summary?.successAccounts)
     ? summary.successAccounts.map(item => item.account).filter(Boolean).join(', ')
     : '';
   const failedAccounts = Array.isArray(summary?.failedAccounts)
     ? summary.failedAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
+    : '';
+  const existsAccounts = Array.isArray(summary?.existsAccounts)
+    ? summary.existsAccounts.map(item => `${item.account}:${item.finalReason || item.finalState || 'UNKNOWN'}`).filter(Boolean).join(', ')
     : '';
   const topSlowestStage = Object.entries(summary?.slowestStageBuckets || {})
     .sort((a, b) => b[1] - a[1])[0]?.[0] || '';
@@ -559,11 +598,17 @@ function buildBatchFinalSummaryLines(summary = {}) {
   if (failureBuckets) {
     lines.push(`[Dreamina Batch] FailureBuckets: ${failureBuckets}`);
   }
+  if (existsBuckets) {
+    lines.push(`[Dreamina Batch] ExistsBuckets: ${existsBuckets}`);
+  }
   if (successAccounts) {
     lines.push(`[Dreamina Batch] SuccessAccounts: ${successAccounts}`);
   }
   if (failedAccounts) {
     lines.push(`[Dreamina Batch] FailedAccounts: ${failedAccounts}`);
+  }
+  if (existsAccounts) {
+    lines.push(`[Dreamina Batch] ExistsAccounts: ${existsAccounts}`);
   }
   if (topSlowestStage) {
     lines.push(`[Dreamina Batch] TopSlowestStage: ${topSlowestStage}`);
@@ -607,7 +652,7 @@ async function runDreaminaBatch(argv = []) {
 
   const summary = await writeBatchSummaryFile(batchContext);
 
-  console.log(`[Dreamina Batch] success=${summary.success ? 'Y' : 'N'} | total=${summary.counts.total} | successCount=${summary.counts.success} | failedCount=${summary.counts.failed} | skippedCount=${summary.counts.skipped}`);
+  console.log(`[Dreamina Batch] success=${summary.success ? 'Y' : 'N'} | total=${summary.counts.total} | successCount=${summary.counts.success} | failedCount=${summary.counts.failed} | existsCount=${summary.counts.exists} | skippedCount=${summary.counts.skipped}`);
   for (const line of buildBatchFinalSummaryLines(summary)) {
     console.log(line);
   }
