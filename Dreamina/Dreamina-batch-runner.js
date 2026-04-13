@@ -68,6 +68,7 @@ function parseBatchCliArgs(argv = []) {
     proxyStart: 0,
     headed: false,
     slowMo: 0,
+    ignoreKnownExists: false,
   };
 
   for (let index = 0; index < args.length; index++) {
@@ -105,6 +106,10 @@ function parseBatchCliArgs(argv = []) {
     if (token === '--slow-mo') {
       parsed.slowMo = Number(args[index + 1] || parsed.slowMo);
       index += 1;
+      continue;
+    }
+    if (token === '--ignore-known-exists') {
+      parsed.ignoreKnownExists = true;
       continue;
     }
   }
@@ -240,6 +245,7 @@ function createBatchRunContext(options = {}) {
       accountStart: Number(options.accountStart || 0),
       accountLimit: Number(options.accountLimit || 0),
       proxyStart: Number(options.proxyStart || 0),
+      ignoreKnownExists: Boolean(options.ignoreKnownExists),
     },
 
     accounts: {
@@ -635,7 +641,7 @@ async function workerLoop(workerId, batchContext) {
 
     try {
       const normalizedEmail = String(account?.email || '').trim().toLowerCase();
-      if (normalizedEmail && batchContext.knownExistsAccounts.has(normalizedEmail)) {
+      if (!batchContext.config.ignoreKnownExists && normalizedEmail && batchContext.knownExistsAccounts.has(normalizedEmail)) {
         updateWorkerStatus(workerId, {
           status: 'skip-known-exists',
           account: account.email,
@@ -764,7 +770,7 @@ async function runDreaminaBatch(argv = []) {
     proxies,
   });
 
-  console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length}`);
+  console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
 
   const panelInterval = setInterval(() => {
     for (const line of buildBatchOverviewLines(batchContext)) {
