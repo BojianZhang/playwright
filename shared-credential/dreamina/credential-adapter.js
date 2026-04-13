@@ -209,6 +209,73 @@ async function ensureDreaminaSignupMode(page, runtime = {}, context = {}) {
  * - 确认 email input / password input / submit button 是否已经可用
  * - 这是阶段 2 的起点判断
  */
+
+async function precheckDreaminaAccountExists(page, account = {}, runtime = {}, context = {}) {
+  const profile = loadDreaminaCredentialProfile();
+  const authModeResult = await ensureDreaminaSignupMode(page, runtime, context);
+  if (!authModeResult?.ok) {
+    return {
+      ok: false,
+      state: authModeResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
+      reason: authModeResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
+      source: 'auth-mode',
+      signalStrength: 'weak',
+    };
+  }
+
+  const formReady = await waitForDreaminaCredentialFormReady(page, runtime, context);
+  if (!formReady?.ok || !formReady?.emailField?.locator) {
+    return {
+      ok: false,
+      state: 'EXISTS_PRECHECK_FORM_NOT_READY',
+      reason: 'EXISTS_PRECHECK_FORM_NOT_READY',
+      source: 'form-ready',
+      signalStrength: 'weak',
+    };
+  }
+
+  const email = String(account?.email || '').trim();
+  await formReady.emailField.locator.fill(email).catch(async () => {
+    await formReady.emailField.locator.click({ timeout: 1000 }).catch(() => {});
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.type(email, { delay: Number(runtime?.credentialEmailTypeDelayMs || 35) }).catch(() => {});
+  });
+  await formReady.emailField.locator.blur().catch(() => {});
+  await page.waitForTimeout(Number(runtime?.existsPrecheckObserveMs || 1200));
+
+  const existingAccount = await findFirstVisibleByTexts(page, profile?.failureSignals?.existingAccount || []);
+  if (existingAccount.ok) {
+    return {
+      ok: true,
+      state: 'ACCOUNT_ALREADY_EXISTS_PRECHECK',
+      reason: 'DREAMINA_ACCOUNT_ALREADY_EXISTS_PRECHECK',
+      source: 'inline-text',
+      signalStrength: 'strong',
+      value: existingAccount.text,
+    };
+  }
+
+  const inlineError = await findFirstVisibleByTexts(page, profile?.failureSignals?.inlineError || []);
+  if (inlineError.ok) {
+    return {
+      ok: true,
+      state: 'EXISTS_PRECHECK_INCONCLUSIVE',
+      reason: 'DREAMINA_EXISTS_PRECHECK_INLINE_ERROR',
+      source: 'inline-text',
+      signalStrength: 'weak',
+      value: inlineError.text,
+    };
+  }
+
+  return {
+    ok: true,
+    state: 'ACCOUNT_NOT_EXISTS_PRECHECK_CLEAR',
+    reason: 'ACCOUNT_NOT_EXISTS_PRECHECK_CLEAR',
+    source: 'no-inline-existing-signal',
+    signalStrength: 'weak',
+  };
+}
+
 async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const profile = loadDreaminaCredentialProfile();
@@ -851,6 +918,7 @@ module.exports = {
   confirmDreaminaRegisterMode,
   confirmDreaminaSigninMode,
   ensureDreaminaSignupMode,
+  precheckDreaminaAccountExists,
   waitForDreaminaCredentialFormReady,
   fillDreaminaCredentialEmail,
   fillDreaminaCredentialPassword,

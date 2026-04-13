@@ -320,7 +320,12 @@ function incrementBucket(target = {}, key = '') {
 
 function isExistsBusinessFailure(result = {}) {
   const reason = String(result?.finalReason || result?.finalState || '').trim();
-  return reason === 'DREAMINA_ACCOUNT_ALREADY_EXISTS' || reason === 'ACCOUNT_ALREADY_EXISTS';
+  return [
+    'DREAMINA_ACCOUNT_ALREADY_EXISTS',
+    'ACCOUNT_ALREADY_EXISTS',
+    'DREAMINA_ACCOUNT_ALREADY_EXISTS_PRECHECK',
+    'ACCOUNT_ALREADY_EXISTS_PRECHECK',
+  ].includes(reason);
 }
 
 async function updateBatchSummary(batchContext, result = {}, extra = {}) {
