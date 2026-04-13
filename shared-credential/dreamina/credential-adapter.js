@@ -855,6 +855,34 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
+  const afterSnapshot = submitResult?.afterSnapshot || null;
+  const signupOverlayStillOpen = Boolean(
+    afterSnapshot
+    && afterSnapshot.authMode === 'signup'
+    && afterSnapshot.emailVisible
+    && afterSnapshot.passwordVisible
+    && afterSnapshot.continueVisible
+    && afterSnapshot.continueEnabled
+    && !afterSnapshot.verificationVisible
+    && !afterSnapshot.hasExistingAccount
+    && !afterSnapshot.hasRejected
+    && !afterSnapshot.hasRateLimited
+    && !afterSnapshot.hasInlineError
+    && !afterSnapshot.hasErrorModal
+  );
+  if (signupOverlayStillOpen) {
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'}`);
+    return {
+      ok: false,
+      state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
+      nextStage: '',
+      source: 'snapshot',
+      value: 'SIGNUP_OVERLAY_STILL_OPEN',
+      strength: 'weak',
+      settleStage: settlementResult?.stage || 'snapshot-check',
+    };
+  }
+
   if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`); // 记录已经经过 settlement 但仍未能判定，方便后续补 signal 而不是误怀疑等待
   return {
     ok: false,
@@ -899,6 +927,8 @@ function classifyDreaminaCredentialSubmitFailure(input = {}) {
     siteReason = 'DREAMINA_SIGNUP_SWITCH_NOT_FOUND';
   } else if (reason === 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE') {
     siteReason = 'DREAMINA_CREDENTIAL_NO_STATE_CHANGE_AFTER_ALL_STRATEGIES';
+  } else if (reason === 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP') {
+    siteReason = 'DREAMINA_CREDENTIAL_STALLED_ON_SIGNUP';
   } else if (reason === 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN') {
     siteReason = 'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN';
   }
