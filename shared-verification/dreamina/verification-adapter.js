@@ -303,8 +303,8 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
   const { logInfo = null, log = null, verificationReady = null, usedCodes = new Set(), attemptIndex = 1 } = context;
   const profile = loadDreaminaVerificationProfile();
   const effectiveRuntime = resolveDreaminaVerificationRuntime({
-    firstmailApiMaxPollAttempts: Number(runtime?.firstmailApiMaxPollAttempts || 2),
-    waitMailIntervalMs: Number(runtime?.waitMailIntervalMs || 2500),
+    firstmailApiMaxPollAttempts: Number(runtime?.firstmailApiMaxPollAttempts || 8),
+    waitMailIntervalMs: Number(runtime?.waitMailIntervalMs || 3500),
     firstmailRecentMessageScanLimit: Number(runtime?.firstmailRecentMessageScanLimit || 8),
     firstmailPollJitterMinMs: Number(runtime?.firstmailPollJitterMinMs || 0),
     firstmailPollJitterMaxMs: Number(runtime?.firstmailPollJitterMaxMs || 0),
