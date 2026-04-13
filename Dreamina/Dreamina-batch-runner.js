@@ -283,6 +283,8 @@ async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
       finalReason: String(result?.finalReason || result?.finalState || ''),
       finalState: String(result?.finalState || ''),
       sessionExtracted: false,
+      firstSessionRecorded: false,
+      firstSessionRecordedAt: '',
       countryCode: '',
       countryName: '',
       sessionId: '',
