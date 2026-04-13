@@ -601,16 +601,14 @@ function isDreaminaBridgeSignal(value = '') {
 
 async function confirmPostAuthUi(page, runtime = {}, context = {}) {
   const profile = loadDreaminaPostAuthReadyProfile();
-  const matchedSelectors = await findAllVisibleBySelectors(page, [
-    ...(profile?.uiSignals?.selectors || []),
-    ...(profile?.successSignals?.workspaceSelectors || []),
-  ]);
-  const matchedTexts = await findAllVisibleByTexts(page, [
-    ...(profile?.uiSignals?.texts || []),
-    ...(profile?.successSignals?.workspaceTexts || []),
-  ]);
+  const bridgeSelectors = await findAllVisibleBySelectors(page, profile?.uiSignals?.selectors || []);
+  const workspaceSelectors = await findAllVisibleBySelectors(page, profile?.successSignals?.workspaceSelectors || []);
+  const bridgeTexts = await findAllVisibleByTexts(page, profile?.uiSignals?.texts || []);
+  const workspaceTexts = await findAllVisibleByTexts(page, profile?.successSignals?.workspaceTexts || []);
+  const matchedSelectors = [...new Set([...bridgeSelectors, ...workspaceSelectors])];
+  const matchedTexts = [...new Set([...bridgeTexts, ...workspaceTexts])];
 
-  const workspaceSelectorHit = matchedSelectors.find(selector => (profile?.successSignals?.workspaceSelectors || []).includes(selector));
+  const workspaceSelectorHit = workspaceSelectors[0] || '';
   if (workspaceSelectorHit) {
     return {
       ok: true,
@@ -623,20 +621,7 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
     };
   }
 
-  const selectorHit = matchedSelectors[0] ? { ok: true, selector: matchedSelectors[0] } : { ok: false, selector: '' };
-  if (selectorHit.ok) {
-    return {
-      ok: true,
-      state: 'BRIDGE_UI_SELECTOR_VISIBLE',
-      source: 'selector',
-      value: selectorHit.selector,
-      strength: 'strong',
-      matchedSelectors,
-      matchedTexts,
-    };
-  }
-
-  const workspaceTextHit = matchedTexts.find(text => (profile?.successSignals?.workspaceTexts || []).includes(text));
+  const workspaceTextHit = workspaceTexts[0] || '';
   if (workspaceTextHit) {
     return {
       ok: true,
@@ -649,7 +634,20 @@ async function confirmPostAuthUi(page, runtime = {}, context = {}) {
     };
   }
 
-  const textHit = matchedTexts[0] ? { ok: true, text: matchedTexts[0] } : { ok: false, text: '' };
+  const selectorHit = bridgeSelectors[0] ? { ok: true, selector: bridgeSelectors[0] } : { ok: false, selector: '' };
+  if (selectorHit.ok) {
+    return {
+      ok: true,
+      state: 'BRIDGE_UI_SELECTOR_VISIBLE',
+      source: 'selector',
+      value: selectorHit.selector,
+      strength: 'strong',
+      matchedSelectors,
+      matchedTexts,
+    };
+  }
+
+  const textHit = bridgeTexts[0] ? { ok: true, text: bridgeTexts[0] } : { ok: false, text: '' };
   if (textHit.ok) {
     return {
       ok: true,
