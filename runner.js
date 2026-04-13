@@ -6,6 +6,7 @@ const tls = require('tls');
 const { runRegisterTask } = require('./task-register');
 const { loadWindowLayoutProfile, summarizeProfile: summarizeWindowLayoutProfile } = require('./window-layout-profile-loader');
 const { logSystem, logAccount, logProxy, logStage, logSuccess, logFail, logWarn, logInfo } = require('./logger');
+const { updateWorkerStatus, markWorkerIdle, buildWorkerStatusLines } = require('./worker-status-tracker');
 
 const baseDir = __dirname;
 const accountsPath = path.join(baseDir, 'accounts.txt');
@@ -711,6 +712,16 @@ function removeProxyFromList(filePath, targetRaw) {
   }
 
   async function processAccount(account, workerId) {
+    updateWorkerStatus(workerId, {
+      status: 'starting-account',
+      account: account.email,
+      stage: 'account-start',
+      step: 'prepare-account',
+      attempt: 0,
+      proxy: '',
+      lastReason: '',
+      lastState: '',
+    });
     let success = false;
     let lastReason = 'UNKNOWN';
     let lastPhase = 'unknown';
@@ -732,6 +743,14 @@ function removeProxyFromList(filePath, targetRaw) {
 
       const { proxy, index } = acquired;
       try {
+        updateWorkerStatus(workerId, {
+          status: 'running-attempt',
+          account: account.email,
+          stage: 'proxy-precheck',
+          step: 'precheck-proxy',
+          attempt,
+          proxy: proxy.server,
+        });
         await appendLineSafe(runLogFile, `[TRY] account=${account.email} attempt=${attempt} worker=${workerId} proxyIndex=${index} proxy=${proxy.server}`);
         logProxy(`[线程${workerId}] 第 ${attempt} 次尝试，选中代理：${proxy.server}（索引 ${index}）`);
         logProxy(`当前账号：${account.email}`);
@@ -769,11 +788,30 @@ function removeProxyFromList(filePath, targetRaw) {
         }
 
         try {
+          updateWorkerStatus(workerId, {
+            status: 'running-register',
+            account: account.email,
+            stage: 'dreamina-register',
+            step: 'run-register-task',
+            attempt,
+            proxy: proxy.server,
+            lastState: precheck.level,
+          });
           logStage(`真实注册流程开始 | 账号=${account.email} | 代理=${proxy.server} | 出口IP=${exitIpText} | 浏览器模式=有头 | 工作线程=${workerId} | 验证码来源=Firstmail API | 预检等级=${precheck.level} | 代理速度档=${precheck.speedTier || 'UNKNOWN'}`);
           logAccount(`[线程${workerId}] 已进入真实注册流程：${account.email} | precheck=${precheck.level} | proxySpeedTier=${precheck.speedTier || 'UNKNOWN'}`);
           const result = await runRegisterTask({ account, proxy, config, attempt, workerId, windowBounds, resolvedExitIp: exitIpText, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN' });
 
           if (result.success) {
+            updateWorkerStatus(workerId, {
+              status: 'success',
+              account: account.email,
+              stage: 'account-success',
+              step: 'persist-success',
+              attempt,
+              proxy: proxy.server,
+              lastState: 'SUCCESS',
+              lastReason: 'SUCCESS',
+            });
             const timingText = result.timings ? Object.entries(result.timings).map(([key, value]) => `${key}=${Number(value || 0)}ms`).join(' | ') : '';
             const sessionFormats = buildSessionFormats(proxy, result.sessionId || '');
             const sessionName = extractSessionName(result.sessionId || '');
@@ -798,6 +836,16 @@ function removeProxyFromList(filePath, targetRaw) {
           }
 
           lastReason = result.reason || 'UNKNOWN_FAIL';
+          updateWorkerStatus(workerId, {
+            status: 'failed-attempt',
+            account: account.email,
+            stage: 'account-failed',
+            step: 'handle-failure',
+            attempt,
+            proxy: proxy.server,
+            lastState: result.reason || 'UNKNOWN_FAIL',
+            lastReason: result.reason || 'UNKNOWN_FAIL',
+          });
           const failureKind = classifyFailureReason(lastReason, config);
           lastPhase = inferFailurePhase(lastReason);
           await appendFailureEventSafe({ time: new Date().toISOString(), account: account.email, proxy: proxy.server, proxyRaw: proxy.raw, workerId, phase: lastPhase, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN', failureKind, reason: lastReason });
@@ -855,6 +903,16 @@ function removeProxyFromList(filePath, targetRaw) {
           }
         } catch (error) {
           lastReason = error.message || 'EXCEPTION';
+          updateWorkerStatus(workerId, {
+            status: 'exception',
+            account: account.email,
+            stage: 'account-exception',
+            step: 'handle-exception',
+            attempt,
+            proxy: proxy.server,
+            lastState: 'EXCEPTION',
+            lastReason,
+          });
           const failureKind = classifyFailureReason(lastReason, config);
           lastPhase = inferFailurePhase(lastReason);
           await appendFailureEventSafe({ time: new Date().toISOString(), account: account.email, proxy: proxy.server, proxyRaw: proxy.raw, workerId, phase: lastPhase, precheckLevel: precheck.level, proxySpeedTier: precheck.speedTier || 'UNKNOWN', failureKind, reason: lastReason });
@@ -888,6 +946,15 @@ function removeProxyFromList(filePath, targetRaw) {
     }
 
     if (!success) {
+      updateWorkerStatus(workerId, {
+        status: 'final-failed',
+        account: account.email,
+        stage: 'account-final-fail',
+        step: 'finalize-failure',
+        proxy: '',
+        lastReason,
+        lastState: lastReason,
+      });
       const failureKind = classifyFailureReason(lastReason, config);
       if (failureKind === 'ACCOUNT_EXISTS') {
         logWarn(`账号已存在：${account.email}`);
@@ -916,14 +983,36 @@ function removeProxyFromList(filePath, targetRaw) {
   }
 
   async function workerLoop(workerId) {
+    updateWorkerStatus(workerId, {
+      status: 'idle',
+      account: '',
+      stage: '',
+      step: 'waiting-account',
+      attempt: 0,
+      proxy: '',
+      lastReason: '',
+      lastState: '',
+    });
     while (true) {
       const account = await acquireNextAccount();
-      if (!account) return;
+      if (!account) {
+        markWorkerIdle(workerId);
+        return;
+      }
       await processAccount(account, workerId);
+      markWorkerIdle(workerId);
     }
   }
 
+  const workerStatusInterval = setInterval(() => {
+    for (const line of buildWorkerStatusLines()) {
+      logInfo(line);
+      appendLine(runLogFile, `[WORKER_STATUS] ${line}`);
+    }
+  }, Math.max(5000, Number(config.workerStatusIntervalMs || 10000)));
+
   await Promise.all(Array.from({ length: concurrency }, (_, index) => workerLoop(index + 1)));
+  clearInterval(workerStatusInterval);
   appendLine(runLogFile, `=== RUN END ${new Date().toISOString()} ===`);
   logSystem('批量框架执行完成');
   logSystem(`结果目录：${resultsDir}`);
