@@ -948,6 +948,44 @@ async function runDreaminaRegisterFlow(options = {}) {
   });
 }
 
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function buildStageSummaryText(stageResults = {}) {
+  const ordered = [
+    ['proxyPrecheck', 'proxyPrecheck'],
+    ['entry', 'entry'],
+    ['credential', 'credential'],
+    ['verification', 'verification'],
+    ['profileCompletion', 'profileCompletion'],
+    ['postAuthReady', 'postAuthReady'],
+    ['accountDelivery', 'accountDelivery'],
+  ];
+  return ordered.map(([key, label]) => {
+    const item = stageResults?.[key];
+    if (!item) return `${label}=SKIP`;
+    return `${label}=${String(item.state || (item.success ? 'OK' : 'UNKNOWN') || 'UNKNOWN')}`;
+  }).join(', ');
+}
+
+function sanitizeFileName(value = '') {
+  return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+async function writeCliResultFile(result = {}, meta = {}) {
+  const resultsDir = path.join(__dirname, 'results');
+  ensureDir(resultsDir);
+  const accountEmail = sanitizeFileName(result?.account?.email || meta?.accountEmail || 'unknown-account');
+  const stage = sanitizeFileName(result?.finalStage || 'unknown-stage');
+  const state = sanitizeFileName(result?.finalState || 'unknown-state');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filePath = path.join(resultsDir, `dreamina-cli-${accountEmail}-${stage}-${state}-${stamp}.json`);
+  await fs.promises.writeFile(filePath, JSON.stringify(result, null, 2), 'utf8');
+  return filePath;
+}
+
 function parseCliArgs(argv = []) {
   const args = Array.isArray(argv) ? argv : [];
   let proxyIndex = 0;
@@ -1267,8 +1305,13 @@ async function runDreaminaRegisterCli(argv = []) {
         accountIndex,
       },
     };
+    const resultFile = await writeCliResultFile(emptyResult, {});
     console.log(noHealthyProxy ? '[Dreamina Register] 当前没有健康代理可用，请补充新代理或清理 bad/unstable 代理记录' : '[Dreamina Register] 未找到可用代理');
-    console.log(JSON.stringify(emptyResult, null, 2));
+    console.log(`[Dreamina Register] Result file: ${resultFile}`);
+    emptyResult.meta = {
+      ...(emptyResult.meta || {}),
+      resultFile,
+    };
     return emptyResult;
   }
 
@@ -1293,8 +1336,13 @@ async function runDreaminaRegisterCli(argv = []) {
         accountIndex,
       },
     };
+    const resultFile = await writeCliResultFile(emptyResult, {});
     console.log('[Dreamina Register] 未找到可用账号，请检查 Dreamina/local-accounts.json');
-    console.log(JSON.stringify(emptyResult, null, 2));
+    console.log(`[Dreamina Register] Result file: ${resultFile}`);
+    emptyResult.meta = {
+      ...(emptyResult.meta || {}),
+      resultFile,
+    };
     return emptyResult;
   }
 
@@ -1381,8 +1429,17 @@ async function runDreaminaRegisterCli(argv = []) {
       };
     }
 
-    console.log(`[Dreamina Register] ProxyIndex=${proxyIndex} | AccountIndex=${accountIndex} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'} | Success=${result.success ? 'Y' : 'N'}`);
-    console.log(JSON.stringify(result, null, 2));
+    const resultFile = await writeCliResultFile(result, {
+      accountEmail: account.email,
+    });
+    const stageSummary = buildStageSummaryText(result?.stageResults || {});
+    console.log(`[Dreamina Register] Success=${result.success ? 'Y' : 'N'} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'}`);
+    console.log(`[Dreamina Register] StageSummary: ${stageSummary}`);
+    console.log(`[Dreamina Register] Result file: ${resultFile}`);
+    result.meta = {
+      ...(result.meta || {}),
+      resultFile,
+    };
     return result;
   } finally {
     if (cliRuntime?.context && typeof cliRuntime.context.close === 'function') {
