@@ -956,7 +956,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     && !afterSnapshot.hasErrorModal
   );
   if (signupOverlayStillOpen) {
-    if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | signup overlay still open after submit | stage=);
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'}`);
     return {
       ok: false,
       state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
@@ -982,7 +982,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     && !afterSnapshot.hasErrorModal
   );
   if (signupOverlayDismissedWithoutOutcome) {
-    if (typeof logInfo === 'function') logInfo(dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=);
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=${settlementResult?.stage || 'none'}`);
     return {
       ok: false,
       state: 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME',
