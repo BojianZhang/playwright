@@ -909,7 +909,11 @@ async function runDreaminaRegisterFlow(options = {}) {
       logStageFail(stageResult?.stage || stageKey, 'Dreamina 注册主链失败收口', {
         logger: logInfo,
         context: registerContext?.stageLogContext || {},
-        extra: `finalReason=${stageResult?.reason || stageResult?.state || 'DREAMINA_REGISTER_FLOW_FAILED'}`,
+        extra: [
+          `finalStage=${stageResult?.stage || stageKey}`,
+          `finalState=${stageResult?.state || 'DREAMINA_REGISTER_FLOW_FAILED'}`,
+          `finalReason=${stageResult?.reason || stageResult?.state || 'DREAMINA_REGISTER_FLOW_FAILED'}`,
+        ].join(' | '),
       });
       return normalizeDreaminaRegisterResult({
         success: false,
