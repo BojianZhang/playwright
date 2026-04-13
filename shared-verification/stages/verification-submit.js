@@ -175,6 +175,7 @@ async function runVerificationSubmitStage(options = {}) {
   }
 
   // 第一步：确认当前页面已经进入 verification 阶段。
+  const readyTimer = createStageTimer();
   logStageProgress('verification-submit', '等待验证码阶段 ready', {
     context: buildStageLogContext(options),
   });
@@ -186,6 +187,7 @@ async function runVerificationSubmitStage(options = {}) {
         verificationReady?.state ? `state=${verificationReady.state}` : '',
         verificationReady?.source ? `source=${verificationReady.source}` : '',
         verificationReady?.strength ? `strength=${verificationReady.strength}` : '',
+        `stepDurationMs=${formatDurationMs(readyTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
   }
@@ -199,6 +201,7 @@ async function runVerificationSubmitStage(options = {}) {
         verificationReady?.state ? `state=${verificationReady.state}` : '',
         verificationReady?.source ? `source=${verificationReady.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
+        `stepDurationMs=${formatDurationMs(readyTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
     // 按统一结构返回失败结果。
@@ -234,6 +237,7 @@ async function runVerificationSubmitStage(options = {}) {
       extra: `round=${attemptIndex}/${verificationRetryMaxAttempts}`,
     });
     // 第二步：获取验证码。
+    const fetchTimer = createStageTimer();
     logStageProgress('verification-submit', '拉取验证码', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: `round=${attemptIndex}/${verificationRetryMaxAttempts}`,
@@ -260,6 +264,7 @@ async function runVerificationSubmitStage(options = {}) {
           fetchCodeResult?.provider ? `provider=${fetchCodeResult.provider}` : '',
           fetchCodeResult?.matchMode ? `matchMode=${fetchCodeResult.matchMode}` : '',
           fetchCodeResult?.code ? `code=${String(fetchCodeResult.code).trim()}` : '',
+          `stepDurationMs=${formatDurationMs(fetchTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
     }
@@ -271,6 +276,7 @@ async function runVerificationSubmitStage(options = {}) {
           fetchCodeResult?.state ? `state=${fetchCodeResult.state}` : '',
           fetchCodeResult?.source ? `source=${fetchCodeResult.source}` : '',
           String(fetchCodeResult?.value || '').trim() ? `value=${String(fetchCodeResult.value).trim()}` : '',
+          `stepDurationMs=${formatDurationMs(fetchTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
       const duplicateSkipped = String(fetchCodeResult?.value || '').startsWith('DUPLICATE_CODE_SKIPPED:');
@@ -321,6 +327,7 @@ async function runVerificationSubmitStage(options = {}) {
     // 只有在页面明确返回 WRONG_VERIFICATION_CODE 之后，才把该验证码视为“已验证失败、不可再试”。
 
     // 第三步：解析验证码输入目标。
+    const resolveTimer = createStageTimer();
     logStageProgress('verification-submit', '定位验证码输入框', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
     });
@@ -331,6 +338,7 @@ async function runVerificationSubmitStage(options = {}) {
         extra: [
           codeInputResolution?.state ? `state=${codeInputResolution.state}` : '',
           codeInputResolution?.source ? `source=${codeInputResolution.source}` : '',
+          `stepDurationMs=${formatDurationMs(resolveTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
     }
@@ -344,6 +352,7 @@ async function runVerificationSubmitStage(options = {}) {
           codeInputResolution?.state ? `state=${codeInputResolution.state}` : '',
           codeInputResolution?.source ? `source=${codeInputResolution.source}` : '',
           classified?.siteReason ? `classified=${classified.siteReason}` : '',
+          `stepDurationMs=${formatDurationMs(resolveTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
       // 返回统一失败结果。
@@ -359,6 +368,7 @@ async function runVerificationSubmitStage(options = {}) {
     }
 
     // 第四步：执行验证码输入动作。
+    const fillTimer = createStageTimer();
     logStageProgress('verification-submit', '输入验证码', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
       extra: fetchCodeResult?.code ? `code=${String(fetchCodeResult.code).trim()}` : '',
@@ -371,6 +381,7 @@ async function runVerificationSubmitStage(options = {}) {
           fillResult?.state ? `state=${fillResult.state}` : '',
           fillResult?.source ? `source=${fillResult.source}` : '',
           typeof fillResult?.stateChanged === 'boolean' ? `stateChanged=${fillResult.stateChanged}` : '',
+          `stepDurationMs=${formatDurationMs(fillTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
     }
@@ -384,6 +395,7 @@ async function runVerificationSubmitStage(options = {}) {
           fillResult?.state ? `state=${fillResult.state}` : '',
           fillResult?.source ? `source=${fillResult.source}` : '',
           classified?.siteReason ? `classified=${classified.siteReason}` : '',
+          `stepDurationMs=${formatDurationMs(fillTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
       // 返回统一失败结果。
@@ -399,6 +411,7 @@ async function runVerificationSubmitStage(options = {}) {
     }
 
     // 第五步：确认验证码提交结果。
+    const confirmTimer = createStageTimer();
     logStageProgress('verification-submit', '确认验证码提交结果', {
       context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
     });
@@ -421,6 +434,7 @@ async function runVerificationSubmitStage(options = {}) {
           confirmResult?.nextStage ? `next=${confirmResult.nextStage}` : '',
           confirmResult?.source ? `source=${confirmResult.source}` : '',
           confirmResult?.strength ? `strength=${confirmResult.strength}` : '',
+          `stepDurationMs=${formatDurationMs(confirmTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
       // 返回统一成功结构。
@@ -493,6 +507,7 @@ async function runVerificationSubmitStage(options = {}) {
         confirmResult?.state ? `state=${confirmResult.state}` : '',
         confirmResult?.source ? `source=${confirmResult.source}` : '',
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
+        `stepDurationMs=${formatDurationMs(confirmTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
     // 返回统一失败结构。

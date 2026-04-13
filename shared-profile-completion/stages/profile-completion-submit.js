@@ -135,6 +135,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  const readyTimer = createStageTimer();
   logStageProgress('profile-completion-submit', '等待资料补全阶段 ready', {
     context: buildStageLogContext(options),
   });
@@ -146,6 +147,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         profileReady?.state ? `state=${profileReady.state}` : '',
         profileReady?.source ? `source=${profileReady.source}` : '',
         profileReady?.strength ? `strength=${profileReady.strength}` : '',
+        `stepDurationMs=${formatDurationMs(readyTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
   }
@@ -169,6 +171,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  const planTimer = createStageTimer();
   logStageProgress('profile-completion-submit', '生成资料填写计划', {
     context: buildStageLogContext(options),
   });
@@ -179,6 +182,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       extra: [
         birthdayFillPlan?.state ? `state=${birthdayFillPlan.state}` : '',
         birthdayFillPlan?.source ? `source=${birthdayFillPlan.source}` : '',
+        `stepDurationMs=${formatDurationMs(planTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
   }
@@ -209,6 +213,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
   const hasSplitFlow = Boolean(fillYear && fillMonth && fillDay);
 
   if (fillBirthdayContinuous) {
+    const fillTimer = createStageTimer();
     logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
       context: buildStageLogContext(options),
     });
@@ -216,7 +221,10 @@ async function runProfileCompletionSubmitStage(options = {}) {
     if (birthdayContinuousResult?.ok) {
       logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
         context: buildStageLogContext(options),
-        extra: birthdayContinuousResult?.state ? `state=${birthdayContinuousResult.state}` : '',
+        extra: [
+          birthdayContinuousResult?.state ? `state=${birthdayContinuousResult.state}` : '',
+          `stepDurationMs=${formatDurationMs(fillTimer.elapsedMs())}`,
+        ].filter(Boolean).join(' | '),
       });
     }
   }
@@ -301,6 +309,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  const submitTimer = createStageTimer();
   logStageProgress('profile-completion-submit', '提交资料补全结果', {
     context: buildStageLogContext(options),
   });
@@ -335,6 +344,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  const confirmTimer = createStageTimer();
   logStageProgress('profile-completion-submit', '确认资料补全提交结果', {
     context: buildStageLogContext(options),
   });
