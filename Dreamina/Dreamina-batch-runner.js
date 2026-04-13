@@ -136,6 +136,35 @@ function selectBatchAccounts(accounts = [], options = {}) {
   return list.slice(start, start + limit);
 }
 
+async function pruneKnownRegisteredFromLocalPool(knownExistsAccounts = new Set()) {
+  if (!(knownExistsAccounts instanceof Set) || !knownExistsAccounts.size) {
+    return {
+      removedCount: 0,
+      removedEmails: [],
+      remainingAccounts: readJsonArrayFile(LOCAL_ACCOUNTS_FILE),
+    };
+  }
+
+  const localAccounts = readJsonArrayFile(LOCAL_ACCOUNTS_FILE);
+  const removedEmails = [];
+  const remainingAccounts = localAccounts.filter(item => {
+    const normalizedEmail = String(item?.email || '').trim().toLowerCase();
+    const shouldRemove = normalizedEmail && knownExistsAccounts.has(normalizedEmail);
+    if (shouldRemove) removedEmails.push(normalizedEmail);
+    return !shouldRemove;
+  });
+
+  if (removedEmails.length > 0) {
+    await fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(remainingAccounts, null, 2)}\n`, 'utf8');
+  }
+
+  return {
+    removedCount: removedEmails.length,
+    removedEmails,
+    remainingAccounts,
+  };
+}
+
 /**
  * 当前先按简单环形轮询分配代理。
  *
@@ -829,7 +858,11 @@ function buildBatchFinalSummaryLines(summary = {}) {
 
 async function runDreaminaBatch(argv = []) {
   const cli = parseBatchCliArgs(argv);
-  const accounts = selectBatchAccounts(loadLocalAccounts(), cli);
+  const knownExistsAccounts = readKnownExistsAccounts();
+  const pruneResult = cli.ignoreKnownExists
+    ? { removedCount: 0, removedEmails: [], remainingAccounts: loadLocalAccounts() }
+    : await pruneKnownRegisteredFromLocalPool(knownExistsAccounts);
+  const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
   const proxies = loadLocalProxies();
 
   if (!accounts.length) {
@@ -846,6 +879,9 @@ async function runDreaminaBatch(argv = []) {
   });
 
   console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
+  if (!cli.ignoreKnownExists && pruneResult.removedCount > 0) {
+    console.log(`[Dreamina Batch] 启动前已从待注册池移除已知已注册账号 | removed=${pruneResult.removedCount}`);
+  }
 
   const panelInterval = setInterval(() => {
     for (const line of buildBatchOverviewLines(batchContext)) {
