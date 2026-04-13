@@ -803,6 +803,8 @@ function normalizeDreaminaRegisterResult(input = {}) {
   const proxy = input.proxy && typeof input.proxy === 'object' ? input.proxy : null;
   // 第六阶段交付对象草案。
   const deliveryPayload = input.deliveryPayload && typeof input.deliveryPayload === 'object' ? input.deliveryPayload : null;
+  // 当前最终失败/成功收口时提升到顶层的 detail，便于 batch runner 直接落盘。
+  const detail = input.detail && typeof input.detail === 'object' ? input.detail : null;
   // 全链阶段结果汇总。
   const stageResults = input.stageResults && typeof input.stageResults === 'object' ? input.stageResults : {};
   // 代理预检摘要；只做轻引用，不吞并完整 detail。
@@ -819,6 +821,7 @@ function normalizeDreaminaRegisterResult(input = {}) {
     nextStage,
     account,
     proxy,
+    detail,
     deliveryPayload,
     stageResults,
     proxyPrecheckSummary,
@@ -923,6 +926,7 @@ async function runDreaminaRegisterFlow(options = {}) {
         nextStage: stageResult?.nextStage || '',
         account: registerContext.account,
         proxy: registerContext.proxy,
+        detail: stageResult?.detail || null,
         deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
         stageResults: registerContext.stageResults,
         proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.stageResults?.proxyPrecheck || registerContext.proxyPrecheckResult),
