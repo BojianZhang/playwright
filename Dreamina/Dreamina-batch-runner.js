@@ -267,11 +267,27 @@ function readJsonArrayFile(filePath) {
 
 function buildSessionArchiveLine(record = {}) {
   return [
-    String(record?.email || '').trim(),
+    String(record?.email || '').trim().toLowerCase(),
     String(record?.countryCode || '').trim(),
     String(record?.countryName || '').trim(),
     String(record?.sessionId || '').trim(),
   ].join('----');
+}
+
+async function appendUniqueFileLine(filePath, line) {
+  const normalizedLine = String(line || '').trim();
+  if (!normalizedLine) return false;
+  try {
+    if (fs.existsSync(filePath)) {
+      const existing = await fs.promises.readFile(filePath, 'utf8');
+      const lines = new Set(String(existing || '').split(/\r?\n/).map(item => String(item || '').trim()).filter(Boolean));
+      if (lines.has(normalizedLine)) {
+        return false;
+      }
+    }
+  } catch (_) {}
+  await fs.promises.appendFile(filePath, `${normalizedLine}\n`, 'utf8');
+  return true;
 }
 
 async function appendFirstSessionRecord(record = {}) {
@@ -285,13 +301,22 @@ async function appendFirstSessionRecord(record = {}) {
   const stamp = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '');
   const batchTxt = path.join(SESSION_RECORDS_DIR, `dreamina-session-batch-${stamp}.txt`);
   const batchJsonl = path.join(SESSION_RECORDS_DIR, `dreamina-session-batch-${stamp}.jsonl`);
-  const line = `${buildSessionArchiveLine(record)}\n`;
-  const jsonl = `${JSON.stringify(record)}\n`;
+  const normalizedRecord = {
+    ...record,
+    email: String(record?.email || '').trim().toLowerCase(),
+    countryCode: String(record?.countryCode || '').trim(),
+    countryName: String(record?.countryName || '').trim(),
+    sessionId: String(record?.sessionId || '').trim(),
+    sessionSource: String(record?.sessionSource || '').trim(),
+    recordedAt: String(record?.recordedAt || '').trim(),
+  };
+  const line = buildSessionArchiveLine(normalizedRecord);
+  const jsonl = JSON.stringify(normalizedRecord);
 
-  await fs.promises.appendFile(batchTxt, line, 'utf8');
-  await fs.promises.appendFile(batchJsonl, jsonl, 'utf8');
-  await fs.promises.appendFile(SESSION_RECORDS_LATEST_TXT, line, 'utf8');
-  await fs.promises.appendFile(SESSION_RECORDS_LATEST_JSONL, jsonl, 'utf8');
+  await fs.promises.appendFile(batchTxt, `${line}\n`, 'utf8');
+  await fs.promises.appendFile(batchJsonl, `${jsonl}\n`, 'utf8');
+  await appendUniqueFileLine(SESSION_RECORDS_LATEST_TXT, line);
+  await appendUniqueFileLine(SESSION_RECORDS_LATEST_JSONL, jsonl);
 
   return {
     recorded: true,
