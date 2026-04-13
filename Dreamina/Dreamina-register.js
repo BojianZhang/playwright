@@ -1005,6 +1005,30 @@ function buildTimingSummaryText(result = {}) {
   return parts.join(', ');
 }
 
+
+function buildSlowestStageText(result = {}) {
+  const stageKeyMap = [
+    ['proxyPrecheck', 'proxyPrecheck'],
+    ['entry', 'entry'],
+    ['credential', 'credential'],
+    ['verification', 'verification'],
+    ['profileCompletion', 'profileCompletion'],
+    ['postAuthReady', 'postAuthReady'],
+    ['accountDelivery', 'accountDelivery'],
+  ];
+  let winner = null;
+  for (const [key, label] of stageKeyMap) {
+    const item = result?.stageResults?.[key];
+    const duration = Number(item?.detail?.durationMs ?? item?.durationMs ?? NaN);
+    if (!Number.isFinite(duration)) continue;
+    if (!winner || duration > winner.durationMs) {
+      winner = { label, durationMs: duration, state: String(item?.state || '') };
+    }
+  }
+  if (!winner) return '';
+  return `${winner.label}=${Math.max(0, Math.round(winner.durationMs))}ms${winner.state ? ` | state=${winner.state}` : ''}`;
+}
+
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -1469,9 +1493,11 @@ async function runDreaminaRegisterCli(argv = []) {
     });
     const stageSummary = buildStageSummaryText(result?.stageResults || {});
     const timingSummary = buildTimingSummaryText(result);
+    const slowestStage = buildSlowestStageText(result);
     console.log(`[Dreamina Register] Success=${result.success ? 'Y' : 'N'} | Account=${account.email} | Proxy=${summarizeProxy(proxy).id || 'N/A'} | FinalStage=${result.finalStage || 'UNKNOWN'} | FinalState=${result.finalState || 'UNKNOWN'}`);
     console.log(`[Dreamina Register] StageSummary: ${stageSummary}`);
     if (timingSummary) console.log(`[Dreamina Register] TimingSummary: ${timingSummary}`);
+    if (slowestStage) console.log(`[Dreamina Register] SlowestStage: ${slowestStage}`);
     console.log(`[Dreamina Register] Result file: ${resultFile}`);
     result.meta = {
       ...(result.meta || {}),
