@@ -1011,6 +1011,8 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
  * 作用：
  * - 将阶段 2 的失败 reason 收敛成 Dreamina 专属语义
  */
+}
+
 function classifyDreaminaCredentialSubmitFailure(input = {}) {
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
   let siteReason = reason;
