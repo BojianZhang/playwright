@@ -361,6 +361,19 @@ function extractDreaminaSeenCookies(cookies = []) {
   }).filter(Boolean))];
 }
 
+function normalizeDreaminaSignalText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildDreaminaSuccessTextTierMap(profile = {}) {
+  const textTiers = profile?.successSignals?.textTiers || {};
+  const map = new Map();
+  for (const value of textTiers?.strong || []) map.set(normalizeDreaminaSignalText(value), 'strong');
+  for (const value of textTiers?.medium || []) map.set(normalizeDreaminaSignalText(value), 'medium');
+  for (const value of textTiers?.risky || []) map.set(normalizeDreaminaSignalText(value), 'risky');
+  return map;
+}
+
 /**
  * 读取当前页面 localStorage key 列表。
  *
@@ -633,30 +646,42 @@ async function confirmPostAuthResult(page, runtime = {}, context = {}) {
 
   const successText = matchedSuccessTexts[0] ? { ok: true, text: matchedSuccessTexts[0] } : { ok: false, text: '' };
   if (successText.ok) {
-    const normalizedText = String(successText.text || '').trim().toLowerCase();
-    const riskyText = ['avatar'].includes(normalizedText);
+    const textTierMap = buildDreaminaSuccessTextTierMap(profile);
+    const normalizedText = normalizeDreaminaSignalText(successText.text);
+    const textTier = textTierMap.get(normalizedText) || 'unknown';
     const bridgeOnlyUi = Boolean(
       uiConfirmation?.matchedSelectors?.length
       && uiConfirmation.matchedSelectors.every(selector => String(selector || '').includes('birthday-next'))
-      && (uiConfirmation?.matchedTexts || []).every(text => ['year', 'month', 'day', 'next'].includes(String(text || '').trim().toLowerCase()))
+      && (uiConfirmation?.matchedTexts || []).every(text => ['year', 'month', 'day', 'next'].includes(normalizeDreaminaSignalText(text)))
     );
     const strongSession = Boolean(sessionInspection?.ok && sessionInspection?.value);
+    const hasStrongText = textTier === 'strong';
+    const hasMediumText = textTier === 'medium';
+    const riskyText = textTier === 'risky';
     const nonBridgeSelector = matchedSuccessSelectors.some(selector => !String(selector || '').includes('birthday-next'));
-    const nonRiskText = matchedSuccessTexts.some(text => !['avatar'].includes(String(text || '').trim().toLowerCase()));
 
-    if (!bridgeOnlyUi && (strongSession || nonBridgeSelector || nonRiskText || !riskyText)) {
+    const allowTextSuccess = !bridgeOnlyUi && (
+      strongSession
+      || nonBridgeSelector
+      || hasStrongText
+      || (hasMediumText && (strongSession || nonBridgeSelector))
+      || (riskyText && strongSession)
+    );
+
+    if (allowTextSuccess) {
       return {
         ok: true,
         state: 'REGISTRATION_COMPLETE',
         nextStage: 'account-delivery',
         source: 'text',
         value: successText.text,
-        strength: riskyText ? 'weak' : 'medium',
+        strength: hasStrongText ? 'medium' : (hasMediumText ? 'weak' : 'weak'),
         settleStage: 'secondary-success',
         stateChanged: true,
         retryCount: 0,
         winningSuccessSignal: {
           type: 'text',
+          tier: textTier,
           value: successText.text,
         },
         matchedSelectors: matchedSuccessSelectors,

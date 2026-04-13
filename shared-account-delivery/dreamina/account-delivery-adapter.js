@@ -422,6 +422,19 @@ async function collectAccountDeliverySummary(page, account, runtime = {}, contex
  * - 统一把 undefined / null / 非字符串值整理成稳定可交付形式
  * - 避免 payload 里混入不可控类型
  */
+function normalizeDreaminaSignalText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildDreaminaSuccessTextTierMap(profile = {}) {
+  const textTiers = profile?.successSignals?.textTiers || profile?.futureDeliveryContract?.successSignals?.textTiers || {};
+  const map = new Map();
+  for (const value of textTiers?.strong || []) map.set(normalizeDreaminaSignalText(value), 'strong');
+  for (const value of textTiers?.medium || []) map.set(normalizeDreaminaSignalText(value), 'medium');
+  for (const value of textTiers?.risky || []) map.set(normalizeDreaminaSignalText(value), 'risky');
+  return map;
+}
+
 function normalizeDeliveryFieldValue(value) {
   // null / undefined 统一回退为空字符串。
   if (value === null || value === undefined) return '';
@@ -542,29 +555,38 @@ async function detectDreaminaAccountDeliverySuccessSignals(page, profile, contex
   const successText = await findFirstVisibleByTexts(page, profile?.successSignals?.texts || []);
   // 文本命中时，先对高风险泛词做收紧，避免仅靠 Avatar 这类词单独宣布交付完成。
   if (successText.ok) {
-    const normalizedText = String(successText.text || '').trim().toLowerCase();
-    const riskyText = normalizedText === 'avatar';
+    const textTierMap = buildDreaminaSuccessTextTierMap(profile);
+    const normalizedText = normalizeDreaminaSignalText(successText.text);
+    const textTier = textTierMap.get(normalizedText) || 'unknown';
     const sessionSignalPresent = Boolean(accountSummary?.sessionSnapshot?.value || deliveryPayload?.payload?.sessionSummary?.value);
     const nonBridgeUiSignal = Boolean(
       accountSummary?.uiSnapshot?.matchedSelectors?.some(selector => !String(selector || '').includes('birthday-next'))
       || accountSummary?.uiSnapshot?.matchedTexts?.some(text => {
-        const normalized = String(text || '').trim().toLowerCase();
+        const normalized = normalizeDreaminaSignalText(text);
         return normalized && !['year', 'month', 'day', 'next'].includes(normalized);
       })
     );
     const strongPostAuth = String(postAuthResultConfirmation?.state || '').trim() === 'REGISTRATION_COMPLETE'
       && String(postAuthResultConfirmation?.source || '').trim() !== 'text';
     const supportSignalPresent = sessionSignalPresent || nonBridgeUiSignal || strongPostAuth;
+    const hasStrongText = textTier === 'strong';
+    const hasMediumText = textTier === 'medium';
+    const riskyText = textTier === 'risky';
 
-    if (supportSignalPresent) {
+    const allowTextSuccess = (hasStrongText && supportSignalPresent)
+      || (hasMediumText && supportSignalPresent)
+      || (riskyText && (sessionSignalPresent || strongPostAuth));
+
+    if (allowTextSuccess) {
       return {
         hit: true,
         state: 'DELIVERY_COMPLETE',
         source: 'text',
         value: successText.text,
-        strength: riskyText ? 'weak' : 'medium',
+        strength: hasStrongText ? 'medium' : 'weak',
         winningSuccessSignal: {
           type: 'text',
+          tier: textTier,
           value: successText.text,
         },
         matchedSelectors: [],
