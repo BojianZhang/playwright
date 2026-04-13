@@ -1046,6 +1046,7 @@ async function writeCliResultFile(result = {}, meta = {}) {
   const successDir = path.join(resultsDir, 'success');
   const failedDir = path.join(resultsDir, 'failed');
   const latestDir = path.join(resultsDir, 'latest');
+  const indexFile = path.join(latestDir, 'dreamina-cli-index.json');
   ensureDir(resultsDir);
   ensureDir(successDir);
   ensureDir(failedDir);
@@ -1065,10 +1066,35 @@ async function writeCliResultFile(result = {}, meta = {}) {
   await fs.promises.writeFile(latestByAccount, JSON.stringify(result, null, 2), 'utf8');
   await fs.promises.writeFile(latestOverall, JSON.stringify(result, null, 2), 'utf8');
 
+  let indexData = [];
+  try {
+    const existing = await fs.promises.readFile(indexFile, 'utf8');
+    const parsed = JSON.parse(existing);
+    if (Array.isArray(parsed)) indexData = parsed;
+  } catch (_) {}
+
+  const entry = {
+    timestamp: new Date().toISOString(),
+    account: result?.account?.email || meta?.accountEmail || '',
+    success: Boolean(result?.success),
+    finalStage: String(result?.finalStage || ''),
+    finalState: String(result?.finalState || ''),
+    finalReason: String(result?.finalReason || ''),
+    slowestStage: buildSlowestStageText(result),
+    durationMs: Number(result?.meta?.durationMs || 0),
+    resultFile: filePath,
+    latestResultFile: latestByAccount,
+  };
+
+  indexData.unshift(entry);
+  indexData = indexData.slice(0, 50);
+  await fs.promises.writeFile(indexFile, JSON.stringify(indexData, null, 2), 'utf8');
+
   return {
     filePath,
     latestByAccount,
     latestOverall,
+    indexFile,
   };
 }
 
@@ -1395,11 +1421,13 @@ async function runDreaminaRegisterCli(argv = []) {
     console.log(noHealthyProxy ? '[Dreamina Register] 当前没有健康代理可用，请补充新代理或清理 bad/unstable 代理记录' : '[Dreamina Register] 未找到可用代理');
     console.log(`[Dreamina Register] Result file: ${resultFiles.filePath}`);
     console.log(`[Dreamina Register] Latest file: ${resultFiles.latestByAccount}`);
+    console.log(`[Dreamina Register] Index file: ${resultFiles.indexFile}`);
     emptyResult.meta = {
       ...(emptyResult.meta || {}),
       resultFile: resultFiles.filePath,
       latestResultFile: resultFiles.latestByAccount,
       latestOverallResultFile: resultFiles.latestOverall,
+      resultIndexFile: resultFiles.indexFile,
     };
     return emptyResult;
   }
@@ -1429,11 +1457,13 @@ async function runDreaminaRegisterCli(argv = []) {
     console.log('[Dreamina Register] 未找到可用账号，请检查 Dreamina/local-accounts.json');
     console.log(`[Dreamina Register] Result file: ${resultFiles.filePath}`);
     console.log(`[Dreamina Register] Latest file: ${resultFiles.latestByAccount}`);
+    console.log(`[Dreamina Register] Index file: ${resultFiles.indexFile}`);
     emptyResult.meta = {
       ...(emptyResult.meta || {}),
       resultFile: resultFiles.filePath,
       latestResultFile: resultFiles.latestByAccount,
       latestOverallResultFile: resultFiles.latestOverall,
+      resultIndexFile: resultFiles.indexFile,
     };
     return emptyResult;
   }
@@ -1535,11 +1565,13 @@ async function runDreaminaRegisterCli(argv = []) {
     if (slowestStage) console.log(`[Dreamina Register] SlowestStage: ${slowestStage}`);
     console.log(`[Dreamina Register] Result file: ${resultFiles.filePath}`);
     console.log(`[Dreamina Register] Latest file: ${resultFiles.latestByAccount}`);
+    console.log(`[Dreamina Register] Index file: ${resultFiles.indexFile}`);
     result.meta = {
       ...(result.meta || {}),
       resultFile: resultFiles.filePath,
       latestResultFile: resultFiles.latestByAccount,
       latestOverallResultFile: resultFiles.latestOverall,
+      resultIndexFile: resultFiles.indexFile,
     };
     return result;
   } finally {
