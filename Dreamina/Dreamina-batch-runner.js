@@ -45,6 +45,11 @@ function ensureDir(dirPath) {
   }
 }
 
+async function resetFile(filePath) {
+  ensureDir(path.dirname(filePath));
+  await fs.promises.writeFile(filePath, '', 'utf8');
+}
+
 const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-exists.json');
 const KNOWN_REGISTERED_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-registered.json');
 const LOCAL_ACCOUNTS_FILE = path.join(__dirname, 'local-accounts.json');
@@ -1028,6 +1033,9 @@ async function runDreaminaBatch(argv = []) {
     accounts,
     proxies,
   });
+
+  await resetFile(SESSION_RECORDS_LATEST_TXT);
+  await resetFile(SESSION_RECORDS_LATEST_JSONL);
 
   console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
   if (!cli.ignoreKnownExists && pruneResult.removedCount > 0) {
