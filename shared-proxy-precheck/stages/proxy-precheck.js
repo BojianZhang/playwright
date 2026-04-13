@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 function resolveAdapterMethod(adapter, methodName) {
   if (!adapter || typeof adapter !== 'object') return null;
   const method = adapter[methodName];
@@ -51,11 +58,22 @@ async function runProxyPrecheckChain(options = {}) {
   const confirmProxyPrecheckResult = resolveAdapterMethod(adapter, 'confirmProxyPrecheckResult');
   const classifyProxyPrecheckFailure = resolveAdapterMethod(adapter, 'classifyProxyPrecheckFailure');
 
+  logStageProgress('proxy-precheck', '检查代理连通性', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
   const connectivity = checkProxyConnectivity ? await checkProxyConnectivity(proxy, runtime, context) : null;
   if (connectivity && connectivity.ok === false) {
     const classified = classifyProxyPrecheckFailure
       ? classifyProxyPrecheckFailure({ state: connectivity.state, source: connectivity.source, value: connectivity.value })
       : null;
+    logStageFail('proxy-precheck', '代理连通性失败', {
+      context: buildStageLogContext({ proxy, runtime, context }),
+      extra: [
+        connectivity?.state ? `state=${connectivity.state}` : '',
+        connectivity?.source ? `source=${connectivity.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProxyPrecheckResult({
       success: false,
       state: String(connectivity.state || 'PROXY_CONNECTIVITY_FAILED'),
@@ -77,15 +95,35 @@ async function runProxyPrecheckChain(options = {}) {
     });
   }
 
+  logStageProgress('proxy-precheck', '检查代理出口 IP', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
   const exitIp = checkProxyExitIp ? await checkProxyExitIp(proxy, runtime, { ...context, connectivity }) : null;
+  logStageProgress('proxy-precheck', '检查 Dreamina 主目标连通性', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
   const primaryTarget = checkDreaminaPrimaryTarget ? await checkDreaminaPrimaryTarget(proxy, runtime, { ...context, connectivity, exitIp }) : null;
+  logStageProgress('proxy-precheck', '检查 Dreamina 副目标连通性', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
   const secondaryTarget = checkDreaminaSecondaryTarget ? await checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget }) : null;
 
+  logStageProgress('proxy-precheck', '确认代理预检结果', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
   const resultConfirmation = confirmProxyPrecheckResult
     ? await confirmProxyPrecheckResult(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget })
     : { ok: false, state: 'PROXY_PRECHECK_BAD', nextStage: '', proxyGrade: 'BAD', source: '', value: '', strength: '', settleStage: 'none' };
 
   if (resultConfirmation?.ok) {
+    logStageSuccess('proxy-precheck', '代理预检成功', {
+      context: buildStageLogContext({ proxy, runtime, context }),
+      extra: [
+        resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+        resultConfirmation?.proxyGrade ? `proxyGrade=${resultConfirmation.proxyGrade}` : '',
+        resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProxyPrecheckResult({
       success: true,
       state: String(resultConfirmation.state || 'PROXY_PRECHECK_OK'),
@@ -112,6 +150,15 @@ async function runProxyPrecheckChain(options = {}) {
   const classified = classifyProxyPrecheckFailure
     ? classifyProxyPrecheckFailure({ state: resultConfirmation?.state || 'PROXY_PRECHECK_BAD', source: resultConfirmation?.source, value: resultConfirmation?.value })
     : null;
+
+  logStageFail('proxy-precheck', '代理预检失败', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+    extra: [
+      resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+      resultConfirmation?.proxyGrade ? `proxyGrade=${resultConfirmation.proxyGrade}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
 
   return normalizeProxyPrecheckResult({
     success: false,

@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 /**
  * 从 adapter 上解析指定方法。
  *
@@ -99,6 +106,10 @@ async function runPostAuthReadyStage(options = {}) {
 
   // 如果最基本的入口 ready 方法不存在，直接返回结构化失败。
   if (!waitForPostAuthReady) {
+    logStageFail('post-auth-ready', 'adapter 必需方法缺失', {
+      context: buildStageLogContext(options),
+      extra: 'missing=waitForPostAuthReady',
+    });
     return normalizePostAuthReadyStageResult({
       success: false,
       state: 'POST_AUTH_ADAPTER_METHOD_MISSING',
@@ -116,12 +127,33 @@ async function runPostAuthReadyStage(options = {}) {
   }
 
   // 第一步：等待第五阶段入口 ready。
+  logStageProgress('post-auth-ready', '等待 post-auth-ready 阶段入口', {
+    context: buildStageLogContext(options),
+  });
   const postAuthReady = await waitForPostAuthReady(page, runtime, context);
+  if (postAuthReady?.ok) {
+    logStageSuccess('post-auth-ready', 'post-auth-ready 阶段入口就绪', {
+      context: buildStageLogContext(options),
+      extra: [
+        postAuthReady?.state ? `state=${postAuthReady.state}` : '',
+        postAuthReady?.source ? `source=${postAuthReady.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
   // 如果入口不 ready，则直接按阶段 5 失败收口。
   if (!postAuthReady?.ok) {
     const classified = classifyPostAuthFailure
       ? classifyPostAuthFailure({ state: postAuthReady?.state || 'POST_AUTH_NOT_READY', source: postAuthReady?.source, value: postAuthReady?.value })
       : null;
+
+    logStageFail('post-auth-ready', 'post-auth-ready 阶段入口失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        postAuthReady?.state ? `state=${postAuthReady.state}` : '',
+        postAuthReady?.source ? `source=${postAuthReady.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
 
     return normalizePostAuthReadyStageResult({
       success: false,
@@ -144,16 +176,25 @@ async function runPostAuthReadyStage(options = {}) {
   }
 
   // 第二步：检查 session / storage / cookie 可用态；如果 adapter 还没实现，就保留 null。
+  logStageProgress('post-auth-ready', '检查 session / storage / cookie 可用态', {
+    context: buildStageLogContext(options),
+  });
   const sessionInspection = inspectPostAuthSession
     ? await inspectPostAuthSession(page, runtime, { ...context, postAuthReady })
     : null;
 
   // 第三步：检查 UI 登录后信号；如果 adapter 还没实现，就保留 null。
+  logStageProgress('post-auth-ready', '检查 UI 登录后信号', {
+    context: buildStageLogContext(options),
+  });
   const uiConfirmation = confirmPostAuthUi
     ? await confirmPostAuthUi(page, runtime, { ...context, postAuthReady, sessionInspection })
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
+  logStageProgress('post-auth-ready', '确认 post-auth-ready 最终结果', {
+    context: buildStageLogContext(options),
+  });
   const resultConfirmation = confirmPostAuthResult
     ? await confirmPostAuthResult(page, runtime, { ...context, postAuthReady, sessionInspection, uiConfirmation })
     : {
@@ -168,6 +209,14 @@ async function runPostAuthReadyStage(options = {}) {
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
+    logStageSuccess('post-auth-ready', 'post-auth-ready 阶段成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+        resultConfirmation?.nextStage ? `next=${resultConfirmation.nextStage}` : '',
+        resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     if (typeof logInfo === 'function') {
       logInfo(`postAuth.ready.success | state=${resultConfirmation.state || 'POST_AUTH_READY_ONLY'} | source=${resultConfirmation.source || ''} | value=${resultConfirmation.value || ''}`);
     }
@@ -202,6 +251,14 @@ async function runPostAuthReadyStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
+  logStageFail('post-auth-ready', 'post-auth-ready 阶段失败', {
+    context: buildStageLogContext(options),
+    extra: [
+      resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+      resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
   return normalizePostAuthReadyStageResult({
     success: false,
     state: String(resultConfirmation?.state || 'POST_AUTH_RESULT_UNKNOWN'),

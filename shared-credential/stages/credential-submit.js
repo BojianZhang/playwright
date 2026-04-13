@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 /**
  * credential-submit.js
  *
@@ -81,6 +88,10 @@ async function runCredentialSubmitStage(options = {}) {
   } = options;
 
   if (!adapter) {
+    logStageFail('credential-submit', 'adapter 缺失', {
+      context: buildStageLogContext(options),
+      extra: 'reason=CREDENTIAL_STAGE_ADAPTER_MISSING',
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: 'ADAPTER_MISSING',
@@ -96,6 +107,16 @@ async function runCredentialSubmitStage(options = {}) {
   const classifyFailure = resolveAdapterMethod(adapter, ['classifyCredentialSubmitFailure', 'classifyDreaminaCredentialSubmitFailure']);
 
   if (!waitForFormReady || !fillEmail || !fillPassword || !submitForm || !confirmSubmitResult) {
+    logStageFail('credential-submit', 'adapter 必需方法缺失', {
+      context: buildStageLogContext(options),
+      extra: [
+        `hasWaitForFormReady=${Boolean(waitForFormReady)}`,
+        `hasFillEmail=${Boolean(fillEmail)}`,
+        `hasFillPassword=${Boolean(fillPassword)}`,
+        `hasSubmitForm=${Boolean(submitForm)}`,
+        `hasConfirmSubmitResult=${Boolean(confirmSubmitResult)}`,
+      ].join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: 'ADAPTER_INCOMPLETE',
@@ -115,9 +136,28 @@ async function runCredentialSubmitStage(options = {}) {
    *
    * 如果这里都没过，后面的 fill / submit 就都没有意义。
    */
+  logStageProgress('credential-submit', '等待 credential form ready', {
+    context: buildStageLogContext(options),
+  });
   const formReady = await waitForFormReady(page, runtime, context);
+  if (formReady?.ok) {
+    logStageSuccess('credential-submit', 'credential form ready', {
+      context: buildStageLogContext(options),
+      extra: [
+        formReady?.state ? `state=${formReady.state}` : '',
+        formReady?.source ? `source=${formReady.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
   if (!formReady?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: formReady?.state || 'FORM_NOT_READY' }) : null;
+    logStageFail('credential-submit', 'credential form 未就绪', {
+      context: buildStageLogContext(options),
+      extra: [
+        formReady?.state ? `state=${formReady.state}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: formReady?.state || 'FORM_NOT_READY',
@@ -135,9 +175,25 @@ async function runCredentialSubmitStage(options = {}) {
    * 这里把 formReady 通过 context 继续传下去，
    * 让 adapter 可以复用前一步已经识别出的字段，不必重复扫描。
    */
+  logStageProgress('credential-submit', '填写邮箱', {
+    context: buildStageLogContext(options),
+  });
   const emailResult = await fillEmail(page, account, runtime, { ...context, formReady });
+  if (emailResult?.ok) {
+    logStageSuccess('credential-submit', '邮箱填写成功', {
+      context: buildStageLogContext(options),
+      extra: emailResult?.state ? `state=${emailResult.state}` : '',
+    });
+  }
   if (!emailResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: emailResult?.state || 'EMAIL_FILL_FAILED' }) : null;
+    logStageFail('credential-submit', '邮箱填写失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        emailResult?.state ? `state=${emailResult.state}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: emailResult?.state || 'EMAIL_FILL_FAILED',
@@ -156,9 +212,25 @@ async function runCredentialSubmitStage(options = {}) {
    * 当前阶段 2 先按 Dreamina 的 email + password 结构接通。
    * 后续如果有站点只需要 email，这里可以再扩成字段可选策略。
    */
+  logStageProgress('credential-submit', '填写密码', {
+    context: buildStageLogContext(options),
+  });
   const passwordResult = await fillPassword(page, account, runtime, { ...context, formReady });
+  if (passwordResult?.ok) {
+    logStageSuccess('credential-submit', '密码填写成功', {
+      context: buildStageLogContext(options),
+      extra: passwordResult?.state ? `state=${passwordResult.state}` : '',
+    });
+  }
   if (!passwordResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: passwordResult?.state || 'PASSWORD_FILL_FAILED' }) : null;
+    logStageFail('credential-submit', '密码填写失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        passwordResult?.state ? `state=${passwordResult.state}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: passwordResult?.state || 'PASSWORD_FILL_FAILED',
@@ -177,9 +249,25 @@ async function runCredentialSubmitStage(options = {}) {
    *
    * 这里只做 submit 动作，不在公共层写任何站点特有按钮逻辑。
    */
+  logStageProgress('credential-submit', '提交 credential 表单', {
+    context: buildStageLogContext(options),
+  });
   const submitResult = await submitForm(page, runtime, { ...context, formReady });
+  if (submitResult?.ok) {
+    logStageSuccess('credential-submit', 'credential 表单提交成功', {
+      context: buildStageLogContext(options),
+      extra: submitResult?.state ? `state=${submitResult.state}` : '',
+    });
+  }
   if (!submitResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'FORM_SUBMIT_FAILED' }) : null;
+    logStageFail('credential-submit', 'credential 表单提交失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        submitResult?.state ? `state=${submitResult.state}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: false,
       state: submitResult?.state || 'FORM_SUBMIT_FAILED',
@@ -200,6 +288,9 @@ async function runCredentialSubmitStage(options = {}) {
    * 这是阶段 2 的成败判定核心。
    * 成功时通常意味着进入下一阶段（Dreamina 当前是 verification）。
    */
+  logStageProgress('credential-submit', '确认 credential 提交结果', {
+    context: buildStageLogContext(options),
+  });
   const confirmResult = await confirmSubmitResult(page, runtime, {
     ...context,
     formReady,
@@ -208,6 +299,14 @@ async function runCredentialSubmitStage(options = {}) {
     submitResult,
   });
   if (confirmResult?.ok) {
+    logStageSuccess('credential-submit', 'credential 阶段成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        confirmResult?.state ? `state=${confirmResult.state}` : '',
+        confirmResult?.nextStage ? `next=${confirmResult.nextStage}` : '',
+        confirmResult?.source ? `source=${confirmResult.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeCredentialStageResult({
       success: true,
       state: confirmResult?.state || 'CREDENTIAL_SUBMIT_OK',
@@ -233,6 +332,14 @@ async function runCredentialSubmitStage(options = {}) {
    * 这样公共层只负责流程，具体 reason 语义仍由站点 adapter 定义。
    */
   const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN' }) : null;
+  logStageFail('credential-submit', 'credential 阶段失败', {
+    context: buildStageLogContext(options),
+    extra: [
+      confirmResult?.state ? `state=${confirmResult.state}` : '',
+      confirmResult?.source ? `source=${confirmResult.source}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
   return normalizeCredentialStageResult({
     success: false,
     state: confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',

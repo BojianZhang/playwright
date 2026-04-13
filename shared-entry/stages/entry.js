@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 /**
  * 从 adapter 上解析指定方法。
  *
@@ -92,6 +99,9 @@ async function runEntryStage(options = {}) {
   const classifyEntryFailure = resolveAdapterMethod(adapter, 'classifyEntryFailure');
 
   // 第一步：如果存在 openEntryPage，就先执行入口页打开或校正。
+  logStageProgress('entry', '打开入口页 / 校正入口上下文', {
+    context: buildStageLogContext(options),
+  });
   const entryOpenResult = openEntryPage
     ? await openEntryPage(page, runtime, context)
     : {
@@ -108,6 +118,14 @@ async function runEntryStage(options = {}) {
       ? classifyEntryFailure({ state: entryOpenResult.state || 'ENTRY_OPEN_FAILED', source: entryOpenResult.source, value: entryOpenResult.value })
       : null;
 
+    logStageFail('entry', '入口页打开失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        entryOpenResult?.state ? `state=${entryOpenResult.state}` : '',
+        entryOpenResult?.source ? `source=${entryOpenResult.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeEntryStageResult({
       success: false,
       state: String(entryOpenResult.state || 'ENTRY_OPEN_FAILED'),
@@ -127,6 +145,9 @@ async function runEntryStage(options = {}) {
   }
 
   // 第二步：如果存在健康检查方法，就执行健康检查；否则给一个跳过占位结果。
+  logStageProgress('entry', '检查入口页健康状态', {
+    context: buildStageLogContext(options),
+  });
   const entryHealthResult = checkEntryHealth
     ? await checkEntryHealth(page, runtime, context)
     : {
@@ -142,6 +163,15 @@ async function runEntryStage(options = {}) {
     const classified = classifyEntryFailure
       ? classifyEntryFailure({ state: entryHealthResult.state || 'ENTRY_HEALTH_FAILED', source: entryHealthResult.source, value: entryHealthResult.value })
       : null;
+
+    logStageFail('entry', '入口页健康检查失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        entryHealthResult?.state ? `state=${entryHealthResult.state}` : '',
+        entryHealthResult?.source ? `source=${entryHealthResult.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
 
     return normalizeEntryStageResult({
       success: false,
@@ -183,12 +213,23 @@ async function runEntryStage(options = {}) {
   }
 
   // 第四步：执行入口 ready 判断；优先使用带 recover 的主链确认。
+  logStageProgress('entry', '等待入口 ready / 恢复入口信号', {
+    context: buildStageLogContext(options),
+  });
   const entryReadyResult = confirmEntryReadyWithRecovery
     ? await confirmEntryReadyWithRecovery(page, runtime, context)
     : await waitForEntryReady(page, runtime, context);
 
   // 如果入口 ready 成功，就直接返回成功结构。
   if (entryReadyResult?.ok) {
+    logStageSuccess('entry', '入口阶段成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        entryReadyResult?.state ? `state=${entryReadyResult.state}` : '',
+        entryReadyResult?.source ? `source=${entryReadyResult.source}` : '',
+        entryReadyResult?.recoveryResult?.recovered ? 'recovered=true' : '',
+      ].filter(Boolean).join(' | '),
+    });
     if (typeof logInfo === 'function') {
       logInfo(`entry.stage.success | state=${entryReadyResult.state || 'ENTRY_READY'} | source=${entryReadyResult.source || ''} | value=${entryReadyResult.value || ''}`);
     }
@@ -219,6 +260,14 @@ async function runEntryStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
+  logStageFail('entry', '入口阶段失败', {
+    context: buildStageLogContext(options),
+    extra: [
+      entryReadyResult?.state ? `state=${entryReadyResult.state}` : '',
+      entryReadyResult?.source ? `source=${entryReadyResult.source}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
   return normalizeEntryStageResult({
     success: false,
     state: String(entryReadyResult?.state || 'ENTRY_NOT_READY'),

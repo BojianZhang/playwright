@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 /**
  * 从 adapter 上解析指定方法。
  *
@@ -95,6 +102,10 @@ async function runAccountDeliveryStage(options = {}) {
 
   // 如果最基本的入口 ready 方法不存在，直接返回结构化失败。
   if (!waitForAccountDeliveryReady) {
+    logStageFail('account-delivery', 'adapter 必需方法缺失', {
+      context: buildStageLogContext(options),
+      extra: 'missing=waitForAccountDeliveryReady',
+    });
     return normalizeAccountDeliveryStageResult({
       success: false,
       state: 'ACCOUNT_DELIVERY_ADAPTER_METHOD_MISSING',
@@ -112,12 +123,33 @@ async function runAccountDeliveryStage(options = {}) {
   }
 
   // 第一步：等待第六阶段入口 ready。
+  logStageProgress('account-delivery', '等待 account-delivery 阶段入口', {
+    context: buildStageLogContext(options),
+  });
   const deliveryReady = await waitForAccountDeliveryReady(page, runtime, context);
+  if (deliveryReady?.ok) {
+    logStageSuccess('account-delivery', 'account-delivery 阶段入口就绪', {
+      context: buildStageLogContext(options),
+      extra: [
+        deliveryReady?.state ? `state=${deliveryReady.state}` : '',
+        deliveryReady?.source ? `source=${deliveryReady.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
   // 如果入口不 ready，则直接按阶段 6 失败收口。
   if (!deliveryReady?.ok) {
     const classified = classifyAccountDeliveryFailure
       ? classifyAccountDeliveryFailure({ state: deliveryReady?.state || 'ACCOUNT_DELIVERY_NOT_READY', source: deliveryReady?.source, value: deliveryReady?.value })
       : null;
+
+    logStageFail('account-delivery', 'account-delivery 阶段入口失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        deliveryReady?.state ? `state=${deliveryReady.state}` : '',
+        deliveryReady?.source ? `source=${deliveryReady.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
 
     return normalizeAccountDeliveryStageResult({
       success: false,
@@ -146,6 +178,9 @@ async function runAccountDeliveryStage(options = {}) {
   const postAuthResultConfirmation = postAuthDetail?.resultConfirmation || null;
 
   // 第二步：收集账号最终交付摘要；如果 adapter 还没实现，就保留 null。
+  logStageProgress('account-delivery', '收集账号最终交付摘要', {
+    context: buildStageLogContext(options),
+  });
   const accountSummary = collectAccountDeliverySummary
     ? await collectAccountDeliverySummary(page, account, runtime, {
         ...context,
@@ -158,6 +193,9 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 第三步：组装 delivery payload；如果 adapter 还没实现，就保留 null。
+  logStageProgress('account-delivery', '构建 delivery payload', {
+    context: buildStageLogContext(options),
+  });
   const deliveryPayload = buildAccountDeliveryPayload
     ? await buildAccountDeliveryPayload(page, account, runtime, {
         ...context,
@@ -171,6 +209,9 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
+  logStageProgress('account-delivery', '确认 account-delivery 最终结果', {
+    context: buildStageLogContext(options),
+  });
   const resultConfirmation = confirmAccountDeliveryResult
     ? await confirmAccountDeliveryResult(page, account, runtime, {
         ...context,
@@ -194,6 +235,14 @@ async function runAccountDeliveryStage(options = {}) {
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
+    logStageSuccess('account-delivery', 'account-delivery 阶段成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+        resultConfirmation?.nextStage ? `next=${resultConfirmation.nextStage}` : '',
+        resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     if (typeof logInfo === 'function') {
       logInfo(`accountDelivery.success | state=${resultConfirmation.state || 'DELIVERY_COMPLETE'} | source=${resultConfirmation.source || ''} | value=${resultConfirmation.value || ''}`);
     }
@@ -228,6 +277,14 @@ async function runAccountDeliveryStage(options = {}) {
     : null;
 
   // 返回统一失败结构。
+  logStageFail('account-delivery', 'account-delivery 阶段失败', {
+    context: buildStageLogContext(options),
+    extra: [
+      resultConfirmation?.state ? `state=${resultConfirmation.state}` : '',
+      resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
   return normalizeAccountDeliveryStageResult({
     success: false,
     state: String(resultConfirmation?.state || 'ACCOUNT_DELIVERY_RESULT_UNKNOWN'),
