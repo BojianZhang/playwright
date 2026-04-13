@@ -13,6 +13,7 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../shared-stage-logger');
+const { updateWorkerStatus } = require('../worker-status-tracker');
 
 // ==============================
 // Dreamina 主链编排层：阶段公共 runner 引入
@@ -469,6 +470,22 @@ function buildDreaminaStageRegistry() {
  * - 统一准备 `stageResults` 容器，让 6 个阶段共享前序结果
  * - 统一准备 meta，方便最后输出整条链的耗时与摘要
  */
+
+function syncWorkerStageStatus(registerContext, patch = {}) {
+  const workerId = registerContext?.stageLogContext?.workerId;
+  if (!workerId) return;
+  updateWorkerStatus(workerId, {
+    status: patch.status || 'running-register-stage',
+    account: registerContext?.account?.email || '',
+    stage: patch.stage || '',
+    step: patch.step || '',
+    attempt: registerContext?.stageLogContext?.attempt || 0,
+    proxy: registerContext?.proxy?.server || registerContext?.proxy?.raw || '',
+    lastState: patch.lastState || '',
+    lastReason: patch.lastReason || '',
+  });
+}
+
 function buildDreaminaRegisterContext(options = {}) {
   // 解构主链输入。
   const {
@@ -676,6 +693,11 @@ async function runDreaminaStage(stageKey, registerContext) {
     context: stageLogContext,
     extra: `stageKey=${stageKey}`,
   });
+  syncWorkerStageStatus(registerContext, {
+    status: 'running-register-stage',
+    stage: stageName,
+    step: 'stage-start',
+  });
 
   // 执行阶段公共 runner。
   // 注意：proxyPrecheck 阶段的主输入是 proxy，不是 page/account 业务表单上下文。
@@ -710,6 +732,13 @@ async function runDreaminaStage(stageKey, registerContext) {
         `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
     });
+    syncWorkerStageStatus(registerContext, {
+      status: 'running-register-stage',
+      stage: stageName,
+      step: 'stage-success',
+      lastState: resultSummary.state || '阶段成功',
+      lastReason: resultSummary.reason || resultSummary.state || '阶段成功',
+    });
   } else {
     logStageFail(stageName, resultSummary.state || '阶段失败', {
       logger: logInfo,
@@ -721,6 +750,13 @@ async function runDreaminaStage(stageKey, registerContext) {
         resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
         `durationMs=${formatDurationMs(stageTimer.elapsedMs())}`,
       ].filter(Boolean).join(' | '),
+    });
+    syncWorkerStageStatus(registerContext, {
+      status: 'running-register-stage',
+      stage: stageName,
+      step: 'stage-fail',
+      lastState: resultSummary.state || '阶段失败',
+      lastReason: resultSummary.reason || resultSummary.state || '阶段失败',
     });
   }
 
