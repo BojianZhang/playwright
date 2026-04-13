@@ -455,6 +455,7 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         credentialSignupSwitchWaitMs: 1200,
         verificationRetryMaxAttempts: 3,
         verificationResendWaitMs: 1800,
+        skipCredentialExistsPrecheckAfterEmail: true,
         firstmailApiMaxPollAttempts: 2,
         waitMailIntervalMs: 2500,
         firstmailRecentMessageScanLimit: 8,
@@ -617,27 +618,7 @@ async function workerLoop(workerId, batchContext) {
     attempt += 1;
     batchContext.accounts.running.push(account.email);
 
-    const proxy = acquireNextProxy(batchContext);
-    if (!proxy) {
-      batchContext.accounts.skipped.push({
-        account: account.email,
-        reason: 'NO_PROXY_AVAILABLE',
-      });
-      batchContext.summary.skippedCount += 1;
-      batchContext.accounts.running = batchContext.accounts.running.filter(item => item !== account.email);
-      continue;
-    }
-
-    updateWorkerStatus(workerId, {
-      status: 'running-register-stage',
-      account: account.email,
-      stage: 'proxy-precheck',
-      step: 'worker-start-account',
-      attempt,
-      proxy: proxy.raw || summarizeProxy(proxy).id || '',
-      lastReason: '',
-      lastState: '',
-    });
+    let proxy = null;
 
     try {
       const normalizedEmail = String(account?.email || '').trim().toLowerCase();
@@ -646,21 +627,42 @@ async function workerLoop(workerId, batchContext) {
           status: 'skip-known-exists',
           account: account.email,
           stage: 'precheck-skip',
-          step: 'known-exists-skip',
+          step: 'known-exists-skip-before-proxy-precheck',
           attempt,
-          proxy: proxy.raw || summarizeProxy(proxy).id || '',
+          proxy: '',
           lastReason: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
           lastState: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
         });
-        console.log(`[Dreamina Batch] 跳过已知 exists 账号 | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
-        const skippedResult = buildKnownExistsSkipResult(account, proxy);
+        console.log(`[Dreamina Batch] 跳过已知 exists 账号（代理预检前） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
+        const skippedResult = buildKnownExistsSkipResult(account, null);
         await updateBatchSummary(batchContext, skippedResult, {
           workerId,
           account,
-          proxy,
+          proxy: null,
         });
         continue;
       }
+
+      proxy = acquireNextProxy(batchContext);
+      if (!proxy) {
+        batchContext.accounts.skipped.push({
+          account: account.email,
+          reason: 'NO_PROXY_AVAILABLE',
+        });
+        batchContext.summary.skippedCount += 1;
+        continue;
+      }
+
+      updateWorkerStatus(workerId, {
+        status: 'running-register-stage',
+        account: account.email,
+        stage: 'proxy-precheck',
+        step: 'worker-start-account',
+        attempt,
+        proxy: proxy.raw || summarizeProxy(proxy).id || '',
+        lastReason: '',
+        lastState: '',
+      });
 
       const result = await runSingleAccountWithNewArchitecture({
         account,

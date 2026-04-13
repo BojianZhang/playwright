@@ -223,7 +223,7 @@ async function runCredentialSubmitStage(options = {}) {
   }
 
 
-  if (precheckExists) {
+  if (precheckExists && !runtime?.skipCredentialExistsPrecheckAfterEmail) {
     syncStageStep(options, { stage: 'credential-submit', step: 'precheck-exists-after-email' });
     logStageProgress('credential-submit', '提交前检查账号是否已存在', {
       context: buildStageLogContext(options),
