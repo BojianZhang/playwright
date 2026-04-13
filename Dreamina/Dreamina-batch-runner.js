@@ -279,8 +279,14 @@ async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
       email: matchedLocal?.email || account?.email || result?.account?.email || '',
       password: matchedLocal?.password || account?.password || '',
       source: result?.success ? 'register-success' : 'account-exists',
+      status: result?.success ? 'registered' : 'exists',
       finalReason: String(result?.finalReason || result?.finalState || ''),
       finalState: String(result?.finalState || ''),
+      sessionExtracted: false,
+      countryCode: '',
+      countryName: '',
+      sessionId: '',
+      lastSessionExtractedAt: '',
       movedAt: new Date().toISOString(),
     });
     appended = true;
