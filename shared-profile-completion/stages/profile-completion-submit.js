@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  buildStageLogContext,
+} = require('../../shared-stage-logger');
+
 /**
  * profile-completion-submit.js
  *
@@ -67,6 +74,10 @@ async function runProfileCompletionSubmitStage(options = {}) {
   } = options;
 
   if (!adapter) {
+    logStageFail('profile-completion-submit', 'adapter 缺失', {
+      context: buildStageLogContext(options),
+      extra: 'reason=PROFILE_COMPLETION_STAGE_ADAPTER_MISSING',
+    });
     return normalizeProfileCompletionStageResult({
       success: false,
       state: 'ADAPTER_MISSING',
@@ -90,6 +101,17 @@ async function runProfileCompletionSubmitStage(options = {}) {
   // Base required capabilities must exist.
   // Fill path can be either continuous-flow or split-flow.
   if (!waitForProfileReady || !buildProfilePlan || !submitProfileCompletion || !confirmSubmitResult || (!hasContinuousFlowMethod && !hasSplitFlowMethods)) {
+    logStageFail('profile-completion-submit', 'adapter 必需方法缺失', {
+      context: buildStageLogContext(options),
+      extra: [
+        `hasWaitForProfileReady=${Boolean(waitForProfileReady)}`,
+        `hasBuildProfilePlan=${Boolean(buildProfilePlan)}`,
+        `hasSubmitProfileCompletion=${Boolean(submitProfileCompletion)}`,
+        `hasConfirmSubmitResult=${Boolean(confirmSubmitResult)}`,
+        `hasContinuousFlowMethod=${Boolean(hasContinuousFlowMethod)}`,
+        `hasSplitFlowMethods=${Boolean(hasSplitFlowMethods)}`,
+      ].join(' | '),
+    });
     return normalizeProfileCompletionStageResult({
       success: false,
       state: 'ADAPTER_INCOMPLETE',
@@ -109,9 +131,30 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  logStageProgress('profile-completion-submit', '等待资料补全阶段 ready', {
+    context: buildStageLogContext(options),
+  });
   const profileReady = await waitForProfileReady(page, runtime, context);
+  if (profileReady?.ok) {
+    logStageSuccess('profile-completion-submit', '资料补全阶段 ready', {
+      context: buildStageLogContext(options),
+      extra: [
+        profileReady?.state ? `state=${profileReady.state}` : '',
+        profileReady?.source ? `source=${profileReady.source}` : '',
+        profileReady?.strength ? `strength=${profileReady.strength}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
   if (!profileReady?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: profileReady?.state || 'PROFILE_COMPLETION_NOT_READY' }) : null;
+    logStageFail('profile-completion-submit', '资料补全阶段未就绪', {
+      context: buildStageLogContext(options),
+      extra: [
+        profileReady?.state ? `state=${profileReady.state}` : '',
+        profileReady?.source ? `source=${profileReady.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProfileCompletionStageResult({
       success: false,
       state: profileReady?.state || 'PROFILE_COMPLETION_NOT_READY',
@@ -122,9 +165,29 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  logStageProgress('profile-completion-submit', '生成资料填写计划', {
+    context: buildStageLogContext(options),
+  });
   const birthdayFillPlan = await buildProfilePlan(page, account, runtime, { ...context, profileReady });
+  if (birthdayFillPlan?.ok) {
+    logStageSuccess('profile-completion-submit', '资料填写计划生成成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        birthdayFillPlan?.state ? `state=${birthdayFillPlan.state}` : '',
+        birthdayFillPlan?.source ? `source=${birthdayFillPlan.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
   if (!birthdayFillPlan?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED' }) : null;
+    logStageFail('profile-completion-submit', '资料填写计划生成失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        birthdayFillPlan?.state ? `state=${birthdayFillPlan.state}` : '',
+        birthdayFillPlan?.source ? `source=${birthdayFillPlan.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProfileCompletionStageResult({
       success: false,
       state: birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED',
@@ -142,7 +205,16 @@ async function runProfileCompletionSubmitStage(options = {}) {
   const hasSplitFlow = Boolean(fillYear && fillMonth && fillDay);
 
   if (fillBirthdayContinuous) {
+    logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
+      context: buildStageLogContext(options),
+    });
     birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
+    if (birthdayContinuousResult?.ok) {
+      logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
+        context: buildStageLogContext(options),
+        extra: birthdayContinuousResult?.state ? `state=${birthdayContinuousResult.state}` : '',
+      });
+    }
   }
 
   if (birthdayContinuousResult?.ok) {
@@ -175,6 +247,9 @@ async function runProfileCompletionSubmitStage(options = {}) {
       nextState: birthdayContinuousResult?.detail?.nextState || null,
     };
   } else if (hasSplitFlow) {
+    logStageProgress('profile-completion-submit', 'continuous flow 不可用，进入 split fallback', {
+      context: buildStageLogContext(options),
+    });
     yearFillResult = await fillYear(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult });
     if (!yearFillResult?.ok) {
       const classified = classifyFailure ? classifyFailure({ reason: yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED' }) : null;
@@ -222,6 +297,9 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  logStageProgress('profile-completion-submit', '提交资料补全结果', {
+    context: buildStageLogContext(options),
+  });
   const submitResult = birthdayContinuousResult?.ok && birthdayContinuousResult?.detail?.submitPerformed
     ? {
         ok: true,
@@ -235,6 +313,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
     : await submitProfileCompletion(page, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, birthdayContinuousResult });
   if (!submitResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED' }) : null;
+    logStageFail('profile-completion-submit', '资料补全提交失败', {
+      context: buildStageLogContext(options),
+      extra: [
+        submitResult?.state ? `state=${submitResult.state}` : '',
+        submitResult?.source ? `source=${submitResult.source}` : '',
+        classified?.siteReason ? `classified=${classified.siteReason}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProfileCompletionStageResult({
       success: false,
       state: submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED',
@@ -245,6 +331,9 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  logStageProgress('profile-completion-submit', '确认资料补全提交结果', {
+    context: buildStageLogContext(options),
+  });
   const confirmResult = await confirmSubmitResult(page, runtime, {
     ...context,
     profileReady,
@@ -256,6 +345,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
   });
 
   if (confirmResult?.ok) {
+    logStageSuccess('profile-completion-submit', '资料补全提交成功', {
+      context: buildStageLogContext(options),
+      extra: [
+        confirmResult?.state ? `state=${confirmResult.state}` : '',
+        confirmResult?.nextStage ? `next=${confirmResult.nextStage}` : '',
+        confirmResult?.source ? `source=${confirmResult.source}` : '',
+      ].filter(Boolean).join(' | '),
+    });
     return normalizeProfileCompletionStageResult({
       success: true,
       state: confirmResult?.state || 'PROFILE_COMPLETION_SUBMIT_OK',
@@ -270,6 +367,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
   }
 
   const classified = classifyFailure ? classifyFailure({ reason: confirmResult?.state || 'PROFILE_COMPLETION_RESULT_UNKNOWN' }) : null;
+  logStageFail('profile-completion-submit', '资料补全结果失败', {
+    context: buildStageLogContext(options),
+    extra: [
+      confirmResult?.state ? `state=${confirmResult.state}` : '',
+      confirmResult?.source ? `source=${confirmResult.source}` : '',
+      classified?.siteReason ? `classified=${classified.siteReason}` : '',
+    ].filter(Boolean).join(' | '),
+  });
   return normalizeProfileCompletionStageResult({
     success: false,
     state: confirmResult?.state || 'PROFILE_COMPLETION_RESULT_UNKNOWN',

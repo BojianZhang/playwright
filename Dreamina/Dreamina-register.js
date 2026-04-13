@@ -4,6 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
+const {
+  logStageStart,
+  logStageProgress,
+  logStageSuccess,
+  logStageFail,
+  summarizeStageResult,
+} = require('../shared-stage-logger');
 
 // ==============================
 // Dreamina 主链编排层：阶段公共 runner 引入
@@ -471,6 +478,8 @@ function buildDreaminaRegisterContext(options = {}) {
     proxyPrecheckResult = null,
     runtime = {},
     logInfo = null,
+    workerId = null,
+    attempt = null,
   } = options;
 
   // 构造 Dreamina 阶段注册表。
@@ -498,6 +507,13 @@ function buildDreaminaRegisterContext(options = {}) {
     logInfo: typeof logInfo === 'function' ? logInfo : null,
     // Dreamina 六阶段注册表。
     stageRegistry,
+    // 阶段日志上下文。
+    stageLogContext: {
+      account: String(account?.email || '').trim(),
+      proxy: String(proxy?.server || proxy?.raw || '').trim(),
+      workerId,
+      attempt,
+    },
     // 各阶段结果容器；初始都为 null。
     stageResults: {
       proxyPrecheck: null,
@@ -575,9 +591,17 @@ async function runDreaminaStage(stageKey, registerContext) {
   const registry = registerContext?.stageRegistry || {};
   // 取出当前阶段注册表项。
   const stageEntry = registry?.[stageKey] || null;
+  const logInfo = typeof registerContext?.logInfo === 'function' ? registerContext.logInfo : null;
+  const stageName = stageEntry?.stage || stageKey;
+  const stageLogContext = registerContext?.stageLogContext || {};
 
   // 如果注册表项不存在，就直接返回失败结构。
   if (!stageEntry) {
+    logStageFail(stageKey, '阶段注册表项缺失', {
+      logger: logInfo,
+      context: stageLogContext,
+      extra: `stageKey=${stageKey}`,
+    });
     return {
       ok: false,
       stageKey,
@@ -601,6 +625,11 @@ async function runDreaminaStage(stageKey, registerContext) {
   const stageRunner = stageEntry.run;
   // 如果公共 runner 不存在，就直接返回失败结构。
   if (typeof stageRunner !== 'function') {
+    logStageFail(stageName, '阶段 runner 缺失', {
+      logger: logInfo,
+      context: stageLogContext,
+      extra: `stageKey=${stageKey}`,
+    });
     return {
       ok: false,
       stageKey,
@@ -639,6 +668,12 @@ async function runDreaminaStage(stageKey, registerContext) {
     ...registerContext.stageResults,
   };
 
+  logStageStart(stageName, '阶段开始', {
+    logger: logInfo,
+    context: stageLogContext,
+    extra: `stageKey=${stageKey}`,
+  });
+
   // 执行阶段公共 runner。
   // 注意：proxyPrecheck 阶段的主输入是 proxy，不是 page/account 业务表单上下文。
   const result = stageKey === 'proxyPrecheck'
@@ -658,6 +693,31 @@ async function runDreaminaStage(stageKey, registerContext) {
 
   // 把阶段结果写回 stageResults。
   registerContext.stageResults[stageKey] = result;
+
+  const resultSummary = summarizeStageResult(result);
+  if (resultSummary.success) {
+    logStageSuccess(stageName, resultSummary.state || '阶段成功', {
+      logger: logInfo,
+      context: stageLogContext,
+      extra: [
+        resultSummary.reason ? `reason=${resultSummary.reason}` : '',
+        resultSummary.nextStage ? `next=${resultSummary.nextStage}` : '',
+        resultSummary.signalStrength ? `strength=${resultSummary.signalStrength}` : '',
+        resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  } else {
+    logStageFail(stageName, resultSummary.state || '阶段失败', {
+      logger: logInfo,
+      context: stageLogContext,
+      extra: [
+        resultSummary.reason ? `reason=${resultSummary.reason}` : '',
+        resultSummary.detectionSource ? `source=${resultSummary.detectionSource}` : '',
+        resultSummary.settleStage ? `settle=${resultSummary.settleStage}` : '',
+        resultSummary.retryCount ? `retryCount=${resultSummary.retryCount}` : '',
+      ].filter(Boolean).join(' | '),
+    });
+  }
 
   // 返回统一单阶段执行结构。
   return {
@@ -730,11 +790,22 @@ async function runDreaminaRegisterFlow(options = {}) {
   // 解构日志函数，便于主链记录关键节点。
   const { logInfo = null } = registerContext;
 
+  logStageProgress('entry', 'Dreamina 注册主链启动', {
+    logger: logInfo,
+    context: registerContext?.stageLogContext || {},
+    extra: 'stageOrder=proxyPrecheck->entry->credential->verification->profileCompletion->postAuthReady->accountDelivery',
+  });
+
   // 在正式进入 Dreamina 六阶段主链前，先做极轻的启动前校验。
   // 注意：Dreamina-register 不负责执行 proxy precheck，但如果外层已经传入失败的 proxyPrecheckResult，
   // 这里会拒绝继续启动，避免把明显坏代理再次交给正式注册链。
   const preconditions = checkDreaminaRegisterPreconditions(registerContext);
   if (!preconditions.ok) {
+    logStageFail('entry', 'Dreamina 注册主链启动前校验失败', {
+      logger: logInfo,
+      context: registerContext?.stageLogContext || {},
+      extra: `reason=${preconditions.reason}`,
+    });
     registerContext.meta.finishedAt = Date.now();
     registerContext.meta.durationMs = registerContext.meta.finishedAt - registerContext.meta.startedAt;
     registerContext.meta.successStageCount = 0;
@@ -785,6 +856,11 @@ async function runDreaminaRegisterFlow(options = {}) {
       registerContext.meta.successStageCount = Object.values(registerContext.stageResults).filter(item => item?.success).length;
 
       // 返回统一失败结构。
+      logStageFail(stageResult?.stage || stageKey, 'Dreamina 注册主链失败收口', {
+        logger: logInfo,
+        context: registerContext?.stageLogContext || {},
+        extra: `finalReason=${stageResult?.reason || stageResult?.state || 'DREAMINA_REGISTER_FLOW_FAILED'}`,
+      });
       return normalizeDreaminaRegisterResult({
         success: false,
         finalStage: stageResult?.stage || stageKey,
@@ -808,6 +884,12 @@ async function runDreaminaRegisterFlow(options = {}) {
   registerContext.meta.finishedAt = Date.now();
   registerContext.meta.durationMs = registerContext.meta.finishedAt - registerContext.meta.startedAt;
   registerContext.meta.successStageCount = Object.values(registerContext.stageResults).filter(item => item?.success).length;
+
+  logStageSuccess('account-delivery', 'Dreamina 注册主链完成', {
+    logger: logInfo,
+    context: registerContext?.stageLogContext || {},
+    extra: `durationMs=${registerContext.meta.durationMs}`,
+  });
 
   // 返回统一成功结构。
   return normalizeDreaminaRegisterResult({
