@@ -33,7 +33,10 @@
                                             "Sign in",
                                             "Log in",
                                             "Login",
-                                            "Sign up"
+                                            "Sign up",
+                                            "Try it now",
+                                            "See results",
+                                            "Canvas"
                                         ],
                          "entryRolePattern":  "sign in|log in|login|sign up",
                          "emailInputRoleName":  "Enter email",
