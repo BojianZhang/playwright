@@ -25,11 +25,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
 
 const {
   runDreaminaRegisterFlow,
   loadLocalAccounts,
+  createDreaminaCliRuntime,
 } = require('./Dreamina-register');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
 
@@ -300,26 +300,12 @@ function buildBatchOverviewLines(batchContext) {
 }
 
 async function createWorkerRuntime(options = {}) {
-  const browser = await chromium.launch({
-    headless: !options.headed,
-    slowMo: Number(options.slowMo || 0),
+  return await createDreaminaCliRuntime({
+    proxy: options.proxy,
+    headed: options.headed,
+    slowMo: options.slowMo,
+    blockedResourceTypes: ['image', 'media', 'font'],
   });
-
-  const proxy = options.proxy || null;
-  const context = await browser.newContext({
-    proxy: proxy
-      ? {
-          server: `${proxy.protocol || 'http'}://${proxy.host}:${proxy.port}`,
-          username: proxy.username,
-          password: proxy.password,
-        }
-      : undefined,
-    locale: 'en-US',
-    timezoneId: 'America/Los_Angeles',
-  });
-
-  const page = await context.newPage();
-  return { browser, context, page };
 }
 
 /**
@@ -354,6 +340,7 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
       account,
       runtime: {
         batch: true,
+        cli: false,
         headed,
         slowMo,
         workerId,
@@ -363,10 +350,45 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         dreaminaNavigationTimeoutMs: 120000,
         firstLoadGraceWaitMs: 12000,
         dreaminaAuthMode: 'signup',
+        credentialSignupSwitchWaitMs: 1200,
         verificationRetryMaxAttempts: 3,
         verificationResendWaitMs: 1800,
         firstmailApiMaxPollAttempts: 2,
         waitMailIntervalMs: 2500,
+        firstmailRecentMessageScanLimit: 8,
+        firstmailPollJitterMinMs: 0,
+        firstmailPollJitterMaxMs: 0,
+        readyTextSignals: [
+          'Continue with email',
+          'Sign in',
+          'Log in',
+          'Login',
+          'Sign up',
+          'Create realistic talk',
+          'Start Creating With AI Agent',
+          'AI Image',
+          'Canvas',
+        ],
+        readySelectors: [
+          'input[role="textbox"]',
+          'input[type="email"]',
+          '[class*="credit-display-container"]',
+          '[class*="login"] button',
+          '[class*="signin"] button',
+          '[class*="sign-in"] button',
+          '[class*="signup"] button',
+          '[class*="sign-up"] button',
+        ],
+        readyBodyPatterns: [
+          'dreamina',
+          'capcut',
+          'continue with email',
+          'sign in',
+          'sign up',
+          'create realistic talk',
+          'ai image',
+          'canvas',
+        ],
       },
       workerId,
       attempt,
