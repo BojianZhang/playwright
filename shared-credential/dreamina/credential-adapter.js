@@ -678,6 +678,10 @@ function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
  * - 第一层短等待后先做快检
  * - 如果第一层没拿到结果，再做第二层保护等待
  * - 把等待阶段信息带回 confirm，避免把“只是稍慢”过早判成 unknown
+ *
+ * 边界：
+ * - 固定 primary + secondary 两层等待，不继续扩成第三层
+ * - 不负责再次 submit / retry / recovery
  */
 async function waitDreaminaCredentialSubmitSettlement(page, runtime = {}, context = {}) {
   const { logInfo = null } = context; // 读取日志函数，方便把等待节奏写进运行日志
@@ -759,6 +763,13 @@ async function waitDreaminaCredentialSubmitSettlement(page, runtime = {}, contex
 // 这是阶段 2 真正的收口层，也是最需要警惕策略膨胀的区域。
 // ==============================
 
+/**
+ * 解析阶段 2 submit target。
+ *
+ * 边界：
+ * - 只负责定位 submit 按钮/入口
+ * - 不负责点击、不负责 settlement、不负责策略 fallback
+ */
 async function resolveDreaminaCredentialSubmitTarget(page, runtime = {}, context = {}) {
   const { formReady = null } = context;
   const profile = loadDreaminaCredentialProfile();
@@ -805,6 +816,14 @@ async function resolveDreaminaCredentialSubmitTarget(page, runtime = {}, context
   };
 }
 
+/**
+ * 执行单次 submit attempt。
+ *
+ * 边界：
+ * - 只跑一次 submit 动作 + 一次 settlement + 前后快照对比
+ * - 不决定是否进入下一个策略
+ * - 不负责最终阶段结果归一化
+ */
 async function runDreaminaCredentialSubmitAttempt(page, runtime = {}, context = {}) {
   const { mode = '', runner = null } = context;
   const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
@@ -834,6 +853,14 @@ async function runDreaminaCredentialSubmitAttempt(page, runtime = {}, context = 
   };
 }
 
+/**
+ * 执行固定 submit strategies。
+ *
+ * 边界：
+ * - 只负责按固定顺序跑 submit 策略并在命中后停止
+ * - 每个策略最多执行一次，不允许递归/嵌套策略
+ * - 不负责 selector 解析，也不负责最终 confirm/classify
+ */
 async function runDreaminaCredentialSubmitStrategies(page, runtime = {}, context = {}) {
   const { logInfo = null, formReady = null, submitLocator = null, submitLabel = '' } = context;
   const attempts = [];
@@ -893,6 +920,13 @@ async function runDreaminaCredentialSubmitStrategies(page, runtime = {}, context
   };
 }
 
+/**
+ * Dreamina 阶段 2 submit 主入口。
+ *
+ * 边界：
+ * - 当前只负责串联 target 解析、strategy runner 与统一返回
+ * - 不直接承担 confirm / classify 主职责
+ */
 async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   const submitTarget = await resolveDreaminaCredentialSubmitTarget(page, runtime, context);
   const submitLocator = submitTarget?.submitLocator || null;
