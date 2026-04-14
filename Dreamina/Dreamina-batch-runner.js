@@ -525,6 +525,47 @@ function createBatchRunContext(options = {}) {
   };
 }
 
+function buildStageSummaryText(stageResults = {}) {
+  const ordered = [
+    ['proxyPrecheck', 'proxyPrecheck'],
+    ['entry', 'entry'],
+    ['credential', 'credential'],
+    ['verification', 'verification'],
+    ['profileCompletion', 'profileCompletion'],
+    ['postAuthReady', 'postAuthReady'],
+    ['accountDelivery', 'accountDelivery'],
+  ];
+  return ordered.map(([key, label]) => {
+    const item = stageResults?.[key];
+    if (!item) return `${label}=SKIP`;
+    return `${label}=${String(item.state || (item.success ? 'OK' : 'UNKNOWN') || 'UNKNOWN')}`;
+  }).join(', ');
+}
+
+function buildSlowestStageText(stageResults = {}) {
+  const ordered = [
+    ['proxyPrecheck', 'proxyPrecheck'],
+    ['entry', 'entry'],
+    ['credential', 'credential'],
+    ['verification', 'verification'],
+    ['profileCompletion', 'profileCompletion'],
+    ['postAuthReady', 'postAuthReady'],
+    ['accountDelivery', 'accountDelivery'],
+  ];
+
+  let winner = null;
+  for (const [key, label] of ordered) {
+    const item = stageResults?.[key];
+    const duration = Number(item?.detail?.durationMs ?? item?.durationMs ?? NaN);
+    if (!Number.isFinite(duration)) continue;
+    if (!winner || duration > winner.durationMs) {
+      winner = { label, durationMs: duration, state: String(item?.state || '') };
+    }
+  }
+
+  return winner ? `${winner.label}=${winner.durationMs}ms${winner.state ? `(${winner.state})` : ''}` : '';
+}
+
 function buildBatchAccountRecord(result = {}, extra = {}) {
   const stageResults = result?.stageResults && typeof result.stageResults === 'object'
     ? { ...result.stageResults }
@@ -552,6 +593,9 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
       || stageResults.postAuthReady?.detail
       || null);
 
+  const stageSummary = buildStageSummaryText(stageResults);
+  const slowestStage = buildSlowestStageText(stageResults);
+
   return {
     account: result?.account?.email || extra?.account?.email || '',
     workerId: extra?.workerId || 0,
@@ -562,8 +606,8 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     finalState: String(result?.finalState || ''),
     finalReason: String(result?.finalReason || ''),
     durationMs: Number(result?.meta?.durationMs || 0),
-    resultFile: String(result?.meta?.resultFile || ''),
-    latestResultFile: String(result?.meta?.latestResultFile || ''),
+    resultFile: String(result?.meta?.resultFile || result?.meta?.filePath || ''),
+    latestResultFile: String(result?.meta?.latestResultFile || result?.meta?.latestByAccount || ''),
     batchBucketPath: String(
       extra?.bucket === 'exists'
         ? (extra?.batchContext?.paths?.existsDir || '')
@@ -571,8 +615,8 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
           ? (extra?.batchContext?.paths?.successDir || '')
           : (extra?.batchContext?.paths?.failedDir || '')
     ),
-    stageSummary: String(result?.stageSummary || ''),
-    slowestStage: String(result?.slowestStage || ''),
+    stageSummary,
+    slowestStage,
     detail: derivedDetail,
     deliveryPayload: result?.deliveryPayload || null,
     stageResults,
