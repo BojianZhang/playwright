@@ -1002,6 +1002,84 @@ async function detectDreaminaVerificationStageReady(page, context = {}) {
  * - 如果内部存在多策略确认，必须保持有上限、可解释、不可递归叠加
  * - 不应再次承担 route-to-form / mode-routing / precheck 主职责
  */
+async function handleDreaminaExistingAccountSigninFallback(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const signinMode = await ensureDreaminaSigninMode(page, runtime, context);
+  if (!signinMode?.ok) {
+    return {
+      ok: false,
+      handled: false,
+      state: 'ACCOUNT_ALREADY_EXISTS',
+      nextStage: '',
+      source: 'signin-fallback',
+      value: 'SIGNIN_MODE_NOT_READY',
+      strength: 'weak',
+      detail: {
+        fallbackType: 'existing-account-signin',
+        signinMode,
+      },
+    };
+  }
+
+  const passwordRefreshed = await refreshDreaminaPasswordFieldAfterPrecheck(page, runtime, context).catch(() => null);
+  const passwordField = passwordRefreshed?.passwordField?.ok
+    ? passwordRefreshed.passwordField.locator
+    : page.locator("input[type='password']").first();
+  const emailField = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
+  await emailField.fill(String(context?.account?.email || '')).catch(() => {});
+  await passwordField.fill(String(context?.account?.password || '')).catch(() => {});
+
+  const signinSubmitResult = await submitDreaminaCredentialForm(page, runtime, {
+    ...context,
+    formReady: null,
+  });
+  const signinSettlement = signinSubmitResult?.settlementResult || null;
+
+  if (signinSettlement?.verificationReady?.ok) {
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | exists fallback signin hit verification | stage=${signinSettlement.stage}`);
+    return {
+      ok: true,
+      handled: true,
+      state: 'EXISTS_ACCOUNT_SIGNIN_OK',
+      nextStage: 'post-auth-ready',
+      source: 'signin-fallback',
+      value: 'ACCOUNT_ALREADY_EXISTS_LOGIN_OK',
+      strength: 'strong',
+      settleStage: signinSettlement.stage,
+      stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', 'EXISTS_ACCOUNT_SIGNIN_OK'],
+      formSignals: {
+        submitMode: signinSubmitResult?.submitMode || '',
+        submitLabel: signinSubmitResult?.submit || '',
+      },
+      detail: {
+        fallbackType: 'existing-account-signin',
+        signinMode,
+        passwordRefreshed,
+        signinSubmitResult,
+        signinSettlement,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    handled: false,
+    state: 'ACCOUNT_ALREADY_EXISTS',
+    nextStage: '',
+    source: 'signin-fallback',
+    value: 'ACCOUNT_ALREADY_EXISTS_LOGIN_NOT_CONFIRMED',
+    strength: 'weak',
+    settleStage: signinSettlement?.stage || '',
+    detail: {
+      fallbackType: 'existing-account-signin',
+      signinMode,
+      passwordRefreshed,
+      signinSubmitResult,
+      signinSettlement,
+    },
+  };
+}
+
 async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
   const { logInfo = null, submitResult = null } = context;
   const profile = loadDreaminaCredentialProfile();
@@ -1009,37 +1087,9 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
 
   if (settlementResult?.quickFailure?.hit) { // 如果 settlement 已经命中高价值失败，这里直接复用，不再重复检查同一批失败
     if (settlementResult.quickFailure.state === 'ACCOUNT_ALREADY_EXISTS') {
-      const signinMode = await ensureDreaminaSigninMode(page, runtime, context);
-      if (signinMode?.ok) {
-        const passwordRefreshed = await refreshDreaminaPasswordFieldAfterPrecheck(page, runtime, context).catch(() => null);
-        const passwordField = passwordRefreshed?.passwordField?.ok
-          ? passwordRefreshed.passwordField.locator
-          : page.locator("input[type='password']").first();
-        const emailField = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
-        await emailField.fill(String(context?.account?.email || '')).catch(() => {});
-        await passwordField.fill(String(context?.account?.password || '')).catch(() => {});
-        const signinSubmitResult = await submitDreaminaCredentialForm(page, runtime, {
-          ...context,
-          formReady: null,
-        });
-        const signinSettlement = signinSubmitResult?.settlementResult || null;
-        if (signinSettlement?.verificationReady?.ok) {
-          if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | exists fallback signin hit verification | stage=${signinSettlement.stage}`);
-          return {
-            ok: true,
-            state: 'EXISTS_ACCOUNT_SIGNIN_OK',
-            nextStage: 'post-auth-ready',
-            source: 'signin-fallback',
-            value: 'ACCOUNT_ALREADY_EXISTS_LOGIN_OK',
-            strength: 'strong',
-            settleStage: signinSettlement.stage,
-            stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', 'EXISTS_ACCOUNT_SIGNIN_OK'],
-            formSignals: {
-              submitMode: signinSubmitResult?.submitMode || '',
-              submitLabel: signinSubmitResult?.submit || '',
-            },
-          };
-        }
+      const signinFallbackResult = await handleDreaminaExistingAccountSigninFallback(page, runtime, context);
+      if (signinFallbackResult?.handled) {
+        return signinFallbackResult;
       }
     }
     if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement failure hit=${settlementResult.quickFailure.state} | stage=${settlementResult.stage}`); // 记录失败是在第几层等待命中的
@@ -1384,6 +1434,7 @@ module.exports = {
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
+  handleDreaminaExistingAccountSigninFallback,
   confirmDreaminaCredentialSubmitResult,
   classifyDreaminaCredentialSubmitFailure,
 };
