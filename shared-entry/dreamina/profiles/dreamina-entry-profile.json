@@ -56,6 +56,20 @@
                                   "intervalMs":  1000
                               }
                           ],
+    "acceleratedLoginSignalStages":  [
+                                           {
+                                               "seconds":  8,
+                                               "intervalMs":  150
+                                           },
+                                           {
+                                               "seconds":  6,
+                                               "intervalMs":  300
+                                           }
+                                       ],
+    "acceleratedLoginReadyTexts":  [
+                                         "Explore Create Assets",
+                                         "Start Creating With AI Agent"
+                                     ],
     "overlays":  {
                      "enabled":  true,
                      "buttonNames":  [

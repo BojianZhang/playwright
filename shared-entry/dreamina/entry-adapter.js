@@ -32,6 +32,36 @@ function loadDreaminaEntryProfile(options = {}) {
   return dreaminaEntryProfileCache;
 }
 
+function resolveDreaminaAcceleratedLoginSignalStages(runtime = {}, profile = {}) {
+  const runtimeStages = Array.isArray(runtime?.acceleratedLoginSignalStages)
+    ? runtime.acceleratedLoginSignalStages
+    : null;
+  const profileStages = Array.isArray(profile?.acceleratedLoginSignalStages)
+    ? profile.acceleratedLoginSignalStages
+    : null;
+  const source = runtimeStages && runtimeStages.length ? runtimeStages : profileStages;
+  if (!source || !source.length) return [];
+  return source
+    .map((item = {}) => ({
+      seconds: Math.max(0, Number(item?.seconds || 0)),
+      intervalMs: Math.max(0, Number(item?.intervalMs || 0)),
+    }))
+    .filter(item => item.seconds > 0 || item.intervalMs > 0);
+}
+
+function resolveDreaminaAcceleratedLoginReadyTexts(runtime = {}, profile = {}) {
+  const runtimeTexts = Array.isArray(runtime?.acceleratedLoginReadyTexts)
+    ? runtime.acceleratedLoginReadyTexts
+    : null;
+  const profileTexts = Array.isArray(profile?.acceleratedLoginReadyTexts)
+    ? profile.acceleratedLoginReadyTexts
+    : null;
+  const source = runtimeTexts && runtimeTexts.length ? runtimeTexts : profileTexts;
+  return Array.isArray(source)
+    ? source.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
 /**
  * 判断 locator 当前是否可见。
  *
@@ -384,6 +414,8 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
   const { logInfo = null } = context;
   const profile = loadDreaminaEntryProfile();
   const stages = resolveDreaminaLoginSignalStages(runtime, profile);
+  const acceleratedStages = resolveDreaminaAcceleratedLoginSignalStages(runtime, profile);
+  const acceleratedReadyTexts = resolveDreaminaAcceleratedLoginReadyTexts(runtime, profile);
 
   const wallClockStartedAt = Date.now();
   let elapsedMs = 0;
@@ -391,6 +423,11 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
   const signalTimeline = {};
   const confirmTrace = {
     stages: stages.map(item => ({ seconds: Number(item?.seconds || 0), intervalMs: Number(item?.intervalMs || 0) })),
+    acceleratedStages: acceleratedStages.map(item => ({ seconds: Number(item?.seconds || 0), intervalMs: Number(item?.intervalMs || 0) })),
+    acceleratedReadyTexts: [...acceleratedReadyTexts],
+    acceleratedMode: false,
+    acceleratedTriggeredBy: '',
+    acceleratedTriggeredAtMs: 0,
     rounds: [],
     resolvedBy: '',
     resolvedAtMs: 0,
@@ -414,9 +451,15 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
     }
   }
 
-  for (const stage of stages) {
+  const defaultPlan = stages.map(stage => ({ ...stage, plan: 'default' }));
+  const acceleratedPlan = acceleratedStages.map(stage => ({ ...stage, plan: 'accelerated' }));
+  let executionPlan = [...defaultPlan];
+
+  for (let stageIndex = 0; stageIndex < executionPlan.length; stageIndex += 1) {
+    const stage = executionPlan[stageIndex];
     const seconds = Number(stage.seconds || 0);
     const intervalMs = Number(stage.intervalMs || 0);
+    const plan = String(stage.plan || 'default');
 
     for (let i = 0; i < seconds; i++) {
       round += 1;
@@ -435,6 +478,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
         accumulatedWallClockBeforeMs: Math.max(0, roundStartedAt - wallClockStartedAt),
         stageSeconds: seconds,
         intervalMs,
+        plan,
         preprocessMs,
         detectSignalMs,
         ctaClickMs: 0,
@@ -540,6 +584,20 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
               postClickGateReadyMs: null,
             },
           };
+        }
+      }
+
+      if (!confirmTrace.acceleratedMode && acceleratedPlan.length) {
+        const acceleratedReadyHit = acceleratedReadyTexts.find(text => Boolean(signalTimeline[`text:${text}`]));
+        if (acceleratedReadyHit) {
+          confirmTrace.acceleratedMode = true;
+          confirmTrace.acceleratedTriggeredBy = acceleratedReadyHit;
+          confirmTrace.acceleratedTriggeredAtMs = elapsedMs;
+          executionPlan = executionPlan.slice(0, stageIndex + 1).concat(acceleratedPlan);
+          if (typeof logInfo === 'function') {
+            logInfo(`dreamina.entry.loginSignal.accelerated | text=${acceleratedReadyHit} | round=${round} | elapsedMs=${elapsedMs}`);
+          }
+          break;
         }
       }
 
