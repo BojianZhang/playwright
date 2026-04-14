@@ -806,6 +806,32 @@ function recordDreaminaSignalTimeline(signalTimeline = {}, signal = {}, currentE
   }
 }
 
+async function captureDreaminaEntrySurfaceEvidence(page) {
+  const url = String(page.url ? page.url() : '').trim();
+  const title = String(await page.title().catch(() => '') || '').trim();
+  const bodyPreview = String(await page.evaluate(() => (document.body?.innerText || '').trim().slice(0, 400)).catch(() => '') || '').trim();
+  const siderMenuLoginExists = await page.locator('#SiderMenuLogin').count().then(count => count > 0).catch(() => false);
+  const siderMenuLoginVisible = await isVisible(page.locator('#SiderMenuLogin').first());
+  const menuitemCount = await page.getByRole('menuitem').count().catch(() => 0);
+  const buttonCount = await page.getByRole('button').count().catch(() => 0);
+  const signInTextVisible = await isVisible(page.getByText(/sign in|log in|login/i).first());
+  const continueWithEmailVisible = await isVisible(page.getByText('Continue with email', { exact: false }).first());
+  const modalVisible = await isVisible(page.locator('.lv-modal-wrapper').first());
+
+  return {
+    url,
+    title,
+    bodyPreview,
+    siderMenuLoginExists,
+    siderMenuLoginVisible,
+    menuitemCount,
+    buttonCount,
+    signInTextVisible,
+    continueWithEmailVisible,
+    modalVisible,
+  };
+}
+
 /**
  * 准备 entry surface，只做一次性动作。
  *
@@ -955,6 +981,7 @@ async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
       rounds,
       totalWallClockMs: Math.max(0, Date.now() - startedAt),
       debugSnapshot: await captureDreaminaEntryDebugSnapshot(page),
+      surfaceEvidence: await captureDreaminaEntrySurfaceEvidence(page),
     },
   };
 }
@@ -1031,6 +1058,7 @@ async function waitForDreaminaSignInEntry(page, runtime = {}, context = {}) {
       rounds,
       totalWallClockMs: Math.max(0, Date.now() - startedAt),
       debugSnapshot: await captureDreaminaEntryDebugSnapshot(page),
+      surfaceEvidence: await captureDreaminaEntrySurfaceEvidence(page),
     },
   };
 }
