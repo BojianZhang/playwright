@@ -48,6 +48,12 @@ function loadDreaminaCredentialProfile(options = {}) {
   return dreaminaCredentialProfileCache;
 }
 
+// ==============================
+// 基础工具层
+// 只负责 profile / 可见性 / 基础 selector-text 查找。
+// 不负责 auth mode、submit、confirm、classify。
+// ==============================
+
 /**
  * 判断 locator 是否可见。
  *
@@ -109,12 +115,26 @@ async function findFirstVisibleByTexts(page, texts = []) {
   };
 }
 
+// ==============================
+// mode-routing 层
+// 负责 register / signin / continue-with-email 的路由推进。
+// 这一层只负责把页面推进到 credential form 入口态，不负责最终 submit 成败判定。
+// ==============================
+
 function resolveDreaminaCredentialIntent(runtime = {}, context = {}) {
   return String(runtime?.dreaminaAuthMode || '').trim().toLowerCase() === 'signin'
     ? { intent: 'signin', source: 'runtime' }
     : { intent: 'register', source: runtime?.dreaminaAuthMode ? 'runtime' : 'default' };
 }
 
+/**
+ * route-to-form 入口动作。
+ *
+ * 边界：
+ * - 只负责把登录层推进到 email/password form 所在层
+ * - 不负责表单 ready 最终判定
+ * - 不负责 submit 后结果判断
+ */
 async function ensureDreaminaContinueWithEmail(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
@@ -302,14 +322,19 @@ async function ensureDreaminaSigninMode(page, runtime = {}, context = {}) {
   };
 }
 
-/**
- * 等待 Dreamina credential form ready。
- *
- * 作用：
- * - 确认 email input / password input / submit button 是否已经可用
- * - 这是阶段 2 的起点判断
- */
+// ==============================
+// precheck hook 层
+// 这是可选子流程，不是 credential submit 主链的固定步骤。
+// 只在 shared stage optional hook 位调用，不应主导整个阶段 2。
+// ==============================
 
+/**
+ * 可选 precheck subflow：检查账号是否已存在。
+ *
+ * 边界：
+ * - 这是 hook subflow，不是 shared credential 主链
+ * - 允许做 route-to-form、表单确认、email 观察，但不应承担 submit 主链职责
+ */
 async function precheckDreaminaAccountExists(page, account = {}, runtime = {}, context = {}) {
   const profile = loadDreaminaCredentialProfile();
   const continueWithEmailResult = await ensureDreaminaContinueWithEmail(page, runtime, context);
@@ -375,6 +400,12 @@ async function precheckDreaminaAccountExists(page, account = {}, runtime = {}, c
     signalStrength: 'weak',
   };
 }
+
+// ==============================
+// form-ready 层
+// 负责识别 credential form 是否已经稳定可用。
+// 当前实现仍带少量 route-to-form 辅助，后续应继续收口边界。
+// ==============================
 
 async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
@@ -465,6 +496,11 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
     intentResult,
   };
 }
+
+// ==============================
+// fill / action 层
+// 只负责字段填写与点击动作，不负责最终结果判定。
+// ==============================
 
 /**
  * 填写 Dreamina email。
@@ -717,6 +753,12 @@ async function waitDreaminaCredentialSubmitSettlement(page, runtime = {}, contex
  * - 不在这里写完整结果判断，而是只负责点击和快照采集
  * - 把 settlement 结果一并带回，让 confirm 层知道分层等待是否已经跑过
  */
+// ==============================
+// submit / confirm / classify 层
+// 负责提交表单、确认结果、归一化失败原因。
+// 这是阶段 2 真正的收口层，也是最需要警惕策略膨胀的区域。
+// ==============================
+
 async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   const { logInfo = null, formReady = null } = context;
   const profile = loadDreaminaCredentialProfile();
@@ -951,6 +993,14 @@ async function detectDreaminaVerificationStageReady(page, context = {}) {
  * - settlement 没拿到结果时，再看 inline error / no-state-change / unknown
  *
  * 这是阶段 2 最核心的结果判断方法。
+ */
+/**
+ * 提交结果确认主入口。
+ *
+ * 边界：
+ * - 负责把 submit 后的页面状态归一化成“成功 / 已存在 / 无状态变化 / 其他失败”
+ * - 如果内部存在多策略确认，必须保持有上限、可解释、不可递归叠加
+ * - 不应再次承担 route-to-form / mode-routing / precheck 主职责
  */
 async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
   const { logInfo = null, submitResult = null } = context;
@@ -1225,6 +1275,13 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
  */
 }
 
+/**
+ * 失败分类层。
+ *
+ * 边界：
+ * - 只负责把原始事实态归一为稳定 reason bucket
+ * - 不负责重新执行 submit / click / wait / retry
+ */
 function classifyDreaminaCredentialSubmitFailure(input = {}) {
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
   let siteReason = reason;
