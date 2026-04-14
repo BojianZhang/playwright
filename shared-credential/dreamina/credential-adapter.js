@@ -1015,16 +1015,57 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     && !afterSnapshot.hasErrorModal
   );
   if (signupOverlayStillOpen) {
-    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'}`);
-    return {
-      ok: false,
-      state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
-      nextStage: '',
-      source: 'snapshot',
-      value: 'SIGNUP_OVERLAY_STILL_OPEN',
-      strength: 'weak',
-      settleStage: settlementResult?.stage || 'snapshot-check',
-    };
+    const followupObservation = await observeDreaminaCredentialFollowup(page, runtime, context).catch(() => null);
+    const followupSnapshot = followupObservation?.snapshot || null;
+    const followupRecovered = Boolean(
+      followupSnapshot
+      && (
+        followupSnapshot.verificationVisible
+        || followupSnapshot.hasExistingAccount
+        || followupSnapshot.hasRejected
+        || followupSnapshot.hasRateLimited
+        || followupSnapshot.hasInlineError
+        || followupSnapshot.hasErrorModal
+        || followupSnapshot.authMode !== 'signup'
+        || !followupSnapshot.emailVisible
+        || !followupSnapshot.passwordVisible
+        || !followupSnapshot.continueVisible
+      )
+    );
+
+    if (followupSnapshot?.verificationVisible) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup recovered verification after signup-still-open | stage=${settlementResult?.stage || 'none'}`);
+      return {
+        ok: true,
+        state: 'CREDENTIAL_SUBMIT_OK',
+        nextStage: 'verification',
+        source: 'followup-snapshot',
+        value: 'FOLLOWUP_VERIFICATION_VISIBLE',
+        strength: 'weak',
+        settleStage: settlementResult?.stage || 'followup-check',
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', 'CREDENTIAL_SUBMIT_OK'],
+        formSignals: {
+          submitMode: submitResult?.submitMode || '',
+          submitLabel: submitResult?.submit || '',
+        },
+      };
+    }
+
+    if (!followupRecovered) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'} | followup=same-open`);
+      return {
+        ok: false,
+        state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
+        nextStage: '',
+        source: 'snapshot',
+        value: 'SIGNUP_OVERLAY_STILL_OPEN',
+        strength: 'weak',
+        settleStage: settlementResult?.stage || 'snapshot-check',
+        followupObservation,
+      };
+    }
+
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay changed after followup | stage=${settlementResult?.stage || 'none'}`);
   }
 
   const signupContinueDisabledWithoutOutcome = Boolean(
