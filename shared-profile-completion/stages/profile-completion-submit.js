@@ -59,10 +59,21 @@ function normalizeProfileCompletionStageResult(input = {}) {
 /**
  * Stage-4 main entry.
  *
+ * Shared boundary:
+ * - Own stage orchestration only
+ * - Choose between continuous primary path and split fallback path
+ * - Aggregate adapter outputs into one stable stage result
+ * - Record shared timing / logging / normalization
+ *
+ * Shared does NOT:
+ * - Own site-specific DOM selectors or repair actions
+ * - Re-implement adapter internal retries or UI recovery strategies
+ * - Decide birthday business rules beyond consuming the generated plan
+ *
  * Flow:
  * 1. wait for profile-completion ready
  * 2. build birthday/profile plan
- * 3. run continuous-flow or split-flow fill path
+ * 3. run continuous-flow primary path or split-flow fallback path
  * 4. submit profile-completion
  * 5. confirm submit result
  * 6. success -> next stage post-auth-ready
@@ -78,6 +89,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  const timingBreakdown = {
+    waitProfileReadyMs: 0,
+    buildProfilePlanMs: 0,
+    fillBirthdayMs: 0,
+    submitProfileCompletionMs: 0,
+    confirmSubmitResultMs: 0,
+    totalMs: 0,
+  };
 
   if (!adapter) {
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
@@ -139,12 +158,15 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  // Ready gate belongs to adapter.
+  // Shared only decides whether stage-4 can begin.
   const readyTimer = createStageTimer();
   syncStageStep(options, { stage: 'profile-completion-submit', step: 'wait-profile-ready' });
   logStageProgress('profile-completion-submit', '等待资料补全阶段 ready', {
     context: buildStageLogContext(options),
   });
   const profileReady = await waitForProfileReady(page, runtime, context);
+  timingBreakdown.waitProfileReadyMs = readyTimer.elapsedMs();
   if (profileReady?.ok) {
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
     logStageSuccess('profile-completion-submit', '资料补全阶段 ready', {
@@ -178,12 +200,15 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  // Plan generation is a site/business hook owned by adapter.
+  // Shared only consumes the resulting normalized birthday/profile plan.
   const planTimer = createStageTimer();
   syncStageStep(options, { stage: 'profile-completion-submit', step: 'build-profile-plan' });
   logStageProgress('profile-completion-submit', '生成资料填写计划', {
     context: buildStageLogContext(options),
   });
   const birthdayFillPlan = await buildProfilePlan(page, account, runtime, { ...context, profileReady });
+  timingBreakdown.buildProfilePlanMs = planTimer.elapsedMs();
   if (birthdayFillPlan?.ok) {
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
     logStageSuccess('profile-completion-submit', '资料填写计划生成成功', {
@@ -230,14 +255,18 @@ async function runProfileCompletionSubmitStage(options = {}) {
   let birthdayContinuousResult = null;
   const hasContinuousFlow = Boolean(fillBirthdayContinuous);
   const hasSplitFlow = Boolean(fillYear && fillMonth && fillDay);
+  const fillTimer = createStageTimer();
 
+  // Fill path policy:
+  // - continuous-flow is the preferred primary path
+  // - split-flow is compatibility fallback only
   if (fillBirthdayContinuous) {
-    const fillTimer = createStageTimer();
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'fill-birthday-continuous' });
     logStageProgress('profile-completion-submit', '执行 birthday continuous flow', {
       context: buildStageLogContext(options),
     });
     birthdayContinuousResult = await fillBirthdayContinuous(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan });
+    timingBreakdown.fillBirthdayMs = fillTimer.elapsedMs();
     if (birthdayContinuousResult?.ok) {
       syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
       logStageSuccess('profile-completion-submit', 'birthday continuous flow 成功', {
@@ -334,6 +363,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
     }
 
     dayFillResult = await fillDay(page, birthdayFillPlan, runtime, { ...context, profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult });
+    timingBreakdown.fillBirthdayMs = fillTimer.elapsedMs();
     if (!dayFillResult?.ok) {
       const classified = classifyFailure ? classifyFailure({ reason: dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED' }) : null;
       return normalizeProfileCompletionStageResult({
@@ -378,6 +408,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  // Submit step belongs to adapter.
+  // Shared only orchestrates whether submit should run or can be skipped because continuous-flow already submitted.
   const submitTimer = createStageTimer();
   syncStageStep(options, { stage: 'profile-completion-submit', step: 'submit-profile-completion' });
   logStageProgress('profile-completion-submit', '提交资料补全结果', {
@@ -394,6 +426,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         stateChanged: true,
       }
     : await submitProfileCompletion(page, runtime, { ...context, profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, birthdayContinuousResult });
+  timingBreakdown.submitProfileCompletionMs = submitTimer.elapsedMs();
   if (!submitResult?.ok) {
     const classified = classifyFailure ? classifyFailure({ reason: submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED' }) : null;
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-fail' });
@@ -429,6 +462,8 @@ async function runProfileCompletionSubmitStage(options = {}) {
     });
   }
 
+  // Confirm step is the only stage-4 settlement gate.
+  // Shared should not re-implement site-specific result inference outside adapter confirm/classify hooks.
   const confirmTimer = createStageTimer();
   syncStageStep(options, { stage: 'profile-completion-submit', step: 'confirm-submit-result' });
   logStageProgress('profile-completion-submit', '确认资料补全提交结果', {
@@ -444,6 +479,9 @@ async function runProfileCompletionSubmitStage(options = {}) {
     birthdayContinuousResult,
     submitResult,
   });
+
+  timingBreakdown.confirmSubmitResultMs = confirmTimer.elapsedMs();
+  timingBreakdown.totalMs = stageTimer.elapsedMs();
 
   if (confirmResult?.ok) {
     syncStageStep(options, { stage: 'profile-completion-submit', step: 'stage-success' });
@@ -478,6 +516,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
         birthdayContinuousResult,
         submitResult,
         confirmResult,
+        timingBreakdown,
       },
     });
   }
@@ -516,6 +555,7 @@ async function runProfileCompletionSubmitStage(options = {}) {
       submitResult,
       confirmResult,
       classified,
+      timingBreakdown,
     },
   });
 }
