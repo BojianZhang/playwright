@@ -1,5 +1,23 @@
 'use strict';
 
+/**
+ * Dreamina proxy-precheck adapter
+ *
+ * 这是 shared-proxy-precheck 的 Dreamina 站点适配层。
+ *
+ * 它负责：
+ * - 单次代理隧道请求
+ * - 单项目标检查（connectivity / exit-ip / primary / secondary）
+ * - 根据已有探测结果做业务级预检确认
+ * - 将失败态归一到 Dreamina 语义
+ *
+ * 它不负责：
+ * - shared stage orchestration
+ * - 多轮 retry / 多轮探测
+ * - 并发调度
+ * - 日志编排
+ */
+
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -8,6 +26,11 @@ const tls = require('tls');
 
 const DREAMINA_PROXY_PRECHECK_PROFILE_PATH = path.join(__dirname, 'profiles', 'dreamina-proxy-precheck-profile.json');
 let dreaminaProxyPrecheckProfileCache = null;
+
+// ==============================
+// 基础工具层
+// 负责 profile 读取、基础 header / body 解析。
+// ==============================
 
 function loadDreaminaProxyPrecheckProfile(options = {}) {
   const forceReload = Boolean(options?.forceReload);
@@ -30,6 +53,20 @@ function extractIpFromResponseBody(body) {
   return plainIpMatch ? plainIpMatch[0].trim() : '';
 }
 
+// ==============================
+// transport 层
+// 负责一次性 HTTP CONNECT -> TLS -> HTTPS 请求，不负责业务结果判定。
+// 不做 retry，不扩成多轮 fallback。
+// ==============================
+
+/**
+ * 通过 HTTP CONNECT 代理发起一次 HTTPS 请求。
+ *
+ * 边界：
+ * - 只负责单次传输，不负责业务级 ok/fail 判定
+ * - 不负责 retry
+ * - CONNECT / TLS / HTTPS 三层错误都在这里收敛成一次请求结果
+ */
 function requestViaHttpProxy(proxy = {}, url, method = 'GET', timeoutMs = 15000) {
   const targetUrl = new URL(url);
   const targetLabel = `${method} ${targetUrl.toString()}`;
@@ -105,6 +142,18 @@ function requestViaHttpProxy(proxy = {}, url, method = 'GET', timeoutMs = 15000)
   });
 }
 
+// ==============================
+// 单项检查层
+// 每个 check 只负责一次目标探测，不互相 fallback，不共享策略循环。
+// ==============================
+
+/**
+ * 代理基础连通性检查。
+ *
+ * 边界：
+ * - 只验证代理是否能完成基础隧道请求
+ * - 不承担出口 IP 解析与目标站点可用性判断
+ */
 async function checkProxyConnectivity(proxy, runtime = {}, context = {}) {
   const profile = loadDreaminaProxyPrecheckProfile();
   const exitIp = profile?.targets?.exitIp || {};
@@ -120,6 +169,12 @@ async function checkProxyConnectivity(proxy, runtime = {}, context = {}) {
   };
 }
 
+/**
+ * 出口 IP 检查。
+ *
+ * 边界：
+ * - 只负责读取出口 IP，不负责 Dreamina 目标可达性判断
+ */
 async function checkProxyExitIp(proxy, runtime = {}, context = {}) {
   const profile = loadDreaminaProxyPrecheckProfile();
   const exitIp = profile?.targets?.exitIp || {};
@@ -137,6 +192,13 @@ async function checkProxyExitIp(proxy, runtime = {}, context = {}) {
   };
 }
 
+/**
+ * Dreamina 主目标检查。
+ *
+ * 边界：
+ * - 只负责 primary target 单次探测
+ * - 不与 secondary / exit-ip 做交叉确认
+ */
 async function checkDreaminaPrimaryTarget(proxy, runtime = {}, context = {}) {
   const profile = loadDreaminaProxyPrecheckProfile();
   const target = profile?.targets?.primary || {};
@@ -153,6 +215,13 @@ async function checkDreaminaPrimaryTarget(proxy, runtime = {}, context = {}) {
   };
 }
 
+/**
+ * Dreamina 副目标检查。
+ *
+ * 边界：
+ * - 只负责 secondary target 单次探测
+ * - 不承担最终代理等级判断
+ */
 async function checkDreaminaSecondaryTarget(proxy, runtime = {}, context = {}) {
   const profile = loadDreaminaProxyPrecheckProfile();
   const target = profile?.targets?.secondary || {};
@@ -169,6 +238,25 @@ async function checkDreaminaSecondaryTarget(proxy, runtime = {}, context = {}) {
   };
 }
 
+// ==============================
+// 业务确认 / 分类层
+// 负责消费已有 probe 结果并给出 Dreamina 代理预检结论。
+// 不重新发请求，不做 retry。
+// ==============================
+
+/**
+ * 业务级预检确认。
+ *
+ * 规则：
+ * - connectivity 不通，直接 BAD
+ * - primary + secondary 都通，判 OK
+ * - primary 通或 exit-ip 可用，判 WEAK
+ * - 否则判 BAD
+ *
+ * 边界：
+ * - 只消费既有 probe 结果
+ * - 不重新发请求，不做补探测
+ */
 async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
   const { connectivity = null, exitIp = null, primaryTarget = null, secondaryTarget = null } = context;
 
@@ -227,6 +315,13 @@ async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
   };
 }
 
+/**
+ * 失败分类。
+ *
+ * 边界：
+ * - 只做 reason -> Dreamina siteReason 映射
+ * - 不负责重新确认 probe 结果
+ */
 function classifyProxyPrecheckFailure(input = {}) {
   const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
   let siteReason = reason;
