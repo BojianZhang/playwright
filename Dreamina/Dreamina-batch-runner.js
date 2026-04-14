@@ -912,6 +912,7 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
           'Login',
           'Sign up',
           'Create realistic talk',
+          'Explore Create Assets',
           'Start Creating With AI Agent',
           'AI Image',
           'Canvas',

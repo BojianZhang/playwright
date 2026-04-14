@@ -61,6 +61,7 @@ const DREAMINA_STRONG_READY_TEXTS = [
   'Login',
   'Sign up',
   'Create realistic talk',
+  'Explore Create Assets',
   'Start Creating With AI Agent',
   'AI Image',
   'Canvas',
@@ -459,6 +460,24 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     matchedValue: '',
   };
 
+  const healthObservationSelectors = [
+    'input[type="email"]',
+    'input[role="textbox"]',
+    '[class*="email"] input',
+    '[class*="login"] button',
+    '[class*="signin"] button',
+    '[class*="sign-in"] button',
+    '[class*="signup"] button',
+    '[class*="sign-up"] button',
+  ];
+  const healthObservationTexts = [
+    'Sign in',
+    'Continue with email',
+    'Enter email',
+    'AI Image',
+    'Canvas',
+  ];
+
   let lastTargetWaitMs = 0;
 
   for (const waitMs of uniqueSteps) {
@@ -470,6 +489,9 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
       selectorHit: null,
       textHit: null,
       bodyPatternHit: null,
+      observedSelectors: {},
+      observedTexts: {},
+      observedBodyPreview: '',
     };
 
     if (round.deltaWaitMs > 0) {
@@ -477,6 +499,15 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     }
     lastTargetWaitMs = waitMs;
     round.elapsedAfterWaitMs = Date.now() - start;
+
+    const observedSelectorResult = await findVisibleReadySelector(page, healthObservationSelectors);
+    round.observedSelectors = observedSelectorResult?.timelineSignals || {};
+
+    const observedTextResult = await findVisibleReadyText(page, healthObservationTexts);
+    round.observedTexts = observedTextResult?.timelineSignals || {};
+
+    const observedBodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
+    round.observedBodyPreview = observedBodyText.slice(0, 240);
 
     const strongSelectorHit = await findVisibleReadySelector(page, strongSelectors);
     round.selectorHit = strongSelectorHit?.ok ? String(strongSelectorHit.value || '') : null;
@@ -492,6 +523,22 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
         logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强 selector ready 信号: ${strongSelectorHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return strongSelectorHit;
+    }
+
+    const bodyPatternHit = await findBodyPatternReady(page, runtime.readyBodyPatterns || []);
+    round.bodyPatternHit = bodyPatternHit?.ok ? String(bodyPatternHit.value || '') : null;
+    if (bodyPatternHit.ok && String(bodyPatternHit.value || '').trim().toLowerCase() === 'dreamina') {
+      trace.rounds.push(round);
+      trace.matchedKind = 'body-pattern';
+      trace.matchedValue = String(bodyPatternHit.value || '');
+      bodyPatternHit.detail = {
+        ...(bodyPatternHit.detail && typeof bodyPatternHit.detail === 'object' ? bodyPatternHit.detail : {}),
+        waitTrace: trace,
+      };
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中早期 dreamina body pattern 放行信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
+      }
+      return bodyPatternHit;
     }
 
     const strongTextHit = await findVisibleReadyText(page, strongTexts);
@@ -510,8 +557,6 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
       return strongTextHit;
     }
 
-    const bodyPatternHit = await findBodyPatternReady(page, runtime.readyBodyPatterns || []);
-    round.bodyPatternHit = bodyPatternHit?.ok ? String(bodyPatternHit.value || '') : null;
     trace.rounds.push(round);
     if (bodyPatternHit.ok) {
       trace.matchedKind = 'body-pattern';
