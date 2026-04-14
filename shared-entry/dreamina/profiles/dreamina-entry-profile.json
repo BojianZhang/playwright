@@ -44,16 +44,16 @@
                      },
     "loginSignalStages":  [
                               {
-                                  "seconds":  8,
-                                  "intervalMs":  500
+                                  "seconds":  6,
+                                  "intervalMs":  300
                               },
                               {
-                                  "seconds":  10,
+                                  "seconds":  4,
+                                  "intervalMs":  600
+                              },
+                              {
+                                  "seconds":  2,
                                   "intervalMs":  1000
-                              },
-                              {
-                                  "seconds":  10,
-                                  "intervalMs":  1500
                               }
                           ],
     "overlays":  {
