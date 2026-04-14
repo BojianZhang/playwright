@@ -285,6 +285,12 @@ async function runVerificationSubmitStage(options = {}) {
       fillCodeMs: 0,
       confirmSubmitMs: 0,
       fetchState: '',
+      provider: '',
+      matchMode: '',
+      fillMode: '',
+      activationMode: '',
+      legacyUsed: false,
+      debugUsed: false,
       confirmState: '',
     };
     verificationPhaseTrace.attempts.push(attemptTrace);
@@ -314,6 +320,8 @@ async function runVerificationSubmitStage(options = {}) {
     });
     attemptTrace.fetchCodeMs = fetchTimer.elapsedMs();
     attemptTrace.fetchState = String(fetchCodeResult?.state || '');
+    attemptTrace.provider = String(fetchCodeResult?.provider || '');
+    attemptTrace.matchMode = String(fetchCodeResult?.matchMode || '');
     if (fetchCodeResult?.ok) {
       syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
     logStageSuccess('verification-submit', '验证码拉取成功', {
@@ -461,6 +469,10 @@ async function runVerificationSubmitStage(options = {}) {
     });
     fillResult = await fillCode(page, fetchCodeResult.code, runtime, { ...context, verificationReady, fetchCodeResult, codeInputResolution, usedCodes, attemptIndex });
     attemptTrace.fillCodeMs = fillTimer.elapsedMs();
+    attemptTrace.fillMode = String(fillResult?.mode || '');
+    attemptTrace.activationMode = String(fillResult?.activationResult?.mode || '');
+    attemptTrace.legacyUsed = Boolean(fillResult?.mode && fillResult.mode !== 'dreamina-direct-fill');
+    attemptTrace.debugUsed = String(fillResult?.mode || '') === 'fallback-keyboard-type';
     if (fillResult?.ok) {
       syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
     logStageSuccess('verification-submit', '验证码输入成功', {
@@ -468,6 +480,8 @@ async function runVerificationSubmitStage(options = {}) {
         extra: [
           fillResult?.state ? `state=${fillResult.state}` : '',
           fillResult?.source ? `source=${fillResult.source}` : '',
+          fillResult?.mode ? `fillMode=${fillResult.mode}` : '',
+          fillResult?.activationResult?.mode ? `activationMode=${fillResult.activationResult.mode}` : '',
           typeof fillResult?.stateChanged === 'boolean' ? `stateChanged=${fillResult.stateChanged}` : '',
           `stepDurationMs=${formatDurationMs(fillTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
