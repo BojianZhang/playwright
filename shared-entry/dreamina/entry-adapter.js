@@ -385,9 +385,19 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
   const profile = loadDreaminaEntryProfile();
   const stages = resolveDreaminaLoginSignalStages(runtime, profile);
 
+  const wallClockStartedAt = Date.now();
   let elapsedMs = 0;
   let round = 0;
   const signalTimeline = {};
+  const confirmTrace = {
+    stages: stages.map(item => ({ seconds: Number(item?.seconds || 0), intervalMs: Number(item?.intervalMs || 0) })),
+    rounds: [],
+    resolvedBy: '',
+    resolvedAtMs: 0,
+    resolvedState: '',
+    resolvedReason: '',
+    totalWallClockMs: 0,
+  };
 
   function recordTimeline(signal = {}, currentElapsedMs = 0) {
     const signals = signal?.timelineSignals && typeof signal.timelineSignals === 'object'
@@ -411,16 +421,45 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
     for (let i = 0; i < seconds; i++) {
       round += 1;
 
+      const roundStartedAt = Date.now();
+      const preprocessStartedAt = Date.now();
       await preprocessDreaminaEntryOverlays(page, runtime, context);
+      const preprocessMs = Math.max(0, Date.now() - preprocessStartedAt);
+      const detectStartedAt = Date.now();
       const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+      const detectSignalMs = Math.max(0, Date.now() - detectStartedAt);
       recordTimeline(signal, elapsedMs);
+      const roundTrace = {
+        round,
+        elapsedBeforeWaitMs: elapsedMs,
+        accumulatedWallClockBeforeMs: Math.max(0, roundStartedAt - wallClockStartedAt),
+        stageSeconds: seconds,
+        intervalMs,
+        preprocessMs,
+        detectSignalMs,
+        ctaClickMs: 0,
+        postCtaWaitMs: 0,
+        waitSleepMs: 0,
+        roundWallClockMs: 0,
+        accumulatedWallClockAfterMs: 0,
+        found: Boolean(signal?.found),
+        clickable: Boolean(signal?.clickable),
+        label: String(signal?.label || ''),
+        source: String(signal?.source || ''),
+        value: String(signal?.value || ''),
+        matchedTexts: Array.isArray(signal?.matchedTexts) ? [...signal.matchedTexts] : [],
+        matchedSelectors: Array.isArray(signal?.matchedSelectors) ? [...signal.matchedSelectors] : [],
+      };
       if (signal.found) {
         if (signal.clickable && signal.locator) {
           const clickStartMs = elapsedMs;
+          const ctaClickStartedAt = Date.now();
           await signal.locator.click({ timeout: 1500 }).catch(async () => {
             await signal.locator.click({ force: true, timeout: 1500 }).catch(() => {});
           });
+          roundTrace.ctaClickMs = Math.max(0, Date.now() - ctaClickStartedAt);
           const postCtaWaitMs = Number(runtime?.entryPostCtaClickWaitMs || 600);
+          roundTrace.postCtaWaitMs = postCtaWaitMs;
           await page.waitForTimeout(postCtaWaitMs).catch(() => {});
           elapsedMs += postCtaWaitMs;
           const recheckSignal = await detectDreaminaLoginEntrySignals(page, runtime, context);
@@ -430,6 +469,22 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
             if (typeof logInfo === 'function') {
               logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
             }
+            roundTrace.recheckFound = Boolean(recheckSignal?.found);
+            roundTrace.recheckLabel = String(recheckSignal?.label || '');
+            roundTrace.recheckSource = String(recheckSignal?.source || '');
+            roundTrace.recheckValue = String(recheckSignal?.value || '');
+            roundTrace.ctaSource = String(signal.value || signal.label || '');
+            roundTrace.ctaOpenedGateMs = clickStartMs;
+            roundTrace.postClickGateReadyMs = postClickGateReadyMs;
+            roundTrace.elapsedAfterActionMs = elapsedMs;
+            roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
+            roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
+            confirmTrace.rounds.push(roundTrace);
+            confirmTrace.resolvedBy = 'cta-recheck-email-input';
+            confirmTrace.resolvedAtMs = elapsedMs;
+            confirmTrace.resolvedState = 'ENTRY_READY';
+            confirmTrace.resolvedReason = 'EMAIL_INPUT_VISIBLE_AFTER_CTA';
+            confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
             return {
               ok: true,
               state: 'ENTRY_READY',
@@ -443,6 +498,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
                 round,
                 elapsedMs,
                 signalTimeline,
+                confirmTrace,
                 ctaSource: signal.value || signal.label || '',
                 ctaOpenedGateMs: clickStartMs,
                 postClickGateReadyMs,
@@ -457,6 +513,15 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
             logInfo(`dreamina.entry.loginSignal.ready | label=${signal.label} | source=${signal.source} | value=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
           }
 
+          roundTrace.elapsedAfterActionMs = elapsedMs;
+          roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
+          roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
+          confirmTrace.rounds.push(roundTrace);
+          confirmTrace.resolvedBy = 'direct-email-input';
+          confirmTrace.resolvedAtMs = elapsedMs;
+          confirmTrace.resolvedState = 'ENTRY_READY';
+          confirmTrace.resolvedReason = 'EMAIL_INPUT_VISIBLE';
+          confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
           return {
             ok: true,
             state: 'ENTRY_READY',
@@ -469,6 +534,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
               round,
               elapsedMs,
               signalTimeline,
+              confirmTrace,
               ctaSource: signal.value || signal.label || '',
               ctaOpenedGateMs: null,
               postClickGateReadyMs: null,
@@ -478,7 +544,11 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       }
 
       await page.waitForTimeout(intervalMs).catch(() => {});
+      roundTrace.waitSleepMs = intervalMs;
       elapsedMs += intervalMs;
+      roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
+      roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
+      confirmTrace.rounds.push(roundTrace);
     }
   }
 
@@ -495,6 +565,14 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       round,
       elapsedMs,
       signalTimeline,
+      confirmTrace: {
+        ...confirmTrace,
+        resolvedBy: confirmTrace.resolvedBy || 'timeout',
+        resolvedAtMs: confirmTrace.resolvedAtMs || elapsedMs,
+        resolvedState: confirmTrace.resolvedState || 'ENTRY_NOT_READY',
+        resolvedReason: confirmTrace.resolvedReason || 'LOGIN_SIGNAL_TIMEOUT',
+        totalWallClockMs: confirmTrace.totalWallClockMs || Math.max(0, Date.now() - wallClockStartedAt),
+      },
       ctaSource: '',
       ctaOpenedGateMs: null,
       postClickGateReadyMs: null,
@@ -677,8 +755,21 @@ async function captureDreaminaEntryDebugSnapshot(page) {
 
 async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
+  const phaseTrace = {
+    initialWaitMs: 0,
+    classifyMs: 0,
+    recoverMs: 0,
+    preprocessAfterRecoverMs: 0,
+    rewaitMs: 0,
+    resolvedPath: '',
+    recovered: false,
+    recoveryAction: '',
+    recoveryReason: '',
+  };
 
+  const initialWaitStartedAt = Date.now();
   const readyResult = await waitForEntryReady(page, runtime, context);
+  phaseTrace.initialWaitMs = Math.max(0, Date.now() - initialWaitStartedAt);
   if (readyResult?.ok) {
     return {
       ok: true,
@@ -688,32 +779,50 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
       strength: readyResult?.strength || '',
       waitStepMs: Number(readyResult?.waitStepMs || 0),
       recoveryResult: null,
-      detail: readyResult?.detail || null,
+      detail: {
+        ...(readyResult?.detail && typeof readyResult.detail === 'object' ? readyResult.detail : {}),
+        recoveryPhaseTrace: {
+          ...phaseTrace,
+          resolvedPath: 'initial-wait-success',
+        },
+      },
     };
   }
 
+  const classifyStartedAt = Date.now();
   const classified = classifyEntryFailure({
     reason: readyResult?.state || 'ENTRY_NOT_READY',
     source: readyResult?.source || '',
     value: readyResult?.value || '',
   });
+  phaseTrace.classifyMs = Math.max(0, Date.now() - classifyStartedAt);
 
+  const recoveryStartedAt = Date.now();
   const recoveryResult = await recoverEntry(page, classified, {
     ...context,
     runtime,
   });
+  phaseTrace.recoverMs = Math.max(0, Date.now() - recoveryStartedAt);
+  phaseTrace.recovered = Boolean(recoveryResult?.recovered);
+  phaseTrace.recoveryAction = String(recoveryResult?.action || '');
+  phaseTrace.recoveryReason = String(recoveryResult?.reason || '');
 
   if (recoveryResult?.recovered) {
     if (typeof logInfo === 'function') {
       logInfo(`dreamina.entry.ready.recheck | action=${recoveryResult.action} | reason=${recoveryResult.reason}`);
     }
 
+    const preprocessStartedAt = Date.now();
     await preprocessDreaminaEntryOverlays(page, runtime, context);
+    phaseTrace.preprocessAfterRecoverMs = Math.max(0, Date.now() - preprocessStartedAt);
+
+    const rewaitStartedAt = Date.now();
     const readyAfterRecovery = await waitForEntryReady(page, runtime, {
       ...context,
       runtime,
       recoveryResult,
     });
+    phaseTrace.rewaitMs = Math.max(0, Date.now() - rewaitStartedAt);
 
     if (readyAfterRecovery?.ok) {
       return {
@@ -728,6 +837,10 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
           ...(readyAfterRecovery?.detail && typeof readyAfterRecovery.detail === 'object' ? readyAfterRecovery.detail : {}),
           recoveryAction: recoveryResult?.action || '',
           recoveryReason: recoveryResult?.reason || '',
+          recoveryPhaseTrace: {
+            ...phaseTrace,
+            resolvedPath: 'recovery-rewait-success',
+          },
         },
       };
     }
@@ -754,7 +867,13 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
     strength: readyResult?.strength || '',
     waitStepMs: Number(readyResult?.waitStepMs || 0),
     recoveryResult: recoveryResult || null,
-    detail: mergedDetail,
+    detail: {
+      ...mergedDetail,
+      recoveryPhaseTrace: {
+        ...phaseTrace,
+        resolvedPath: recoveryResult?.recovered ? 'recovery-rewait-failed' : 'recovery-not-applied',
+      },
+    },
   };
 }
 function classifyEntryFailure(input = {}) {
