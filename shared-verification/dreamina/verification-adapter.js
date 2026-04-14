@@ -17,6 +17,14 @@
  * - verification 阶段总重试循环
  * - 上一阶段 credential submit
  * - 下一阶段 profile completion 实际填写
+ *
+ * 维护热点（后续默认遵守）：
+ * - `tryDreaminaCharByCharInput(...)` 是高成本 fallback，不再继续增强
+ * - `fillDreaminaVerificationCode(...)` 不再新增更多默认输入策略
+ * - `activateDreaminaVerificationInput(...)` 保持有限候选，不扩成更大的激活状态机
+ * - `ensureDreaminaVerificationInputAlive(...)` 只做局部保活，不承担路径决策
+ * - 默认主路径保持为 activation + direct-fill
+ * - legacy / debug 路径只在显式开关下参与
  */
 
 // 引入文件系统模块，用来读取 Dreamina verification profile JSON 配置文件。
