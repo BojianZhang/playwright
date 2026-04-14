@@ -48,15 +48,15 @@
                      },
     "loginSignalStages":  [
                               {
-                                  "seconds":  6,
+                                  "seconds":  12,
                                   "intervalMs":  300
                               },
                               {
-                                  "seconds":  4,
+                                  "seconds":  3,
                                   "intervalMs":  600
                               },
                               {
-                                  "seconds":  2,
+                                  "seconds":  1,
                                   "intervalMs":  1000
                               }
                           ],
