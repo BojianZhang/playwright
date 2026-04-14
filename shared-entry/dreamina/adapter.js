@@ -527,19 +527,6 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
 
     const bodyPatternHit = await findBodyPatternReady(page, runtime.readyBodyPatterns || []);
     round.bodyPatternHit = bodyPatternHit?.ok ? String(bodyPatternHit.value || '') : null;
-    if (bodyPatternHit.ok && String(bodyPatternHit.value || '').trim().toLowerCase() === 'dreamina') {
-      trace.rounds.push(round);
-      trace.matchedKind = 'body-pattern';
-      trace.matchedValue = String(bodyPatternHit.value || '');
-      bodyPatternHit.detail = {
-        ...(bodyPatternHit.detail && typeof bodyPatternHit.detail === 'object' ? bodyPatternHit.detail : {}),
-        waitTrace: trace,
-      };
-      if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中早期 dreamina body pattern 放行信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
-      }
-      return bodyPatternHit;
-    }
 
     const strongTextHit = await findVisibleReadyText(page, strongTexts);
     round.textHit = strongTextHit?.ok ? String(strongTextHit.value || '') : null;
@@ -558,7 +545,7 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     }
 
     trace.rounds.push(round);
-    if (bodyPatternHit.ok) {
+    if (bodyPatternHit.ok && waitMs >= maxWaitMs && maxWaitMs > 0) {
       trace.matchedKind = 'body-pattern';
       trace.matchedValue = String(bodyPatternHit.value || '');
       bodyPatternHit.detail = {
@@ -566,7 +553,7 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
         waitTrace: trace,
       };
       if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中 body pattern 兜底信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中末段 body pattern 兜底信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return bodyPatternHit;
     }
