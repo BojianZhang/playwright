@@ -1714,6 +1714,31 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
   const yearValue = String(plan?.birthdayPlan?.year || '').trim();
   const monthValue = String(plan?.birthdayPlan?.month?.fullName || '').trim();
   const dayValue = String(plan?.birthdayPlan?.day || '').trim();
+  const flowStartedAt = Date.now();
+  const phaseTrace = {
+    startedAt: new Date(flowStartedAt).toISOString(),
+    scopeResolveMs: 0,
+    waitYearVisibleMs: 0,
+    yearPreClickWaitMs: 0,
+    clickYearMs: 0,
+    yearPreFillWaitMs: 0,
+    fillYearMs: 0,
+    waitMonthVisibleMs: 0,
+    monthPreClickWaitMs: 0,
+    clickMonthMs: 0,
+    monthOptionWaitMs: 0,
+    pickMonthMs: 0,
+    waitDayVisibleMs: 0,
+    dayPreClickWaitMs: 0,
+    clickDayMs: 0,
+    dayOptionWaitMs: 0,
+    pickDayMs: 0,
+    continuousSettleMs: 0,
+    inspectNextMs: 0,
+    preSubmitSettleMs: 0,
+    clickNextMs: 0,
+    totalMs: 0,
+  };
 
   if (!yearValue || !monthValue || !dayValue) {
     return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: 'INCOMPLETE_BIRTHDAY_PLAN', stateChanged: null, detail: null };
@@ -1729,6 +1754,7 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
 
     let birthdayScope = null;
     let scopeMode = 'page';
+    const scopeResolveStart = Date.now();
     for (const candidate of birthdayDialogCandidates) {
       if (await isVisible(candidate)) {
         birthdayScope = candidate;
@@ -1736,6 +1762,7 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
         break;
       }
     }
+    phaseTrace.scopeResolveMs = Date.now() - scopeResolveStart;
 
     const scoped = birthdayScope || page;
     const yearInput = scoped.getByRole('textbox', { name: 'Year' }).first();
@@ -1743,37 +1770,93 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
     const dayDropdown = scoped.getByText('Day', { exact: true }).first();
     const nextButton = scoped.getByRole('button', { name: 'Next' }).first();
 
+    let phaseStartedAt = Date.now();
     await yearInput.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(Number(runtime?.birthdayYearPreClickWaitMs || 1000)).catch(() => {});
-    await yearInput.click().catch(async () => { await yearInput.click({ force: true }).catch(() => {}); });
-    await page.waitForTimeout(Number(runtime?.birthdayYearPreFillWaitMs || 500)).catch(() => {});
-    await yearInput.fill(yearValue).catch(async () => { await yearInput.type(yearValue, { delay: 60 }).catch(() => {}); });
+    phaseTrace.waitYearVisibleMs = Date.now() - phaseStartedAt;
 
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayYearPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.yearPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await yearInput.click().catch(async () => { await yearInput.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickYearMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayYearPreFillWaitMs || 500)).catch(() => {});
+    phaseTrace.yearPreFillWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await yearInput.fill(yearValue).catch(async () => { await yearInput.type(yearValue, { delay: 60 }).catch(() => {}); });
+    phaseTrace.fillYearMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await monthDropdown.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(Number(runtime?.birthdayMonthPreClickWaitMs || 1000)).catch(() => {});
+    phaseTrace.waitMonthVisibleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayMonthPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.monthPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await monthDropdown.click().catch(async () => { await monthDropdown.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickMonthMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await page.waitForTimeout(Number(runtime?.birthdayMonthOptionWaitMs || 700)).catch(() => {});
+    phaseTrace.monthOptionWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await page.getByRole('option', { name: monthValue }).first().click().catch(async () => {
       await page.getByRole('option', { name: monthValue }).first().click({ force: true }).catch(() => {});
     });
+    phaseTrace.pickMonthMs = Date.now() - phaseStartedAt;
 
+    phaseStartedAt = Date.now();
     await dayDropdown.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(Number(runtime?.birthdayDayPreClickWaitMs || 1000)).catch(() => {});
+    phaseTrace.waitDayVisibleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayDayPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.dayPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await dayDropdown.click().catch(async () => { await dayDropdown.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickDayMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await page.waitForTimeout(Number(runtime?.birthdayDayOptionWaitMs || 700)).catch(() => {});
+    phaseTrace.dayOptionWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     await page.getByRole('option', { name: dayValue, exact: true }).first().click().catch(async () => {
       await page.getByRole('option', { name: dayValue, exact: true }).first().click({ force: true }).catch(() => {});
     });
+    phaseTrace.pickDayMs = Date.now() - phaseStartedAt;
 
-    await page.waitForTimeout(Number(runtime?.birthdayContinuousSettleMs || 900)).catch(() => {});
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayContinuousSettleMs || 500)).catch(() => {});
+    phaseTrace.continuousSettleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
     const nextEnabled = await nextButton.isEnabled().catch(() => false);
+    phaseTrace.inspectNextMs = Date.now() - phaseStartedAt;
+
     if (nextEnabled) {
+      phaseStartedAt = Date.now();
       await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
+      phaseTrace.preSubmitSettleMs = Date.now() - phaseStartedAt;
+
+      phaseStartedAt = Date.now();
       await nextButton.click().catch(async () => { await nextButton.click({ force: true }).catch(() => {}); });
+      phaseTrace.clickNextMs = Date.now() - phaseStartedAt;
     }
+
+    phaseTrace.totalMs = Date.now() - flowStartedAt;
 
     if (typeof logInfo === 'function') {
       logInfo('dreamina.profileCompletion.birthdayContinuous.reference | scope=' + scopeMode + ' | year=' + yearValue + ' | month=' + monthValue + ' | day=' + dayValue + ' | nextEnabled=' + (nextEnabled ? 'Y' : 'N'));
+      logInfo('dreamina.profileCompletion.birthdayContinuous.phaseTrace | totalMs=' + phaseTrace.totalMs + ' | yearPreClickWaitMs=' + phaseTrace.yearPreClickWaitMs + ' | yearPreFillWaitMs=' + phaseTrace.yearPreFillWaitMs + ' | monthPreClickWaitMs=' + phaseTrace.monthPreClickWaitMs + ' | monthOptionWaitMs=' + phaseTrace.monthOptionWaitMs + ' | dayPreClickWaitMs=' + phaseTrace.dayPreClickWaitMs + ' | dayOptionWaitMs=' + phaseTrace.dayOptionWaitMs + ' | continuousSettleMs=' + phaseTrace.continuousSettleMs + ' | preSubmitSettleMs=' + phaseTrace.preSubmitSettleMs);
     }
 
     return {
@@ -1790,10 +1873,11 @@ async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, cont
         scopeMode,
         submitPerformed: true,
         submitOwner: 'continuous-flow',
+        phaseTrace,
       },
     };
   } catch (error) {
-    return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: error?.message || 'UNKNOWN', stateChanged: false, detail: null };
+    return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: error?.message || 'UNKNOWN', stateChanged: false, detail: { phaseTrace } };
   }
 }
 
