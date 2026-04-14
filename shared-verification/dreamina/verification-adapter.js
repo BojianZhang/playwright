@@ -858,6 +858,13 @@ async function tryDreaminaCharByCharInput(page, locator, code, runtime = {}, con
 // 应优先保持主路径清晰，再把 legacy / fallback 路径限制在可控范围内。
 // ==============================
 
+/**
+ * 主路径：Dreamina direct-fill。
+ *
+ * 定位：
+ * - 这是当前默认、优先、低成本的验证码填写主路径
+ * - 后续若继续收口 verification fill 架构，应优先围绕这条路径优化
+ */
 async function tryDreaminaDirectFill(page, locator, code, logInfo) {
   const value = String(code || '').trim();
   if (!value) return { ok: false, mode: 'dreamina-direct-fill', value: 'EMPTY_CODE', stateChanged: null };
@@ -908,6 +915,13 @@ async function tryDreaminaDirectFill(page, locator, code, logInfo) {
   }
 }
 
+/**
+ * legacy fallback：hidden-input 注入。
+ *
+ * 定位：
+ * - 这是兼容型旧路径，不是默认主路径
+ * - 依赖手动 value / event 注入，后续应限制在 legacy fallback 语境下使用
+ */
 async function tryDreaminaHiddenInputFill(page, locator, code, logInfo) {
   const value = String(code || '').trim();
   if (!value) return { ok: false, mode: 'dreamina-hidden-input', value: 'EMPTY_CODE', stateChanged: null };
@@ -952,6 +966,13 @@ async function tryDreaminaHiddenInputFill(page, locator, code, logInfo) {
  * 这个策略适用于：
  * - 页面表面是验证码格子容器
  * - 真实输入焦点落在 wrapper 关联元素上
+ */
+/**
+ * legacy fallback：wrapper keyboard。
+ *
+ * 定位：
+ * - 这是围绕 Dreamina 外层验证码容器的兼容输入路径
+ * - 不应与 direct-fill 并列为长期主路径
  */
 async function tryDreaminaWrapperKeyboardFill(page, code, logInfo) {
   // 统一目标验证码字符串。
@@ -1016,6 +1037,13 @@ async function tryDreaminaWrapperKeyboardFill(page, code, logInfo) {
  * 这是第三层兜底：
  * - 当前面 Dreamina 专用路径都没成功时
  * - 仍尝试直接对已解析出的 locator 做普通输入
+ */
+/**
+ * debug-oriented fallback：普通 keyboard/fill 兜底。
+ *
+ * 定位：
+ * - 这是最泛化、长期维护价值最低的一层兜底
+ * - 更适合作为 debug-only / 最终排障手段，而不是常规主链能力
  */
 async function tryDreaminaFallbackFill(page, locator, code, logInfo) {
   // 统一目标验证码字符串。
@@ -1120,6 +1148,7 @@ async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context
  * - 先做输入激活
  * - 优先走主路径 direct-fill
  * - legacy / fallback 路径只在明确开启时继续尝试
+ * - fallback-keyboard-type 更偏 debug-only，默认不应视作正式主链
  * - 这里只负责编排填写策略，不承担 verification 阶段总重试循环
  */
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
@@ -1182,6 +1211,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     });
   };
 
+  // 主路径：direct-fill
   const directFillResult = await tryDreaminaDirectFill(page, codeInputResolution.locator, normalizedCode, logInfo);
   await recordAttempt('dreamina-direct-fill', directFillResult);
   if (directFillResult.ok) {
@@ -1213,6 +1243,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
+  // legacy fallback 1：char-by-char（高成本，仅在显式开启 legacy fallbacks 时参与）
   const charByCharResult = await tryDreaminaCharByCharInput(page, codeInputResolution.locator, normalizedCode, runtime, context);
   await recordAttempt('dreamina-char-by-char', charByCharResult);
   if (charByCharResult.ok) {
@@ -1229,6 +1260,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
+  // legacy fallback 2：hidden-input 注入
   const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
   await recordAttempt('dreamina-hidden-input', hiddenInputResult);
   if (hiddenInputResult.ok) {
@@ -1245,6 +1277,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
+  // legacy fallback 3：wrapper keyboard
   const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
   await recordAttempt('dreamina-wrapper-keyboard', wrapperResult);
   if (wrapperResult.ok) {
@@ -1261,6 +1294,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
+  // debug-oriented fallback：普通 keyboard/fill 兜底
   const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
   await recordAttempt('fallback-keyboard-type', fallbackResult);
   if (fallbackResult.ok) {
