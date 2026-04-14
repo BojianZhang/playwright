@@ -36,9 +36,10 @@ const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/l
 const {
   updateWorkerStatus,
   markWorkerIdle,
+  syncWorkerSnapshot,
   buildWorkerOverviewPanel,
 } = require('../worker-status-tracker');
-const { runBatchOrchestration } = require('../shared-batch-orchestration');
+const { runBatchOrchestration, createWindowLayoutPlanner, resolveVerificationBudget, resolveProxyPolicy } = require('../shared-batch-orchestration');
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -481,6 +482,7 @@ function createBatchRunContext(options = {}) {
       accountLimit: Number(options.accountLimit || 0),
       proxyStart: Number(options.proxyStart || 0),
       ignoreKnownExists: Boolean(options.ignoreKnownExists),
+      layoutProfilePath: String(options.layoutProfilePath || ''),
     },
 
     accounts: {
@@ -491,6 +493,24 @@ function createBatchRunContext(options = {}) {
       failed: [],
       exists: [],
       skipped: [],
+    },
+
+    orchestration: {
+      queueSummary: {
+        total: pendingQueue.length,
+        pending: pendingQueue.length,
+        running: 0,
+        done: 0,
+        failed: 0,
+      },
+      workerSummary: {
+        total: Math.max(1, Number(options.concurrency || 1)),
+        idle: Math.max(1, Number(options.concurrency || 1)),
+        running: 0,
+        done: 0,
+        failed: 0,
+      },
+      workers: [],
     },
 
     proxies: {
@@ -565,6 +585,94 @@ function buildSlowestStageText(stageResults = {}) {
   }
 
   return winner ? `${winner.label}=${winner.durationMs}ms${winner.state ? `(${winner.state})` : ''}` : '';
+}
+
+function buildNumericStats(values = []) {
+  const list = (Array.isArray(values) ? values : []).map(item => Number(item)).filter(Number.isFinite);
+  if (!list.length) {
+    return {
+      min: 0,
+      max: 0,
+      avg: 0,
+      sampleCount: 0,
+    };
+  }
+  const total = list.reduce((sum, item) => sum + item, 0);
+  return {
+    min: Math.min(...list),
+    max: Math.max(...list),
+    avg: Math.round(total / list.length),
+    sampleCount: list.length,
+  };
+}
+
+function buildEntrySlowSample(record = {}) {
+  const entry = record?.stageResults?.entry || {};
+  const detail = entry?.detail || record?.detail?.entry || {};
+  const timing = detail?.timingBreakdown || {};
+  const confirmTimingBreakdown = timing?.confirmTimingBreakdown || {};
+  const waitTrace = detail?.healthTrace?.detail?.waitTrace || {};
+  const signalTimeline = detail?.signalTimeline || {};
+  const readyTraceEnvelope = detail?.readyTrace || {};
+  const readyTrace = readyTraceEnvelope?.readyTrace && typeof readyTraceEnvelope.readyTrace === 'object'
+    ? readyTraceEnvelope.readyTrace
+    : readyTraceEnvelope;
+  const confirmTrace = readyTrace?.confirmTrace || detail?.confirmTrace || {};
+  const recoveryPhaseTrace = detail?.recoveryPhaseTrace || readyTraceEnvelope?.recoveryPhaseTrace || {};
+  const gateTrace = readyTrace?.gateTrace || detail?.gateTrace || {};
+  const waitForEntryReadyPhaseTrace = confirmTimingBreakdown?.waitForEntryReadyPhaseTrace && typeof confirmTimingBreakdown.waitForEntryReadyPhaseTrace === 'object'
+    ? confirmTimingBreakdown.waitForEntryReadyPhaseTrace
+    : readyTrace?.waitForEntryReadyPhaseTrace && typeof readyTrace.waitForEntryReadyPhaseTrace === 'object'
+      ? readyTrace.waitForEntryReadyPhaseTrace
+      : detail?.waitForEntryReadyPhaseTrace && typeof detail.waitForEntryReadyPhaseTrace === 'object'
+        ? detail.waitForEntryReadyPhaseTrace
+        : {};
+
+  return {
+    account: String(record?.account || ''),
+    workerId: Number(record?.workerId || 0),
+    durationMs: Number(entry?.durationMs ?? record?.durationMs ?? 0),
+    openEntryPageMs: Number(timing?.openEntryPageMs || 0),
+    checkEntryHealthMs: Number(timing?.checkEntryHealthMs || 0),
+    confirmEntryReadyMs: Number(timing?.confirmEntryReadyMs || 0),
+    totalBeforeSettleMs: Number(timing?.totalBeforeSettleMs || 0),
+    outerConfirmMs: Number(confirmTimingBreakdown?.outerConfirmMs || 0),
+    gateConfirmMs: Number(confirmTimingBreakdown?.gateConfirmMs || 0),
+    confirmWrapperOverheadMs: Number(confirmTimingBreakdown?.wrapperOverheadMs || 0),
+    waitWrapperMs: Number(confirmTimingBreakdown?.waitWrapperMs || 0),
+    wrapperResidualMs: Number(confirmTimingBreakdown?.wrapperResidualMs || 0),
+    waitTimelineMs: Number(waitForEntryReadyPhaseTrace?.timelineWaitMs || 0),
+    waitEnsureGateMs: Number(waitForEntryReadyPhaseTrace?.ensureGateMs || 0),
+    waitRecoverSignalsMs: Number(waitForEntryReadyPhaseTrace?.recoverSignalsMs || 0),
+    waitReensureGateMs: Number(waitForEntryReadyPhaseTrace?.reensureGateMs || 0),
+    waitDebugSnapshotMs: Number(waitForEntryReadyPhaseTrace?.debugSnapshotMs || 0),
+    waitResolvedPath: String(waitForEntryReadyPhaseTrace?.resolvedPath || ''),
+    waitRecoveredSignals: Boolean(waitForEntryReadyPhaseTrace?.recoveredSignals),
+    recoveryInitialWaitMs: Number(recoveryPhaseTrace?.initialWaitMs || 0),
+    recoveryClassifyMs: Number(recoveryPhaseTrace?.classifyMs || 0),
+    recoveryRecoverMs: Number(recoveryPhaseTrace?.recoverMs || 0),
+    recoveryPreprocessAfterRecoverMs: Number(recoveryPhaseTrace?.preprocessAfterRecoverMs || 0),
+    recoveryRewaitMs: Number(recoveryPhaseTrace?.rewaitMs || 0),
+    recoveryResolvedPath: String(recoveryPhaseTrace?.resolvedPath || ''),
+    matchedKind: String(waitTrace?.matchedKind || ''),
+    matchedValue: String(waitTrace?.matchedValue || ''),
+    source: String(entry?.source || detail?.source || ''),
+    ctaSource: String(signalTimeline?.ctaSource || ''),
+    ctaOpenedGateMs: Number(signalTimeline?.ctaOpenedGateMs || 0),
+    postClickGateReadyMs: Number(signalTimeline?.postClickGateReadyMs || 0),
+    continueWithEmailVisibleMs: Number(signalTimeline?.continueWithEmailVisible?.firstSeenMs || 0),
+    emailInputVisibleMs: Number(signalTimeline?.emailInputVisible?.firstSeenMs || 0),
+    signInVisibleMs: Number(signalTimeline?.['text:Sign in']?.firstSeenMs || 0),
+    outerConfirmResolvedAtMs: Number(confirmTrace?.resolvedAtMs || 0),
+    outerConfirmResolvedBy: String(confirmTrace?.resolvedBy || ''),
+    outerConfirmResolvedState: String(confirmTrace?.resolvedState || ''),
+    outerConfirmResolvedReason: String(confirmTrace?.resolvedReason || ''),
+    gateResolvedAtMs: Number(gateTrace?.resolvedAtMs || 0),
+    gateResolvedState: String(gateTrace?.resolvedState || ''),
+    gateResolvedReason: String(gateTrace?.resolvedReason || ''),
+    finalState: String(record?.finalState || ''),
+    stageSummary: String(record?.stageSummary || ''),
+  };
 }
 
 function buildBatchAccountRecord(result = {}, extra = {}) {
@@ -701,8 +809,9 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
 }
 
 function buildBatchOverviewLines(batchContext) {
-  const pending = batchContext.accounts.pendingQueue.length;
-  const running = batchContext.accounts.running.length;
+  const queueSummary = batchContext?.orchestration?.queueSummary || {};
+  const pending = Number(queueSummary.pending || 0);
+  const running = Number(queueSummary.running || 0);
   const success = batchContext.summary.successCount;
   const failed = batchContext.summary.failedCount;
   const exists = batchContext.summary.existsCount;
@@ -725,6 +834,7 @@ async function createWorkerRuntime(options = {}) {
     proxy: options.proxy,
     headed: options.headed,
     slowMo: options.slowMo,
+    windowLayout: options.windowLayout || null,
     blockedResourceTypes: ['image', 'media', 'font'],
   });
 }
@@ -744,12 +854,15 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
     attempt = 1,
     headed = false,
     slowMo = 0,
+    verificationBudget = null,
+    proxyPolicy = null,
   } = options;
 
   const runtimeBundle = await createWorkerRuntime({
     proxy,
     headed,
     slowMo,
+    windowLayout: options.windowLayout || null,
   });
 
   try {
@@ -775,16 +888,20 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         proxyCountryCode: String(proxy?.countryCode || proxy?.proxyCountryCode || '').trim(),
         proxyCountryName: String(proxy?.countryName || proxy?.proxyCountryName || '').trim(),
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
+        proxyConnectivityTimeoutMs: Number(proxyPolicy?.connectivityTimeoutMs || 8000),
+        proxyPrimaryTargetTimeoutMs: Number(proxyPolicy?.primaryTargetTimeoutMs || 10000),
+        proxySecondaryTargetTimeoutMs: Number(proxyPolicy?.secondaryTargetTimeoutMs || 8000),
+        proxyEnableSecondaryTarget: Boolean(proxyPolicy?.enableSecondaryTarget ?? true),
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
         firstLoadGraceWaitMs: 12000,
         dreaminaAuthMode: 'signup',
         credentialSignupSwitchWaitMs: 1200,
-        verificationRetryMaxAttempts: 3,
-        verificationResendWaitMs: 1800,
+        verificationRetryMaxAttempts: Number(verificationBudget?.verificationRetryMaxAttempts || 3),
+        verificationResendWaitMs: Number(verificationBudget?.verificationResendWaitMs || 1800),
         skipCredentialExistsPrecheckAfterEmail: true,
-        firstmailApiMaxPollAttempts: 6,
-        waitMailIntervalMs: 2500,
+        firstmailApiMaxPollAttempts: Number(verificationBudget?.firstmailApiMaxPollAttempts || 6),
+        waitMailIntervalMs: Number(verificationBudget?.waitMailIntervalMs || 2500),
         firstmailRecentMessageScanLimit: 8,
         firstmailPollJitterMinMs: 0,
         firstmailPollJitterMaxMs: 0,
@@ -861,6 +978,63 @@ async function writeBatchSummaryFile(batchContext) {
   batchContext.finishedAt = Date.now();
   batchContext.durationMs = Math.max(0, batchContext.finishedAt - batchContext.startedAt);
 
+  const allAccountRecords = [
+    ...(Array.isArray(batchContext.accounts.success) ? batchContext.accounts.success : []),
+    ...(Array.isArray(batchContext.accounts.failed) ? batchContext.accounts.failed : []),
+    ...(Array.isArray(batchContext.accounts.exists) ? batchContext.accounts.exists : []),
+    ...(Array.isArray(batchContext.accounts.skipped) ? batchContext.accounts.skipped : []),
+  ];
+
+  const allEntrySamples = allAccountRecords
+    .filter(item => item?.stageResults?.entry)
+    .map(buildEntrySlowSample);
+
+  const entrySlowSamples = [...allEntrySamples]
+    .sort((a, b) => Number(b?.durationMs || 0) - Number(a?.durationMs || 0))
+    .slice(0, 5);
+
+  const matchedSignalBuckets = allEntrySamples.reduce((acc, item) => {
+    const key = `${String(item?.matchedKind || '')}:${String(item?.matchedValue || '')}` || 'UNKNOWN';
+    acc[key] = Number(acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const entryConcurrencyStats = {
+    sampleCount: allEntrySamples.length,
+    durationMs: buildNumericStats(allEntrySamples.map(item => item.durationMs)),
+    openEntryPageMs: buildNumericStats(allEntrySamples.map(item => item.openEntryPageMs)),
+    checkEntryHealthMs: buildNumericStats(allEntrySamples.map(item => item.checkEntryHealthMs)),
+    confirmEntryReadyMs: buildNumericStats(allEntrySamples.map(item => item.confirmEntryReadyMs)),
+    totalBeforeSettleMs: buildNumericStats(allEntrySamples.map(item => item.totalBeforeSettleMs)),
+    matchedSignalBuckets,
+    topMatchedSignals: Object.entries(matchedSignalBuckets)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([key, count]) => ({ key, count })),
+  };
+
+  const concurrencyProfileSnapshot = {
+    concurrency: Number(batchContext?.config?.concurrency || 0),
+    verificationBudget: batchContext?.concurrencyPolicy?.verificationBudget || null,
+    proxyPolicy: batchContext?.concurrencyPolicy?.proxyPolicy || null,
+    layoutPreset: batchContext?.windowLayout?.resolvedPreset
+      ? {
+          mode: String(batchContext.windowLayout.resolvedPreset.mode || ''),
+          cols: Number(batchContext.windowLayout.resolvedPreset.cols || 0),
+          rows: Number(batchContext.windowLayout.resolvedPreset.rows || 0),
+          scale: Number(batchContext.windowLayout.resolvedPreset.scale || 0),
+          usageRatio: Number(batchContext.windowLayout.resolvedPreset.usageRatio || 0),
+          gap: Number(batchContext.windowLayout.resolvedPreset.gap || 0),
+          outerMargin: Number(batchContext.windowLayout.resolvedPreset.outerMargin || 0),
+          width: Number(batchContext.windowLayout.resolvedPreset.width || 0),
+          height: Number(batchContext.windowLayout.resolvedPreset.height || 0),
+          cellWidth: Number(batchContext.windowLayout.resolvedPreset.cellWidth || 0),
+          cellHeight: Number(batchContext.windowLayout.resolvedPreset.cellHeight || 0),
+        }
+      : null,
+    layoutProfilePath: String(batchContext?.windowLayout?.profilePath || ''),
+  };
+
   const summary = {
     runId: batchContext.runId,
     startedAt: new Date(batchContext.startedAt).toISOString(),
@@ -881,6 +1055,28 @@ async function writeBatchSummaryFile(batchContext) {
     existsMeaning: 'exists=本次实际提交注册后，被平台明确判定为账号已存在；skipped/knownExistsSkipped=运行前已知该账号已注册或不可重复注册，因此本次直接跳过未提交注册',
     finalStageBuckets: batchContext.summary.finalStageBuckets,
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
+    concurrencyPolicy: batchContext.concurrencyPolicy || null,
+    concurrencyProfileSnapshot,
+    entryConcurrencyStats,
+    layoutProfile: {
+      path: String(batchContext?.windowLayout?.profilePath || ''),
+      preset: batchContext?.windowLayout?.resolvedPreset
+        ? {
+            mode: String(batchContext.windowLayout.resolvedPreset.mode || ''),
+            cols: Number(batchContext.windowLayout.resolvedPreset.cols || 0),
+            rows: Number(batchContext.windowLayout.resolvedPreset.rows || 0),
+            scale: Number(batchContext.windowLayout.resolvedPreset.scale || 0),
+            usageRatio: Number(batchContext.windowLayout.resolvedPreset.usageRatio || 0),
+            gap: Number(batchContext.windowLayout.resolvedPreset.gap || 0),
+            outerMargin: Number(batchContext.windowLayout.resolvedPreset.outerMargin || 0),
+            width: Number(batchContext.windowLayout.resolvedPreset.width || 0),
+            height: Number(batchContext.windowLayout.resolvedPreset.height || 0),
+            cellWidth: Number(batchContext.windowLayout.resolvedPreset.cellWidth || 0),
+            cellHeight: Number(batchContext.windowLayout.resolvedPreset.cellHeight || 0),
+          }
+        : null,
+    },
+    entrySlowSamples,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
     confirmedExistsAccounts: batchContext.accounts.exists,
@@ -903,6 +1099,68 @@ async function writeBatchSummaryFile(batchContext) {
   const topFailureReason = Object.entries(batchContext.summary.failureReasonBuckets || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
   const topExistsReason = Object.entries(summary.existsReasonBuckets || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
   const topSlowestStage = Object.entries(batchContext.summary.slowestStageBuckets || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  const concurrencyPolicy = summary.concurrencyPolicy || null;
+  const persistedConcurrencyProfileSnapshot = summary?.concurrencyProfileSnapshot || null;
+  const persistedEntryConcurrencyStats = summary?.entryConcurrencyStats || null;
+  const layoutPreset = summary?.layoutProfile?.preset || null;
+  const topEntrySlowSample = Array.isArray(summary.entrySlowSamples) && summary.entrySlowSamples.length > 0
+    ? {
+        account: String(summary.entrySlowSamples[0]?.account || ''),
+        durationMs: Number(summary.entrySlowSamples[0]?.durationMs || 0),
+        openEntryPageMs: Number(summary.entrySlowSamples[0]?.openEntryPageMs || 0),
+        checkEntryHealthMs: Number(summary.entrySlowSamples[0]?.checkEntryHealthMs || 0),
+        confirmEntryReadyMs: Number(summary.entrySlowSamples[0]?.confirmEntryReadyMs || 0),
+        matchedKind: String(summary.entrySlowSamples[0]?.matchedKind || ''),
+        matchedValue: String(summary.entrySlowSamples[0]?.matchedValue || ''),
+        source: String(summary.entrySlowSamples[0]?.source || ''),
+        ctaSource: String(summary.entrySlowSamples[0]?.ctaSource || ''),
+        ctaOpenedGateMs: Number(summary.entrySlowSamples[0]?.ctaOpenedGateMs || 0),
+        postClickGateReadyMs: Number(summary.entrySlowSamples[0]?.postClickGateReadyMs || 0),
+        continueWithEmailVisibleMs: Number(summary.entrySlowSamples[0]?.continueWithEmailVisibleMs || 0),
+        emailInputVisibleMs: Number(summary.entrySlowSamples[0]?.emailInputVisibleMs || 0),
+        signInVisibleMs: Number(summary.entrySlowSamples[0]?.signInVisibleMs || 0),
+        outerConfirmMs: Number(summary.entrySlowSamples[0]?.outerConfirmMs || 0),
+        gateConfirmMs: Number(summary.entrySlowSamples[0]?.gateConfirmMs || 0),
+        confirmWrapperOverheadMs: Number(summary.entrySlowSamples[0]?.confirmWrapperOverheadMs || 0),
+        waitWrapperMs: Number(summary.entrySlowSamples[0]?.waitWrapperMs || 0),
+        wrapperResidualMs: Number(summary.entrySlowSamples[0]?.wrapperResidualMs || 0),
+        waitTimelineMs: Number(summary.entrySlowSamples[0]?.waitTimelineMs || 0),
+        waitEnsureGateMs: Number(summary.entrySlowSamples[0]?.waitEnsureGateMs || 0),
+        waitRecoverSignalsMs: Number(summary.entrySlowSamples[0]?.waitRecoverSignalsMs || 0),
+        waitReensureGateMs: Number(summary.entrySlowSamples[0]?.waitReensureGateMs || 0),
+        waitDebugSnapshotMs: Number(summary.entrySlowSamples[0]?.waitDebugSnapshotMs || 0),
+        waitResolvedPath: String(summary.entrySlowSamples[0]?.waitResolvedPath || ''),
+        waitRecoveredSignals: Boolean(summary.entrySlowSamples[0]?.waitRecoveredSignals),
+        recoveryInitialWaitMs: Number(summary.entrySlowSamples[0]?.recoveryInitialWaitMs || 0),
+        recoveryClassifyMs: Number(summary.entrySlowSamples[0]?.recoveryClassifyMs || 0),
+        recoveryRecoverMs: Number(summary.entrySlowSamples[0]?.recoveryRecoverMs || 0),
+        recoveryPreprocessAfterRecoverMs: Number(summary.entrySlowSamples[0]?.recoveryPreprocessAfterRecoverMs || 0),
+        recoveryRewaitMs: Number(summary.entrySlowSamples[0]?.recoveryRewaitMs || 0),
+        recoveryResolvedPath: String(summary.entrySlowSamples[0]?.recoveryResolvedPath || ''),
+        outerConfirmResolvedAtMs: Number(summary.entrySlowSamples[0]?.outerConfirmResolvedAtMs || 0),
+        outerConfirmResolvedBy: String(summary.entrySlowSamples[0]?.outerConfirmResolvedBy || ''),
+        outerConfirmResolvedState: String(summary.entrySlowSamples[0]?.outerConfirmResolvedState || ''),
+        outerConfirmResolvedReason: String(summary.entrySlowSamples[0]?.outerConfirmResolvedReason || ''),
+        gateResolvedAtMs: Number(summary.entrySlowSamples[0]?.gateResolvedAtMs || 0),
+        gateResolvedState: String(summary.entrySlowSamples[0]?.gateResolvedState || ''),
+        gateResolvedReason: String(summary.entrySlowSamples[0]?.gateResolvedReason || ''),
+        layoutPreset: layoutPreset
+          ? {
+              mode: String(layoutPreset.mode || ''),
+              cols: Number(layoutPreset.cols || 0),
+              rows: Number(layoutPreset.rows || 0),
+              scale: Number(layoutPreset.scale || 0),
+              usageRatio: Number(layoutPreset.usageRatio || 0),
+              gap: Number(layoutPreset.gap || 0),
+              outerMargin: Number(layoutPreset.outerMargin || 0),
+              width: Number(layoutPreset.width || 0),
+              height: Number(layoutPreset.height || 0),
+            }
+          : null,
+        verificationBudget: concurrencyPolicy?.verificationBudget || null,
+        proxyPolicy: concurrencyPolicy?.proxyPolicy || null,
+      }
+    : null;
 
   indexData.unshift({
     timestamp: new Date().toISOString(),
@@ -921,6 +1179,24 @@ async function writeBatchSummaryFile(batchContext) {
     topExistsReason,
     topFailureReason,
     topSlowestStage,
+    topEntrySlowSample,
+    verificationBudget: concurrencyPolicy?.verificationBudget || null,
+    concurrencyProfileSnapshot: persistedConcurrencyProfileSnapshot,
+    entryConcurrencyStats: persistedEntryConcurrencyStats,
+    layoutProfilePath: String(summary?.layoutProfile?.path || ''),
+    layoutPreset: layoutPreset
+      ? {
+          mode: String(layoutPreset.mode || ''),
+          cols: Number(layoutPreset.cols || 0),
+          rows: Number(layoutPreset.rows || 0),
+          scale: Number(layoutPreset.scale || 0),
+          usageRatio: Number(layoutPreset.usageRatio || 0),
+          gap: Number(layoutPreset.gap || 0),
+          outerMargin: Number(layoutPreset.outerMargin || 0),
+          width: Number(layoutPreset.width || 0),
+          height: Number(layoutPreset.height || 0),
+        }
+      : null,
     summaryFile: batchContext.paths.summaryFile,
   });
   indexData = indexData.slice(0, 30);
@@ -996,6 +1272,16 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
       lastState: '',
     });
 
+    const windowLayout = batchContext?.windowLayout?.planner
+      ? batchContext.windowLayout.planner.resolve(workerId, batchContext.config.concurrency)
+      : null;
+    const verificationBudget = batchContext?.concurrencyPolicy?.verificationBudget || null;
+    const proxyPolicy = batchContext?.concurrencyPolicy?.proxyPolicy || null;
+    const staggerMs = Math.max(0, Number(proxyPolicy?.workerStartStaggerMs || 0)) * Math.max(0, workerId - 1);
+    if (staggerMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, staggerMs));
+    }
+
     const result = await runSingleAccountWithNewArchitecture({
       account,
       proxy,
@@ -1003,6 +1289,9 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
       attempt,
       headed: batchContext.config.headed,
       slowMo: batchContext.config.slowMo,
+      windowLayout,
+      verificationBudget,
+      proxyPolicy,
     });
 
     await updateBatchSummary(batchContext, result, {
@@ -1059,6 +1348,7 @@ function buildBatchFinalSummaryLines(summary = {}) {
     : '';
   const topSlowestStage = Object.entries(summary?.slowestStageBuckets || {})
     .sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  const entrySlowSamples = Array.isArray(summary?.entrySlowSamples) ? summary.entrySlowSamples : [];
 
   if (existsBuckets) {
     lines.push(`[Dreamina Batch] ExistsBuckets: ${existsBuckets}`);
@@ -1084,6 +1374,28 @@ function buildBatchFinalSummaryLines(summary = {}) {
   if (topSlowestStage) {
     lines.push(`[Dreamina Batch] TopSlowestStage: ${topSlowestStage}`);
   }
+  const verificationBudget = summary?.concurrencyPolicy?.verificationBudget || null;
+  if (verificationBudget) {
+    lines.push(`[Dreamina Batch] VerificationBudget: matched=${verificationBudget.matchedConcurrency} | attempts=${verificationBudget.firstmailApiMaxPollAttempts} | intervalMs=${verificationBudget.waitMailIntervalMs} | retryMax=${verificationBudget.verificationRetryMaxAttempts} | resendWaitMs=${verificationBudget.verificationResendWaitMs}`);
+  }
+  const proxyPolicy = summary?.concurrencyPolicy?.proxyPolicy || null;
+  if (proxyPolicy) {
+    lines.push(`[Dreamina Batch] ProxyPolicy: matched=${proxyPolicy.matchedConcurrency} | staggerMs=${proxyPolicy.workerStartStaggerMs} | connectivityTimeoutMs=${proxyPolicy.connectivityTimeoutMs} | primaryTimeoutMs=${proxyPolicy.primaryTargetTimeoutMs} | secondaryTimeoutMs=${proxyPolicy.secondaryTargetTimeoutMs} | enableSecondaryTarget=${proxyPolicy.enableSecondaryTarget ? 'Y' : 'N'}`);
+  }
+  const layoutPreset = summary?.layoutProfile?.preset || null;
+  if (layoutPreset) {
+    lines.push(`[Dreamina Batch] LayoutPreset: mode=${layoutPreset.mode} | cols=${layoutPreset.cols} | rows=${layoutPreset.rows} | scale=${layoutPreset.scale} | usageRatio=${layoutPreset.usageRatio} | gap=${layoutPreset.gap} | outerMargin=${layoutPreset.outerMargin} | width=${layoutPreset.width} | height=${layoutPreset.height}`);
+  }
+  const entryConcurrencyStats = summary?.entryConcurrencyStats || null;
+  if (entryConcurrencyStats && Number(entryConcurrencyStats.sampleCount || 0) > 0) {
+    lines.push(`[Dreamina Batch] EntryConcurrencyStats: samples=${entryConcurrencyStats.sampleCount} | durationAvg=${entryConcurrencyStats.durationMs?.avg || 0} | durationMax=${entryConcurrencyStats.durationMs?.max || 0} | healthAvg=${entryConcurrencyStats.checkEntryHealthMs?.avg || 0} | healthMax=${entryConcurrencyStats.checkEntryHealthMs?.max || 0} | confirmAvg=${entryConcurrencyStats.confirmEntryReadyMs?.avg || 0} | confirmMax=${entryConcurrencyStats.confirmEntryReadyMs?.max || 0}`);
+  }
+  if (entrySlowSamples.length > 0) {
+    const compact = entrySlowSamples
+      .map(item => `${item.account}:${item.durationMs}ms(open=${item.openEntryPageMs},health=${item.checkEntryHealthMs},confirm=${item.confirmEntryReadyMs},outerMs=${item.outerConfirmMs || 0},gateMs=${item.gateConfirmMs || 0},wrapMs=${item.confirmWrapperOverheadMs || 0},wait=${item.waitTimelineMs || 0}/${item.waitEnsureGateMs || 0}/${item.waitRecoverSignalsMs || 0}/${item.waitReensureGateMs || 0}/${item.waitDebugSnapshotMs || 0},waitPath=${item.waitResolvedPath || '-'},residual=${item.wrapperResidualMs || 0},recovery=${item.recoveryResolvedPath || '-'}:${item.recoveryInitialWaitMs || 0}/${item.recoveryRecoverMs || 0}/${item.recoveryRewaitMs || 0},match=${item.matchedKind || '-'}:${item.matchedValue || '-'},src=${item.source || '-'},cta=${item.ctaOpenedGateMs || 0}/${item.postClickGateReadyMs || 0},outer=${item.outerConfirmResolvedAtMs || 0}:${item.outerConfirmResolvedBy || '-'},gate=${item.gateResolvedAtMs || 0}:${item.gateResolvedState || '-'})`)
+      .join(' | ');
+    lines.push(`[Dreamina Batch] EntrySlowSamples: ${compact}`);
+  }
   return lines;
 }
 
@@ -1103,11 +1415,29 @@ async function runDreaminaBatch(argv = []) {
     throw new Error('Dreamina batch runner: no proxies available from local proxy source');
   }
 
+  const layoutProfilePath = path.join(__dirname, 'dreamina-layout-profile.json');
+  const layoutPlanner = createWindowLayoutPlanner({ profilePath: layoutProfilePath });
+
   const batchContext = createBatchRunContext({
     ...cli,
+    layoutProfilePath,
     accounts,
     proxies,
   });
+
+  const resolvedLayoutPreset = layoutPlanner.resolve(1, batchContext.config.concurrency);
+
+  batchContext.windowLayout = {
+    planner: layoutPlanner,
+    profilePath: layoutProfilePath,
+    profile: layoutPlanner.profile || {},
+    resolvedPreset: resolvedLayoutPreset,
+  };
+
+  batchContext.concurrencyPolicy = {
+    verificationBudget: resolveVerificationBudget(layoutPlanner.profile || {}, batchContext.config.concurrency),
+    proxyPolicy: resolveProxyPolicy(layoutPlanner.profile || {}, batchContext.config.concurrency),
+  };
 
   await resetFile(SESSION_RECORDS_LATEST_TXT);
   await resetFile(SESSION_RECORDS_LATEST_JSONL);
@@ -1138,7 +1468,18 @@ async function runDreaminaBatch(argv = []) {
           batchContext,
         });
       },
-      onWorkerUpdate: async (workerState) => {
+      onWorkerUpdate: async (workerState, snapshot = {}) => {
+        batchContext.orchestration = batchContext.orchestration || {
+          queueSummary: { total: 0, pending: 0, running: 0, done: 0, failed: 0 },
+          workerSummary: { total: 0, idle: 0, running: 0, done: 0, failed: 0 },
+          workers: [],
+        };
+        batchContext.orchestration.queueSummary = snapshot?.queueSummary || batchContext.orchestration.queueSummary;
+        batchContext.orchestration.workerSummary = snapshot?.workerSummary || batchContext.orchestration.workerSummary;
+        batchContext.orchestration.workers = Array.isArray(snapshot?.workers) ? snapshot.workers : batchContext.orchestration.workers;
+
+        syncWorkerSnapshot(batchContext.orchestration.workers);
+
         updateWorkerStatus(workerState?.workerId || 0, {
           status: workerState?.status || 'idle',
           account: workerState?.account?.email || workerState?.account || '',
