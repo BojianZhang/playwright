@@ -526,6 +526,20 @@ function createBatchRunContext(options = {}) {
 }
 
 function buildBatchAccountRecord(result = {}, extra = {}) {
+  const stageResults = result?.stageResults && typeof result.stageResults === 'object'
+    ? { ...result.stageResults }
+    : {};
+
+  const topLevelDetail = result?.detail && typeof result.detail === 'object'
+    ? result.detail
+    : null;
+
+  const derivedDetail = topLevelDetail
+    || stageResults[result?.finalStage]?.detail
+    || stageResults.accountDelivery?.detail
+    || stageResults.postAuthReady?.detail
+    || null;
+
   return {
     account: result?.account?.email || extra?.account?.email || '',
     workerId: extra?.workerId || 0,
@@ -547,12 +561,9 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     ),
     stageSummary: String(result?.stageSummary || ''),
     slowestStage: String(result?.slowestStage || ''),
-    detail: result?.detail || null,
+    detail: derivedDetail,
     deliveryPayload: result?.deliveryPayload || null,
-    stageResults: {
-      postAuthReady: result?.stageResults?.postAuthReady || null,
-      accountDelivery: result?.stageResults?.accountDelivery || null,
-    },
+    stageResults,
   };
 }
 
