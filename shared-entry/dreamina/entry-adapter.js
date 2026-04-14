@@ -140,7 +140,7 @@ async function openEntryPage(page, runtime = {}, context = {}) {
 
   try {
     // 执行 goto 到 entryUrl。
-    await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: Number(runtime?.entryGotoTimeoutMs || 30000) }).catch(() => {});
+    await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: Number(runtime?.entryGotoTimeoutMs || 30000) });
     // 如果有日志函数，记录本轮 goto。
     if (typeof logInfo === 'function') logInfo(`dreamina.entry.open | source=goto | value=${entryUrl} | strength=strong`);
     return {
@@ -287,7 +287,7 @@ async function preprocessDreaminaEntryOverlays(page, runtime = {}, context = {})
   const buttonNames = Array.isArray(overlays.buttonNames) ? overlays.buttonNames : [];
   const buttonNamePattern = String(overlays.buttonNamePattern || '').trim();
   const extraSelectors = Array.isArray(overlays.extraSelectors) ? overlays.extraSelectors : [];
-  const postOverlayWaitMs = Number(runtime?.entryPostOverlayWaitMs ?? overlays.postOverlayWaitMs ?? 1500);
+  const postOverlayWaitMs = Number(runtime?.entryPostOverlayWaitMs ?? overlays.postOverlayWaitMs ?? 800);
 
   async function handleOverlay(locator, matchedType, matchedValue) {
     if (typeof capture === 'function') {
@@ -849,8 +849,8 @@ async function prepareDreaminaEntrySurface(page, runtime = {}, context = {}) {
 async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
   const profile = loadDreaminaEntryProfile();
   const readyTexts = Array.isArray(profile?.loginSignals?.readyTexts) ? profile.loginSignals.readyTexts : [];
-  const maxWaitMs = Number(runtime?.entryHomeReadyTimeoutMs || 10000);
-  const intervalMs = Number(runtime?.entryHomeReadyPollIntervalMs || 400);
+  const maxWaitMs = Number(runtime?.entryHomeReadyTimeoutMs || 5000);
+  const intervalMs = Number(runtime?.entryHomeReadyPollIntervalMs || 300);
   const startedAt = Date.now();
   let elapsedMs = 0;
   let round = 0;
@@ -932,8 +932,8 @@ async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
  */
 async function waitForDreaminaSignInEntry(page, runtime = {}, context = {}) {
   const startedAt = Date.now();
-  const maxWaitMs = Number(runtime?.entrySignInTimeoutMs || 10000);
-  const intervalMs = Number(runtime?.entrySignInPollIntervalMs || 300);
+  const maxWaitMs = Number(runtime?.entrySignInTimeoutMs || 8000);
+  const intervalMs = Number(runtime?.entrySignInPollIntervalMs || 250);
   let elapsedMs = 0;
   let round = 0;
   const signalTimeline = {};
@@ -1068,7 +1068,7 @@ async function clickDreaminaSignInOnce(page, signInSignal = {}, runtime = {}, co
 async function confirmDreaminaLoginGateAfterClick(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const startedAt = Date.now();
-  const settleMs = Number(runtime?.entryPostCtaClickWaitMs || 600);
+  const settleMs = Number(runtime?.entryPostCtaClickWaitMs || 450);
   await page.waitForTimeout(settleMs).catch(() => {});
   const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
   const recheckLabel = String(signal?.label || '');
@@ -1438,7 +1438,7 @@ async function recoverEntry(page, classifiedFailure = {}, context = {}) {
     };
   }
 
-  const postRecoveryWaitMs = Number(runtime?.entryPostRecoveryWaitMs ?? profile?.errorModal?.postRecoveryWaitMs ?? 4000);
+  const postRecoveryWaitMs = Number(runtime?.entryPostRecoveryWaitMs ?? profile?.errorModal?.postRecoveryWaitMs ?? 1200);
   const refreshButtonPattern = String(profile?.errorModal?.refreshButtonPattern || 'refresh').trim();
   const refreshButton = page.getByRole('button', { name: new RegExp(refreshButtonPattern || 'refresh', 'i') }).first();
 
