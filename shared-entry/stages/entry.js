@@ -402,11 +402,7 @@ async function runEntryStage(options = {}) {
         signalTimeline: pickEntrySignalTimeline(
           entryReadyResult?.detail?.signalTimeline,
           entryReadyResult?.detail?.loginSignal?.detail?.signalTimeline,
-          entryReadyResult?.detail?.readyTrace?.gateResult?.detail?.signalTimeline,
-          entryReadyResult?.detail?.readyTrace?.gateResult?.gateState?.detail?.signalTimeline,
-          entryReadyResult?.detail?.readyTrace?.signalTimeline,
-          entryReadyResult?.detail?.gateResult?.detail?.signalTimeline,
-          entryReadyResult?.detail?.gateResult?.gateState?.detail?.signalTimeline
+          entryReadyResult?.detail?.readyTrace?.signalTimeline
         ),
         readyTrace: entryReadyResult?.detail || null,
         recoveryTrace: entryReadyResult?.recoveryResult || null,
@@ -459,11 +455,7 @@ async function runEntryStage(options = {}) {
       signalTimeline: pickEntrySignalTimeline(
         entryReadyResult?.detail?.signalTimeline,
         entryReadyResult?.detail?.loginSignal?.detail?.signalTimeline,
-        entryReadyResult?.detail?.readyTrace?.gateResult?.detail?.signalTimeline,
-        entryReadyResult?.detail?.readyTrace?.gateResult?.gateState?.detail?.signalTimeline,
-        entryReadyResult?.detail?.readyTrace?.signalTimeline,
-        entryReadyResult?.detail?.gateResult?.detail?.signalTimeline,
-        entryReadyResult?.detail?.gateResult?.gateState?.detail?.signalTimeline
+        entryReadyResult?.detail?.readyTrace?.signalTimeline
       ),
       readyTrace: entryReadyResult?.detail || null,
       recoveryTrace: entryReadyResult?.recoveryResult || null,
