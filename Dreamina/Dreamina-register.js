@@ -43,8 +43,9 @@ const { runAccountDeliveryStage } = require('../shared-account-delivery/stages/a
 const dreaminaProxyPrecheckAdapter = require('../shared-proxy-precheck/dreamina/proxy-precheck-adapter');
 // 阶段 1：Dreamina entry adapter。
 const dreaminaEntrySiteAdapter = require('../shared-entry/dreamina/adapter');
+const dreaminaEntryTimelineAdapter = require('../shared-entry/dreamina/entry-adapter');
 
-function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
+function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) {
   async function detectEntryDeadPage(page) {
     return await page.evaluate(() => {
       const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -262,10 +263,26 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           value: 'waitForDreaminaReady',
           strength: '',
           stateChanged: null,
+          healthTrace: {
+            decision: 'adapter-method-missing',
+            missingMethod: 'waitForDreaminaReady',
+          },
         };
       }
 
+      const healthStartMs = Date.now();
       const readyResult = await siteAdapter.waitForDreaminaReady(page, runtime, context);
+      const waitForDreaminaReadyMs = Math.max(0, Date.now() - healthStartMs);
+      const healthTrace = {
+        decision: readyResult?.ok ? 'ready-signal-found' : 'ready-signal-missing',
+        source: String(readyResult?.source || ''),
+        value: String(readyResult?.value || ''),
+        strength: String(readyResult?.strength || ''),
+        detail: readyResult?.detail && typeof readyResult.detail === 'object' ? readyResult.detail : null,
+        timing: {
+          waitForDreaminaReadyMs,
+        },
+      };
       if (readyResult?.ok) {
         return {
           ok: true,
@@ -274,6 +291,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           value: readyResult.value || 'READY_SIGNAL_FOUND',
           strength: readyResult.strength || 'weak',
           stateChanged: null,
+          healthTrace,
         };
       }
 
@@ -284,10 +302,31 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
         value: 'READY_SIGNAL_MISSING',
         strength: '',
         stateChanged: null,
+        healthTrace,
       };
     },
 
     async waitForEntryReady(page, runtime = {}, context = {}) {
+      const phaseTrace = {
+        timelineWaitMs: 0,
+        ensureGateMs: 0,
+        recoverSignalsMs: 0,
+        reensureGateMs: 0,
+        debugSnapshotMs: 0,
+        resolvedPath: '',
+        recoveredSignals: false,
+        gateResolvedState: '',
+        gateResolvedReason: '',
+      };
+
+      const timelineStartedAt = Date.now();
+      const timelineResult = typeof timelineAdapter.waitForEntryReady === 'function'
+        ? await timelineAdapter.waitForEntryReady(page, runtime, context)
+        : (typeof siteAdapter.waitForEntryReady === 'function'
+          ? await siteAdapter.waitForEntryReady(page, runtime, context)
+          : null);
+      phaseTrace.timelineWaitMs = Math.max(0, Date.now() - timelineStartedAt);
+
       if (typeof siteAdapter.ensureDreaminaLoginGate !== 'function') {
         return {
           ok: false,
@@ -295,46 +334,130 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
           source: 'adapter',
           value: 'ensureDreaminaLoginGate',
           strength: '',
+          detail: {
+            readyTrace: {
+              decision: 'adapter-method-missing',
+              missingMethod: 'ensureDreaminaLoginGate',
+              confirmTrace: timelineResult?.detail?.confirmTrace || null,
+              waitForEntryReadyPhaseTrace: {
+                ...phaseTrace,
+                resolvedPath: 'adapter-method-missing',
+              },
+            },
+            loginSignal: timelineResult?.detail?.loginSignal || null,
+            signalTimeline: timelineResult?.detail?.signalTimeline || null,
+          },
         };
       }
 
+      const ensureGateStartedAt = Date.now();
       let gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
+      phaseTrace.ensureGateMs = Math.max(0, Date.now() - ensureGateStartedAt);
+      phaseTrace.gateResolvedState = String(gateResult?.state || '');
+      phaseTrace.gateResolvedReason = String(gateResult?.reason || '');
       if (gateResult?.success) {
         return {
           ok: true,
           state: 'ENTRY_READY',
-          source: gateResult.state || 'login-gate',
-          value: gateResult.reason || gateResult.state || 'LOGIN_GATE_READY',
+          source: gateResult.state || timelineResult?.source || 'login-gate',
+          value: gateResult.reason || gateResult.state || timelineResult?.value || 'LOGIN_GATE_READY',
           strength: 'strong',
           stateChanged: true,
+          detail: {
+            readyTrace: {
+              decision: 'gate-success',
+              confirmTrace: timelineResult?.detail?.confirmTrace || null,
+              gateState: gateResult?.state || '',
+              gateReason: gateResult?.reason || '',
+              gateResult,
+              timelineResult,
+              waitForEntryReadyPhaseTrace: {
+                ...phaseTrace,
+                resolvedPath: 'initial-gate-success',
+              },
+            },
+            loginSignal: gateResult?.gateState || gateResult?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
+            signalTimeline: timelineResult?.detail?.signalTimeline
+              || gateResult?.detail?.signalTimeline
+              || gateResult?.detail?.loginSignal?.detail?.signalTimeline
+              || gateResult?.detail?.loginSignal?.timelineSignals
+              || null,
+          },
         };
       }
 
       if (String(gateResult?.reason || '').trim().toUpperCase() === 'LOGIN_ENTRY_NOT_FOUND') {
+        const recoverSignalsStartedAt = Date.now();
         const recovered = await recoverEntrySignals(page, runtime);
+        phaseTrace.recoverSignalsMs = Math.max(0, Date.now() - recoverSignalsStartedAt);
+        phaseTrace.recoveredSignals = Boolean(recovered);
         if (recovered) {
+          const reensureGateStartedAt = Date.now();
           gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
+          phaseTrace.reensureGateMs = Math.max(0, Date.now() - reensureGateStartedAt);
+          phaseTrace.gateResolvedState = String(gateResult?.state || '');
+          phaseTrace.gateResolvedReason = String(gateResult?.reason || '');
           if (gateResult?.success) {
             return {
               ok: true,
               state: 'ENTRY_READY',
-              source: gateResult.state || 'login-gate',
-              value: gateResult.reason || gateResult.state || 'LOGIN_GATE_READY',
+              source: gateResult.state || timelineResult?.source || 'login-gate',
+              value: gateResult.reason || gateResult.state || timelineResult?.value || 'LOGIN_GATE_READY',
               strength: 'strong',
               stateChanged: true,
+              detail: {
+                readyTrace: {
+                  decision: 'gate-success-after-recover-signals',
+                  confirmTrace: timelineResult?.detail?.confirmTrace || null,
+                  gateState: gateResult?.state || '',
+                  gateReason: gateResult?.reason || '',
+                  recovered: true,
+                  gateResult,
+                  timelineResult,
+                  waitForEntryReadyPhaseTrace: {
+                    ...phaseTrace,
+                    resolvedPath: 'recover-signals-gate-success',
+                  },
+                },
+                loginSignal: gateResult?.gateState || gateResult?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
+                signalTimeline: timelineResult?.detail?.signalTimeline
+                  || gateResult?.detail?.signalTimeline
+                  || gateResult?.detail?.loginSignal?.detail?.signalTimeline
+                  || gateResult?.detail?.loginSignal?.timelineSignals
+                  || null,
+              },
             };
           }
         }
       }
 
+      const debugSnapshotStartedAt = Date.now();
       const debugSnapshot = await captureEntryDebugSnapshot(page);
+      phaseTrace.debugSnapshotMs = Math.max(0, Date.now() - debugSnapshotStartedAt);
       return {
         ok: false,
-        state: 'ENTRY_NOT_READY',
-        source: gateResult?.state || gateResult?.source || 'login-gate',
-        value: gateResult?.reason || gateResult?.state || '',
+        state: gateResult?.state || timelineResult?.state || 'ENTRY_NOT_READY',
+        source: gateResult?.state || gateResult?.source || timelineResult?.source || 'login-gate',
+        value: gateResult?.reason || gateResult?.state || timelineResult?.value || '',
         strength: '',
         detail: {
+          readyTrace: {
+            decision: 'gate-failed',
+            confirmTrace: timelineResult?.detail?.confirmTrace || null,
+            gateState: gateResult?.state || '',
+            gateReason: gateResult?.reason || '',
+            gateResult,
+            timelineResult,
+            waitForEntryReadyPhaseTrace: {
+              ...phaseTrace,
+              resolvedPath: phaseTrace.recoveredSignals ? 'recover-signals-gate-failed' : 'initial-gate-failed',
+            },
+          },
+          loginSignal: timelineResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || null,
+          signalTimeline: timelineResult?.detail?.signalTimeline
+            || gateResult?.detail?.signalTimeline
+            || gateResult?.detail?.loginSignal?.detail?.signalTimeline
+            || null,
           gateResult,
           debugSnapshot,
         },
@@ -389,7 +512,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}) {
   };
 }
 
-const dreaminaEntryAdapter = buildDreaminaEntryStageAdapter(dreaminaEntrySiteAdapter);
+const dreaminaEntryAdapter = buildDreaminaEntryStageAdapter(dreaminaEntrySiteAdapter, dreaminaEntryTimelineAdapter);
 // 阶段 2：Dreamina credential adapter。
 const dreaminaCredentialAdapter = require('../shared-credential/dreamina/credential-adapter');
 // 阶段 3：Dreamina verification adapter。
@@ -1350,6 +1473,7 @@ async function createDreaminaCliRuntime(options = {}) {
   const proxy = options?.proxy && typeof options.proxy === 'object' ? options.proxy : null;
   const headed = Boolean(options?.headed);
   const slowMo = Number.isFinite(Number(options?.slowMo)) ? Number(options.slowMo) : 0;
+  const windowLayout = options?.windowLayout && typeof options.windowLayout === 'object' ? options.windowLayout : null;
   const blockedResourceTypes = Array.isArray(options?.blockedResourceTypes)
     ? options.blockedResourceTypes.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
     : ['image', 'media', 'font'];
@@ -1358,6 +1482,14 @@ async function createDreaminaCliRuntime(options = {}) {
     headless: !headed,
     slowMo,
   };
+
+  if (headed && windowLayout?.enabled) {
+    launchOptions.args = [
+      ...(Array.isArray(launchOptions.args) ? launchOptions.args : []),
+      `--window-position=${Number(windowLayout.x || 0)},${Number(windowLayout.y || 0)}`,
+      `--window-size=${Number(windowLayout.width || 1440)},${Number(windowLayout.height || 900)}`,
+    ];
+  }
 
   if (proxy?.server) {
     launchOptions.proxy = {
@@ -1369,7 +1501,12 @@ async function createDreaminaCliRuntime(options = {}) {
 
   const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
+    viewport: windowLayout?.viewport && Number(windowLayout.viewport.width) > 0 && Number(windowLayout.viewport.height) > 0
+      ? {
+          width: Number(windowLayout.viewport.width),
+          height: Number(windowLayout.viewport.height),
+        }
+      : { width: 1440, height: 900 },
     locale: 'en-US',
     timezoneId: 'Asia/Shanghai',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',

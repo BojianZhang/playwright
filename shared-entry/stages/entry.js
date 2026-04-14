@@ -33,6 +33,65 @@ function resolveAdapterMethod(adapter, methodName) {
  * - 保证外层无论 adapter 返回了什么，阶段 1 最终输出结构都稳定
  * - 把 success / stage / reason / detail 等字段统一收敛
  */
+function pickEntrySignalTimeline(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'object' && Object.keys(candidate).length) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function extractConfirmTimingBreakdown(entryReadyResult = {}, confirmEntryReadyMs = 0) {
+  const detail = entryReadyResult?.detail && typeof entryReadyResult.detail === 'object' ? entryReadyResult.detail : {};
+  const readyTraceEnvelope = detail?.readyTrace && typeof detail.readyTrace === 'object' ? detail.readyTrace : {};
+  const readyTrace = readyTraceEnvelope?.readyTrace && typeof readyTraceEnvelope.readyTrace === 'object'
+    ? readyTraceEnvelope.readyTrace
+    : readyTraceEnvelope;
+  const timelineResult = readyTrace?.timelineResult && typeof readyTrace.timelineResult === 'object'
+    ? readyTrace.timelineResult
+    : {};
+  const gateResult = readyTrace?.gateResult && typeof readyTrace.gateResult === 'object'
+    ? readyTrace.gateResult
+    : {};
+  const confirmTrace = readyTrace?.confirmTrace || timelineResult?.detail?.confirmTrace || detail?.confirmTrace || {};
+  const gateTrace = readyTrace?.gateTrace || gateResult?.detail?.gateTrace || detail?.gateTrace || {};
+  const waitForEntryReadyPhaseTrace = readyTrace?.waitForEntryReadyPhaseTrace && typeof readyTrace.waitForEntryReadyPhaseTrace === 'object'
+    ? readyTrace.waitForEntryReadyPhaseTrace
+    : detail?.waitForEntryReadyPhaseTrace && typeof detail.waitForEntryReadyPhaseTrace === 'object'
+      ? detail.waitForEntryReadyPhaseTrace
+      : {};
+  const outerConfirmMs = Number(confirmTrace?.resolvedAtMs || timelineResult?.waitStepMs || 0);
+  const gateConfirmMs = Number(gateTrace?.resolvedAtMs || 0);
+  const waitWrapperMs = Math.max(0,
+    Number(waitForEntryReadyPhaseTrace?.timelineWaitMs || 0)
+    + Number(waitForEntryReadyPhaseTrace?.ensureGateMs || 0)
+    + Number(waitForEntryReadyPhaseTrace?.recoverSignalsMs || 0)
+    + Number(waitForEntryReadyPhaseTrace?.reensureGateMs || 0)
+    + Number(waitForEntryReadyPhaseTrace?.debugSnapshotMs || 0)
+  );
+  const totalMs = Number(confirmEntryReadyMs || 0);
+  const wrapperOverheadMs = Math.max(0, totalMs - outerConfirmMs - gateConfirmMs);
+  const wrapperResidualMs = Math.max(0, wrapperOverheadMs - waitWrapperMs);
+
+  return {
+    totalMs,
+    outerConfirmMs,
+    gateConfirmMs,
+    wrapperOverheadMs,
+    waitWrapperMs,
+    wrapperResidualMs,
+    waitForEntryReadyResolvedPath: String(waitForEntryReadyPhaseTrace?.resolvedPath || ''),
+    waitForEntryReadyRecoveredSignals: Boolean(waitForEntryReadyPhaseTrace?.recoveredSignals),
+    waitForEntryReadyPhaseTrace,
+    outerConfirmResolvedBy: String(confirmTrace?.resolvedBy || ''),
+    outerConfirmResolvedState: String(confirmTrace?.resolvedState || ''),
+    outerConfirmResolvedReason: String(confirmTrace?.resolvedReason || ''),
+    gateResolvedState: String(gateTrace?.resolvedState || ''),
+    gateResolvedReason: String(gateTrace?.resolvedReason || ''),
+  };
+}
+
 function normalizeEntryStageResult(input = {}) {
   // 统一 success。
   const success = Boolean(input.success);
@@ -94,6 +153,14 @@ async function runEntryStage(options = {}) {
 
   const stageTimer = createStageTimer();
   const timingBreakdown = {};
+  const entryPhaseTrace = {
+    openStartedAtMs: 0,
+    openFinishedAtMs: null,
+    healthStartedAtMs: null,
+    healthFinishedAtMs: null,
+    confirmStartedAtMs: null,
+    confirmFinishedAtMs: null,
+  };
 
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
@@ -111,6 +178,7 @@ async function runEntryStage(options = {}) {
     context: buildStageLogContext(options),
   });
   const openStartMs = stageTimer.elapsedMs();
+  entryPhaseTrace.openStartedAtMs = openStartMs;
   const entryOpenResult = openEntryPage
     ? await openEntryPage(page, runtime, context)
     : {
@@ -121,6 +189,7 @@ async function runEntryStage(options = {}) {
         strength: '',
       };
   timingBreakdown.openEntryPageMs = Math.max(0, stageTimer.elapsedMs() - openStartMs);
+  entryPhaseTrace.openFinishedAtMs = stageTimer.elapsedMs();
 
   // 如果入口页打开就已经明确失败，则直接收口。
   if (entryOpenResult && entryOpenResult.ok === false) {
@@ -149,11 +218,16 @@ async function runEntryStage(options = {}) {
       retryCount: 0,
       detail: {
         entryHealth: null,
+        healthTrace: null,
+        overlayHandled: false,
+        loginSignal: null,
+        readyTrace: null,
         recoveryTrace: null,
         entryOpenResult,
         entryReadyResult: null,
         classified,
         timingBreakdown,
+        entryPhaseTrace,
       },
     });
   }
@@ -164,6 +238,7 @@ async function runEntryStage(options = {}) {
     context: buildStageLogContext(options),
   });
   const healthStartMs = stageTimer.elapsedMs();
+  entryPhaseTrace.healthStartedAtMs = healthStartMs;
   const entryHealthResult = checkEntryHealth
     ? await checkEntryHealth(page, runtime, context)
     : {
@@ -174,6 +249,7 @@ async function runEntryStage(options = {}) {
         strength: '',
       };
   timingBreakdown.checkEntryHealthMs = Math.max(0, stageTimer.elapsedMs() - healthStartMs);
+  entryPhaseTrace.healthFinishedAtMs = stageTimer.elapsedMs();
 
   // 如果健康检查明确失败，则直接收口。
   if (entryHealthResult && entryHealthResult.ok === false) {
@@ -203,12 +279,17 @@ async function runEntryStage(options = {}) {
       retryCount: 0,
       detail: {
         entryHealth: entryHealthResult,
+        healthTrace: entryHealthResult?.healthTrace || null,
+        overlayHandled: Boolean(entryHealthResult?.overlayHandled),
+        loginSignal: entryHealthResult?.loginSignal || null,
+        readyTrace: null,
         recoveryTrace: null,
         entryOpenResult,
         entryHealthResult,
         entryReadyResult: null,
         classified,
         timingBreakdown,
+        entryPhaseTrace,
       },
     });
   }
@@ -228,10 +309,15 @@ async function runEntryStage(options = {}) {
       detail: {
         missingMethod: 'confirmEntryReadyWithRecovery|waitForEntryReady',
         entryHealth: entryHealthResult,
+        healthTrace: entryHealthResult?.healthTrace || null,
+        overlayHandled: Boolean(entryHealthResult?.overlayHandled),
+        loginSignal: entryHealthResult?.loginSignal || null,
+        readyTrace: null,
         recoveryTrace: null,
         entryOpenResult,
         entryHealthResult,
         timingBreakdown,
+        entryPhaseTrace,
       },
     });
   }
@@ -242,10 +328,13 @@ async function runEntryStage(options = {}) {
     context: buildStageLogContext(options),
   });
   const readyStartMs = stageTimer.elapsedMs();
+  entryPhaseTrace.confirmStartedAtMs = readyStartMs;
   const entryReadyResult = confirmEntryReadyWithRecovery
     ? await confirmEntryReadyWithRecovery(page, runtime, context)
     : await waitForEntryReady(page, runtime, context);
   timingBreakdown.confirmEntryReadyMs = Math.max(0, stageTimer.elapsedMs() - readyStartMs);
+  timingBreakdown.confirmTimingBreakdown = extractConfirmTimingBreakdown(entryReadyResult, timingBreakdown.confirmEntryReadyMs);
+  entryPhaseTrace.confirmFinishedAtMs = stageTimer.elapsedMs();
   timingBreakdown.totalBeforeSettleMs = Math.max(0, stageTimer.elapsedMs());
 
   // 如果入口 ready 成功，就直接返回成功结构。
@@ -275,6 +364,19 @@ async function runEntryStage(options = {}) {
       retryCount: Number.isFinite(Number(entryReadyResult.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
       detail: {
         entryHealth: entryHealthResult,
+        healthTrace: entryHealthResult?.healthTrace || null,
+        overlayHandled: Boolean(entryHealthResult?.overlayHandled),
+        loginSignal: entryHealthResult?.loginSignal || entryReadyResult?.detail?.loginSignal || null,
+        signalTimeline: pickEntrySignalTimeline(
+          entryReadyResult?.detail?.signalTimeline,
+          entryReadyResult?.detail?.loginSignal?.detail?.signalTimeline,
+          entryReadyResult?.detail?.readyTrace?.gateResult?.detail?.signalTimeline,
+          entryReadyResult?.detail?.readyTrace?.gateResult?.gateState?.detail?.signalTimeline,
+          entryReadyResult?.detail?.readyTrace?.signalTimeline,
+          entryReadyResult?.detail?.gateResult?.detail?.signalTimeline,
+          entryReadyResult?.detail?.gateResult?.gateState?.detail?.signalTimeline
+        ),
+        readyTrace: entryReadyResult?.detail || null,
         recoveryTrace: entryReadyResult?.recoveryResult || null,
         entryOpenResult,
         entryHealthResult,
@@ -282,6 +384,7 @@ async function runEntryStage(options = {}) {
         recoveryResult: entryReadyResult?.recoveryResult || null,
         classified: null,
         timingBreakdown,
+        entryPhaseTrace,
       },
     });
   }
@@ -313,6 +416,19 @@ async function runEntryStage(options = {}) {
     retryCount: Number.isFinite(Number(entryReadyResult?.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
     detail: {
       entryHealth: entryHealthResult,
+      healthTrace: entryHealthResult?.healthTrace || null,
+      overlayHandled: Boolean(entryHealthResult?.overlayHandled),
+      loginSignal: entryHealthResult?.loginSignal || entryReadyResult?.detail?.loginSignal || null,
+      signalTimeline: pickEntrySignalTimeline(
+        entryReadyResult?.detail?.signalTimeline,
+        entryReadyResult?.detail?.loginSignal?.detail?.signalTimeline,
+        entryReadyResult?.detail?.readyTrace?.gateResult?.detail?.signalTimeline,
+        entryReadyResult?.detail?.readyTrace?.gateResult?.gateState?.detail?.signalTimeline,
+        entryReadyResult?.detail?.readyTrace?.signalTimeline,
+        entryReadyResult?.detail?.gateResult?.detail?.signalTimeline,
+        entryReadyResult?.detail?.gateResult?.gateState?.detail?.signalTimeline
+      ),
+      readyTrace: entryReadyResult?.detail || null,
       recoveryTrace: entryReadyResult?.recoveryResult || null,
       entryOpenResult,
       entryHealthResult,
@@ -320,6 +436,7 @@ async function runEntryStage(options = {}) {
       recoveryResult: entryReadyResult?.recoveryResult || null,
       classified,
       timingBreakdown,
+      entryPhaseTrace,
     },
   });
 }
