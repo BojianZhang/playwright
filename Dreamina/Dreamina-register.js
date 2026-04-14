@@ -114,41 +114,11 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       return { ok: false, skipped: true, reason: 'NOT_LOGIN_PAGE' };
     }
 
-    const checkboxLabel = page.locator('label.lv-checkbox.privacyCheck').first();
     const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
-    const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
-    const checkboxHotspot = page.locator('label.lv-checkbox.privacyCheck span.lv-icon-hover.lv-checkbox-icon-hover.lv-checkbox-mask-wrapper').first();
-    const signInButton = page.locator('[class*="login-button"]').first();
+    const checkboxMask = page.locator('.lv-checkbox-mask').first();
+    const signInText = page.getByText('Sign in', { exact: false }).first();
 
-    const clickCheckboxHotspot = async () => {
-      const hotspotVisible = await checkboxHotspot.isVisible().catch(() => false);
-      if (hotspotVisible) {
-        await checkboxHotspot.click({ timeout: 1500 }).catch(() => null);
-        return 'checkbox-hotspot';
-      }
-
-      const maskVisible = await checkboxMask.isVisible().catch(() => false);
-      if (maskVisible) {
-        await checkboxMask.click({ timeout: 1500 }).catch(() => null);
-        return 'checkbox-mask';
-      }
-
-      const box = await checkboxHotspot.boundingBox().catch(() => null) || await checkboxMask.boundingBox().catch(() => null);
-      if (box && Number(box.width || 0) > 0 && Number(box.height || 0) > 0) {
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 50 }).catch(() => null);
-        return 'checkbox-bounding-box-center';
-      }
-
-      const labelVisible = await checkboxLabel.isVisible().catch(() => false);
-      if (labelVisible) {
-        await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
-        return 'checkbox-label';
-      }
-
-      return '';
-    };
-
-    const signInVisible = await signInButton.isVisible().catch(() => false);
+    const signInVisible = await signInText.isVisible().catch(() => false);
     if (!signInVisible) {
       return { ok: false, skipped: true, reason: 'LOGIN_PAGE_SIGN_IN_NOT_VISIBLE' };
     }
@@ -156,31 +126,20 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     const checkedBefore = await checkboxInput.isChecked().catch(() => false);
     let checkboxClickTarget = '';
     if (!checkedBefore) {
-      checkboxClickTarget = await clickCheckboxHotspot();
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 500)).catch(() => null);
+      await checkboxMask.click({ timeout: 1500 }).catch(() => null);
+      checkboxClickTarget = 'checkbox-mask';
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 400)).catch(() => null);
     }
 
-    let checkedAfter = await checkboxInput.isChecked().catch(() => false);
+    const checkedAfter = await checkboxInput.isChecked().catch(() => false);
     if (!checkedAfter) {
-      checkboxClickTarget = checkboxClickTarget || await clickCheckboxHotspot();
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxRetryWaitMs || 700)).catch(() => null);
-      checkedAfter = await checkboxInput.isChecked().catch(() => false);
+      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkedBefore, checkedAfter, checkboxClickTarget };
     }
 
-    if (!checkedAfter) {
-      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkboxClickTarget };
-    }
-
-    const signInButtonEnabledBefore = await signInButton.isEnabled().catch(() => false);
-    const signInButtonClassBefore = await signInButton.evaluate(node => String(node?.className || '')).catch(() => '');
-
-    await signInButton.click({ timeout: 2000 }).catch(async () => {
-      await signInButton.click({ force: true, timeout: 2000 }).catch(() => null);
+    await signInText.click({ timeout: 2000 }).catch(async () => {
+      await signInText.click({ force: true, timeout: 2000 }).catch(() => null);
     });
     await page.waitForTimeout(Number(runtime?.dreaminaLoginSignInWaitMs || 800)).catch(() => null);
-
-    const signInButtonEnabledAfter = await signInButton.isEnabled().catch(() => false);
-    const signInButtonClassAfter = await signInButton.evaluate(node => String(node?.className || '')).catch(() => '');
 
     return {
       ok: true,
@@ -189,10 +148,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       checkedBefore,
       checkedAfter,
       checkboxClickTarget,
-      signInButtonEnabledBefore,
-      signInButtonEnabledAfter,
-      signInButtonClassBefore,
-      signInButtonClassAfter,
     };
   }
 
@@ -218,6 +173,83 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     }
 
     return false;
+  }
+
+  async function observeDreaminaLoginPageAfterSignIn(page, runtime = {}, context = {}) {
+    const observeMs = Number(runtime?.dreaminaLoginPostClickObserveMs || 3500);
+    const deadline = Date.now() + Math.max(500, observeMs);
+    let lastGateResult = null;
+
+    while (Date.now() < deadline) {
+      if (typeof siteAdapter?.confirmDreaminaLoginGate === 'function') {
+        lastGateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+        if (lastGateResult?.ok && lastGateResult?.state === 'EMAIL_GATE_READY') {
+          return {
+            ok: true,
+            state: 'ENTRY_READY',
+            source: 'login-page-post-click-observe',
+            value: 'EMAIL_GATE_READY',
+            strength: 'strong',
+            stateChanged: true,
+            detail: {
+              readyTrace: {
+                decision: 'login-page-post-click-gate-success',
+                gateState: lastGateResult?.state || '',
+                gateReason: lastGateResult?.value || lastGateResult?.reason || '',
+                gateResult: lastGateResult,
+              },
+              loginSignal: lastGateResult?.detail?.loginSignal || null,
+              signalTimeline: lastGateResult?.detail?.signalTimeline || null,
+            },
+          };
+        }
+      }
+
+      const continueVisible = await page.getByText('Continue with email', { exact: false }).first().isVisible().catch(() => false);
+      const emailVisible = await page.locator("input[type='email']").first().isVisible().catch(() => false)
+        || await page.locator("input[placeholder*='email' i]").first().isVisible().catch(() => false);
+      const modalVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
+
+      if (continueVisible || emailVisible || modalVisible) {
+        return {
+          ok: true,
+          state: 'ENTRY_READY',
+          source: 'login-page-post-click-observe',
+          value: emailVisible ? 'EMAIL_GATE_VISIBLE' : (continueVisible ? 'CONTINUE_WITH_EMAIL_VISIBLE' : 'LOGIN_MODAL_VISIBLE'),
+          strength: 'strong',
+          stateChanged: true,
+          detail: {
+            readyTrace: {
+              decision: 'login-page-post-click-signal-visible',
+              gateState: lastGateResult?.state || '',
+              gateReason: lastGateResult?.value || lastGateResult?.reason || '',
+              gateResult: lastGateResult,
+            },
+            loginSignal: lastGateResult?.detail?.loginSignal || null,
+            signalTimeline: lastGateResult?.detail?.signalTimeline || null,
+          },
+        };
+      }
+
+      await page.waitForTimeout(250).catch(() => null);
+    }
+
+    return {
+      ok: false,
+      state: 'LOGIN_ENTRY_FAILED',
+      source: 'login-page-post-click-observe',
+      value: 'LOGIN_PAGE_POST_CLICK_SIGNAL_MISSING',
+      strength: '',
+      stateChanged: false,
+      detail: {
+        readyTrace: {
+          decision: 'login-page-post-click-signal-missing',
+          gateState: lastGateResult?.state || '',
+          gateReason: lastGateResult?.value || lastGateResult?.reason || '',
+          gateResult: lastGateResult,
+        },
+      },
+    };
   }
 
   async function recoverEntrySignals(page, runtime = {}) {
@@ -630,6 +662,30 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         gateResolvedState: '',
         gateResolvedReason: '',
       };
+
+      const loginPagePrepareResult = context?.openEntryPageResult?.detail?.loginPagePrepareResult || null;
+      if (loginPagePrepareResult?.ok && loginPagePrepareResult?.reason === 'LOGIN_PAGE_SIGN_IN_CLICKED') {
+        const observeStartedAt = Date.now();
+        const observedResult = await observeDreaminaLoginPageAfterSignIn(page, runtime, context);
+        phaseTrace.timelineWaitMs = Math.max(0, Date.now() - observeStartedAt);
+        phaseTrace.resolvedPath = observedResult?.ok ? 'login-page-post-click-success' : 'login-page-post-click-failed';
+        phaseTrace.gateResolvedState = String(observedResult?.detail?.readyTrace?.gateState || observedResult?.state || '');
+        phaseTrace.gateResolvedReason = String(observedResult?.detail?.readyTrace?.gateReason || observedResult?.value || '');
+        return {
+          ...observedResult,
+          detail: {
+            ...(observedResult?.detail || {}),
+            readyTrace: {
+              ...((observedResult?.detail && observedResult.detail.readyTrace) || {}),
+              waitForEntryReadyPhaseTrace: {
+                ...phaseTrace,
+                resolvedPath: phaseTrace.resolvedPath,
+              },
+              loginPagePrepareResult,
+            },
+          },
+        };
+      }
 
       const timelineStartedAt = Date.now();
       const timelineResult = typeof timelineAdapter.waitForEntryReady === 'function'

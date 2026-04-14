@@ -329,9 +329,14 @@ async function runEntryStage(options = {}) {
   });
   const readyStartMs = stageTimer.elapsedMs();
   entryPhaseTrace.confirmStartedAtMs = readyStartMs;
+  const entryReadyContext = {
+    ...context,
+    openEntryPageResult,
+  };
+
   const entryReadyResult = confirmEntryReadyWithRecovery
-    ? await confirmEntryReadyWithRecovery(page, runtime, context)
-    : await waitForEntryReady(page, runtime, context);
+    ? await confirmEntryReadyWithRecovery(page, runtime, entryReadyContext)
+    : await waitForEntryReady(page, runtime, entryReadyContext);
   timingBreakdown.confirmEntryReadyMs = Math.max(0, stageTimer.elapsedMs() - readyStartMs);
   timingBreakdown.confirmTimingBreakdown = extractConfirmTimingBreakdown(entryReadyResult, timingBreakdown.confirmEntryReadyMs);
   entryPhaseTrace.confirmFinishedAtMs = stageTimer.elapsedMs();
