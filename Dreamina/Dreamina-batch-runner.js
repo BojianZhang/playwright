@@ -38,6 +38,7 @@ const {
   markWorkerIdle,
   buildWorkerOverviewPanel,
 } = require('../worker-status-tracker');
+const { runBatchOrchestration } = require('../shared-batch-orchestration');
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -928,110 +929,108 @@ async function writeBatchSummaryFile(batchContext) {
   return summary;
 }
 
-async function workerLoop(workerId, batchContext) {
-  updateWorkerStatus(workerId, {
-    status: 'idle',
-    account: '',
-    stage: '',
-    step: 'waiting-account',
-    attempt: 0,
-    proxy: '',
-    lastReason: '',
-    lastState: '',
-  });
+async function processBatchTask({ workerId, task, payload, batchContext }) {
+  const account = payload?.account || null;
+  const attempt = Number(task?.attempts || 1);
+  if (!account) {
+    return {
+      success: false,
+      finalStage: 'batch-runner',
+      finalState: 'BATCH_TASK_ACCOUNT_MISSING',
+      finalReason: 'BATCH_TASK_ACCOUNT_MISSING',
+      meta: { durationMs: 0 },
+    };
+  }
 
-  let attempt = 0;
+  batchContext.accounts.running.push(account.email);
+  let proxy = null;
 
-  while (true) {
-    const account = acquireNextAccount(batchContext);
-    if (!account) {
-      markWorkerIdle(workerId);
-      return;
-    }
-
-    attempt += 1;
-    batchContext.accounts.running.push(account.email);
-
-    let proxy = null;
-
-    try {
-      const normalizedEmail = String(account?.email || '').trim().toLowerCase();
-      if (!batchContext.config.ignoreKnownExists && normalizedEmail && batchContext.knownExistsAccounts.has(normalizedEmail)) {
-        updateWorkerStatus(workerId, {
-          status: 'skip-known-exists',
-          account: account.email,
-          stage: 'precheck-skip',
-          step: 'known-exists-skip-before-proxy-precheck',
-          attempt,
-          proxy: '',
-          lastReason: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
-          lastState: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
-        });
-        console.log(`[Dreamina Batch] 跳过已知已注册账号（代理预检前，账号已在 registered-accounts.json 保留） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
-        const skippedResult = buildKnownExistsSkipResult(account, null);
-        await updateBatchSummary(batchContext, skippedResult, {
-          workerId,
-          account,
-          proxy: null,
-        });
-        continue;
-      }
-
-      proxy = acquireNextProxy(batchContext);
-      if (!proxy) {
-        batchContext.accounts.skipped.push({
-          account: account.email,
-          reason: 'NO_PROXY_AVAILABLE',
-        });
-        batchContext.summary.skippedCount += 1;
-        continue;
-      }
-
+  try {
+    const normalizedEmail = String(account?.email || '').trim().toLowerCase();
+    if (!batchContext.config.ignoreKnownExists && normalizedEmail && batchContext.knownExistsAccounts.has(normalizedEmail)) {
       updateWorkerStatus(workerId, {
-        status: 'running-register-stage',
+        status: 'skip-known-exists',
         account: account.email,
-        stage: 'proxy-precheck',
-        step: 'worker-start-account',
+        stage: 'precheck-skip',
+        step: 'known-exists-skip-before-proxy-precheck',
         attempt,
-        proxy: proxy.raw || summarizeProxy(proxy).id || '',
-        lastReason: '',
-        lastState: '',
+        proxy: '',
+        lastReason: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
+        lastState: 'KNOWN_EXISTS_ACCOUNT_SKIPPED',
       });
-
-      const result = await runSingleAccountWithNewArchitecture({
-        account,
-        proxy,
-        workerId,
-        attempt,
-        headed: batchContext.config.headed,
-        slowMo: batchContext.config.slowMo,
-      });
-
-      await updateBatchSummary(batchContext, result, {
+      console.log(`[Dreamina Batch] 跳过已知已注册账号（代理预检前，账号已在 registered-accounts.json 保留） | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | reason=KNOWN_EXISTS_ACCOUNT_SKIPPED`);
+      const skippedResult = buildKnownExistsSkipResult(account, null);
+      await updateBatchSummary(batchContext, skippedResult, {
         workerId,
         account,
-        proxy,
+        proxy: null,
       });
-    } catch (error) {
-      const failedResult = {
-        success: false,
-        finalStage: 'batch-runner',
-        finalState: 'BATCH_RUNNER_EXCEPTION',
-        finalReason: String(error?.message || 'BATCH_RUNNER_EXCEPTION'),
-        meta: {
-          durationMs: 0,
-        },
-      };
-
-      await updateBatchSummary(batchContext, failedResult, {
-        workerId,
-        account,
-        proxy,
-      });
-    } finally {
-      batchContext.accounts.running = batchContext.accounts.running.filter(item => item !== account.email);
-      markWorkerIdle(workerId);
+      return skippedResult;
     }
+
+    proxy = acquireNextProxy(batchContext);
+    if (!proxy) {
+      batchContext.accounts.skipped.push({
+        account: account.email,
+        reason: 'NO_PROXY_AVAILABLE',
+      });
+      batchContext.summary.skippedCount += 1;
+      return {
+        success: false,
+        skipped: true,
+        finalStage: 'batch-runner',
+        finalState: 'NO_PROXY_AVAILABLE',
+        finalReason: 'NO_PROXY_AVAILABLE',
+        meta: { durationMs: 0 },
+      };
+    }
+
+    updateWorkerStatus(workerId, {
+      status: 'running-register-stage',
+      account: account.email,
+      stage: 'proxy-precheck',
+      step: 'worker-start-account',
+      attempt,
+      proxy: proxy.raw || summarizeProxy(proxy).id || '',
+      lastReason: '',
+      lastState: '',
+    });
+
+    const result = await runSingleAccountWithNewArchitecture({
+      account,
+      proxy,
+      workerId,
+      attempt,
+      headed: batchContext.config.headed,
+      slowMo: batchContext.config.slowMo,
+    });
+
+    await updateBatchSummary(batchContext, result, {
+      workerId,
+      account,
+      proxy,
+    });
+    return result;
+  } catch (error) {
+    const failedResult = {
+      success: false,
+      finalStage: 'batch-runner',
+      finalState: 'BATCH_RUNNER_EXCEPTION',
+      finalReason: String(error?.message || 'BATCH_RUNNER_EXCEPTION'),
+      meta: {
+        durationMs: 0,
+      },
+    };
+
+    await updateBatchSummary(batchContext, failedResult, {
+      workerId,
+      account,
+      proxy,
+    });
+    return failedResult;
+  } finally {
+    batchContext.accounts.running = batchContext.accounts.running.filter(item => item !== account.email);
+    markWorkerIdle(workerId);
   }
 }
 
@@ -1125,9 +1124,34 @@ async function runDreaminaBatch(argv = []) {
   }, 10000);
 
   try {
-    await Promise.all(
-      Array.from({ length: batchContext.config.concurrency }, (_, index) => workerLoop(index + 1, batchContext))
-    );
+    await runBatchOrchestration({
+      tasks: accounts.map((account, index) => ({
+        id: `account-${index + 1}-${sanitizeFileName(account?.email || '')}`,
+        account,
+      })),
+      concurrency: batchContext.config.concurrency,
+      runTask: async ({ workerId, task, payload }) => {
+        return await processBatchTask({
+          workerId,
+          task,
+          payload,
+          batchContext,
+        });
+      },
+      onWorkerUpdate: async (workerState) => {
+        updateWorkerStatus(workerState?.workerId || 0, {
+          status: workerState?.status || 'idle',
+          account: workerState?.account?.email || workerState?.account || '',
+          stage: workerState?.stage || '',
+          step: workerState?.step || 'waiting-account',
+          attempt: workerState?.attempt || 0,
+          proxy: workerState?.proxy?.raw || workerState?.proxy || '',
+        });
+        if (String(workerState?.status || '') === 'idle') {
+          markWorkerIdle(workerState?.workerId || 0);
+        }
+      },
+    });
   } finally {
     clearInterval(panelInterval);
   }
