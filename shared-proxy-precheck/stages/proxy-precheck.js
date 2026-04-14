@@ -1,5 +1,24 @@
 'use strict';
 
+/**
+ * proxy-precheck.js
+ *
+ * 这是 shared proxy-precheck stage 的编排层。
+ *
+ * 它负责：
+ * - 解析 adapter hooks
+ * - 编排一次性 proxy precheck 主链
+ * - 记录阶段日志
+ * - 归一化 shared stage 输出结果
+ *
+ * 它不负责：
+ * - 具体网络请求实现
+ * - 代理连通性探测细节
+ * - 目标站点判定细节
+ * - retry / 多轮探测 / 策略循环
+ * - 站点专属失败分类细节
+ */
+
 const {
   logStageProgress,
   logStageSuccess,
@@ -8,6 +27,12 @@ const {
   createStageTimer,
   formatDurationMs,
 } = require('../../shared-stage-logger');
+
+// ==============================
+// 基础工具层
+// 只负责 adapter hook 解析与 shared result 归一化。
+// 不负责具体探测行为。
+// ==============================
 
 function resolveAdapterMethod(adapter, methodName) {
   if (!adapter || typeof adapter !== 'object') return null;
@@ -46,6 +71,12 @@ function normalizeProxyPrecheckResult(input = {}) {
   };
 }
 
+// ==============================
+// stage orchestrator 层
+// 负责按固定顺序执行 connectivity gate -> parallel targets -> result confirmation。
+// 不负责 retry，也不扩成多轮策略链。
+// ==============================
+
 async function runProxyPrecheckChain(options = {}) {
   const {
     proxy = {},
@@ -63,6 +94,8 @@ async function runProxyPrecheckChain(options = {}) {
   const confirmProxyPrecheckResult = resolveAdapterMethod(adapter, 'confirmProxyPrecheckResult');
   const classifyProxyPrecheckFailure = resolveAdapterMethod(adapter, 'classifyProxyPrecheckFailure');
 
+  // Step 1: connectivity gate
+  // 先做最外层 fail-fast，避免坏代理继续浪费后续目标检查。
   logStageProgress('proxy-precheck', '检查代理连通性', {
     context: buildStageLogContext({ proxy, runtime, context }),
   });
@@ -79,6 +112,7 @@ async function runProxyPrecheckChain(options = {}) {
         classified?.siteReason ? `classified=${classified.siteReason}` : '',
       ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
+    // connectivity fail-fast 出口
     return normalizeProxyPrecheckResult({
       success: false,
       state: String(connectivity.state || 'PROXY_CONNECTIVITY_FAILED'),
@@ -103,15 +137,31 @@ async function runProxyPrecheckChain(options = {}) {
     });
   }
 
+  // Step 2: parallel target probes
+  // exitIp / primary / secondary 明确并行执行，避免串行探测放大耗时。
   logStageProgress('proxy-precheck', '并行检查代理出口 IP / Dreamina 主目标 / Dreamina 副目标', {
     context: buildStageLogContext({ proxy, runtime, context }),
   });
+  const enableSecondaryTarget = Boolean(runtime?.proxyEnableSecondaryTarget ?? true);
   const [exitIp, primaryTarget, secondaryTarget] = await Promise.all([
     checkProxyExitIp ? checkProxyExitIp(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
     checkDreaminaPrimaryTarget ? checkDreaminaPrimaryTarget(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
-    checkDreaminaSecondaryTarget ? checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity }) : Promise.resolve(null),
+    enableSecondaryTarget && checkDreaminaSecondaryTarget
+      ? checkDreaminaSecondaryTarget(proxy, runtime, { ...context, connectivity })
+      : Promise.resolve({
+          ok: false,
+          skipped: true,
+          state: 'DREAMINA_SECONDARY_TARGET_SKIPPED',
+          source: 'secondary-target-disabled',
+          value: 'disabled-by-runtime-policy',
+          strength: 'weak',
+          elapsedMs: 0,
+          response: null,
+        }),
   ]);
 
+  // Step 3: result confirmation
+  // 由 adapter 统一综合 connectivity + targets 结果，shared 层只负责承接与收口。
   logStageProgress('proxy-precheck', '确认代理预检结果', {
     context: buildStageLogContext({ proxy, runtime, context }),
   });
@@ -128,6 +178,7 @@ async function runProxyPrecheckChain(options = {}) {
         resultConfirmation?.source ? `source=${resultConfirmation.source}` : '',
       ].filter(Boolean).concat([`durationMs=${formatDurationMs(stageTimer.elapsedMs())}`]).join(' | '),
     });
+    // success 出口
     return normalizeProxyPrecheckResult({
       success: true,
       state: String(resultConfirmation.state || 'PROXY_PRECHECK_OK'),
@@ -167,6 +218,7 @@ async function runProxyPrecheckChain(options = {}) {
     ].filter(Boolean).join(' | '),
   });
 
+  // confirmation failure 出口
   return normalizeProxyPrecheckResult({
     success: false,
     state: String(resultConfirmation?.state || 'PROXY_PRECHECK_BAD'),
