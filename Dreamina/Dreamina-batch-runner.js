@@ -534,11 +534,23 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     ? result.detail
     : null;
 
-  const derivedDetail = topLevelDetail
-    || stageResults[result?.finalStage]?.detail
-    || stageResults.accountDelivery?.detail
-    || stageResults.postAuthReady?.detail
-    || null;
+  const stageDetailSummary = Object.entries(stageResults).reduce((acc, [stageKey, stageResult]) => {
+    if (stageResult && typeof stageResult === 'object' && stageResult.detail && typeof stageResult.detail === 'object') {
+      acc[stageKey] = stageResult.detail;
+    }
+    return acc;
+  }, {});
+
+  const derivedDetail = Object.keys(stageDetailSummary).length > 0
+    ? {
+        ...(topLevelDetail ? { finalStageDetail: topLevelDetail } : {}),
+        ...stageDetailSummary,
+      }
+    : (topLevelDetail
+      || stageResults[result?.finalStage]?.detail
+      || stageResults.accountDelivery?.detail
+      || stageResults.postAuthReady?.detail
+      || null);
 
   return {
     account: result?.account?.email || extra?.account?.email || '',
