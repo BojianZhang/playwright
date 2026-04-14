@@ -171,6 +171,7 @@ async function runEntryStage(options = {}) {
   const waitForEntryReady = resolveAdapterMethod(adapter, 'waitForEntryReady');
   const confirmEntryReadyWithRecovery = resolveAdapterMethod(adapter, 'confirmEntryReadyWithRecovery');
   const classifyEntryFailure = resolveAdapterMethod(adapter, 'classifyEntryFailure');
+  const runDreaminaEntryFlow = resolveAdapterMethod(adapter, 'runDreaminaEntryFlow');
 
   // 第一步：如果存在 openEntryPage，就先执行入口页打开或校正。
   syncStageStep(options, { stage: 'entry', step: 'open-entry-page' });
@@ -322,9 +323,9 @@ async function runEntryStage(options = {}) {
     });
   }
 
-  // 第四步：执行入口 ready 判断；优先使用带 recover 的主链确认。
+  // 第四步：执行入口 ready 判断；若站点 adapter 已提供分段式 orchestrator，则优先使用。
   syncStageStep(options, { stage: 'entry', step: 'confirm-entry-ready' });
-  logStageProgress('entry', '等待入口 ready / 恢复入口信号', {
+  logStageProgress('entry', runDreaminaEntryFlow ? '执行分段式 entry flow' : '等待入口 ready / 恢复入口信号', {
     context: buildStageLogContext(options),
   });
   const readyStartMs = stageTimer.elapsedMs();
@@ -334,9 +335,11 @@ async function runEntryStage(options = {}) {
     openEntryPageResult: entryOpenResult,
   };
 
-  const entryReadyResult = confirmEntryReadyWithRecovery
-    ? await confirmEntryReadyWithRecovery(page, runtime, entryReadyContext)
-    : await waitForEntryReady(page, runtime, entryReadyContext);
+  const entryReadyResult = runDreaminaEntryFlow
+    ? await runDreaminaEntryFlow(page, runtime, entryReadyContext)
+    : (confirmEntryReadyWithRecovery
+      ? await confirmEntryReadyWithRecovery(page, runtime, entryReadyContext)
+      : await waitForEntryReady(page, runtime, entryReadyContext));
   timingBreakdown.confirmEntryReadyMs = Math.max(0, stageTimer.elapsedMs() - readyStartMs);
   timingBreakdown.confirmTimingBreakdown = extractConfirmTimingBreakdown(entryReadyResult, timingBreakdown.confirmEntryReadyMs);
   entryPhaseTrace.confirmFinishedAtMs = stageTimer.elapsedMs();
