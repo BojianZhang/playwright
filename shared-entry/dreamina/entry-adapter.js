@@ -387,6 +387,28 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
     return { found: true, clickable: true, locator: continueWithEmail, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors, timelineSignals };
   }
 
+  const continueWithEmailInModal = page.locator('.lv-modal-wrapper').filter({ hasText: continueWithEmailText }).first();
+  const continueWithEmailModalVisible = await isVisible(continueWithEmailInModal);
+  timelineSignals.continueWithEmailModalVisible = continueWithEmailModalVisible;
+  if (continueWithEmailModalVisible) {
+    const modalContinueWithEmail = continueWithEmailInModal.getByText(continueWithEmailText, { exact: false }).first();
+    const modalContinueWithEmailVisible = await isVisible(modalContinueWithEmail);
+    timelineSignals.continueWithEmailModalButtonVisible = modalContinueWithEmailVisible;
+    matchedSelectors.push('.lv-modal-wrapper');
+    matchedTexts.push(continueWithEmailText);
+    return {
+      found: true,
+      clickable: modalContinueWithEmailVisible,
+      locator: modalContinueWithEmailVisible ? modalContinueWithEmail : continueWithEmailInModal,
+      label: modalContinueWithEmailVisible ? 'continue-with-email-modal-button' : 'continue-with-email-modal',
+      source: 'modal',
+      value: continueWithEmailText,
+      matchedTexts,
+      matchedSelectors,
+      timelineSignals,
+    };
+  }
+
   for (const text of readyTexts) {
     const locator = page.getByText(String(text || ''), { exact: false }).first();
     const visible = await isVisible(locator);
@@ -413,6 +435,47 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
   if (roleVisible) {
     matchedSelectors.push(`role=button[name~=${entryRolePattern}]`);
     return { found: true, clickable: true, locator: roleLocator, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors, timelineSignals };
+  }
+
+  const siderMenuLoginById = page.locator('#SiderMenuLogin').first();
+  const siderMenuLoginByIdVisible = await isVisible(siderMenuLoginById);
+  timelineSignals.siderMenuLoginVisible = siderMenuLoginByIdVisible;
+  if (siderMenuLoginByIdVisible) {
+    const siderMenuLoginText = String(await siderMenuLoginById.textContent().catch(() => '') || '').trim();
+    timelineSignals.siderMenuLoginTextVisible = Boolean(siderMenuLoginText);
+    matchedSelectors.push('#SiderMenuLogin');
+    if (siderMenuLoginText) {
+      matchedTexts.push(siderMenuLoginText);
+    }
+    return {
+      found: true,
+      clickable: true,
+      locator: siderMenuLoginById,
+      label: 'entry-menuitem',
+      source: 'selector',
+      value: siderMenuLoginText || 'SiderMenuLogin',
+      matchedTexts,
+      matchedSelectors,
+      timelineSignals,
+    };
+  }
+
+  const menuitemRoleLocator = page.getByRole('menuitem', { name: new RegExp(entryRolePattern || 'sign in|log in|login|sign up', 'i') }).first();
+  const menuitemRoleVisible = await isVisible(menuitemRoleLocator);
+  timelineSignals.entryMenuitemRoleVisible = menuitemRoleVisible;
+  if (menuitemRoleVisible) {
+    matchedSelectors.push(`role=menuitem[name~=${entryRolePattern}]`);
+    return {
+      found: true,
+      clickable: true,
+      locator: menuitemRoleLocator,
+      label: 'entry-menuitem-role',
+      source: 'role',
+      value: entryRolePattern,
+      matchedTexts,
+      matchedSelectors,
+      timelineSignals,
+    };
   }
 
   return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors, timelineSignals };

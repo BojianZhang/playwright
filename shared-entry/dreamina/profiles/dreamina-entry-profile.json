@@ -1,7 +1,7 @@
 {
     "site":  "dreamina",
     "stage":  "entry",
-    "entryUrl":  "https://www.dreamina.com/",
+    "entryUrl":  "https://dreamina.capcut.com/ai-tool/login",
     "readySignals":  {
                          "selectors":  [
 

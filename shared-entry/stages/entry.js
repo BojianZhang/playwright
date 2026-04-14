@@ -391,7 +391,12 @@ async function runEntryStage(options = {}) {
 
   // 第五步：ready 失败时做失败分类。
   const classified = classifyEntryFailure
-    ? classifyEntryFailure({ state: entryReadyResult?.state || 'ENTRY_NOT_READY', source: entryReadyResult?.source, value: entryReadyResult?.value })
+    ? classifyEntryFailure({
+        state: entryReadyResult?.state || 'ENTRY_NOT_READY',
+        source: entryReadyResult?.source,
+        value: entryReadyResult?.value,
+        detail: entryReadyResult?.detail || null,
+      })
     : null;
 
   // 返回统一失败结构。

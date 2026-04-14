@@ -108,6 +108,54 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     }
   }
 
+  async function prepareDreaminaLoginPage(page, runtime = {}, context = {}) {
+    const currentUrl = String(page.url ? page.url() : '').trim();
+    if (!/dreamina\.capcut\.com\/ai-tool\/login/i.test(currentUrl)) {
+      return { ok: false, skipped: true, reason: 'NOT_LOGIN_PAGE' };
+    }
+
+    const checkboxLabel = page.locator('label.lv-checkbox.privacyCheck').first();
+    const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
+    const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
+    const signInButton = page.getByText('Sign in', { exact: false }).first();
+
+    const signInVisible = await signInButton.isVisible().catch(() => false);
+    if (!signInVisible) {
+      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_SIGN_IN_NOT_VISIBLE' };
+    }
+
+    const checkedBefore = await checkboxInput.isChecked().catch(() => false);
+    if (!checkedBefore) {
+      const labelVisible = await checkboxLabel.isVisible().catch(() => false);
+      if (labelVisible) {
+        await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
+      } else {
+        const maskVisible = await checkboxMask.isVisible().catch(() => false);
+        if (maskVisible) {
+          await checkboxMask.click({ timeout: 1500 }).catch(() => null);
+        }
+      }
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 400)).catch(() => null);
+    }
+
+    const checkedAfter = await checkboxInput.isChecked().catch(() => false);
+    if (!checkedAfter) {
+      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED' };
+    }
+
+    await signInButton.click({ timeout: 2000 }).catch(async () => {
+      await signInButton.click({ force: true, timeout: 2000 }).catch(() => null);
+    });
+    await page.waitForTimeout(Number(runtime?.dreaminaLoginSignInWaitMs || 800)).catch(() => null);
+
+    return {
+      ok: true,
+      skipped: false,
+      reason: 'LOGIN_PAGE_SIGN_IN_CLICKED',
+      checked: checkedAfter,
+    };
+  }
+
   async function hasVisibleEntrySignals(page) {
     const signals = [
       page.getByText('Sign in').first(),
@@ -353,73 +401,146 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
 
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
+      const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://www.dreamina.com/').trim();
       const homeUrl = String(runtime?.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
+      const gotoTimeout = Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000);
 
-      try {
-        await page.goto(homeUrl, {
-          waitUntil: 'domcontentloaded',
-          timeout: Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000),
-        });
+      const attemptGoto = async (targetUrl, sourceLabel) => {
+        try {
+          await page.goto(targetUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: gotoTimeout,
+          });
 
-        const deadPageSnapshot = await detectEntryDeadPage(page);
-        if (deadPageSnapshot.whiteScreenLike || deadPageSnapshot.deadPageLike) {
-          return {
-            ok: false,
-            state: 'ENTRY_PAGE_OPEN_FAILED',
-            source: 'goto',
-            value: deadPageSnapshot.whiteScreenLike ? 'DREAMINA_WHITE_SCREEN' : 'DREAMINA_FIRST_LOAD_DEAD_PAGE',
-            strength: 'strong',
-            stateChanged: false,
-            detail: {
-              deadPageSnapshot,
-            },
-          };
-        }
+          const deadPageSnapshot = await detectEntryDeadPage(page);
+          if (deadPageSnapshot.whiteScreenLike || deadPageSnapshot.deadPageLike) {
+            return {
+              ok: false,
+              state: 'ENTRY_PAGE_OPEN_FAILED',
+              source: sourceLabel,
+              value: deadPageSnapshot.whiteScreenLike ? 'DREAMINA_WHITE_SCREEN' : 'DREAMINA_FIRST_LOAD_DEAD_PAGE',
+              strength: 'strong',
+              stateChanged: false,
+              detail: {
+                targetUrl,
+                deadPageSnapshot,
+              },
+            };
+          }
 
-        return {
-          ok: true,
-          state: 'ENTRY_PAGE_OPENED',
-          source: 'goto',
-          value: homeUrl,
-          strength: 'strong',
-          stateChanged: true,
-        };
-      } catch (error) {
-        const message = String(error?.message || homeUrl);
-        const deadPageSnapshot = await detectEntryDeadPage(page);
-        const isTimeout = /Timeout\s+\d+ms\s+exceeded/i.test(message);
-        const isHttpResponseCodeFailure = /ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message);
-        const pageLooksUsable = !deadPageSnapshot.whiteScreenLike
-          && !deadPageSnapshot.deadPageLike
-          && (Number(deadPageSnapshot.bodyTextLength || 0) >= 40 || Number(deadPageSnapshot.bodyHtmlLength || 0) >= 4000);
-
-        if (isHttpResponseCodeFailure && pageLooksUsable) {
           return {
             ok: true,
             state: 'ENTRY_PAGE_OPENED',
-            source: 'goto-http-fallback',
-            value: homeUrl,
-            strength: 'medium',
+            source: sourceLabel,
+            value: targetUrl,
+            strength: sourceLabel === 'goto-public-entry' ? 'strong' : 'medium',
             stateChanged: true,
             detail: {
-              gotoWarning: message,
+              targetUrl,
+              deadPageSnapshot,
+            },
+          };
+        } catch (error) {
+          const message = String(error?.message || targetUrl);
+          const deadPageSnapshot = await detectEntryDeadPage(page);
+          const isTimeout = /Timeout\s+\d+ms\s+exceeded/i.test(message);
+          const isHttpResponseCodeFailure = /ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message);
+          const pageLooksUsable = !deadPageSnapshot.whiteScreenLike
+            && !deadPageSnapshot.deadPageLike
+            && (Number(deadPageSnapshot.bodyTextLength || 0) >= 40 || Number(deadPageSnapshot.bodyHtmlLength || 0) >= 4000);
+
+          if (isHttpResponseCodeFailure && pageLooksUsable) {
+            return {
+              ok: true,
+              state: 'ENTRY_PAGE_OPENED',
+              source: `${sourceLabel}-http-fallback`,
+              value: targetUrl,
+              strength: 'medium',
+              stateChanged: true,
+              detail: {
+                targetUrl,
+                gotoWarning: message,
+                deadPageSnapshot,
+              },
+            };
+          }
+
+          return {
+            ok: false,
+            state: 'ENTRY_PAGE_OPEN_FAILED',
+            source: sourceLabel,
+            value: isTimeout ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT' : message,
+            strength: 'strong',
+            stateChanged: false,
+            detail: {
+              targetUrl,
               deadPageSnapshot,
             },
           };
         }
+      };
 
-        return {
-          ok: false,
-          state: 'ENTRY_PAGE_OPEN_FAILED',
-          source: 'goto',
-          value: isTimeout ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT' : message,
-          strength: 'strong',
-          stateChanged: false,
+      const assessPublicEntryAffordance = async () => {
+        if (typeof siteAdapter.detectDreaminaLoginEntrySignals !== 'function') {
+          return null;
+        }
+        await preprocessEntryOverlays(page).catch(() => null);
+        return await siteAdapter.detectDreaminaLoginEntrySignals(page, runtime, context).catch(() => null);
+      };
+
+      let publicEntryResult = await attemptGoto(entryUrl, 'goto-public-entry');
+      if (!publicEntryResult?.ok) {
+        return publicEntryResult;
+      }
+
+      const loginPagePrepareResult = await prepareDreaminaLoginPage(page, runtime, context).catch(() => null);
+      publicEntryResult = {
+        ...publicEntryResult,
+        detail: {
+          ...(publicEntryResult?.detail || {}),
+          loginPagePrepareResult,
+        },
+      };
+
+      let publicEntrySignal = await assessPublicEntryAffordance();
+      if (!(publicEntrySignal?.found && (publicEntrySignal?.clickable || publicEntrySignal?.label === 'email-input'))) {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: gotoTimeout }).catch(() => null);
+        await preprocessEntryOverlays(page).catch(() => null);
+        publicEntrySignal = await assessPublicEntryAffordance();
+        publicEntryResult = {
+          ...publicEntryResult,
           detail: {
-            deadPageSnapshot,
+            ...(publicEntryResult?.detail || {}),
+            publicEntryRetried: true,
           },
         };
       }
+
+      if (publicEntrySignal?.found && (publicEntrySignal?.clickable || publicEntrySignal?.label === 'email-input')) {
+        return {
+          ...publicEntryResult,
+          detail: {
+            ...(publicEntryResult?.detail || {}),
+            publicEntrySignal,
+            strategy: 'public-entry-affordance-ready',
+          },
+        };
+      }
+
+      const homeResult = await attemptGoto(homeUrl, 'goto-home-fallback');
+      if (!homeResult?.ok) {
+        return homeResult;
+      }
+
+      return {
+        ...homeResult,
+        detail: {
+          ...(homeResult?.detail || {}),
+          strategy: 'public-entry-then-home-fallback',
+          entryUrl,
+          homeUrl,
+        },
+      };
     },
 
     async checkEntryHealth(page, runtime = {}, context = {}) {
@@ -782,6 +903,23 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       const entryReason = String(input.reason || input.state || '').trim().toUpperCase();
       const gateReason = String(input.value || '').trim().toUpperCase();
       const gateState = String(input.source || '').trim().toUpperCase();
+      const detail = input?.detail && typeof input.detail === 'object' ? input.detail : {};
+      const readyTrace = detail?.readyTrace && typeof detail.readyTrace === 'object' ? detail.readyTrace : {};
+      const signalTimeline = readyTrace?.signalTimeline && typeof readyTrace.signalTimeline === 'object'
+        ? readyTrace.signalTimeline
+        : detail?.signalTimeline && typeof detail.signalTimeline === 'object'
+          ? detail.signalTimeline
+          : {};
+      const debugSnapshot = readyTrace?.debugSnapshot && typeof readyTrace.debugSnapshot === 'object'
+        ? readyTrace.debugSnapshot
+        : detail?.debugSnapshot && typeof detail.debugSnapshot === 'object'
+          ? detail.debugSnapshot
+          : {};
+      const keywordClickables = Array.isArray(debugSnapshot?.keywordClickables) ? debugSnapshot.keywordClickables : [];
+      const clickableInventory = Array.isArray(debugSnapshot?.clickableInventory) ? debugSnapshot.clickableInventory : [];
+      const homeReadyOnly = Boolean(signalTimeline?.['text:Explore Create Assets'] || signalTimeline?.['text:Start Creating With AI Agent']);
+      const hasLoginAffordance = keywordClickables.length > 0
+        || clickableInventory.some(item => /sign in|log in|login|continue with email|email|account|profile|user|avatar/i.test(String(item?.summary || '')));
 
       if (entryReason === 'ENTRY_HEALTH_FAILED') {
         const classifiedEntry = typeof siteAdapter.classifyDreaminaEntryFailure === 'function'
@@ -807,6 +945,14 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                 ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT'
                 : 'DREAMINA_ENTRY_PAGE_OPEN_FAILED',
           hardFailure: true,
+        };
+      }
+
+      if ((gateReason || entryReason) === 'LOGIN_ENTRY_NOT_FOUND' && homeReadyOnly && !hasLoginAffordance) {
+        return {
+          reason: gateReason || entryReason || 'LOGIN_ENTRY_NOT_FOUND',
+          siteReason: 'DREAMINA_HOME_SHELL_WITHOUT_LOGIN_ENTRY',
+          hardFailure: false,
         };
       }
 
