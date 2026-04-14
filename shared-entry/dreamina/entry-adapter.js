@@ -570,6 +570,11 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       };
       if (signal.found) {
         if (signal.clickable && signal.locator) {
+          confirmTrace.resolvedBy = 'sign-in-detected-exit-wait-loop';
+          confirmTrace.resolvedAtMs = elapsedMs;
+          confirmTrace.resolvedState = 'ENTRY_SIGNAL_DETECTED';
+          confirmTrace.resolvedReason = 'CLICKABLE_LOGIN_SIGNAL_DETECTED';
+
           const clickStartMs = elapsedMs;
           const ctaClickStartedAt = Date.now();
           await signal.locator.click({ timeout: 1500 }).catch(async () => {
@@ -580,6 +585,7 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
           roundTrace.postCtaWaitMs = postCtaWaitMs;
           await page.waitForTimeout(postCtaWaitMs).catch(() => {});
           elapsedMs += postCtaWaitMs;
+
           const recheckSignal = await detectDreaminaLoginEntrySignals(page, runtime, context);
           recordTimeline(recheckSignal, elapsedMs);
           const postClickGateReadyMs = Math.max(0, elapsedMs - clickStartMs);
@@ -607,15 +613,15 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
           confirmTrace.rounds.push(roundTrace);
 
           if (typeof logInfo === 'function') {
-            logInfo(`dreamina.entry.loginSignal.cta-clicked | via=${signal.value} | recheck=${recheckLabel || 'none'} | gateLayerReady=${gateLayerReady ? 'Y' : 'N'} | round=${round} | elapsedMs=${elapsedMs}`);
+            logInfo(`dreamina.entry.loginSignal.detected-then-clicked | via=${signal.value} | recheck=${recheckLabel || 'none'} | gateLayerReady=${gateLayerReady ? 'Y' : 'N'} | round=${round} | elapsedMs=${elapsedMs}`);
           }
 
-          confirmTrace.resolvedBy = gateLayerReady ? 'cta-click-gate-layer-confirmed' : 'cta-clicked-exit-loop';
+          confirmTrace.resolvedBy = gateLayerReady ? 'cta-click-gate-layer-confirmed' : 'cta-clicked-single-recheck-complete';
           confirmTrace.resolvedAtMs = elapsedMs;
           confirmTrace.resolvedState = 'ENTRY_READY';
           confirmTrace.resolvedReason = gateLayerReady
             ? (recheckLabel === 'email-input' ? 'EMAIL_INPUT_VISIBLE_AFTER_CTA' : 'LOGIN_GATE_LAYER_VISIBLE_AFTER_CTA')
-            : 'CTA_CLICKED_ASSUME_GATE_TRANSITION';
+            : 'CTA_CLICKED_SINGLE_RECHECK_COMPLETE';
           confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
           return {
             ok: true,
