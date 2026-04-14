@@ -483,6 +483,40 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
             }
           }
 
+          if (typeof siteAdapter.openDreaminaLoginEntry === 'function' && typeof siteAdapter.confirmDreaminaLoginGate === 'function') {
+            await siteAdapter.openDreaminaLoginEntry(page, runtime, context).catch(() => null);
+            const postRecoveryOpenGateState = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+            if (postRecoveryOpenGateState?.ok && postRecoveryOpenGateState?.state === 'EMAIL_GATE_READY') {
+              phaseTrace.gateResolvedState = String(postRecoveryOpenGateState?.state || '');
+              phaseTrace.gateResolvedReason = 'LOGIN_GATE_READY_AFTER_RECOVERY_OPEN';
+              return {
+                ok: true,
+                state: 'ENTRY_READY',
+                source: postRecoveryOpenGateState.state || timelineResult?.source || 'login-gate',
+                value: postRecoveryOpenGateState.value || postRecoveryOpenGateState.state || timelineResult?.value || 'LOGIN_GATE_READY',
+                strength: 'strong',
+                stateChanged: true,
+                detail: {
+                  readyTrace: {
+                    decision: 'gate-success-after-recovery-open',
+                    confirmTrace: timelineResult?.detail?.confirmTrace || null,
+                    gateState: postRecoveryOpenGateState?.state || '',
+                    gateReason: postRecoveryOpenGateState?.value || '',
+                    recovered: true,
+                    gateResult: postRecoveryOpenGateState,
+                    timelineResult,
+                    waitForEntryReadyPhaseTrace: {
+                      ...phaseTrace,
+                      resolvedPath: 'recover-open-gate-success',
+                    },
+                  },
+                  loginSignal: postRecoveryOpenGateState?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
+                  signalTimeline: postRecoveryOpenGateState?.detail?.signalTimeline || timelineResult?.detail?.signalTimeline || null,
+                },
+              };
+            }
+          }
+
           const reensureGateStartedAt = Date.now();
           gateResult = await siteAdapter.ensureDreaminaLoginGate(page, runtime, context);
           phaseTrace.reensureGateMs = Math.max(0, Date.now() - reensureGateStartedAt);
