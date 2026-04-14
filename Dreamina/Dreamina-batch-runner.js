@@ -689,7 +689,9 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
     batchContext.accounts.failed.push(record);
   }
 
-  await writeBatchAccountRecordFile(batchContext, record);
+  const recordFiles = await writeBatchAccountRecordFile(batchContext, record);
+  record.resultFile = String(recordFiles?.filePath || record.resultFile || '');
+  record.latestResultFile = String(recordFiles?.latestByAccount || record.latestResultFile || '');
 
   if ((result?.success || existsFailure) && normalizedEmail) {
     const migration = await migrateAccountOutOfLocalPool(extra?.account || result?.account || {}, result);
@@ -842,9 +844,16 @@ async function writeBatchAccountRecordFile(batchContext, record = {}) {
       ? batchContext.paths.successDir
       : batchContext.paths.failedDir;
   const filePath = path.join(targetDir, `dreamina-batch-${account}-${stage}-${reason}-${stamp}.json`);
+  const latestByAccount = path.join(batchContext.paths.latestDir, `dreamina-batch-${account}-latest.json`);
   await fs.promises.writeFile(filePath, JSON.stringify(record, null, 2), 'utf8');
+  await fs.promises.writeFile(latestByAccount, JSON.stringify(record, null, 2), 'utf8');
   record.batchRecordFile = filePath;
-  return filePath;
+  record.resultFile = filePath;
+  record.latestResultFile = latestByAccount;
+  return {
+    filePath,
+    latestByAccount,
+  };
 }
 
 async function writeBatchSummaryFile(batchContext) {
