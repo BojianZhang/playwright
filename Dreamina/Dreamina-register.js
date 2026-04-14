@@ -585,6 +585,34 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     },
 
     async checkEntryHealth(page, runtime = {}, context = {}) {
+      const currentUrl = String(page.url ? page.url() : '').trim();
+      const loginCheckboxVisible = await page.locator('.lv-checkbox-mask').first().isVisible().catch(() => false);
+      const loginSignInVisible = await page.getByText('Sign in', { exact: false }).first().isVisible().catch(() => false);
+      if (/dreamina\.capcut\.com\/ai-tool\/login/i.test(currentUrl) && loginCheckboxVisible && loginSignInVisible) {
+        return {
+          ok: true,
+          state: 'ENTRY_HEALTH_OK',
+          source: 'dreamina-login-page',
+          value: 'LOGIN_PAGE_VISIBLE',
+          strength: 'strong',
+          stateChanged: null,
+          healthTrace: {
+            decision: 'login-page-short-circuit',
+            source: 'dreamina-login-page',
+            value: 'LOGIN_PAGE_VISIBLE',
+            strength: 'strong',
+            detail: {
+              currentUrl,
+              loginCheckboxVisible,
+              loginSignInVisible,
+            },
+            timing: {
+              waitForDreaminaReadyMs: 0,
+            },
+          },
+        };
+      }
+
       if (typeof siteAdapter.waitForDreaminaReady !== 'function') {
         return {
           ok: false,
