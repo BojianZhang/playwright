@@ -362,6 +362,7 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
   const loginSignals = profile?.loginSignals || {};
 
   const entryTexts = Array.isArray(loginSignals?.entryTexts) ? loginSignals.entryTexts : [];
+  const readyTexts = Array.isArray(loginSignals?.readyTexts) ? loginSignals.readyTexts : [];
   const entryRolePattern = String(loginSignals?.entryRolePattern || 'sign in|log in|login|sign up').trim();
   const emailInputRoleName = String(loginSignals?.emailInputRoleName || 'Enter email').trim();
   const continueWithEmailText = String(loginSignals?.continueWithEmailText || 'Continue with email').trim();
@@ -384,6 +385,16 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
   if (continueWithEmailVisible) {
     matchedTexts.push(continueWithEmailText);
     return { found: true, clickable: true, locator: continueWithEmail, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors, timelineSignals };
+  }
+
+  for (const text of readyTexts) {
+    const locator = page.getByText(String(text || ''), { exact: false }).first();
+    const visible = await isVisible(locator);
+    timelineSignals[`text:${String(text || '')}`] = visible;
+    if (visible) {
+      matchedTexts.push(String(text || ''));
+      return { found: true, clickable: false, locator, label: 'ready-text', source: 'text', value: text, matchedTexts, matchedSelectors, timelineSignals };
+    }
   }
 
   for (const text of entryTexts) {

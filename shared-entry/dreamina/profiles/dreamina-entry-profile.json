@@ -38,6 +38,10 @@
                                             "See results",
                                             "Canvas"
                                         ],
+                         "readyTexts":  [
+                                            "Explore Create Assets",
+                                            "Start Creating With AI Agent"
+                                        ],
                          "entryRolePattern":  "sign in|log in|login|sign up",
                          "emailInputRoleName":  "Enter email",
                          "continueWithEmailText":  "Continue with email"
