@@ -44,6 +44,21 @@ function pickEntrySignalTimeline(...candidates) {
 
 function extractConfirmTimingBreakdown(entryReadyResult = {}, confirmEntryReadyMs = 0) {
   const detail = entryReadyResult?.detail && typeof entryReadyResult.detail === 'object' ? entryReadyResult.detail : {};
+
+  // 新路径优先：如果 adapter 已直接产出稳定 timingBreakdown，shared 层直接透传，
+  // 不再继续理解 Dreamina 站点内部 trace 细节。
+  const directTimingBreakdown = detail?.timingBreakdown && typeof detail.timingBreakdown === 'object'
+    ? detail.timingBreakdown
+    : null;
+  if (directTimingBreakdown) {
+    return {
+      ...directTimingBreakdown,
+      totalMs: Number(directTimingBreakdown?.totalMs || confirmEntryReadyMs || 0),
+      source: String(directTimingBreakdown?.source || 'adapter-direct'),
+    };
+  }
+
+  // 旧路径兜底：仅在 legacy flow 仍返回历史 trace 结构时，shared 层临时兼容解析。
   const readyTraceEnvelope = detail?.readyTrace && typeof detail.readyTrace === 'object' ? detail.readyTrace : {};
   const readyTrace = readyTraceEnvelope?.readyTrace && typeof readyTraceEnvelope.readyTrace === 'object'
     ? readyTraceEnvelope.readyTrace
@@ -89,6 +104,7 @@ function extractConfirmTimingBreakdown(entryReadyResult = {}, confirmEntryReadyM
     outerConfirmResolvedReason: String(confirmTrace?.resolvedReason || ''),
     gateResolvedState: String(gateTrace?.resolvedState || ''),
     gateResolvedReason: String(gateTrace?.resolvedReason || ''),
+    source: 'legacy-fallback',
   };
 }
 

@@ -483,6 +483,11 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
 
 /**
  * Dreamina 登录入口 staged wait。
+ *
+ * legacy compatibility path:
+ * - 这是旧的混合 wait 实现
+ * - 当前保留仅用于兼容/回退/对照
+ * - Dreamina 主路径已迁到 runDreaminaEntryFlow(...)
  */
 async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
@@ -1438,6 +1443,11 @@ async function recoverEntry(page, classifiedFailure = {}, context = {}) {
 
 /**
  * 入口 ready 主链确认（第一轮带 recover 版）。
+ *
+ * legacy compatibility path:
+ * - 这是旧的 recover + rewait 兼容链
+ * - 当前保留仅用于兼容/回退/旧产物对照
+ * - Dreamina 主路径已迁到 runDreaminaEntryFlow(...)
  *
  * 流程：
  * 1. 先做一次 ready 检查
