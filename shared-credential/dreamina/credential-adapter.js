@@ -1080,50 +1080,17 @@ async function handleDreaminaExistingAccountSigninFallback(page, runtime = {}, c
   };
 }
 
-async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
-  const { logInfo = null, submitResult = null } = context;
+async function detectDirectDreaminaCredentialOutcome(page, runtime = {}, context = {}) {
+  const { submitResult = null } = context;
   const profile = loadDreaminaCredentialProfile();
-  const settlementResult = submitResult?.settlementResult || null; // 先拿 submit 阶段已经跑过的 settlement 结果，避免确认层再重复组织等待
-
-  if (settlementResult?.quickFailure?.hit) { // 如果 settlement 已经命中高价值失败，这里直接复用，不再重复检查同一批失败
-    if (settlementResult.quickFailure.state === 'ACCOUNT_ALREADY_EXISTS') {
-      const signinFallbackResult = await handleDreaminaExistingAccountSigninFallback(page, runtime, context);
-      if (signinFallbackResult?.handled) {
-        return signinFallbackResult;
-      }
-    }
-    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement failure hit=${settlementResult.quickFailure.state} | stage=${settlementResult.stage}`); // 记录失败是在第几层等待命中的
+  const settlementResult = submitResult?.settlementResult || null;
+  const inlineErrors = profile?.failureSignals?.inlineErrors || [];
+  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').toLowerCase();
+  const inlineHit = inlineErrors.find(item => bodyText.includes(String(item || '').toLowerCase()));
+  if (inlineHit) {
     return {
       ok: false,
-      state: settlementResult.quickFailure.state,
-      nextStage: '',
-      source: settlementResult.quickFailure.source,
-      value: settlementResult.quickFailure.value,
-      strength: 'strong',
-      settleStage: settlementResult.stage,
-    };
-  }
-
-  if (settlementResult?.verificationReady?.ok) { // 如果 settlement 已经命中验证码阶段成功信号，就直接把成功结果返回
-    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement verification hit | stage=${settlementResult.stage}`); // 把成功命中的等待阶段也写进日志
-    return {
-      ...settlementResult.verificationReady,
-      settleStage: settlementResult.stage,
-      strength: settlementResult.verificationReady?.strength || '',
-      stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', settlementResult.verificationReady?.state || 'CREDENTIAL_SUBMIT_OK'],
-      formSignals: {
-        submitMode: submitResult?.submitMode || '',
-        submitLabel: submitResult?.submit || '',
-      },
-    };
-  }
-
-  const inlineErrors = profile?.failureSignals?.inlineErrors || []; // 取出 profile 里的通用 inline error 关键字，作为 settlement 之后的补充检查
-  const bodyText = (await page.locator('body').innerText().catch(() => '') || '').toLowerCase(); // 读取 body 文本，用于做通用 inline error 扫描
-  const inlineHit = inlineErrors.find(item => bodyText.includes(String(item || '').toLowerCase())); // 在 body 文本里查找是否出现已知内联错误
-  if (inlineHit) { // 如果页面上已经出现内联错误，就明确返回这类失败，不再落到更粗的 unknown
-    return {
-      ok: false,
+      handled: true,
       state: 'INLINE_ERROR_VISIBLE',
       nextStage: '',
       source: 'bodyText',
@@ -1133,9 +1100,10 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
-  if (submitResult && submitResult.hasStateChange === false) { // 如果 settlement 跑完后页面仍然没有有意义变化，就明确归类成 no-state-change
+  if (submitResult && submitResult.hasStateChange === false) {
     return {
       ok: false,
+      handled: true,
       state: 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE',
       nextStage: '',
       source: 'snapshot',
@@ -1145,7 +1113,17 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     };
   }
 
+  return {
+    ok: false,
+    handled: false,
+  };
+}
+
+async function resolveDreaminaAmbiguousCredentialOutcome(page, runtime = {}, context = {}) {
+  const { logInfo = null, submitResult = null } = context;
+  const settlementResult = submitResult?.settlementResult || null;
   const afterSnapshot = submitResult?.afterSnapshot || null;
+
   const signupOverlayStillOpen = Boolean(
     afterSnapshot
     && afterSnapshot.authMode === 'signup'
@@ -1183,6 +1161,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup recovered verification after signup-still-open | stage=${settlementResult?.stage || 'none'}`);
       return {
         ok: true,
+        handled: true,
         state: 'CREDENTIAL_SUBMIT_OK',
         nextStage: 'verification',
         source: 'followup-snapshot',
@@ -1194,6 +1173,13 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
           submitMode: submitResult?.submitMode || '',
           submitLabel: submitResult?.submit || '',
         },
+        detail: {
+          resolutionType: 'followup-observation',
+          scenario: 'signup-overlay-still-open',
+          afterSnapshot,
+          followupObservation,
+          followupSnapshot,
+        },
       };
     }
 
@@ -1201,13 +1187,20 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | signup overlay still open after submit | stage=${settlementResult?.stage || 'none'} | followup=same-open`);
       return {
         ok: false,
+        handled: true,
         state: 'CREDENTIAL_SUBMIT_STALLED_ON_SIGNUP',
         nextStage: '',
         source: 'snapshot',
         value: 'SIGNUP_OVERLAY_STILL_OPEN',
         strength: 'weak',
         settleStage: settlementResult?.stage || 'snapshot-check',
-        followupObservation,
+        detail: {
+          resolutionType: 'followup-observation',
+          scenario: 'signup-overlay-still-open',
+          afterSnapshot,
+          followupObservation,
+          followupSnapshot,
+        },
       };
     }
 
@@ -1235,12 +1228,18 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     }
     return {
       ok: false,
+      handled: true,
       state: 'CREDENTIAL_SUBMIT_STUCK_SIGNUP_CONTINUE_DISABLED',
       nextStage: '',
       source: 'snapshot',
       value: 'SIGNUP_CONTINUE_DISABLED_NO_RESULT',
       strength: 'weak',
       settleStage: settlementResult?.stage || 'snapshot-check',
+      detail: {
+        resolutionType: 'snapshot-direct',
+        scenario: 'signup-continue-disabled-without-outcome',
+        afterSnapshot,
+      },
     };
   }
 
@@ -1277,6 +1276,7 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup recovered verification after initial dismiss | stage=${settlementResult?.stage || 'none'}`);
       return {
         ok: true,
+        handled: true,
         state: 'CREDENTIAL_SUBMIT_OK',
         nextStage: 'verification',
         source: 'followup-snapshot',
@@ -1288,6 +1288,13 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
           submitMode: submitResult?.submitMode || '',
           submitLabel: submitResult?.submit || '',
         },
+        detail: {
+          resolutionType: 'followup-observation',
+          scenario: 'signup-overlay-dismissed-without-outcome',
+          afterSnapshot,
+          followupObservation,
+          followupSnapshot,
+        },
       };
     }
 
@@ -1296,17 +1303,78 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
     }
     return {
       ok: false,
+      handled: true,
       state: 'CREDENTIAL_SUBMIT_DISMISSED_WITHOUT_OUTCOME',
       nextStage: '',
       source: 'snapshot',
       value: 'SIGNUP_OVERLAY_DISMISSED_NO_RESULT',
       strength: 'weak',
       settleStage: settlementResult?.stage || 'snapshot-check',
-      followupObservation,
+      detail: {
+        resolutionType: 'followup-observation',
+        scenario: 'signup-overlay-dismissed-without-outcome',
+        afterSnapshot,
+        followupObservation,
+        followupSnapshot,
+        followupStillDismissedWithoutOutcome,
+      },
     };
   }
 
-  if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`); // ��¼�Ѿ����� settlement ����δ���ж������������ signal ���������ɵȴ�
+  return {
+    ok: false,
+    handled: false,
+  };
+}
+
+async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context = {}) {
+  const { logInfo = null, submitResult = null } = context;
+  const settlementResult = submitResult?.settlementResult || null; // 先拿 submit 阶段已经跑过的 settlement 结果，避免确认层再重复组织等待
+
+  if (settlementResult?.quickFailure?.hit) { // 如果 settlement 已经命中高价值失败，这里直接复用，不再重复检查同一批失败
+    if (settlementResult.quickFailure.state === 'ACCOUNT_ALREADY_EXISTS') {
+      const signinFallbackResult = await handleDreaminaExistingAccountSigninFallback(page, runtime, context);
+      if (signinFallbackResult?.handled) {
+        return signinFallbackResult;
+      }
+    }
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement failure hit=${settlementResult.quickFailure.state} | stage=${settlementResult.stage}`); // 记录失败是在第几层等待命中的
+    return {
+      ok: false,
+      state: settlementResult.quickFailure.state,
+      nextStage: '',
+      source: settlementResult.quickFailure.source,
+      value: settlementResult.quickFailure.value,
+      strength: 'strong',
+      settleStage: settlementResult.stage,
+    };
+  }
+
+  if (settlementResult?.verificationReady?.ok) { // 如果 settlement 已经命中验证码阶段成功信号，就直接把成功结果返回
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | settlement verification hit | stage=${settlementResult.stage}`); // 把成功命中的等待阶段也写进日志
+    return {
+      ...settlementResult.verificationReady,
+      settleStage: settlementResult.stage,
+      strength: settlementResult.verificationReady?.strength || '',
+      stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', settlementResult.verificationReady?.state || 'CREDENTIAL_SUBMIT_OK'],
+      formSignals: {
+        submitMode: submitResult?.submitMode || '',
+        submitLabel: submitResult?.submit || '',
+      },
+    };
+  }
+
+  const directOutcome = await detectDirectDreaminaCredentialOutcome(page, runtime, context);
+  if (directOutcome?.handled) {
+    return directOutcome;
+  }
+
+  const ambiguousOutcome = await resolveDreaminaAmbiguousCredentialOutcome(page, runtime, context);
+  if (ambiguousOutcome?.handled) {
+    return ambiguousOutcome;
+  }
+
+  if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | unknown after settlement | stage=${settlementResult?.stage || 'none'}`);
   return {
     ok: false,
     state: 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
@@ -1434,7 +1502,9 @@ module.exports = {
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
+  detectDirectDreaminaCredentialOutcome,
   handleDreaminaExistingAccountSigninFallback,
+  resolveDreaminaAmbiguousCredentialOutcome,
   confirmDreaminaCredentialSubmitResult,
   classifyDreaminaCredentialSubmitFailure,
 };
