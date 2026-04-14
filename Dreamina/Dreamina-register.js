@@ -136,6 +136,22 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       };
     };
 
+    const waitForCheckboxReady = async () => {
+      await checkboxLabel.waitFor({ state: 'visible', timeout: 3000 }).catch(() => null);
+      await checkboxMask.waitFor({ state: 'visible', timeout: 3000 }).catch(() => null);
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxReadyWaitMs || 350)).catch(() => null);
+    };
+
+    const waitForCheckboxChecked = async () => {
+      await page.waitForFunction(() => {
+        const label = document.querySelector('label.lv-checkbox.privacyCheck');
+        if (!label) return false;
+        return String((label as HTMLElement).className || '').includes('lv-checkbox-checked');
+      }, { timeout: Number(runtime?.dreaminaLoginCheckboxCheckedTimeoutMs || 1600) }).catch(() => null);
+      return await getCheckboxState();
+    };
+
+    await waitForCheckboxReady();
     const checkedBeforeState = await getCheckboxState();
     const checkedBefore = checkedBeforeState.checked;
     let checkboxClickTarget = '';
@@ -144,15 +160,13 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     if (!checkedBefore) {
       await checkboxMask.click({ timeout: 1500 }).catch(() => null);
       checkboxClickTarget = 'checkbox-mask';
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 300)).catch(() => null);
-      checkboxState = await getCheckboxState();
+      checkboxState = await waitForCheckboxChecked();
     }
 
     if (!checkboxState.checked) {
       await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
       checkboxClickTarget = checkboxClickTarget || 'checkbox-label';
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxRetryWaitMs || 300)).catch(() => null);
-      checkboxState = await getCheckboxState();
+      checkboxState = await waitForCheckboxChecked();
     }
 
     if (!checkboxState.checked) {
@@ -160,8 +174,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       if (box && Number(box.width || 0) > 0 && Number(box.height || 0) > 0) {
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 50 }).catch(() => null);
         checkboxClickTarget = checkboxClickTarget || 'checkbox-mask-center';
-        await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxCenterWaitMs || 300)).catch(() => null);
-        checkboxState = await getCheckboxState();
+        checkboxState = await waitForCheckboxChecked();
       }
     }
 
