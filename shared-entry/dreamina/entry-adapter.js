@@ -1059,18 +1059,34 @@ async function confirmDreaminaLoginGateAfterClick(page, runtime = {}, context = 
     logInfo(`dreamina.entry.gate-confirm | recheck=${recheckLabel || 'none'} | gateLayerReady=${gateLayerReady ? 'Y' : 'N'}`);
   }
 
+  if (!gateLayerReady) {
+    return {
+      ok: false,
+      state: 'LOGIN_GATE_CONFIRM_TIMEOUT',
+      source: 'confirm-login-gate-once',
+      value: String(signal?.value || signal?.label || 'LOGIN_GATE_CONFIRM_TIMEOUT'),
+      strength: '',
+      waitStepMs: settleMs,
+      detail: {
+        loginSignal: signal?.found ? signal : null,
+        gateLayerReady: false,
+        confirmMs: Math.max(0, Date.now() - startedAt),
+        postClickGateReadyMs: settleMs,
+        debugSnapshot: await captureDreaminaEntryDebugSnapshot(page),
+      },
+    };
+  }
+
   return {
     ok: true,
     state: 'ENTRY_READY',
-    source: gateLayerReady
-      ? (recheckLabel === 'email-input' ? String(signal?.source || '') : 'LOGIN_GATE_LAYER_READY')
-      : 'LOGIN_ENTRY_CLICKED',
-    value: String(signal?.value || signal?.label || 'LOGIN_ENTRY_CLICKED'),
+    source: recheckLabel === 'email-input' ? String(signal?.source || '') : 'LOGIN_GATE_LAYER_READY',
+    value: String(signal?.value || signal?.label || 'LOGIN_GATE_LAYER_READY'),
     strength: 'strong',
     waitStepMs: settleMs,
     detail: {
-      loginSignal: signal?.found ? signal : null,
-      gateLayerReady,
+      loginSignal: signal,
+      gateLayerReady: true,
       confirmMs: Math.max(0, Date.now() - startedAt),
       postClickGateReadyMs: settleMs,
     },
@@ -1105,6 +1121,9 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     resolvedPath: '',
   };
 
+  if (typeof context?.onStepChange === 'function') {
+    context.onStepChange('prepare-entry-surface');
+  }
   const prepareStartedAt = Date.now();
   const prepareResult = await prepareDreaminaEntrySurface(page, runtime, context);
   stageBreakdown.prepareEntrySurfaceMs = Math.max(0, Date.now() - prepareStartedAt);
@@ -1132,6 +1151,9 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     };
   }
 
+  if (typeof context?.onStepChange === 'function') {
+    context.onStepChange('wait-home-ready');
+  }
   const homeReadyStartedAt = Date.now();
   const homeReadyResult = await waitForDreaminaHomeReady(page, runtime, context);
   stageBreakdown.waitHomeReadyMs = Math.max(0, Date.now() - homeReadyStartedAt);
@@ -1165,6 +1187,9 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     logInfo(`dreamina.entry.flow.home-ready | value=${homeReadyResult?.value || ''}`);
   }
 
+  if (typeof context?.onStepChange === 'function') {
+    context.onStepChange('wait-sign-in-entry');
+  }
   const signInStartedAt = Date.now();
   const signInResult = await waitForDreaminaSignInEntry(page, runtime, context);
   stageBreakdown.waitSignInEntryMs = Math.max(0, Date.now() - signInStartedAt);
@@ -1194,6 +1219,9 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     };
   }
 
+  if (typeof context?.onStepChange === 'function') {
+    context.onStepChange('click-sign-in-once');
+  }
   const clickStartedAt = Date.now();
   const clickResult = await clickDreaminaSignInOnce(page, signInResult?.detail?.loginSignal || null, runtime, context);
   stageBreakdown.clickSignInOnceMs = Math.max(0, Date.now() - clickStartedAt);
@@ -1221,6 +1249,9 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     };
   }
 
+  if (typeof context?.onStepChange === 'function') {
+    context.onStepChange('confirm-login-gate-once');
+  }
   const gateStartedAt = Date.now();
   const gateConfirmResult = await confirmDreaminaLoginGateAfterClick(page, runtime, context);
   stageBreakdown.confirmLoginGateMs = Math.max(0, Date.now() - gateStartedAt);
@@ -1232,10 +1263,38 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
     0
   );
 
+  if (!gateConfirmResult?.ok) {
+    return {
+      ok: false,
+      state: String(gateConfirmResult?.state || 'LOGIN_GATE_CONFIRM_TIMEOUT'),
+      source: String(gateConfirmResult?.source || 'confirm-login-gate-once'),
+      value: String(gateConfirmResult?.value || 'LOGIN_GATE_CONFIRM_TIMEOUT'),
+      strength: String(gateConfirmResult?.strength || ''),
+      waitStepMs: stageBreakdown.confirmLoginGateMs,
+      detail: {
+        loginSignal: gateConfirmResult?.detail?.loginSignal || signInResult?.detail?.loginSignal || null,
+        signalTimeline,
+        flowTrace: {
+          ...flowTrace,
+          resolvedPath: 'login-gate-confirm-failed',
+        },
+        ctaSource: signInResult?.detail?.loginSignal?.value || signInResult?.detail?.loginSignal?.label || '',
+        ctaOpenedGateMs: stageBreakdown.clickSignInOnceMs,
+        postClickGateReadyMs: gateConfirmResult?.detail?.postClickGateReadyMs ?? null,
+        gateLayerReady: false,
+        timingBreakdown: {
+          ...stageBreakdown,
+          totalMs: Math.max(0, Date.now() - flowStartedAt),
+        },
+        debugSnapshot: gateConfirmResult?.detail?.debugSnapshot || null,
+      },
+    };
+  }
+
   return {
     ok: true,
     state: String(gateConfirmResult?.state || 'ENTRY_READY'),
-    source: String(gateConfirmResult?.source || 'LOGIN_ENTRY_CLICKED'),
+    source: String(gateConfirmResult?.source || 'LOGIN_GATE_LAYER_READY'),
     value: String(gateConfirmResult?.value || 'ENTRY_READY'),
     strength: String(gateConfirmResult?.strength || 'strong'),
     waitStepMs: Math.max(0, Date.now() - flowStartedAt),
@@ -1249,20 +1308,16 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
       ctaSource: signInResult?.detail?.loginSignal?.value || signInResult?.detail?.loginSignal?.label || '',
       ctaOpenedGateMs: stageBreakdown.clickSignInOnceMs,
       postClickGateReadyMs: gateConfirmResult?.detail?.postClickGateReadyMs ?? null,
-      gateLayerReady: Boolean(gateConfirmResult?.detail?.gateLayerReady),
+      gateLayerReady: true,
       timingBreakdown: {
         ...stageBreakdown,
         totalMs: Math.max(0, Date.now() - flowStartedAt),
       },
       confirmTrace: {
-        resolvedBy: Boolean(gateConfirmResult?.detail?.gateLayerReady)
-          ? 'click-then-login-gate-visible'
-          : 'click-then-single-recheck-complete',
+        resolvedBy: 'click-then-login-gate-visible',
         resolvedAtMs: Math.max(0, Date.now() - flowStartedAt),
         resolvedState: String(gateConfirmResult?.state || 'ENTRY_READY'),
-        resolvedReason: Boolean(gateConfirmResult?.detail?.gateLayerReady)
-          ? 'LOGIN_GATE_LAYER_VISIBLE_AFTER_SIGN_IN_CLICK'
-          : 'SIGN_IN_CLICKED_SINGLE_RECHECK_COMPLETE',
+        resolvedReason: 'LOGIN_GATE_LAYER_VISIBLE_AFTER_SIGN_IN_CLICK',
         totalWallClockMs: Math.max(0, Date.now() - flowStartedAt),
       },
     },

@@ -324,7 +324,7 @@ async function runEntryStage(options = {}) {
   }
 
   // 第四步：执行入口 ready 判断；若站点 adapter 已提供分段式 orchestrator，则优先使用。
-  syncStageStep(options, { stage: 'entry', step: 'confirm-entry-ready' });
+  syncStageStep(options, { stage: 'entry', step: runDreaminaEntryFlow ? 'prepare-entry-surface' : 'confirm-entry-ready' });
   logStageProgress('entry', runDreaminaEntryFlow ? '执行分段式 entry flow' : '等待入口 ready / 恢复入口信号', {
     context: buildStageLogContext(options),
   });
@@ -333,6 +333,7 @@ async function runEntryStage(options = {}) {
   const entryReadyContext = {
     ...context,
     openEntryPageResult: entryOpenResult,
+    onStepChange: (step) => syncStageStep(options, { stage: 'entry', step }),
   };
 
   const entryReadyResult = runDreaminaEntryFlow
