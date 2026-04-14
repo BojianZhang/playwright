@@ -1,5 +1,24 @@
 'use strict';
 
+/**
+ * Dreamina verification adapter
+ *
+ * 这是 shared-verification 的 Dreamina 站点适配层。
+ *
+ * 它负责：
+ * - verification ready 检测
+ * - 验证码获取 / resend 触发
+ * - 输入目标解析
+ * - Dreamina 验证码输入激活 / 保活 / 填写策略
+ * - verification 提交结果确认与失败分类
+ *
+ * 它不负责：
+ * - shared stage orchestration
+ * - verification 阶段总重试循环
+ * - 上一阶段 credential submit
+ * - 下一阶段 profile completion 实际填写
+ */
+
 // 引入文件系统模块，用来读取 Dreamina verification profile JSON 配置文件。
 const fs = require('fs');
 // 引入 path 模块，用来安全拼接当前目录下的 profile 文件路径。
@@ -29,6 +48,11 @@ let dreaminaVerificationProfileCache = null;
  * - 默认走内存缓存
  * - 在需要时允许 forceReload 强制重新读取
  */
+// ==============================
+// 基础工具层
+// 负责 profile/runtime 解析与基础 selector/text 命中工具。
+// ==============================
+
 function loadDreaminaVerificationProfile(options = {}) {
   // 读取是否要求强制刷新 profile 的开关。
   const forceReload = Boolean(options?.forceReload);
@@ -125,6 +149,12 @@ async function findFirstVisibleByTexts(page, texts = []) {
  * - 这一层优先看结构信号，而不是文本
  * - 结构信号通常比文本更像“真的已经进入可输入验证码状态”
  */
+// ==============================
+// verification ready 检测层
+// 负责确认当前页面是否已进入验证码阶段。
+// 不负责拉码、输入和结果确认。
+// ==============================
+
 async function detectDreaminaVerificationReadyBySelector(page, profile) {
   // 读取 profile 中定义的 verification ready selector 列表。
   const selectorHit = await findFirstVisibleBySelectors(page, profile?.verificationReady?.selectors || []);
@@ -563,6 +593,12 @@ function hasDreaminaVerificationValue(state = {}, code = '') {
   return inputValue === expectedValue || joinedBoxText.slice(0, expectedValue.length) === expectedValue;
 }
 
+// ==============================
+// input state / activation / repair 层
+// 负责 Dreamina 验证码输入焦点状态读取、激活与保活。
+// 这层是局部修复层，不应继续膨胀成 verification 总编排器。
+// ==============================
+
 function isDreaminaVerificationActivated(state = {}) {
   return Boolean(
     String(state?.activeTag || '').trim() && String(state?.activeTag || '').trim().toUpperCase() !== 'BODY'
@@ -572,6 +608,14 @@ function isDreaminaVerificationActivated(state = {}) {
   );
 }
 
+/**
+ * 激活 Dreamina 验证码输入焦点。
+ *
+ * 边界：
+ * - 只负责把焦点拉到 Dreamina 验证码输入链路上
+ * - 不负责验证码填写策略调度
+ * - 当前采用有限候选尝试，不继续扩成无限激活循环
+ */
 async function activateDreaminaVerificationInput(page, locator, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const attempts = [];
@@ -688,6 +732,13 @@ async function activateDreaminaVerificationInput(page, locator, runtime = {}, co
  * - fill / type
  * - evaluate 注入 input/change/keyup 事件
  */
+/**
+ * 确保验证码输入链路仍然处于可写状态。
+ *
+ * 边界：
+ * - 这是局部保活 helper，只处理“当前输入是否还活着”
+ * - 不负责决定整条 fill 主路径的策略顺序
+ */
 async function ensureDreaminaVerificationInputAlive(page, locator, runtime = {}, context = {}) {
   const state = await readDreaminaVerificationInputState(page);
   if (isDreaminaVerificationActivated(state)) {
@@ -714,6 +765,13 @@ async function ensureDreaminaVerificationInputAlive(page, locator, runtime = {},
   };
 }
 
+/**
+ * 高成本 fallback：逐字符输入。
+ *
+ * 边界：
+ * - 这是局部修复型输入策略，不是 verification 默认主路径
+ * - 内部允许按字符做有限检查/保活，但不应再叠加第二层策略调度
+ */
 async function tryDreaminaCharByCharInput(page, locator, code, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const value = String(code || '').trim();
@@ -793,6 +851,12 @@ async function tryDreaminaCharByCharInput(page, locator, code, runtime = {}, con
     };
   }
 }
+
+// ==============================
+// fill strategy 层
+// 负责 Dreamina 验证码填写策略。
+// 应优先保持主路径清晰，再把 legacy / fallback 路径限制在可控范围内。
+// ==============================
 
 async function tryDreaminaDirectFill(page, locator, code, logInfo) {
   const value = String(code || '').trim();
@@ -1005,6 +1069,13 @@ async function tryDreaminaFallbackFill(page, locator, code, logInfo) {
  * - 不退回宽泛输入目标匹配
  * - 不因为单一路径失败就直接判整阶段失败
  */
+/**
+ * 触发验证码 resend。
+ *
+ * 边界：
+ * - 只负责一次 resend 入口动作
+ * - 不负责 resend 后的下一轮 verification orchestration
+ */
 async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const resendCandidates = [
@@ -1042,6 +1113,15 @@ async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context
   };
 }
 
+/**
+ * Dreamina 验证码填写主入口。
+ *
+ * 当前边界：
+ * - 先做输入激活
+ * - 优先走主路径 direct-fill
+ * - legacy / fallback 路径只在明确开启时继续尝试
+ * - 这里只负责编排填写策略，不承担 verification 阶段总重试循环
+ */
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
   const { codeInputResolution = null, logInfo = null } = context;
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
@@ -1217,6 +1297,11 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
  * - 这是第三阶段成功的最强确认之一
  * - 只确认“下一阶段是否可达”，不执行下一阶段填写动作
  */
+// ==============================
+// result confirm / classify 层
+// 负责确认是否进入下一阶段，以及收口明确失败信号。
+// ==============================
+
 async function detectDreaminaProfileCompletionReady(page, profile, context = {}) {
   // 优先通过结构性 selector 判断是否进入下一阶段。
   const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.profileCompletion?.selectors || []);
@@ -1368,6 +1453,14 @@ async function detectDreaminaVerificationFailureSignals(page, profile, context =
  * - 这里只负责“确认第三阶段是否完成”
  * - 可以确认第四阶段是否已可达
  * - 不能替第四阶段做填写动作
+ */
+/**
+ * 确认 Dreamina 验证码提交结果。
+ *
+ * 边界：
+ * - 只确认第三阶段是否完成、下一阶段是否可达、或是否命中明确失败
+ * - 允许一轮 grace wait 做保护确认
+ * - 不负责 resend / 下一轮验证码重试编排
  */
 async function confirmDreaminaVerificationSubmitResult(page, runtime = {}, context = {}) {
   const profile = loadDreaminaVerificationProfile();
