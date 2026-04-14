@@ -234,39 +234,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     );
   }
 
-  async function clickFirstVisible(locator) {
-    const visible = await locator.isVisible().catch(() => false);
-    if (!visible) return false;
-    await locator.click().catch(() => null);
-    return true;
-  }
-
-  async function triggerDreaminaHomeShellEntry(page) {
-    const attempts = [
-      () => page.getByRole('button', { name: /sign in|log in|login|continue with email/i }).first(),
-      () => page.getByRole('link', { name: /sign in|log in|login|continue with email/i }).first(),
-      () => page.locator('header').getByRole('button').last(),
-      () => page.locator('header').getByRole('link').last(),
-      () => page.locator('[class*="header"]').getByRole('button').last(),
-      () => page.locator('[class*="topbar"]').getByRole('button').last(),
-      () => page.locator('[class*="nav"]').getByRole('button').last(),
-      () => page.locator('button[aria-haspopup="menu"]').last(),
-      () => page.locator('[role="button"][aria-haspopup="menu"]').last(),
-      () => page.locator('button[aria-label*="profile" i], button[aria-label*="account" i], button[aria-label*="user" i]').last(),
-      () => page.locator('[class*="avatar" i], [class*="profile" i], [class*="account" i]').locator('button, [role="button"], a').first(),
-    ];
-
-    for (const build of attempts) {
-      const clicked = await clickFirstVisible(build()).catch(() => false);
-      if (clicked) {
-        await page.waitForTimeout(600).catch(() => null);
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   async function attemptFinalGraceLoginGate(page, runtime = {}, context = {}) {
     const finalGraceWaitMs = Number(runtime?.entryFinalGraceWaitMs || 2000);
     const finalGracePollMs = Number(runtime?.entryFinalGracePollMs || 400);
@@ -278,7 +245,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       rounds,
       matchedAtRound: 0,
       openAttempted: false,
-      homeShellTriggered: false,
       finalState: '',
       finalValue: '',
     };
@@ -305,19 +271,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       }
     }
 
-    trace.homeShellTriggered = await triggerDreaminaHomeShellEntry(page).catch(() => false);
-    if (trace.homeShellTriggered) {
-      if (typeof siteAdapter.preprocessDreaminaEntryOverlays === 'function') {
-        await siteAdapter.preprocessDreaminaEntryOverlays(page, runtime, context).catch(() => null);
-      }
-      const gateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
-      trace.finalState = String(gateResult?.state || '');
-      trace.finalValue = String(gateResult?.value || '');
-      if (gateResult?.ok && gateResult?.state === 'EMAIL_GATE_READY') {
-        return { ok: true, trace, gateResult, resolvedBy: 'home-shell-trigger' };
-      }
-    }
-
     if (typeof siteAdapter.openDreaminaLoginEntry === 'function') {
       trace.openAttempted = true;
       await siteAdapter.openDreaminaLoginEntry(page, runtime, context).catch(() => null);
@@ -330,12 +283,12 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       if (gateResult?.ok && gateResult?.state === 'EMAIL_GATE_READY') {
         return { ok: true, trace, gateResult, resolvedBy: 'open-entry' };
       }
-      return { ok: false, trace, gateResult, resolvedBy: trace.homeShellTriggered ? 'home-shell-trigger' : 'open-entry' };
+      return { ok: false, trace, gateResult, resolvedBy: 'open-entry' };
     }
 
     trace.finalState = 'open-entry-missing';
     trace.finalValue = 'openDreaminaLoginEntry';
-    return { ok: false, trace, gateResult: null, resolvedBy: trace.homeShellTriggered ? 'home-shell-trigger' : 'none' };
+    return { ok: false, trace, gateResult: null, resolvedBy: 'none' };
   }
 
   return {
@@ -717,9 +670,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                     timelineResult,
                     waitForEntryReadyPhaseTrace: {
                       ...phaseTrace,
-                      resolvedPath: finalGraceResult?.resolvedBy === 'home-shell-trigger'
-                        ? 'recover-home-shell-gate-success'
-                        : 'recover-final-grace-gate-success',
+                      resolvedPath: 'recover-final-grace-gate-success',
                     },
                   },
                   loginSignal: finalGraceResult?.gateResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
