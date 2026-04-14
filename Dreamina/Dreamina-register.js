@@ -240,11 +240,32 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       } catch (error) {
         const message = String(error?.message || homeUrl);
         const deadPageSnapshot = await detectEntryDeadPage(page);
+        const isTimeout = /Timeout\s+\d+ms\s+exceeded/i.test(message);
+        const isHttpResponseCodeFailure = /ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(message);
+        const pageLooksUsable = !deadPageSnapshot.whiteScreenLike
+          && !deadPageSnapshot.deadPageLike
+          && (Number(deadPageSnapshot.bodyTextLength || 0) >= 40 || Number(deadPageSnapshot.bodyHtmlLength || 0) >= 4000);
+
+        if (isHttpResponseCodeFailure && pageLooksUsable) {
+          return {
+            ok: true,
+            state: 'ENTRY_PAGE_OPENED',
+            source: 'goto-http-fallback',
+            value: homeUrl,
+            strength: 'medium',
+            stateChanged: true,
+            detail: {
+              gotoWarning: message,
+              deadPageSnapshot,
+            },
+          };
+        }
+
         return {
           ok: false,
           state: 'ENTRY_PAGE_OPEN_FAILED',
           source: 'goto',
-          value: /Timeout\s+\d+ms\s+exceeded/i.test(message) ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT' : message,
+          value: isTimeout ? 'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT' : message,
           strength: 'strong',
           stateChanged: false,
           detail: {
