@@ -840,6 +840,11 @@ async function prepareDreaminaEntrySurface(page, runtime = {}, context = {}) {
 
 /**
  * 第一层轮询，只等待首页 ready 文案。
+ *
+ * 契约：
+ * - 成功/失败出口都必须返回 detail.signalTimeline
+ * - 成功/失败出口都必须返回 detail.resolvedBy 或 detail.debugSnapshot 之一
+ * - 不负责 Sign in 检测，不负责点击
  */
 async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
   const profile = loadDreaminaEntryProfile();
@@ -919,6 +924,11 @@ async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
 
 /**
  * 第二层轮询，只等待 Sign in 入口。
+ *
+ * 契约：
+ * - 成功/失败出口都必须返回 detail.signalTimeline
+ * - 成功出口必须返回 detail.loginSignal
+ * - 不负责点击，不负责 gate 确认
  */
 async function waitForDreaminaSignInEntry(page, runtime = {}, context = {}) {
   const startedAt = Date.now();
@@ -990,6 +1000,10 @@ async function waitForDreaminaSignInEntry(page, runtime = {}, context = {}) {
 
 /**
  * 只点击一次 Sign in。
+ *
+ * 契约：
+ * - 成功/失败出口都必须返回 detail.clickStrategy
+ * - 只负责 click，不负责后续 gate 确认
  */
 async function clickDreaminaSignInOnce(page, signInSignal = {}, runtime = {}, context = {}) {
   const locator = signInSignal?.locator || null;
@@ -1045,6 +1059,11 @@ async function clickDreaminaSignInOnce(page, signInSignal = {}, runtime = {}, co
 
 /**
  * 点击后只做一次短 gate 确认。
+ *
+ * 契约：
+ * - 成功/失败出口都必须返回 detail.postClickGateReadyMs
+ * - 失败出口必须返回 detail.debugSnapshot
+ * - 不回到 home-ready / sign-in wait 层
  */
 async function confirmDreaminaLoginGateAfterClick(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
@@ -1105,6 +1124,11 @@ async function confirmDreaminaLoginGateAfterClick(page, runtime = {}, context = 
  * - prepare -> home ready -> sign in -> click -> confirm
  * - 每段单独负责自己的职责
  * - 当前先并行保留旧主链，待验证后再收旧实现
+ *
+ * 契约：
+ * - 所有成功/失败出口必须稳定返回 detail.timingBreakdown
+ * - 所有成功/失败出口必须稳定返回 detail.signalTimeline
+ * - 所有成功/失败出口必须稳定返回 detail.flowTrace.resolvedPath
  */
 async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
@@ -1148,9 +1172,11 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
           ...flowTrace,
           resolvedPath: 'prepare-failed',
         },
+        resolvedPath: 'prepare-failed',
         timingBreakdown: {
           ...stageBreakdown,
           totalMs: Math.max(0, Date.now() - flowStartedAt),
+          source: 'runDreaminaEntryFlow',
         },
       },
     };
@@ -1179,9 +1205,11 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
           ...flowTrace,
           resolvedPath: 'home-ready-failed',
         },
+        resolvedPath: 'home-ready-failed',
         timingBreakdown: {
           ...stageBreakdown,
           totalMs: Math.max(0, Date.now() - flowStartedAt),
+          source: 'runDreaminaEntryFlow',
         },
         debugSnapshot: homeReadyResult?.detail?.debugSnapshot || null,
       },
@@ -1215,9 +1243,11 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
           ...flowTrace,
           resolvedPath: 'sign-in-not-found',
         },
+        resolvedPath: 'sign-in-not-found',
         timingBreakdown: {
           ...stageBreakdown,
           totalMs: Math.max(0, Date.now() - flowStartedAt),
+          source: 'runDreaminaEntryFlow',
         },
         debugSnapshot: signInResult?.detail?.debugSnapshot || null,
       },
@@ -1246,9 +1276,11 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
           ...flowTrace,
           resolvedPath: 'sign-in-click-failed',
         },
+        resolvedPath: 'sign-in-click-failed',
         timingBreakdown: {
           ...stageBreakdown,
           totalMs: Math.max(0, Date.now() - flowStartedAt),
+          source: 'runDreaminaEntryFlow',
         },
       },
     };
@@ -1283,6 +1315,7 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
           ...flowTrace,
           resolvedPath: 'login-gate-confirm-failed',
         },
+        resolvedPath: 'login-gate-confirm-failed',
         ctaSource: signInResult?.detail?.loginSignal?.value || signInResult?.detail?.loginSignal?.label || '',
         ctaOpenedGateMs: stageBreakdown.clickSignInOnceMs,
         postClickGateReadyMs: gateConfirmResult?.detail?.postClickGateReadyMs ?? null,
@@ -1290,6 +1323,7 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
         timingBreakdown: {
           ...stageBreakdown,
           totalMs: Math.max(0, Date.now() - flowStartedAt),
+          source: 'runDreaminaEntryFlow',
         },
         debugSnapshot: gateConfirmResult?.detail?.debugSnapshot || null,
       },
@@ -1310,6 +1344,7 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
         ...flowTrace,
         resolvedPath: 'click-then-confirm-gate',
       },
+      resolvedPath: 'click-then-confirm-gate',
       ctaSource: signInResult?.detail?.loginSignal?.value || signInResult?.detail?.loginSignal?.label || '',
       ctaOpenedGateMs: stageBreakdown.clickSignInOnceMs,
       postClickGateReadyMs: gateConfirmResult?.detail?.postClickGateReadyMs ?? null,
@@ -1317,6 +1352,7 @@ async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
       timingBreakdown: {
         ...stageBreakdown,
         totalMs: Math.max(0, Date.now() - flowStartedAt),
+        source: 'runDreaminaEntryFlow',
       },
       confirmTrace: {
         resolvedBy: 'click-then-login-gate-visible',
