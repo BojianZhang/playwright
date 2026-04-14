@@ -1309,8 +1309,39 @@ async function runDreaminaVerificationLegacyFillFallbacks(page, code, runtime = 
   };
 }
 
+async function runDreaminaVerificationDebugFillFallback(page, code, runtime = {}, context = {}) {
+  const { codeInputResolution = null, logInfo = null, attempts = [] } = context;
+  const normalizedCode = String(code || '').trim();
+  const nextAttempts = Array.isArray(attempts) ? [...attempts] : [];
+
+  const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  const state = await readDreaminaVerificationInputState(page);
+  nextAttempts.push({
+    mode: fallbackResult?.mode || 'fallback-keyboard-type',
+    ok: Boolean(fallbackResult?.ok),
+    value: String(fallbackResult?.value || ''),
+    inputValue: String(state?.inputValue || ''),
+    boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
+    activeTag: String(state?.activeTag || ''),
+    activeClass: String(state?.activeClass || ''),
+    activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
+    stateChanged: typeof fallbackResult?.stateChanged === 'boolean' ? fallbackResult.stateChanged : null,
+  });
+
+  return {
+    ok: Boolean(fallbackResult?.ok),
+    state: fallbackResult?.ok ? 'VERIFICATION_CODE_FILLED' : 'VERIFICATION_CODE_FILL_FAILED',
+    mode: fallbackResult?.mode || 'fallback-keyboard-type',
+    source: 'verification-input',
+    value: fallbackResult?.value || '',
+    stateChanged: typeof fallbackResult?.stateChanged === 'boolean' ? fallbackResult.stateChanged : false,
+    attempts: nextAttempts,
+    fallbackResult,
+  };
+}
+
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
-  const { codeInputResolution = null, logInfo = null } = context;
+  const { codeInputResolution = null } = context;
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
       ok: false,
@@ -1401,21 +1432,21 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
-  // debug-oriented fallback：普通 keyboard/fill 兜底
-  let fallbackResult = null;
+  let debugFillResult = null;
   if (enableDebugFallbacks) {
-    // debug-oriented fallback：普通 keyboard/fill 兜底，仅在显式 debug 开关下参与
-    fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-    await recordAttempt('fallback-keyboard-type', fallbackResult);
-    if (fallbackResult.ok) {
+    debugFillResult = await runDreaminaVerificationDebugFillFallback(page, normalizedCode, runtime, {
+      ...context,
+      attempts: legacyAttempts,
+    });
+    if (debugFillResult?.ok) {
       return {
         ok: true,
         state: 'VERIFICATION_CODE_FILLED',
-        mode: fallbackResult.mode,
-        source: 'verification-input',
-        value: fallbackResult.value,
-        stateChanged: fallbackResult.stateChanged,
-        attempts: legacyAttempts,
+        mode: debugFillResult.mode,
+        source: debugFillResult.source,
+        value: debugFillResult.value,
+        stateChanged: debugFillResult.stateChanged,
+        attempts: debugFillResult.attempts,
         activationResult,
         charSteps,
       };
@@ -1425,11 +1456,11 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
   return {
     ok: false,
     state: 'VERIFICATION_CODE_FILL_FAILED',
-    mode: fallbackResult?.mode || wrapperResult?.mode || hiddenInputResult?.mode || charByCharResult?.mode || directFillResult?.mode || '',
+    mode: debugFillResult?.mode || wrapperResult?.mode || hiddenInputResult?.mode || charByCharResult?.mode || directFillResult?.mode || '',
     source: 'verification-input',
-    value: fallbackResult?.value || wrapperResult?.value || hiddenInputResult?.value || charByCharResult?.value || directFillResult?.value || 'UNKNOWN',
+    value: debugFillResult?.value || wrapperResult?.value || hiddenInputResult?.value || charByCharResult?.value || directFillResult?.value || 'UNKNOWN',
     stateChanged: false,
-    attempts: legacyAttempts,
+    attempts: debugFillResult?.attempts || legacyAttempts,
     activationResult,
     charSteps,
   };
@@ -1773,6 +1804,7 @@ module.exports = {
   // 导出验证码输入能力。
   runDreaminaVerificationPrimaryFill,
   runDreaminaVerificationLegacyFillFallbacks,
+  runDreaminaVerificationDebugFillFallback,
   fillDreaminaVerificationCode,
   // 导出验证码提交结果确认能力。
   confirmDreaminaVerificationSubmitResult,
