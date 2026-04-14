@@ -409,16 +409,6 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
     };
   }
 
-  for (const text of readyTexts) {
-    const locator = page.getByText(String(text || ''), { exact: false }).first();
-    const visible = await isVisible(locator);
-    timelineSignals[`text:${String(text || '')}`] = visible;
-    if (visible) {
-      matchedTexts.push(String(text || ''));
-      return { found: true, clickable: false, locator, label: 'ready-text', source: 'text', value: text, matchedTexts, matchedSelectors, timelineSignals };
-    }
-  }
-
   for (const text of entryTexts) {
     const locator = page.getByText(String(text || ''), { exact: false }).first();
     const visible = await isVisible(locator);
@@ -476,6 +466,16 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
       matchedSelectors,
       timelineSignals,
     };
+  }
+
+  for (const text of readyTexts) {
+    const locator = page.getByText(String(text || ''), { exact: false }).first();
+    const visible = await isVisible(locator);
+    timelineSignals[`text:${String(text || '')}`] = visible;
+    if (visible) {
+      matchedTexts.push(String(text || ''));
+      return { found: true, clickable: false, locator, label: 'ready-text', source: 'text', value: text, matchedTexts, matchedSelectors, timelineSignals };
+    }
   }
 
   return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors, timelineSignals };
