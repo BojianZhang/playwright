@@ -74,6 +74,20 @@ function normalizeCredentialStageResult(input = {}) {
   };
 }
 
+function createCredentialTimingBreakdown(stageTimer, breakdown = {}) {
+  return {
+    waitFormReadyMs: Number(breakdown.waitFormReadyMs || 0),
+    fillEmailMs: Number(breakdown.fillEmailMs || 0),
+    precheckExistsMs: Number(breakdown.precheckExistsMs || 0),
+    refreshPasswordFieldMs: Number(breakdown.refreshPasswordFieldMs || 0),
+    fillPasswordMs: Number(breakdown.fillPasswordMs || 0),
+    submitFormMs: Number(breakdown.submitFormMs || 0),
+    confirmSubmitResultMs: Number(breakdown.confirmSubmitResultMs || 0),
+    totalMs: Number(stageTimer?.elapsedMs ? stageTimer.elapsedMs() : 0),
+    source: 'runCredentialSubmitStage',
+  };
+}
+
 /**
  * 阶段 2 主入口。
  *
@@ -99,6 +113,15 @@ async function runCredentialSubmitStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  const timingBreakdown = {
+    waitFormReadyMs: 0,
+    fillEmailMs: 0,
+    precheckExistsMs: 0,
+    refreshPasswordFieldMs: 0,
+    fillPasswordMs: 0,
+    submitFormMs: 0,
+    confirmSubmitResultMs: 0,
+  };
   // optional site hook result:
   // - 若后续真正接入 refreshPasswordFieldAfterPrecheck(...)，该对象用于承接刷新后的 password field 状态
   // - 若站点未实现该 hook，则保持 null
@@ -166,7 +189,9 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '等待 credential form ready', {
     context: buildStageLogContext(options),
   });
+  const waitFormReadyStartedAt = stageTimer.elapsedMs();
   const formReady = await waitForFormReady(page, runtime, context);
+  timingBreakdown.waitFormReadyMs = Math.max(0, stageTimer.elapsedMs() - waitFormReadyStartedAt);
   if (formReady?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', 'credential form ready', {
@@ -196,6 +221,7 @@ async function runCredentialSubmitStage(options = {}) {
         formSignals: formReady?.formSignals || null,
         formReady,
         classified,
+        timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
       },
     });
   }
@@ -210,7 +236,9 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '填写邮箱', {
     context: buildStageLogContext(options),
   });
+  const fillEmailStartedAt = stageTimer.elapsedMs();
   const emailResult = await fillEmail(page, account, runtime, { ...context, formReady });
+  timingBreakdown.fillEmailMs = Math.max(0, stageTimer.elapsedMs() - fillEmailStartedAt);
   if (emailResult?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', '邮箱填写成功', {
@@ -238,6 +266,7 @@ async function runCredentialSubmitStage(options = {}) {
         formReady,
         emailResult,
         classified,
+        timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
       },
     });
   }
@@ -256,7 +285,9 @@ async function runCredentialSubmitStage(options = {}) {
     logStageProgress('credential-submit', '提交前检查账号是否已存在', {
       context: buildStageLogContext(options),
     });
+    const precheckStartedAt = stageTimer.elapsedMs();
     const precheckResult = await precheckExists(page, account, runtime, { ...context, formReady, emailResult });
+    timingBreakdown.precheckExistsMs = Math.max(0, stageTimer.elapsedMs() - precheckStartedAt);
     if (precheckResult?.ok && precheckResult?.state === 'ACCOUNT_ALREADY_EXISTS_PRECHECK') {
       syncStageStep(options, { stage: 'credential-submit', step: 'stage-fail' });
       logStageFail('credential-submit', '提交前 exists 检查命中已存在账号', {
@@ -279,8 +310,15 @@ async function runCredentialSubmitStage(options = {}) {
           formReady,
           emailResult,
           precheckResult,
+          timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
         },
       });
+    }
+
+    if (precheckResult?.ok && refreshPasswordField) {
+      const refreshPasswordFieldStartedAt = stageTimer.elapsedMs();
+      passwordRefreshResult = await refreshPasswordField(page, runtime, { ...context, formReady, emailResult, precheckResult }).catch(() => null);
+      timingBreakdown.refreshPasswordFieldMs = Math.max(0, stageTimer.elapsedMs() - refreshPasswordFieldStartedAt);
     }
   }
 
@@ -294,7 +332,9 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '填写密码', {
     context: buildStageLogContext(options),
   });
+  const fillPasswordStartedAt = stageTimer.elapsedMs();
   const passwordResult = await fillPassword(page, account, runtime, { ...context, formReady, passwordRefreshResult });
+  timingBreakdown.fillPasswordMs = Math.max(0, stageTimer.elapsedMs() - fillPasswordStartedAt);
   if (passwordResult?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', '密码填写成功', {
@@ -321,8 +361,10 @@ async function runCredentialSubmitStage(options = {}) {
         formSignals: formReady?.formSignals || null,
         formReady,
         emailResult,
+        passwordRefreshResult,
         passwordResult,
         classified,
+        timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
       },
     });
   }
@@ -336,7 +378,9 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '提交 credential 表单', {
     context: buildStageLogContext(options),
   });
+  const submitFormStartedAt = stageTimer.elapsedMs();
   const submitResult = await submitForm(page, runtime, { ...context, formReady });
+  timingBreakdown.submitFormMs = Math.max(0, stageTimer.elapsedMs() - submitFormStartedAt);
   if (submitResult?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', 'credential 表单提交成功', {
@@ -363,9 +407,11 @@ async function runCredentialSubmitStage(options = {}) {
         formSignals: submitResult?.formSignals || formReady?.formSignals || null,
         formReady,
         emailResult,
+        passwordRefreshResult,
         passwordResult,
         submitResult,
         classified,
+        timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
       },
     });
   }
@@ -380,6 +426,7 @@ async function runCredentialSubmitStage(options = {}) {
   logStageProgress('credential-submit', '确认 credential 提交结果', {
     context: buildStageLogContext(options),
   });
+  const confirmSubmitResultStartedAt = stageTimer.elapsedMs();
   const confirmResult = await confirmSubmitResult(page, runtime, {
     ...context,
     formReady,
@@ -387,6 +434,7 @@ async function runCredentialSubmitStage(options = {}) {
     passwordResult,
     submitResult,
   });
+  timingBreakdown.confirmSubmitResultMs = Math.max(0, stageTimer.elapsedMs() - confirmSubmitResultStartedAt);
   if (confirmResult?.ok) {
     syncStageStep(options, { stage: 'credential-submit', step: 'stage-success' });
     logStageSuccess('credential-submit', 'credential 阶段成功', {
@@ -411,9 +459,11 @@ async function runCredentialSubmitStage(options = {}) {
         formSignals: confirmResult?.formSignals || submitResult?.formSignals || formReady?.formSignals || null,
         formReady,
         emailResult,
+        passwordRefreshResult,
         passwordResult,
         submitResult,
         confirmResult,
+        timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
       },
     });
   }
@@ -447,10 +497,12 @@ async function runCredentialSubmitStage(options = {}) {
       formSignals: confirmResult?.formSignals || submitResult?.formSignals || formReady?.formSignals || null,
       formReady,
       emailResult,
+      passwordRefreshResult,
       passwordResult,
       submitResult,
       confirmResult,
       classified,
+      timingBreakdown: createCredentialTimingBreakdown(stageTimer, timingBreakdown),
     },
   });
 }
