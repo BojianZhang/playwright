@@ -114,9 +114,9 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       return { ok: false, skipped: true, reason: 'NOT_LOGIN_PAGE' };
     }
 
+    const checkboxLabel = page.locator('label.lv-checkbox.privacyCheck').first();
     const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
-    const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
-    const signInText = page.getByText('Sign in', { exact: false }).first();
+    const signInText = page.getByText('Sign in').first();
 
     const signInVisible = await signInText.isVisible().catch(() => false);
     if (!signInVisible) {
@@ -126,14 +126,16 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     const checkedBefore = await checkboxInput.isChecked().catch(() => false);
     let checkboxClickTarget = '';
     if (!checkedBefore) {
-      await checkboxMask.click({ timeout: 1500 }).catch(() => null);
-      checkboxClickTarget = 'checkbox-mask';
+      await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
+      checkboxClickTarget = 'checkbox-label';
       await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 400)).catch(() => null);
     }
 
     const checkedAfter = await checkboxInput.isChecked().catch(() => false);
-    if (!checkedAfter) {
-      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkedBefore, checkedAfter, checkboxClickTarget };
+    const checkboxClassAfter = await checkboxLabel.evaluate(node => String(node?.className || '')).catch(() => '');
+    const checkboxLabelChecked = /(^|\s)lv-checkbox-checked(\s|$)/.test(checkboxClassAfter);
+    if (!checkedAfter && !checkboxLabelChecked) {
+      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkedBefore, checkedAfter, checkboxLabelChecked, checkboxClassAfter, checkboxClickTarget };
     }
 
     await signInText.click({ timeout: 2000 }).catch(async () => {
