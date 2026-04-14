@@ -135,8 +135,8 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
   async function recoverEntrySignals(page, runtime = {}) {
     await preprocessEntryOverlays(page);
 
-    const firstObservationMs = Number(runtime?.entrySignalObservationMs || 2200);
-    const secondObservationMs = Number(runtime?.entrySignalObservationAfterReloadMs || 4500);
+    const firstObservationMs = Number(runtime?.entrySignalObservationMs || 3200);
+    const secondObservationMs = Number(runtime?.entrySignalObservationAfterReloadMs || 6500);
     const observe = async totalMs => {
       const rounds = Math.max(1, Math.ceil(totalMs / 1000));
       for (let index = 0; index < rounds; index++) {
