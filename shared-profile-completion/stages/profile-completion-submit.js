@@ -46,6 +46,7 @@ function normalizeProfileCompletionStageResult(input = {}) {
     state: String(input.state || '').trim(),
     reason: String(input.reason || '').trim(),
     nextStage: String(input.nextStage || '').trim(),
+    source: String(input.detectionSource || '').trim(),
     signalStrength: String(input.signalStrength || '').trim(),
     settleStage: String(input.settleStage || '').trim(),
     detectionSource: String(input.detectionSource || '').trim(),
@@ -210,7 +211,16 @@ async function runProfileCompletionSubmitStage(options = {}) {
       state: birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED',
       reason: classified?.siteReason || classified?.reason || birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED',
       detectionSource: birthdayFillPlan?.source || '',
-      detail: { profileReady, birthdayFillPlan, classified },
+      detail: {
+        planSource: String(birthdayFillPlan?.source || ''),
+        flowMode: 'unresolved',
+        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+          ? birthdayFillPlan.ageQualified
+          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+        profileReady,
+        birthdayFillPlan,
+        classified,
+      },
     });
   }
 
@@ -283,7 +293,18 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
         detectionSource: yearFillResult?.source || '',
         stateChanged: typeof yearFillResult?.stateChanged === 'boolean' ? yearFillResult.stateChanged : null,
-        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, classified },
+        detail: {
+          planSource: String(birthdayFillPlan?.source || ''),
+          flowMode: 'split',
+          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+            ? birthdayFillPlan.ageQualified
+            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+          profileReady,
+          birthdayFillPlan,
+          birthdayContinuousResult,
+          yearFillResult,
+          classified,
+        },
       });
     }
 
@@ -296,7 +317,19 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
         detectionSource: monthFillResult?.source || '',
         stateChanged: typeof monthFillResult?.stateChanged === 'boolean' ? monthFillResult.stateChanged : null,
-        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, classified },
+        detail: {
+          planSource: String(birthdayFillPlan?.source || ''),
+          flowMode: 'split',
+          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+            ? birthdayFillPlan.ageQualified
+            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+          profileReady,
+          birthdayFillPlan,
+          birthdayContinuousResult,
+          yearFillResult,
+          monthFillResult,
+          classified,
+        },
       });
     }
 
@@ -309,7 +342,20 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
         detectionSource: dayFillResult?.source || '',
         stateChanged: typeof dayFillResult?.stateChanged === 'boolean' ? dayFillResult.stateChanged : null,
-        detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, dayFillResult, classified },
+        detail: {
+          planSource: String(birthdayFillPlan?.source || ''),
+          flowMode: 'split',
+          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+            ? birthdayFillPlan.ageQualified
+            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+          profileReady,
+          birthdayFillPlan,
+          birthdayContinuousResult,
+          yearFillResult,
+          monthFillResult,
+          dayFillResult,
+          classified,
+        },
       });
     }
   } else {
@@ -317,7 +363,18 @@ async function runProfileCompletionSubmitStage(options = {}) {
       success: false,
       state: 'ADAPTER_INCOMPLETE',
       reason: 'PROFILE_COMPLETION_STAGE_NO_ACTIVE_FILL_PATH',
-      detail: { profileReady, birthdayFillPlan, hasContinuousFlow, hasSplitFlow, birthdayContinuousResult },
+      detail: {
+        planSource: String(birthdayFillPlan?.source || ''),
+        flowMode: hasContinuousFlow ? 'continuous' : (hasSplitFlow ? 'split' : 'none'),
+        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+          ? birthdayFillPlan.ageQualified
+          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+        profileReady,
+        birthdayFillPlan,
+        hasContinuousFlow,
+        hasSplitFlow,
+        birthdayContinuousResult,
+      },
     });
   }
 
@@ -354,7 +411,21 @@ async function runProfileCompletionSubmitStage(options = {}) {
       reason: classified?.siteReason || classified?.reason || submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED',
       detectionSource: submitResult?.source || '',
       stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, birthdayContinuousResult, yearFillResult, monthFillResult, dayFillResult, submitResult, classified },
+      detail: {
+        planSource: String(birthdayFillPlan?.source || ''),
+        flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
+        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+          ? birthdayFillPlan.ageQualified
+          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+        profileReady,
+        birthdayFillPlan,
+        birthdayContinuousResult,
+        yearFillResult,
+        monthFillResult,
+        dayFillResult,
+        submitResult,
+        classified,
+      },
     });
   }
 
@@ -393,7 +464,21 @@ async function runProfileCompletionSubmitStage(options = {}) {
       settleStage: confirmResult?.settleStage || '',
       detectionSource: confirmResult?.source || '',
       stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-      detail: { profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, submitResult, confirmResult },
+      detail: {
+        planSource: String(birthdayFillPlan?.source || ''),
+        flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
+        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+          ? birthdayFillPlan.ageQualified
+          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+        profileReady,
+        birthdayFillPlan,
+        yearFillResult,
+        monthFillResult,
+        dayFillResult,
+        birthdayContinuousResult,
+        submitResult,
+        confirmResult,
+      },
     });
   }
 
@@ -416,7 +501,22 @@ async function runProfileCompletionSubmitStage(options = {}) {
     settleStage: confirmResult?.settleStage || '',
     detectionSource: confirmResult?.source || '',
     stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-    detail: { profileReady, birthdayFillPlan, yearFillResult, monthFillResult, dayFillResult, submitResult, confirmResult, classified },
+    detail: {
+      planSource: String(birthdayFillPlan?.source || ''),
+      flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
+      ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
+        ? birthdayFillPlan.ageQualified
+        : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
+      profileReady,
+      birthdayFillPlan,
+      yearFillResult,
+      monthFillResult,
+      dayFillResult,
+      birthdayContinuousResult,
+      submitResult,
+      confirmResult,
+      classified,
+    },
   });
 }
 

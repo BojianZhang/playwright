@@ -78,6 +78,8 @@ function normalizeVerificationStageResult(input = {}) {
     reason: String(input.reason || '').trim(),
     // 成功后应推进到哪个阶段。
     nextStage: String(input.nextStage || '').trim(),
+    // 当前主证据来源。
+    source: String(input.detectionSource || '').trim(),
     // 当前结果信号强度。
     signalStrength: String(input.signalStrength || '').trim(),
     // 当前结果是在第几层确认里收敛出来的。

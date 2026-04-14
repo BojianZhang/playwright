@@ -64,6 +64,7 @@ function normalizePostAuthReadyStageResult(input = {}) {
     state,
     reason,
     nextStage,
+    source: detectionSource,
     signalStrength,
     settleStage,
     detectionSource,

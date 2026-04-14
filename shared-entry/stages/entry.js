@@ -64,9 +64,10 @@ function normalizeEntryStageResult(input = {}) {
     state,
     reason,
     nextStage,
+    source: detectionSource,
+    detectionSource,
     signalStrength,
     settleStage,
-    detectionSource,
     stateChanged,
     retryCount,
     detail,
@@ -144,6 +145,8 @@ async function runEntryStage(options = {}) {
       stateChanged: typeof entryOpenResult.stateChanged === 'boolean' ? entryOpenResult.stateChanged : null,
       retryCount: 0,
       detail: {
+        entryHealth: null,
+        recoveryTrace: null,
         entryOpenResult,
         entryReadyResult: null,
         classified,
@@ -193,6 +196,8 @@ async function runEntryStage(options = {}) {
       stateChanged: typeof entryHealthResult.stateChanged === 'boolean' ? entryHealthResult.stateChanged : null,
       retryCount: 0,
       detail: {
+        entryHealth: entryHealthResult,
+        recoveryTrace: null,
         entryOpenResult,
         entryHealthResult,
         entryReadyResult: null,
@@ -215,6 +220,8 @@ async function runEntryStage(options = {}) {
       retryCount: 0,
       detail: {
         missingMethod: 'confirmEntryReadyWithRecovery|waitForEntryReady',
+        entryHealth: entryHealthResult,
+        recoveryTrace: null,
         entryOpenResult,
         entryHealthResult,
       },
@@ -256,6 +263,8 @@ async function runEntryStage(options = {}) {
       stateChanged: typeof entryReadyResult.stateChanged === 'boolean' ? entryReadyResult.stateChanged : null,
       retryCount: Number.isFinite(Number(entryReadyResult.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
       detail: {
+        entryHealth: entryHealthResult,
+        recoveryTrace: entryReadyResult?.recoveryResult || null,
         entryOpenResult,
         entryHealthResult,
         entryReadyResult,
@@ -291,6 +300,8 @@ async function runEntryStage(options = {}) {
     stateChanged: typeof entryReadyResult?.stateChanged === 'boolean' ? entryReadyResult.stateChanged : null,
     retryCount: Number.isFinite(Number(entryReadyResult?.retryCount)) ? Number(entryReadyResult.retryCount) : 0,
     detail: {
+      entryHealth: entryHealthResult,
+      recoveryTrace: entryReadyResult?.recoveryResult || null,
       entryOpenResult,
       entryHealthResult,
       entryReadyResult,
