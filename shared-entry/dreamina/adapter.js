@@ -974,9 +974,9 @@ async function waitAfterLoginEntryAction(page, context = {}) {
  *
  * 作用：
  * - 在首页 ready 之后，按既定优先级识别当前处于哪一种“登录前态”
- * - 优先判断是否已经在 email gate
- * - 再判断 Continue with email
- * - 最后再判断 Sign in / Login / Sign up 这类外层入口
+ * - 优先判断是否已经进入登录 modal 外层
+ * - 再判断首页上的 Sign in / Login / Sign up 这类外层入口
+ * - 第一阶段只做到登录 modal，不再把 email gate 当成阶段目标
  *
  * 这个方法只负责“识别状态和入口”，不负责点击，不负责最终确认登录门是否真的打开。
  */
@@ -984,23 +984,23 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
 
   /**
-   * 第一步：优先短路判断 email gate 是否已经就绪。
+   * 第一步：优先短路判断是否已经进入登录 modal 外层。
    *
-   * 这样做的原因：
-   * - email input 已出现，说明已经处于登录门
-   * - 继续点首页入口只会制造多余动作，甚至把状态点乱
+   * 第一阶段边界到登录 modal 为止，
+   * 不再把 email input / email gate 作为 S1 内目标。
    */
-  const emailGateState = await detectDreaminaEmailGateReady(page, context);
-  if (emailGateState.ok) {
+  const continueLayerState = await findVisibleReadyText(page, ['Continue with email']);
+  const modalVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
+  if (continueLayerState.ok || modalVisible) {
     return {
       found: true,
-      type: 'email-input-ready',
-      matchType: 'gate',
-      text: null,
-      selector: emailGateState.value,
+      type: 'login-gate-layer-ready',
+      matchType: modalVisible ? 'modal' : 'gate-layer',
+      text: continueLayerState.ok ? continueLayerState.value : 'LOGIN_MODAL_VISIBLE',
+      selector: modalVisible ? '.lv-modal-wrapper' : null,
       locator: null,
       alreadyInGate: true,
-      nextExpectedState: 'EMAIL_GATE_READY',
+      nextExpectedState: 'LOGIN_GATE_LAYER_READY',
     };
   }
 
@@ -1008,9 +1008,8 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
    * 第二步：按登录入口优先级扫描候选。
    *
    * 当前优先级原则：
-   * 1. Continue with email
-   * 2. Sign in / Login / Log in / Sign up
-   * 3. 结构化 selector 兜底
+   * 1. Sign in / Login / Log in / Sign up
+   * 2. 结构化 selector 兜底
    */
   const loginPageButton = page.locator('[class*="login-button"]').first();
   const loginPageButtonVisible = await loginPageButton.isVisible().catch(() => false);
@@ -1046,7 +1045,7 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
           selector: null,
           locator,
           alreadyInGate: false,
-          nextExpectedState: candidate.type === 'continue-with-email' ? 'EMAIL_GATE_READY' : 'LOGIN_GATE_LAYER_READY',
+          nextExpectedState: 'LOGIN_GATE_LAYER_READY',
         };
       }
     }
@@ -1096,7 +1095,7 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
  *
  * 作用：
  * - 先调用 findDreaminaLoginEntry 找到当前最优入口
- * - 如果已经在 email gate，直接短路成功
+ * - 如果已经在登录 modal 外层，直接短路成功
  * - 如果只是首页外层入口，则点击入口并返回点击结果
  * - 同时记录点击前后快照，判断页面是否真的发生了有意义的状态变化
  *
@@ -1107,20 +1106,20 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const entry = await findDreaminaLoginEntry(page, runtime, context);
 
   /**
-   * 已经在 email gate 时，直接视为第一阶段登录入口完成。
+   * 已经在登录 modal 外层时，直接视为第一阶段登录入口完成。
    *
    * 这里不再点击任何东西，避免把已经好的状态重新点坏。
    */
   if (entry.found && entry.alreadyInGate) {
     if (typeof logInfo === 'function') {
-      logInfo('dreamina.adapter.openDreaminaLoginEntry | 当前已在邮箱登录门，跳过入口点击');
+      logInfo('dreamina.adapter.openDreaminaLoginEntry | 当前已在登录 modal 外层，跳过入口点击');
     }
     return {
       success: true,
-      reason: 'LOGIN_GATE_ALREADY_READY',
+      reason: 'LOGIN_GATE_LAYER_READY',
       entry,
       clicked: false,
-      nextExpectedState: 'EMAIL_GATE_READY',
+      nextExpectedState: 'LOGIN_GATE_LAYER_READY',
     };
   }
 
@@ -1369,10 +1368,10 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
   const initialConfirmStartAt = Date.now();
   let gateState = await confirmDreaminaLoginGate(page, runtime, context);
   gateTrace.initialConfirmMs = Math.max(0, Date.now() - initialConfirmStartAt);
-  if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
+  if (gateState.ok && gateState.state === 'LOGIN_GATE_LAYER_READY') {
     return {
       success: true,
-      reason: 'LOGIN_GATE_READY',
+      reason: 'LOGIN_GATE_LAYER_READY',
       state: gateState.state,
       gateState,
       detail: gateState?.detail && typeof gateState.detail === 'object'
@@ -1384,7 +1383,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_READY',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           }
         : {
@@ -1394,7 +1393,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_READY',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           },
     };
@@ -1421,10 +1420,10 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
   const postOpenConfirmStartAt = Date.now();
   gateState = await confirmDreaminaLoginGate(page, runtime, context);
   gateTrace.postOpenConfirmMs = Math.max(0, Date.now() - postOpenConfirmStartAt);
-  if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
+  if (gateState.ok && gateState.state === 'LOGIN_GATE_LAYER_READY') {
     return {
       success: true,
-      reason: 'LOGIN_GATE_READY',
+      reason: 'LOGIN_GATE_LAYER_READY',
       state: gateState.state,
       openResult,
       gateState,
@@ -1437,7 +1436,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_READY',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           }
         : {
@@ -1447,14 +1446,14 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_READY',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           },
     };
   }
 
   /**
-   * 第四步：如果只到了 Continue with email 这一层，执行第二跳。
+   * 第四步：点击后只要进入登录 modal 外层，就视为第一阶段成功。
    *
    * 这是从旧逻辑提炼出来的真实行为：
    * - 某些首页入口不会直接打开 email input
