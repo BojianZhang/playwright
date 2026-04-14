@@ -56,6 +56,45 @@ function normalizeProfileCompletionStageResult(input = {}) {
   };
 }
 
+function resolveProfileCompletionAgeQualified(birthdayFillPlan = {}) {
+  return typeof birthdayFillPlan?.ageQualified === 'boolean'
+    ? birthdayFillPlan.ageQualified
+    : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null);
+}
+
+function buildProfileCompletionStageDetail(input = {}) {
+  const {
+    birthdayFillPlan,
+    profileReady,
+    birthdayContinuousResult = null,
+    yearFillResult = null,
+    monthFillResult = null,
+    dayFillResult = null,
+    submitResult = null,
+    confirmResult = null,
+    classified = null,
+    timingBreakdown = null,
+    extra = null,
+  } = input;
+
+  return {
+    planSource: String(birthdayFillPlan?.source || ''),
+    flowMode: birthdayContinuousResult?.ok ? 'continuous' : (yearFillResult || monthFillResult || dayFillResult ? 'split' : 'unresolved'),
+    ageQualified: resolveProfileCompletionAgeQualified(birthdayFillPlan),
+    profileReady,
+    birthdayFillPlan,
+    birthdayContinuousResult,
+    yearFillResult,
+    monthFillResult,
+    dayFillResult,
+    submitResult,
+    confirmResult,
+    classified,
+    timingBreakdown,
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  };
+}
+
 /**
  * Stage-4 main entry.
  *
@@ -236,16 +275,12 @@ async function runProfileCompletionSubmitStage(options = {}) {
       state: birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED',
       reason: classified?.siteReason || classified?.reason || birthdayFillPlan?.state || 'PROFILE_COMPLETION_PLAN_FAILED',
       detectionSource: birthdayFillPlan?.source || '',
-      detail: {
-        planSource: String(birthdayFillPlan?.source || ''),
-        flowMode: 'unresolved',
-        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-          ? birthdayFillPlan.ageQualified
-          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-        profileReady,
+      detail: buildProfileCompletionStageDetail({
         birthdayFillPlan,
+        profileReady,
         classified,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -322,18 +357,14 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || yearFillResult?.state || 'BIRTHDAY_YEAR_FILL_FAILED',
         detectionSource: yearFillResult?.source || '',
         stateChanged: typeof yearFillResult?.stateChanged === 'boolean' ? yearFillResult.stateChanged : null,
-        detail: {
-          planSource: String(birthdayFillPlan?.source || ''),
-          flowMode: 'split',
-          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-            ? birthdayFillPlan.ageQualified
-            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-          profileReady,
+        detail: buildProfileCompletionStageDetail({
           birthdayFillPlan,
+          profileReady,
           birthdayContinuousResult,
           yearFillResult,
           classified,
-        },
+          timingBreakdown,
+        }),
       });
     }
 
@@ -346,19 +377,15 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || monthFillResult?.state || 'BIRTHDAY_MONTH_FILL_FAILED',
         detectionSource: monthFillResult?.source || '',
         stateChanged: typeof monthFillResult?.stateChanged === 'boolean' ? monthFillResult.stateChanged : null,
-        detail: {
-          planSource: String(birthdayFillPlan?.source || ''),
-          flowMode: 'split',
-          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-            ? birthdayFillPlan.ageQualified
-            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-          profileReady,
+        detail: buildProfileCompletionStageDetail({
           birthdayFillPlan,
+          profileReady,
           birthdayContinuousResult,
           yearFillResult,
           monthFillResult,
           classified,
-        },
+          timingBreakdown,
+        }),
       });
     }
 
@@ -372,20 +399,16 @@ async function runProfileCompletionSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || dayFillResult?.state || 'BIRTHDAY_DAY_FILL_FAILED',
         detectionSource: dayFillResult?.source || '',
         stateChanged: typeof dayFillResult?.stateChanged === 'boolean' ? dayFillResult.stateChanged : null,
-        detail: {
-          planSource: String(birthdayFillPlan?.source || ''),
-          flowMode: 'split',
-          ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-            ? birthdayFillPlan.ageQualified
-            : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-          profileReady,
+        detail: buildProfileCompletionStageDetail({
           birthdayFillPlan,
+          profileReady,
           birthdayContinuousResult,
           yearFillResult,
           monthFillResult,
           dayFillResult,
           classified,
-        },
+          timingBreakdown,
+        }),
       });
     }
   } else {
@@ -393,18 +416,17 @@ async function runProfileCompletionSubmitStage(options = {}) {
       success: false,
       state: 'ADAPTER_INCOMPLETE',
       reason: 'PROFILE_COMPLETION_STAGE_NO_ACTIVE_FILL_PATH',
-      detail: {
-        planSource: String(birthdayFillPlan?.source || ''),
-        flowMode: hasContinuousFlow ? 'continuous' : (hasSplitFlow ? 'split' : 'none'),
-        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-          ? birthdayFillPlan.ageQualified
-          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-        profileReady,
+      detail: buildProfileCompletionStageDetail({
         birthdayFillPlan,
-        hasContinuousFlow,
-        hasSplitFlow,
+        profileReady,
         birthdayContinuousResult,
-      },
+        timingBreakdown,
+        extra: {
+          flowMode: hasContinuousFlow ? 'continuous' : (hasSplitFlow ? 'split' : 'none'),
+          hasContinuousFlow,
+          hasSplitFlow,
+        },
+      }),
     });
   }
 
@@ -444,21 +466,17 @@ async function runProfileCompletionSubmitStage(options = {}) {
       reason: classified?.siteReason || classified?.reason || submitResult?.state || 'PROFILE_COMPLETION_SUBMIT_FAILED',
       detectionSource: submitResult?.source || '',
       stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-      detail: {
-        planSource: String(birthdayFillPlan?.source || ''),
-        flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
-        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-          ? birthdayFillPlan.ageQualified
-          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-        profileReady,
+      detail: buildProfileCompletionStageDetail({
         birthdayFillPlan,
+        profileReady,
         birthdayContinuousResult,
         yearFillResult,
         monthFillResult,
         dayFillResult,
         submitResult,
         classified,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -502,22 +520,17 @@ async function runProfileCompletionSubmitStage(options = {}) {
       settleStage: confirmResult?.settleStage || '',
       detectionSource: confirmResult?.source || '',
       stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-      detail: {
-        planSource: String(birthdayFillPlan?.source || ''),
-        flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
-        ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-          ? birthdayFillPlan.ageQualified
-          : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-        profileReady,
+      detail: buildProfileCompletionStageDetail({
         birthdayFillPlan,
+        profileReady,
+        birthdayContinuousResult,
         yearFillResult,
         monthFillResult,
         dayFillResult,
-        birthdayContinuousResult,
         submitResult,
         confirmResult,
         timingBreakdown,
-      },
+      }),
     });
   }
 
@@ -540,23 +553,18 @@ async function runProfileCompletionSubmitStage(options = {}) {
     settleStage: confirmResult?.settleStage || '',
     detectionSource: confirmResult?.source || '',
     stateChanged: typeof submitResult?.stateChanged === 'boolean' ? submitResult.stateChanged : null,
-    detail: {
-      planSource: String(birthdayFillPlan?.source || ''),
-      flowMode: birthdayContinuousResult?.ok ? 'continuous' : 'split',
-      ageQualified: typeof birthdayFillPlan?.ageQualified === 'boolean'
-        ? birthdayFillPlan.ageQualified
-        : (typeof birthdayFillPlan?.detail?.ageQualified === 'boolean' ? birthdayFillPlan.detail.ageQualified : null),
-      profileReady,
+    detail: buildProfileCompletionStageDetail({
       birthdayFillPlan,
+      profileReady,
+      birthdayContinuousResult,
       yearFillResult,
       monthFillResult,
       dayFillResult,
-      birthdayContinuousResult,
       submitResult,
       confirmResult,
       classified,
       timingBreakdown,
-    },
+    }),
   });
 }
 
