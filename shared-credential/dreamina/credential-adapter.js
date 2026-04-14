@@ -115,6 +115,50 @@ function resolveDreaminaCredentialIntent(runtime = {}, context = {}) {
     : { intent: 'register', source: runtime?.dreaminaAuthMode ? 'runtime' : 'default' };
 }
 
+async function ensureDreaminaContinueWithEmail(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
+  const passwordInput = page.locator("input[type='password']").first();
+  const formReady = await isVisible(emailInput) && await isVisible(passwordInput);
+  if (formReady) {
+    return {
+      ok: true,
+      state: 'CONTINUE_WITH_EMAIL_ALREADY_RESOLVED',
+      source: 'credential-form',
+      signalStrength: 'strong',
+      clicked: false,
+    };
+  }
+
+  const continueEntry = await findFirstVisibleByTexts(page, ['Continue with email']);
+  if (!continueEntry.ok || !continueEntry.locator) {
+    return {
+      ok: false,
+      state: 'CONTINUE_WITH_EMAIL_NOT_FOUND',
+      source: 'login-gate-layer',
+      signalStrength: 'weak',
+      clicked: false,
+    };
+  }
+
+  await continueEntry.locator.click({ timeout: 1500 }).catch(async () => {
+    await continueEntry.locator.click({ force: true, timeout: 1500 });
+  });
+  await page.waitForTimeout(Number(runtime?.credentialContinueWithEmailWaitMs || 1200));
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.credential.ensureContinueWithEmail | clicked via=${continueEntry.text}`);
+  }
+
+  return {
+    ok: true,
+    state: 'CONTINUE_WITH_EMAIL_CLICKED',
+    source: continueEntry.text,
+    signalStrength: 'medium',
+    clicked: true,
+  };
+}
+
 async function confirmDreaminaSigninMode(page) {
   const signInHeader = await findFirstVisibleByTexts(page, ['Sign in', 'Welcome back']);
   const emailInput = page.locator("input[placeholder*='email' i], input[type='email'], input[role='textbox']").first();
@@ -268,18 +312,18 @@ async function ensureDreaminaSigninMode(page, runtime = {}, context = {}) {
 
 async function precheckDreaminaAccountExists(page, account = {}, runtime = {}, context = {}) {
   const profile = loadDreaminaCredentialProfile();
-  const authModeResult = await ensureDreaminaSignupMode(page, runtime, context);
-  if (!authModeResult?.ok) {
+  const continueWithEmailResult = await ensureDreaminaContinueWithEmail(page, runtime, context);
+  if (!continueWithEmailResult?.ok) {
     return {
       ok: false,
-      state: authModeResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
-      reason: authModeResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
-      source: 'auth-mode',
+      state: continueWithEmailResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
+      reason: continueWithEmailResult?.state || 'EXISTS_PRECHECK_FORM_NOT_READY',
+      source: 'continue-with-email',
       signalStrength: 'weak',
     };
   }
 
-  const formReady = await waitForDreaminaCredentialFormReady(page, runtime, context);
+  const formReady = await waitForDreaminaCredentialFormReady(page, runtime, { ...context, continueWithEmailResult });
   if (!formReady?.ok || !formReady?.emailField?.locator) {
     return {
       ok: false,
@@ -336,12 +380,14 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
   const { logInfo = null } = context;
   const profile = loadDreaminaCredentialProfile();
   const intentResult = resolveDreaminaCredentialIntent(runtime, context);
-  const authModeResult = await ensureDreaminaSignupMode(page, runtime, context);
-  if (!authModeResult?.ok) {
+  const continueWithEmailResult = context?.continueWithEmailResult?.ok
+    ? context.continueWithEmailResult
+    : await ensureDreaminaContinueWithEmail(page, runtime, context);
+  if (!continueWithEmailResult?.ok) {
     return {
       ok: false,
-      state: authModeResult?.state || 'FORM_NOT_READY',
-      authModeResult,
+      state: continueWithEmailResult?.state || 'FORM_NOT_READY',
+      continueWithEmailResult,
     };
   }
   const primaryWaitMs = Number(runtime?.credentialFormPrimaryWaitMs || 300);
@@ -398,7 +444,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
           submitValue: submit?.value || '',
         },
         waitStepMs: waitMs,
-        authModeResult,
+        continueWithEmailResult,
         intentResult,
       };
     }
@@ -415,7 +461,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
     passwordField: { ok: false, selector: '', locator: null },
     submit: { ok: false, source: '', value: '', locator: null },
     waitStepMs: 0,
-    authModeResult,
+    continueWithEmailResult,
     intentResult,
   };
 }
