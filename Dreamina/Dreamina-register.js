@@ -146,7 +146,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       await page.waitForFunction(() => {
         const label = document.querySelector('label.lv-checkbox.privacyCheck');
         if (!label) return false;
-        return String((label as HTMLElement).className || '').includes('lv-checkbox-checked');
+        return String(label.className || '').includes('lv-checkbox-checked');
       }, { timeout: Number(runtime?.dreaminaLoginCheckboxCheckedTimeoutMs || 1600) }).catch(() => null);
       return await getCheckboxState();
     };
