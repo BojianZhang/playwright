@@ -178,6 +178,47 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         .filter(Boolean)
         .slice(0, 20);
 
+      const clickableInventory = Array.from(document.querySelectorAll('button, [role="button"], a, [tabindex], input[type="button"], input[type="submit"]'))
+        .filter(visible)
+        .map(element => {
+          const rect = element.getBoundingClientRect();
+          const text = normalize(element.innerText || element.textContent || '');
+          const ariaLabel = normalize(element.getAttribute('aria-label') || '');
+          const role = normalize(element.getAttribute('role') || '');
+          const className = normalize(typeof element.className === 'string' ? element.className : '');
+          const id = normalize(element.getAttribute('id') || '');
+          const href = normalize(element.getAttribute('href') || '');
+          const name = normalize(element.getAttribute('name') || '');
+          const title = normalize(element.getAttribute('title') || '');
+          const tag = String(element.tagName || '').toLowerCase();
+          const summary = [text, ariaLabel, title, name, id, className].filter(Boolean).join(' | ');
+          return {
+            tag,
+            role,
+            text,
+            ariaLabel,
+            title,
+            name,
+            id,
+            className,
+            href,
+            x: Math.round(rect.left || 0),
+            y: Math.round(rect.top || 0),
+            w: Math.round(rect.width || 0),
+            h: Math.round(rect.height || 0),
+            summary,
+          };
+        })
+        .slice(0, 40);
+
+      const headerClickables = clickableInventory
+        .filter(item => item.y >= 0 && item.y <= 220)
+        .slice(0, 20);
+
+      const keywordClickables = clickableInventory
+        .filter(item => /sign|login|log in|continue|email|account|profile|user|avatar/i.test(item.summary || ''))
+        .slice(0, 20);
+
       const inputs = Array.from(document.querySelectorAll('input, textarea'))
         .filter(visible)
         .map(element => ({
@@ -196,6 +237,9 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         bodyPreview: bodyText.slice(0, 500),
         visibleButtons: buttons,
         visibleInputs: inputs,
+        clickableInventory,
+        headerClickables,
+        keywordClickables,
       };
     }).catch(() => ({
       url: String(page?.url ? page.url() : ''),
@@ -203,6 +247,9 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       bodyPreview: '',
       visibleButtons: [],
       visibleInputs: [],
+      clickableInventory: [],
+      headerClickables: [],
+      keywordClickables: [],
     }));
   }
 
