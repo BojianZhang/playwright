@@ -657,7 +657,11 @@ function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
   if (before.url !== after.url) return true;
   if (before.authMode !== after.authMode) return true;
   if (before.authTitle !== after.authTitle) return true;
+  if (before.emailVisible !== after.emailVisible) return true;
+  if (before.passwordVisible !== after.passwordVisible) return true;
+  if (before.continueVisible !== after.continueVisible) return true;
   if (before.continueEnabled !== after.continueEnabled) return true;
+  if (before.continueText !== after.continueText) return true;
   if (before.verificationVisible !== after.verificationVisible) return true;
   if (before.hasSuccessSelector !== after.hasSuccessSelector) return true;
   if (before.hasSuccessText !== after.hasSuccessText) return true;
@@ -666,6 +670,7 @@ function hasMeaningfulCredentialSubmitStateChange(before = null, after = null) {
   if (before.hasRateLimited !== after.hasRateLimited) return true;
   if (before.hasInlineError !== after.hasInlineError) return true;
   if (before.hasErrorModal !== after.hasErrorModal) return true;
+  if (before.hasHomeSignals !== after.hasHomeSignals) return true;
   if (before.bodyPreview !== after.bodyPreview) return true;
   if (Math.abs(Number(before.bodyTextLength || 0) - Number(after.bodyTextLength || 0)) >= 40) return true;
   return false;
@@ -844,7 +849,18 @@ async function runDreaminaCredentialSubmitAttempt(page, runtime = {}, context = 
       mode,
       beforeAuthMode: beforeSnapshot?.authMode || '',
       afterAuthMode: afterSnapshot?.authMode || '',
-      continueEnabled: beforeSnapshot?.continueEnabled,
+      beforeEmailVisible: beforeSnapshot?.emailVisible,
+      afterEmailVisible: afterSnapshot?.emailVisible,
+      beforePasswordVisible: beforeSnapshot?.passwordVisible,
+      afterPasswordVisible: afterSnapshot?.passwordVisible,
+      beforeContinueVisible: beforeSnapshot?.continueVisible,
+      afterContinueVisible: afterSnapshot?.continueVisible,
+      beforeContinueEnabled: beforeSnapshot?.continueEnabled,
+      afterContinueEnabled: afterSnapshot?.continueEnabled,
+      beforeContinueText: beforeSnapshot?.continueText || '',
+      afterContinueText: afterSnapshot?.continueText || '',
+      beforeHomeSignals: beforeSnapshot?.hasHomeSignals,
+      afterHomeSignals: afterSnapshot?.hasHomeSignals,
       verificationVisible: afterSnapshot?.verificationVisible,
       inlineError: afterSnapshot?.hasInlineError,
       stateChanged: hasStateChange,
