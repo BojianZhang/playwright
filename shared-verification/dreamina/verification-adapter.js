@@ -1220,8 +1220,97 @@ async function runDreaminaVerificationPrimaryFill(page, code, runtime = {}, cont
   };
 }
 
+async function runDreaminaVerificationLegacyFillFallbacks(page, code, runtime = {}, context = {}) {
+  const { codeInputResolution = null, logInfo = null, attempts = [] } = context;
+  const normalizedCode = String(code || '').trim();
+  const nextAttempts = Array.isArray(attempts) ? [...attempts] : [];
+
+  const recordAttempt = async (label, result) => {
+    const state = await readDreaminaVerificationInputState(page);
+    nextAttempts.push({
+      mode: result?.mode || label,
+      ok: Boolean(result?.ok),
+      value: String(result?.value || ''),
+      inputValue: String(state?.inputValue || ''),
+      boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
+      activeTag: String(state?.activeTag || ''),
+      activeClass: String(state?.activeClass || ''),
+      activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
+      stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
+    });
+  };
+
+  const charByCharResult = await tryDreaminaCharByCharInput(page, codeInputResolution.locator, normalizedCode, runtime, context);
+  await recordAttempt('dreamina-char-by-char', charByCharResult);
+  if (charByCharResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: charByCharResult.mode,
+      source: 'verification-input',
+      value: charByCharResult.value,
+      stateChanged: charByCharResult.stateChanged,
+      attempts: nextAttempts,
+      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+      charByCharResult,
+      hiddenInputResult: null,
+      wrapperResult: null,
+    };
+  }
+
+  const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  await recordAttempt('dreamina-hidden-input', hiddenInputResult);
+  if (hiddenInputResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: hiddenInputResult.mode,
+      source: 'verification-input',
+      value: hiddenInputResult.value,
+      stateChanged: hiddenInputResult.stateChanged,
+      attempts: nextAttempts,
+      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+      charByCharResult,
+      hiddenInputResult,
+      wrapperResult: null,
+    };
+  }
+
+  const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
+  await recordAttempt('dreamina-wrapper-keyboard', wrapperResult);
+  if (wrapperResult.ok) {
+    return {
+      ok: true,
+      state: 'VERIFICATION_CODE_FILLED',
+      mode: wrapperResult.mode,
+      source: 'verification-input',
+      value: wrapperResult.value,
+      stateChanged: wrapperResult.stateChanged,
+      attempts: nextAttempts,
+      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+      charByCharResult,
+      hiddenInputResult,
+      wrapperResult,
+    };
+  }
+
+  return {
+    ok: false,
+    state: 'VERIFICATION_CODE_FILL_FAILED',
+    mode: wrapperResult.mode || hiddenInputResult.mode || charByCharResult.mode || '',
+    source: 'verification-input',
+    value: wrapperResult.value || hiddenInputResult.value || charByCharResult.value || 'UNKNOWN',
+    stateChanged: false,
+    attempts: nextAttempts,
+    charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+    charByCharResult,
+    hiddenInputResult,
+    wrapperResult,
+  };
+}
+
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
-  const { codeInputResolution = null } = context;
+  const { codeInputResolution = null, logInfo = null } = context;
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
       ok: false,
@@ -1288,54 +1377,27 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
-  // legacy fallback 1：char-by-char（高成本，仅在显式开启 legacy fallbacks 时参与）
-  const charByCharResult = await tryDreaminaCharByCharInput(page, codeInputResolution.locator, normalizedCode, runtime, context);
-  await recordAttempt('dreamina-char-by-char', charByCharResult);
-  if (charByCharResult.ok) {
-    return {
-      ok: true,
-      state: 'VERIFICATION_CODE_FILLED',
-      mode: charByCharResult.mode,
-      source: 'verification-input',
-      value: charByCharResult.value,
-      stateChanged: charByCharResult.stateChanged,
-      attempts,
-      activationResult,
-      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
-    };
-  }
+  const legacyFillResult = await runDreaminaVerificationLegacyFillFallbacks(page, normalizedCode, runtime, {
+    ...context,
+    attempts,
+  });
+  const legacyAttempts = Array.isArray(legacyFillResult?.attempts) ? legacyFillResult.attempts : attempts;
+  const charSteps = Array.isArray(legacyFillResult?.charSteps) ? legacyFillResult.charSteps : [];
+  const charByCharResult = legacyFillResult?.charByCharResult || null;
+  const hiddenInputResult = legacyFillResult?.hiddenInputResult || null;
+  const wrapperResult = legacyFillResult?.wrapperResult || null;
 
-  // legacy fallback 2：hidden-input 注入
-  const hiddenInputResult = await tryDreaminaHiddenInputFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-  await recordAttempt('dreamina-hidden-input', hiddenInputResult);
-  if (hiddenInputResult.ok) {
+  if (legacyFillResult?.ok) {
     return {
       ok: true,
       state: 'VERIFICATION_CODE_FILLED',
-      mode: hiddenInputResult.mode,
-      source: 'verification-input',
-      value: hiddenInputResult.value,
-      stateChanged: hiddenInputResult.stateChanged,
-      attempts,
+      mode: legacyFillResult.mode,
+      source: legacyFillResult.source,
+      value: legacyFillResult.value,
+      stateChanged: legacyFillResult.stateChanged,
+      attempts: legacyAttempts,
       activationResult,
-      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
-    };
-  }
-
-  // legacy fallback 3：wrapper keyboard
-  const wrapperResult = await tryDreaminaWrapperKeyboardFill(page, normalizedCode, logInfo);
-  await recordAttempt('dreamina-wrapper-keyboard', wrapperResult);
-  if (wrapperResult.ok) {
-    return {
-      ok: true,
-      state: 'VERIFICATION_CODE_FILLED',
-      mode: wrapperResult.mode,
-      source: 'verification-input',
-      value: wrapperResult.value,
-      stateChanged: wrapperResult.stateChanged,
-      attempts,
-      activationResult,
-      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+      charSteps,
     };
   }
 
@@ -1353,9 +1415,9 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
         source: 'verification-input',
         value: fallbackResult.value,
         stateChanged: fallbackResult.stateChanged,
-        attempts,
+        attempts: legacyAttempts,
         activationResult,
-        charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+        charSteps,
       };
     }
   }
@@ -1363,13 +1425,13 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
   return {
     ok: false,
     state: 'VERIFICATION_CODE_FILL_FAILED',
-    mode: fallbackResult?.mode || wrapperResult.mode || hiddenInputResult.mode || charByCharResult.mode || directFillResult.mode || '',
+    mode: fallbackResult?.mode || wrapperResult?.mode || hiddenInputResult?.mode || charByCharResult?.mode || directFillResult?.mode || '',
     source: 'verification-input',
-    value: fallbackResult?.value || wrapperResult.value || hiddenInputResult.value || charByCharResult.value || directFillResult.value || 'UNKNOWN',
+    value: fallbackResult?.value || wrapperResult?.value || hiddenInputResult?.value || charByCharResult?.value || directFillResult?.value || 'UNKNOWN',
     stateChanged: false,
-    attempts,
+    attempts: legacyAttempts,
     activationResult,
-    charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+    charSteps,
   };
 }
 
@@ -1710,6 +1772,7 @@ module.exports = {
   resolveDreaminaVerificationInput,
   // 导出验证码输入能力。
   runDreaminaVerificationPrimaryFill,
+  runDreaminaVerificationLegacyFillFallbacks,
   fillDreaminaVerificationCode,
   // 导出验证码提交结果确认能力。
   confirmDreaminaVerificationSubmitResult,
