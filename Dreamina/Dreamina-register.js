@@ -116,6 +116,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
 
     const checkboxLabel = page.locator('label.lv-checkbox.privacyCheck').first();
     const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
+    const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
     const signInText = page.getByText('Sign in').first();
 
     const signInVisible = await signInText.isVisible().catch(() => false);
@@ -123,18 +124,51 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       return { ok: false, skipped: true, reason: 'LOGIN_PAGE_SIGN_IN_NOT_VISIBLE' };
     }
 
-    const checkedBefore = await checkboxInput.isChecked().catch(() => false);
+    const getCheckboxState = async () => {
+      const checkedByInput = await checkboxInput.isChecked().catch(() => false);
+      const checkboxClass = await checkboxLabel.evaluate(node => String(node?.className || '')).catch(() => '');
+      const checkedByLabelClass = /(^|\s)lv-checkbox-checked(\s|$)/.test(checkboxClass);
+      return {
+        checkedByInput,
+        checkedByLabelClass,
+        checkboxClass,
+        checked: Boolean(checkedByInput || checkedByLabelClass),
+      };
+    };
+
+    const checkedBeforeState = await getCheckboxState();
+    const checkedBefore = checkedBeforeState.checked;
     let checkboxClickTarget = '';
+    let checkboxState = checkedBeforeState;
+
     if (!checkedBefore) {
-      await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
-      checkboxClickTarget = 'checkbox-label';
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 400)).catch(() => null);
+      await checkboxMask.click({ timeout: 1500 }).catch(() => null);
+      checkboxClickTarget = 'checkbox-mask';
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 300)).catch(() => null);
+      checkboxState = await getCheckboxState();
     }
 
-    const checkedAfter = await checkboxInput.isChecked().catch(() => false);
-    const checkboxClassAfter = await checkboxLabel.evaluate(node => String(node?.className || '')).catch(() => '');
-    const checkboxLabelChecked = /(^|\s)lv-checkbox-checked(\s|$)/.test(checkboxClassAfter);
-    if (!checkedAfter && !checkboxLabelChecked) {
+    if (!checkboxState.checked) {
+      await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
+      checkboxClickTarget = checkboxClickTarget || 'checkbox-label';
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxRetryWaitMs || 300)).catch(() => null);
+      checkboxState = await getCheckboxState();
+    }
+
+    if (!checkboxState.checked) {
+      const box = await checkboxMask.boundingBox().catch(() => null);
+      if (box && Number(box.width || 0) > 0 && Number(box.height || 0) > 0) {
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 50 }).catch(() => null);
+        checkboxClickTarget = checkboxClickTarget || 'checkbox-mask-center';
+        await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxCenterWaitMs || 300)).catch(() => null);
+        checkboxState = await getCheckboxState();
+      }
+    }
+
+    const checkedAfter = checkboxState.checked;
+    const checkboxClassAfter = checkboxState.checkboxClass;
+    const checkboxLabelChecked = checkboxState.checkedByLabelClass;
+    if (!checkedAfter) {
       return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkedBefore, checkedAfter, checkboxLabelChecked, checkboxClassAfter, checkboxClickTarget };
     }
 
