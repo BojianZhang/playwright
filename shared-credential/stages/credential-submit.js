@@ -58,6 +58,7 @@ function normalizeCredentialStageResult(input = {}) {
     state: String(input.state || '').trim(),
     reason: String(input.reason || '').trim(),
     nextStage: String(input.nextStage || '').trim(),
+    source: String(input.detectionSource || '').trim(),
     signalStrength: String(input.signalStrength || '').trim(),
     settleStage: String(input.settleStage || '').trim(),
     detectionSource: String(input.detectionSource || '').trim(),
@@ -176,6 +177,8 @@ async function runCredentialSubmitStage(options = {}) {
       state: formReady?.state || 'FORM_NOT_READY',
       reason: classified?.siteReason || classified?.reason || formReady?.state || 'FORM_NOT_READY',
       detail: {
+        stateTrace: ['FORM_READY'],
+        formSignals: formReady?.formSignals || null,
         formReady,
         classified,
       },
@@ -215,6 +218,8 @@ async function runCredentialSubmitStage(options = {}) {
       state: emailResult?.state || 'EMAIL_FILL_FAILED',
       reason: classified?.siteReason || classified?.reason || emailResult?.state || 'EMAIL_FILL_FAILED',
       detail: {
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED'],
+        formSignals: formReady?.formSignals || null,
         formReady,
         emailResult,
         classified,
@@ -246,6 +251,8 @@ async function runCredentialSubmitStage(options = {}) {
         reason: precheckResult.reason || 'DREAMINA_ACCOUNT_ALREADY_EXISTS_PRECHECK',
         detectionSource: precheckResult.source || 'precheck',
         detail: {
+          stateTrace: ['FORM_READY', 'EMAIL_FILLED'],
+          formSignals: formReady?.formSignals || null,
           formReady,
           emailResult,
           precheckResult,
@@ -287,6 +294,8 @@ async function runCredentialSubmitStage(options = {}) {
       state: passwordResult?.state || 'PASSWORD_FILL_FAILED',
       reason: classified?.siteReason || classified?.reason || passwordResult?.state || 'PASSWORD_FILL_FAILED',
       detail: {
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED'],
+        formSignals: formReady?.formSignals || null,
         formReady,
         emailResult,
         passwordResult,
@@ -327,6 +336,8 @@ async function runCredentialSubmitStage(options = {}) {
       state: submitResult?.state || 'FORM_SUBMIT_FAILED',
       reason: classified?.siteReason || classified?.reason || submitResult?.state || 'FORM_SUBMIT_FAILED',
       detail: {
+        stateTrace: submitResult?.stateTrace || ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED'],
+        formSignals: submitResult?.formSignals || formReady?.formSignals || null,
         formReady,
         emailResult,
         passwordResult,
@@ -373,6 +384,8 @@ async function runCredentialSubmitStage(options = {}) {
       detectionSource: confirmResult?.source || '',
       stateChanged: typeof submitResult?.hasStateChange === 'boolean' ? submitResult.hasStateChange : null,
       detail: {
+        stateTrace: confirmResult?.stateTrace || submitResult?.stateTrace || ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', confirmResult?.state || 'CREDENTIAL_SUBMIT_OK'],
+        formSignals: confirmResult?.formSignals || submitResult?.formSignals || formReady?.formSignals || null,
         formReady,
         emailResult,
         passwordResult,
@@ -407,6 +420,8 @@ async function runCredentialSubmitStage(options = {}) {
     detectionSource: confirmResult?.source || '',
     stateChanged: typeof submitResult?.hasStateChange === 'boolean' ? submitResult.hasStateChange : null,
     detail: {
+      stateTrace: confirmResult?.stateTrace || submitResult?.stateTrace || ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', confirmResult?.state || 'CREDENTIAL_SUBMIT_RESULT_UNKNOWN'],
+      formSignals: confirmResult?.formSignals || submitResult?.formSignals || formReady?.formSignals || null,
       formReady,
       emailResult,
       passwordResult,
