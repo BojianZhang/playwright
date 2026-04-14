@@ -421,6 +421,36 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
       continueWithEmailResult,
     };
   }
+
+  let authModeResult = null;
+  if (intentResult.intent === 'signin') {
+    authModeResult = await ensureDreaminaSigninMode(page, runtime, {
+      ...context,
+      continueWithEmailResult,
+      intentResult,
+    });
+  } else {
+    authModeResult = await ensureDreaminaSignupMode(page, runtime, {
+      ...context,
+      continueWithEmailResult,
+      intentResult,
+    });
+  }
+
+  if (!authModeResult?.ok) {
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.credential.waitForFormReady | auth-mode-not-ready | intent=${intentResult.intent} | state=${authModeResult?.state || 'unknown'}`);
+    }
+    return {
+      ok: false,
+      state: authModeResult?.state || 'FORM_AUTH_MODE_NOT_READY',
+      source: 'auth-mode-routing',
+      signalStrength: authModeResult?.signalStrength || 'weak',
+      continueWithEmailResult,
+      intentResult,
+      authModeResult,
+    };
+  }
   const primaryWaitMs = Number(runtime?.credentialFormPrimaryWaitMs || 300);
   const secondaryWaitMs = Number(runtime?.credentialFormSecondaryWaitMs || 900);
   const waitSteps = [...new Set([0, primaryWaitMs, secondaryWaitMs].filter(ms => Number(ms) >= 0))];
@@ -477,6 +507,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
         waitStepMs: waitMs,
         continueWithEmailResult,
         intentResult,
+        authModeResult,
       };
     }
 
@@ -494,6 +525,7 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
     waitStepMs: 0,
     continueWithEmailResult,
     intentResult,
+    authModeResult,
   };
 }
 
