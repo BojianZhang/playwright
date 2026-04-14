@@ -742,8 +742,535 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
  * - 直接转调 staged login-entry wait 主体
  * - 兼容保留 waitForEntryReady 方法名，避免外层调用点立刻断裂
  */
+/**
+ * 统一记录 S1 观测时间线。
+ *
+ * 边界：
+ * - 只负责记录信号首次出现时间
+ * - 不做点击，不做恢复，不推进阶段
+ */
+function recordDreaminaSignalTimeline(signalTimeline = {}, signal = {}, currentElapsedMs = 0, round = 0) {
+  const signals = signal?.timelineSignals && typeof signal.timelineSignals === 'object'
+    ? signal.timelineSignals
+    : {};
+  for (const [key, visible] of Object.entries(signals)) {
+    if (!visible) continue;
+    if (!signalTimeline[key]) {
+      signalTimeline[key] = {
+        firstSeenMs: currentElapsedMs,
+        round,
+      };
+    }
+  }
+}
+
+/**
+ * 准备 entry surface，只做一次性动作。
+ *
+ * 边界：
+ * - 允许清 overlay
+ * - 允许做一次健康检查
+ * - 不等待首页 ready
+ * - 不等待 Sign in
+ * - 不点击登录入口
+ */
+async function prepareDreaminaEntrySurface(page, runtime = {}, context = {}) {
+  const prepareTrace = {
+    overlayHandled: false,
+    overlayMatchedType: '',
+    overlayMatchedValue: '',
+    inspectState: '',
+    inspectSource: '',
+    inspectValue: '',
+    inspectDecision: '',
+  };
+
+  const overlayResult = await preprocessDreaminaEntryOverlays(page, runtime, context).catch(() => ({ handled: false }));
+  prepareTrace.overlayHandled = Boolean(overlayResult?.handled);
+  prepareTrace.overlayMatchedType = String(overlayResult?.matchedType || '');
+  prepareTrace.overlayMatchedValue = String(overlayResult?.matchedValue || '');
+
+  const healthResult = await checkEntryHealth(page, runtime, {
+    ...context,
+    skipOverlayPreprocess: true,
+  }).catch(() => ({
+    ok: false,
+    state: 'ENTRY_HEALTH_FAILED',
+    source: 'prepare-entry-surface',
+    value: 'CHECK_ENTRY_HEALTH_THROWN',
+    strength: '',
+  }));
+
+  prepareTrace.inspectState = String(healthResult?.state || '');
+  prepareTrace.inspectSource = String(healthResult?.source || '');
+  prepareTrace.inspectValue = String(healthResult?.value || '');
+  prepareTrace.inspectDecision = String(healthResult?.healthTrace?.decision || '');
+
+  if (healthResult?.ok === false) {
+    return {
+      ok: false,
+      state: String(healthResult?.state || 'ENTRY_SURFACE_PREPARE_FAILED'),
+      source: String(healthResult?.source || 'prepare-entry-surface'),
+      value: String(healthResult?.value || 'ENTRY_SURFACE_PREPARE_FAILED'),
+      strength: String(healthResult?.strength || ''),
+      detail: {
+        prepareTrace,
+        healthResult,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    state: 'ENTRY_SURFACE_READY',
+    source: 'prepare-entry-surface',
+    value: 'ENTRY_SURFACE_READY',
+    strength: 'medium',
+    detail: {
+      prepareTrace,
+      healthResult,
+    },
+  };
+}
+
+/**
+ * 第一层轮询，只等待首页 ready 文案。
+ */
+async function waitForDreaminaHomeReady(page, runtime = {}, context = {}) {
+  const profile = loadDreaminaEntryProfile();
+  const readyTexts = Array.isArray(profile?.loginSignals?.readyTexts) ? profile.loginSignals.readyTexts : [];
+  const maxWaitMs = Number(runtime?.entryHomeReadyTimeoutMs || 10000);
+  const intervalMs = Number(runtime?.entryHomeReadyPollIntervalMs || 400);
+  const startedAt = Date.now();
+  let elapsedMs = 0;
+  let round = 0;
+  const signalTimeline = {};
+  const rounds = [];
+
+  while (elapsedMs <= maxWaitMs) {
+    round += 1;
+    const detectStartedAt = Date.now();
+    let matchedText = '';
+
+    for (const text of readyTexts) {
+      const locator = page.getByText(String(text || ''), { exact: false }).first();
+      const visible = await isVisible(locator);
+      if (visible && !signalTimeline[`text:${String(text || '')}`]) {
+        signalTimeline[`text:${String(text || '')}`] = {
+          firstSeenMs: elapsedMs,
+          round,
+        };
+      }
+      if (visible) {
+        matchedText = String(text || '');
+        break;
+      }
+    }
+
+    rounds.push({
+      round,
+      elapsedMs,
+      detectMs: Math.max(0, Date.now() - detectStartedAt),
+      matchedText,
+    });
+
+    if (matchedText) {
+      return {
+        ok: true,
+        state: 'HOME_READY',
+        source: 'text',
+        value: matchedText,
+        strength: 'medium',
+        waitStepMs: elapsedMs,
+        detail: {
+          signalTimeline,
+          rounds,
+          resolvedBy: 'ready-text',
+          resolvedAtMs: elapsedMs,
+          totalWallClockMs: Math.max(0, Date.now() - startedAt),
+        },
+      };
+    }
+
+    await page.waitForTimeout(intervalMs).catch(() => {});
+    elapsedMs += intervalMs;
+  }
+
+  return {
+    ok: false,
+    state: 'HOME_READY_TIMEOUT',
+    source: 'wait-home-ready',
+    value: 'HOME_READY_TEXT_NOT_FOUND',
+    strength: '',
+    waitStepMs: elapsedMs,
+    detail: {
+      signalTimeline,
+      rounds,
+      totalWallClockMs: Math.max(0, Date.now() - startedAt),
+      debugSnapshot: await captureDreaminaEntryDebugSnapshot(page),
+    },
+  };
+}
+
+/**
+ * 第二层轮询，只等待 Sign in 入口。
+ */
+async function waitForDreaminaSignInEntry(page, runtime = {}, context = {}) {
+  const startedAt = Date.now();
+  const maxWaitMs = Number(runtime?.entrySignInTimeoutMs || 10000);
+  const intervalMs = Number(runtime?.entrySignInPollIntervalMs || 300);
+  let elapsedMs = 0;
+  let round = 0;
+  const signalTimeline = {};
+  const rounds = [];
+
+  while (elapsedMs <= maxWaitMs) {
+    round += 1;
+    const detectStartedAt = Date.now();
+    const signal = await detectDreaminaLoginEntrySignals(page, runtime, {
+      ...context,
+      detectMode: 'sign-in-entry-only',
+    });
+    recordDreaminaSignalTimeline(signalTimeline, signal, elapsedMs, round);
+
+    rounds.push({
+      round,
+      elapsedMs,
+      detectMs: Math.max(0, Date.now() - detectStartedAt),
+      found: Boolean(signal?.found),
+      clickable: Boolean(signal?.clickable),
+      label: String(signal?.label || ''),
+      source: String(signal?.source || ''),
+      value: String(signal?.value || ''),
+    });
+
+    if (signal?.found && signal?.clickable && signal?.locator) {
+      return {
+        ok: true,
+        state: 'SIGN_IN_FOUND',
+        source: String(signal?.source || ''),
+        value: String(signal?.value || signal?.label || 'SIGN_IN_FOUND'),
+        strength: 'strong',
+        waitStepMs: elapsedMs,
+        detail: {
+          loginSignal: signal,
+          signalTimeline,
+          rounds,
+          resolvedBy: 'sign-in-entry',
+          resolvedAtMs: elapsedMs,
+          totalWallClockMs: Math.max(0, Date.now() - startedAt),
+        },
+      };
+    }
+
+    await page.waitForTimeout(intervalMs).catch(() => {});
+    elapsedMs += intervalMs;
+  }
+
+  return {
+    ok: false,
+    state: 'SIGN_IN_NOT_FOUND',
+    source: 'wait-sign-in-entry',
+    value: 'SIGN_IN_ENTRY_NOT_FOUND',
+    strength: '',
+    waitStepMs: elapsedMs,
+    detail: {
+      signalTimeline,
+      rounds,
+      totalWallClockMs: Math.max(0, Date.now() - startedAt),
+      debugSnapshot: await captureDreaminaEntryDebugSnapshot(page),
+    },
+  };
+}
+
+/**
+ * 只点击一次 Sign in。
+ */
+async function clickDreaminaSignInOnce(page, signInSignal = {}, runtime = {}, context = {}) {
+  const locator = signInSignal?.locator || null;
+  if (!locator) {
+    return {
+      ok: false,
+      state: 'SIGN_IN_CLICK_FAILED',
+      source: 'click-sign-in-once',
+      value: 'SIGN_IN_LOCATOR_MISSING',
+      strength: '',
+      detail: {
+        clickStrategy: 'missing-locator',
+      },
+    };
+  }
+
+  const clickStartedAt = Date.now();
+  let clickStrategy = 'normal-click';
+  try {
+    await locator.click({ timeout: 1500 });
+  } catch (error) {
+    clickStrategy = 'force-click';
+    try {
+      await locator.click({ force: true, timeout: 1500 });
+    } catch (forceError) {
+      return {
+        ok: false,
+        state: 'SIGN_IN_CLICK_FAILED',
+        source: 'click-sign-in-once',
+        value: forceError?.message || error?.message || 'SIGN_IN_CLICK_FAILED',
+        strength: '',
+        detail: {
+          clickStrategy,
+          clickMs: Math.max(0, Date.now() - clickStartedAt),
+        },
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    state: 'SIGN_IN_CLICKED',
+    source: 'click-sign-in-once',
+    value: String(signInSignal?.value || signInSignal?.label || 'SIGN_IN_CLICKED'),
+    strength: 'strong',
+    detail: {
+      clickStrategy,
+      clickMs: Math.max(0, Date.now() - clickStartedAt),
+      clickedSignal: signInSignal,
+    },
+  };
+}
+
+/**
+ * 点击后只做一次短 gate 确认。
+ */
+async function confirmDreaminaLoginGateAfterClick(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const startedAt = Date.now();
+  const settleMs = Number(runtime?.entryPostCtaClickWaitMs || 600);
+  await page.waitForTimeout(settleMs).catch(() => {});
+  const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+  const recheckLabel = String(signal?.label || '');
+  const gateLayerReady = Boolean(signal?.found) && (
+    recheckLabel === 'email-input'
+    || recheckLabel === 'continue-with-email'
+    || recheckLabel === 'continue-with-email-modal'
+    || recheckLabel === 'continue-with-email-modal-button'
+  );
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.entry.gate-confirm | recheck=${recheckLabel || 'none'} | gateLayerReady=${gateLayerReady ? 'Y' : 'N'}`);
+  }
+
+  return {
+    ok: true,
+    state: 'ENTRY_READY',
+    source: gateLayerReady
+      ? (recheckLabel === 'email-input' ? String(signal?.source || '') : 'LOGIN_GATE_LAYER_READY')
+      : 'LOGIN_ENTRY_CLICKED',
+    value: String(signal?.value || signal?.label || 'LOGIN_ENTRY_CLICKED'),
+    strength: 'strong',
+    waitStepMs: settleMs,
+    detail: {
+      loginSignal: signal?.found ? signal : null,
+      gateLayerReady,
+      confirmMs: Math.max(0, Date.now() - startedAt),
+      postClickGateReadyMs: settleMs,
+    },
+  };
+}
+
+/**
+ * Dreamina S1 新编排入口。
+ *
+ * 边界：
+ * - prepare -> home ready -> sign in -> click -> confirm
+ * - 每段单独负责自己的职责
+ * - 当前先并行保留旧主链，待验证后再收旧实现
+ */
+async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const flowStartedAt = Date.now();
+  const signalTimeline = {};
+  const stageBreakdown = {
+    prepareEntrySurfaceMs: 0,
+    waitHomeReadyMs: 0,
+    waitSignInEntryMs: 0,
+    clickSignInOnceMs: 0,
+    confirmLoginGateMs: 0,
+  };
+  const flowTrace = {
+    prepare: null,
+    homeReady: null,
+    signInEntry: null,
+    click: null,
+    gateConfirm: null,
+    resolvedPath: '',
+  };
+
+  const prepareStartedAt = Date.now();
+  const prepareResult = await prepareDreaminaEntrySurface(page, runtime, context);
+  stageBreakdown.prepareEntrySurfaceMs = Math.max(0, Date.now() - prepareStartedAt);
+  flowTrace.prepare = prepareResult;
+  if (!prepareResult?.ok) {
+    return {
+      ok: false,
+      state: String(prepareResult?.state || 'ENTRY_SURFACE_PREPARE_FAILED'),
+      source: String(prepareResult?.source || 'prepare-entry-surface'),
+      value: String(prepareResult?.value || 'ENTRY_SURFACE_PREPARE_FAILED'),
+      strength: String(prepareResult?.strength || ''),
+      waitStepMs: stageBreakdown.prepareEntrySurfaceMs,
+      detail: {
+        loginSignal: null,
+        signalTimeline,
+        flowTrace: {
+          ...flowTrace,
+          resolvedPath: 'prepare-failed',
+        },
+        timingBreakdown: {
+          ...stageBreakdown,
+          totalMs: Math.max(0, Date.now() - flowStartedAt),
+        },
+      },
+    };
+  }
+
+  const homeReadyStartedAt = Date.now();
+  const homeReadyResult = await waitForDreaminaHomeReady(page, runtime, context);
+  stageBreakdown.waitHomeReadyMs = Math.max(0, Date.now() - homeReadyStartedAt);
+  flowTrace.homeReady = homeReadyResult;
+  if (homeReadyResult?.detail?.signalTimeline) Object.assign(signalTimeline, homeReadyResult.detail.signalTimeline);
+  if (!homeReadyResult?.ok) {
+    return {
+      ok: false,
+      state: String(homeReadyResult?.state || 'HOME_READY_TIMEOUT'),
+      source: String(homeReadyResult?.source || 'wait-home-ready'),
+      value: String(homeReadyResult?.value || 'HOME_READY_TIMEOUT'),
+      strength: String(homeReadyResult?.strength || ''),
+      waitStepMs: stageBreakdown.waitHomeReadyMs,
+      detail: {
+        loginSignal: null,
+        signalTimeline,
+        flowTrace: {
+          ...flowTrace,
+          resolvedPath: 'home-ready-failed',
+        },
+        timingBreakdown: {
+          ...stageBreakdown,
+          totalMs: Math.max(0, Date.now() - flowStartedAt),
+        },
+        debugSnapshot: homeReadyResult?.detail?.debugSnapshot || null,
+      },
+    };
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.entry.flow.home-ready | value=${homeReadyResult?.value || ''}`);
+  }
+
+  const signInStartedAt = Date.now();
+  const signInResult = await waitForDreaminaSignInEntry(page, runtime, context);
+  stageBreakdown.waitSignInEntryMs = Math.max(0, Date.now() - signInStartedAt);
+  flowTrace.signInEntry = signInResult;
+  if (signInResult?.detail?.signalTimeline) Object.assign(signalTimeline, signInResult.detail.signalTimeline);
+  if (!signInResult?.ok) {
+    return {
+      ok: false,
+      state: String(signInResult?.state || 'SIGN_IN_NOT_FOUND'),
+      source: String(signInResult?.source || 'wait-sign-in-entry'),
+      value: String(signInResult?.value || 'SIGN_IN_NOT_FOUND'),
+      strength: String(signInResult?.strength || ''),
+      waitStepMs: stageBreakdown.waitSignInEntryMs,
+      detail: {
+        loginSignal: null,
+        signalTimeline,
+        flowTrace: {
+          ...flowTrace,
+          resolvedPath: 'sign-in-not-found',
+        },
+        timingBreakdown: {
+          ...stageBreakdown,
+          totalMs: Math.max(0, Date.now() - flowStartedAt),
+        },
+        debugSnapshot: signInResult?.detail?.debugSnapshot || null,
+      },
+    };
+  }
+
+  const clickStartedAt = Date.now();
+  const clickResult = await clickDreaminaSignInOnce(page, signInResult?.detail?.loginSignal || null, runtime, context);
+  stageBreakdown.clickSignInOnceMs = Math.max(0, Date.now() - clickStartedAt);
+  flowTrace.click = clickResult;
+  if (!clickResult?.ok) {
+    return {
+      ok: false,
+      state: String(clickResult?.state || 'SIGN_IN_CLICK_FAILED'),
+      source: String(clickResult?.source || 'click-sign-in-once'),
+      value: String(clickResult?.value || 'SIGN_IN_CLICK_FAILED'),
+      strength: String(clickResult?.strength || ''),
+      waitStepMs: stageBreakdown.clickSignInOnceMs,
+      detail: {
+        loginSignal: signInResult?.detail?.loginSignal || null,
+        signalTimeline,
+        flowTrace: {
+          ...flowTrace,
+          resolvedPath: 'sign-in-click-failed',
+        },
+        timingBreakdown: {
+          ...stageBreakdown,
+          totalMs: Math.max(0, Date.now() - flowStartedAt),
+        },
+      },
+    };
+  }
+
+  const gateStartedAt = Date.now();
+  const gateConfirmResult = await confirmDreaminaLoginGateAfterClick(page, runtime, context);
+  stageBreakdown.confirmLoginGateMs = Math.max(0, Date.now() - gateStartedAt);
+  flowTrace.gateConfirm = gateConfirmResult;
+  recordDreaminaSignalTimeline(
+    signalTimeline,
+    gateConfirmResult?.detail?.loginSignal || {},
+    stageBreakdown.prepareEntrySurfaceMs + stageBreakdown.waitHomeReadyMs + stageBreakdown.waitSignInEntryMs + stageBreakdown.clickSignInOnceMs + stageBreakdown.confirmLoginGateMs,
+    0
+  );
+
+  return {
+    ok: true,
+    state: String(gateConfirmResult?.state || 'ENTRY_READY'),
+    source: String(gateConfirmResult?.source || 'LOGIN_ENTRY_CLICKED'),
+    value: String(gateConfirmResult?.value || 'ENTRY_READY'),
+    strength: String(gateConfirmResult?.strength || 'strong'),
+    waitStepMs: Math.max(0, Date.now() - flowStartedAt),
+    detail: {
+      loginSignal: gateConfirmResult?.detail?.loginSignal || signInResult?.detail?.loginSignal || null,
+      signalTimeline,
+      flowTrace: {
+        ...flowTrace,
+        resolvedPath: 'click-then-confirm-gate',
+      },
+      ctaSource: signInResult?.detail?.loginSignal?.value || signInResult?.detail?.loginSignal?.label || '',
+      ctaOpenedGateMs: stageBreakdown.clickSignInOnceMs,
+      postClickGateReadyMs: gateConfirmResult?.detail?.postClickGateReadyMs ?? null,
+      gateLayerReady: Boolean(gateConfirmResult?.detail?.gateLayerReady),
+      timingBreakdown: {
+        ...stageBreakdown,
+        totalMs: Math.max(0, Date.now() - flowStartedAt),
+      },
+      confirmTrace: {
+        resolvedBy: Boolean(gateConfirmResult?.detail?.gateLayerReady)
+          ? 'click-then-login-gate-visible'
+          : 'click-then-single-recheck-complete',
+        resolvedAtMs: Math.max(0, Date.now() - flowStartedAt),
+        resolvedState: String(gateConfirmResult?.state || 'ENTRY_READY'),
+        resolvedReason: Boolean(gateConfirmResult?.detail?.gateLayerReady)
+          ? 'LOGIN_GATE_LAYER_VISIBLE_AFTER_SIGN_IN_CLICK'
+          : 'SIGN_IN_CLICKED_SINGLE_RECHECK_COMPLETE',
+        totalWallClockMs: Math.max(0, Date.now() - flowStartedAt),
+      },
+    },
+  };
+}
+
 async function waitForEntryReady(page, runtime = {}, context = {}) {
-  return await waitForDreaminaLoginEntryReady(page, runtime, context);
+  return await runDreaminaEntryFlow(page, runtime, context);
 }
 
 /**
