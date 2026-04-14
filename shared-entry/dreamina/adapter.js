@@ -867,10 +867,26 @@ async function captureDreaminaLoginGateSnapshot(page, context = {}) {
   const continueLayer = await findVisibleReadyText(page, ['Continue with email']);
   const bodyText = (await page.locator('body').innerText().catch(() => '') || '').replace(/\s+/g, ' ').trim();
 
+  const loginCheckboxChecked = await page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first().isChecked().catch(() => false);
+  const loginCheckboxVisible = await page.locator('label.lv-checkbox.privacyCheck').first().isVisible().catch(() => false);
+  const loginButton = page.locator('[class*="login-button"]').first();
+  const loginButtonVisible = await loginButton.isVisible().catch(() => false);
+  const loginButtonEnabled = await loginButton.isEnabled().catch(() => false);
+  const loginButtonClassName = await loginButton.evaluate(node => String(node?.className || '')).catch(() => '');
+  const loginPageVisible = await page.locator('text=Sign in').first().isVisible().catch(() => false);
+  const modalWrapperVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
+
   return {
     url: page.url(),
     emailGateReady: Boolean(emailGate.ok),
     continueLayerVisible: Boolean(continueLayer.ok),
+    loginCheckboxVisible: Boolean(loginCheckboxVisible),
+    loginCheckboxChecked: Boolean(loginCheckboxChecked),
+    loginButtonVisible: Boolean(loginButtonVisible),
+    loginButtonEnabled: Boolean(loginButtonEnabled),
+    loginButtonClassName: String(loginButtonClassName || ''),
+    loginPageVisible: Boolean(loginPageVisible),
+    modalWrapperVisible: Boolean(modalWrapperVisible),
     bodyTextLength: bodyText.length,
     bodyPreview: bodyText.slice(0, 200),
   };
@@ -888,6 +904,10 @@ function hasMeaningfulLoginGateStateChange(before = null, after = null) {
   if (before.url !== after.url) return true;
   if (before.emailGateReady !== after.emailGateReady) return true;
   if (before.continueLayerVisible !== after.continueLayerVisible) return true;
+  if (before.loginCheckboxChecked !== after.loginCheckboxChecked) return true;
+  if (before.loginButtonEnabled !== after.loginButtonEnabled) return true;
+  if (before.loginButtonClassName !== after.loginButtonClassName) return true;
+  if (before.modalWrapperVisible !== after.modalWrapperVisible) return true;
   if (before.bodyPreview !== after.bodyPreview) return true;
   if (Math.abs(Number(before.bodyTextLength || 0) - Number(after.bodyTextLength || 0)) >= 40) return true;
   return false;
@@ -992,6 +1012,24 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
    * 2. Sign in / Login / Log in / Sign up
    * 3. 结构化 selector 兜底
    */
+  const loginPageButton = page.locator('[class*="login-button"]').first();
+  const loginPageButtonVisible = await loginPageButton.isVisible().catch(() => false);
+  if (loginPageButtonVisible) {
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.adapter.findDreaminaLoginEntry | 命中 login 页面按钮容器: [class*="login-button"]');
+    }
+    return {
+      found: true,
+      type: 'login-page-sign-in',
+      matchType: 'selector',
+      text: 'Sign in',
+      selector: '[class*="login-button"]',
+      locator: loginPageButton,
+      alreadyInGate: false,
+      nextExpectedState: 'LOGIN_GATE_LAYER_READY',
+    };
+  }
+
   for (const candidate of DREAMINA_LOGIN_ENTRY_CANDIDATES) {
     if (candidate.text) {
       const locator = page.getByText(candidate.text, { exact: false }).first();

@@ -117,7 +117,36 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     const checkboxLabel = page.locator('label.lv-checkbox.privacyCheck').first();
     const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
     const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
-    const signInButton = page.getByText('Sign in', { exact: false }).first();
+    const checkboxHotspot = page.locator('label.lv-checkbox.privacyCheck span.lv-icon-hover.lv-checkbox-icon-hover.lv-checkbox-mask-wrapper').first();
+    const signInButton = page.locator('[class*="login-button"]').first();
+
+    const clickCheckboxHotspot = async () => {
+      const hotspotVisible = await checkboxHotspot.isVisible().catch(() => false);
+      if (hotspotVisible) {
+        await checkboxHotspot.click({ timeout: 1500 }).catch(() => null);
+        return 'checkbox-hotspot';
+      }
+
+      const maskVisible = await checkboxMask.isVisible().catch(() => false);
+      if (maskVisible) {
+        await checkboxMask.click({ timeout: 1500 }).catch(() => null);
+        return 'checkbox-mask';
+      }
+
+      const box = await checkboxHotspot.boundingBox().catch(() => null) || await checkboxMask.boundingBox().catch(() => null);
+      if (box && Number(box.width || 0) > 0 && Number(box.height || 0) > 0) {
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 50 }).catch(() => null);
+        return 'checkbox-bounding-box-center';
+      }
+
+      const labelVisible = await checkboxLabel.isVisible().catch(() => false);
+      if (labelVisible) {
+        await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
+        return 'checkbox-label';
+      }
+
+      return '';
+    };
 
     const signInVisible = await signInButton.isVisible().catch(() => false);
     if (!signInVisible) {
@@ -125,22 +154,21 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     }
 
     const checkedBefore = await checkboxInput.isChecked().catch(() => false);
+    let checkboxClickTarget = '';
     if (!checkedBefore) {
-      const labelVisible = await checkboxLabel.isVisible().catch(() => false);
-      if (labelVisible) {
-        await checkboxLabel.click({ timeout: 1500 }).catch(() => null);
-      } else {
-        const maskVisible = await checkboxMask.isVisible().catch(() => false);
-        if (maskVisible) {
-          await checkboxMask.click({ timeout: 1500 }).catch(() => null);
-        }
-      }
-      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 400)).catch(() => null);
+      checkboxClickTarget = await clickCheckboxHotspot();
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxWaitMs || 500)).catch(() => null);
     }
 
-    const checkedAfter = await checkboxInput.isChecked().catch(() => false);
+    let checkedAfter = await checkboxInput.isChecked().catch(() => false);
     if (!checkedAfter) {
-      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED' };
+      checkboxClickTarget = checkboxClickTarget || await clickCheckboxHotspot();
+      await page.waitForTimeout(Number(runtime?.dreaminaLoginCheckboxRetryWaitMs || 700)).catch(() => null);
+      checkedAfter = await checkboxInput.isChecked().catch(() => false);
+    }
+
+    if (!checkedAfter) {
+      return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkboxClickTarget };
     }
 
     await signInButton.click({ timeout: 2000 }).catch(async () => {
@@ -153,6 +181,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       skipped: false,
       reason: 'LOGIN_PAGE_SIGN_IN_CLICKED',
       checked: checkedAfter,
+      checkboxClickTarget,
     };
   }
 
@@ -401,8 +430,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
 
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
-      const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://www.dreamina.com/').trim();
-      const homeUrl = String(runtime?.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
+      const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://dreamina.capcut.com/ai-tool/login').trim();
       const gotoTimeout = Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000);
 
       const attemptGoto = async (targetUrl, sourceLabel) => {
@@ -480,7 +508,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         }
       };
 
-      const assessPublicEntryAffordance = async () => {
+      const assessLoginEntryAffordance = async () => {
         if (typeof siteAdapter.detectDreaminaLoginEntrySignals !== 'function') {
           return null;
         }
@@ -488,57 +516,27 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         return await siteAdapter.detectDreaminaLoginEntrySignals(page, runtime, context).catch(() => null);
       };
 
-      let publicEntryResult = await attemptGoto(entryUrl, 'goto-public-entry');
-      if (!publicEntryResult?.ok) {
-        return publicEntryResult;
+      let loginEntryResult = await attemptGoto(entryUrl, 'goto-login-entry');
+      if (!loginEntryResult?.ok) {
+        return loginEntryResult;
       }
 
       const loginPagePrepareResult = await prepareDreaminaLoginPage(page, runtime, context).catch(() => null);
-      publicEntryResult = {
-        ...publicEntryResult,
+      loginEntryResult = {
+        ...loginEntryResult,
         detail: {
-          ...(publicEntryResult?.detail || {}),
+          ...(loginEntryResult?.detail || {}),
           loginPagePrepareResult,
+          strategy: 'login-entry-checkbox-then-sign-in',
         },
       };
 
-      let publicEntrySignal = await assessPublicEntryAffordance();
-      if (!(publicEntrySignal?.found && (publicEntrySignal?.clickable || publicEntrySignal?.label === 'email-input'))) {
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: gotoTimeout }).catch(() => null);
-        await preprocessEntryOverlays(page).catch(() => null);
-        publicEntrySignal = await assessPublicEntryAffordance();
-        publicEntryResult = {
-          ...publicEntryResult,
-          detail: {
-            ...(publicEntryResult?.detail || {}),
-            publicEntryRetried: true,
-          },
-        };
-      }
-
-      if (publicEntrySignal?.found && (publicEntrySignal?.clickable || publicEntrySignal?.label === 'email-input')) {
-        return {
-          ...publicEntryResult,
-          detail: {
-            ...(publicEntryResult?.detail || {}),
-            publicEntrySignal,
-            strategy: 'public-entry-affordance-ready',
-          },
-        };
-      }
-
-      const homeResult = await attemptGoto(homeUrl, 'goto-home-fallback');
-      if (!homeResult?.ok) {
-        return homeResult;
-      }
-
+      const loginEntrySignal = await assessLoginEntryAffordance();
       return {
-        ...homeResult,
+        ...loginEntryResult,
         detail: {
-          ...(homeResult?.detail || {}),
-          strategy: 'public-entry-then-home-fallback',
-          entryUrl,
-          homeUrl,
+          ...(loginEntryResult?.detail || {}),
+          loginEntrySignal,
         },
       };
     },
@@ -2098,6 +2096,7 @@ async function runDreaminaRegisterCli(argv = []) {
         selectedProxyIndex: proxySelection.selectedProxyIndex,
         skippedProxyIds: proxySelection.skippedProxyIds,
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
+        dreaminaEntryUrl: 'https://dreamina.capcut.com/ai-tool/login',
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
         firstLoadGraceWaitMs: 12000,
