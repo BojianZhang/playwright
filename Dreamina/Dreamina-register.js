@@ -162,7 +162,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
   }
 
   async function captureEntryDebugSnapshot(page) {
-    return await page.evaluate(() => {
+    const snapshot = await page.evaluate(() => {
       const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
       const visible = element => {
         if (!element) return false;
@@ -170,9 +170,38 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         const rect = element.getBoundingClientRect();
         return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
       };
+      const toPlainClickable = element => {
+        const rect = element.getBoundingClientRect();
+        const text = normalize(element.innerText || element.textContent || '');
+        const ariaLabel = normalize(element.getAttribute('aria-label') || '');
+        const role = normalize(element.getAttribute('role') || '');
+        const className = normalize(typeof element.className === 'string' ? element.className : '');
+        const id = normalize(element.getAttribute('id') || '');
+        const href = normalize(element.getAttribute('href') || '');
+        const name = normalize(element.getAttribute('name') || '');
+        const title = normalize(element.getAttribute('title') || '');
+        const tag = String(element.tagName || '').toLowerCase();
+        const summary = [text, ariaLabel, title, name, id, className].filter(Boolean).join(' | ');
+        return {
+          tag,
+          role,
+          text,
+          ariaLabel,
+          title,
+          name,
+          id,
+          className,
+          href,
+          x: Number(Math.round(rect.left || 0)),
+          y: Number(Math.round(rect.top || 0)),
+          w: Number(Math.round(rect.width || 0)),
+          h: Number(Math.round(rect.height || 0)),
+          summary,
+        };
+      };
 
       const bodyText = normalize(document.body?.innerText || '');
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+      const visibleButtons = Array.from(document.querySelectorAll('button, [role="button"], a'))
         .filter(visible)
         .map(element => normalize(element.innerText || element.textContent || element.getAttribute('aria-label') || ''))
         .filter(Boolean)
@@ -180,46 +209,19 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
 
       const clickableInventory = Array.from(document.querySelectorAll('button, [role="button"], a, [tabindex], input[type="button"], input[type="submit"]'))
         .filter(visible)
-        .map(element => {
-          const rect = element.getBoundingClientRect();
-          const text = normalize(element.innerText || element.textContent || '');
-          const ariaLabel = normalize(element.getAttribute('aria-label') || '');
-          const role = normalize(element.getAttribute('role') || '');
-          const className = normalize(typeof element.className === 'string' ? element.className : '');
-          const id = normalize(element.getAttribute('id') || '');
-          const href = normalize(element.getAttribute('href') || '');
-          const name = normalize(element.getAttribute('name') || '');
-          const title = normalize(element.getAttribute('title') || '');
-          const tag = String(element.tagName || '').toLowerCase();
-          const summary = [text, ariaLabel, title, name, id, className].filter(Boolean).join(' | ');
-          return {
-            tag,
-            role,
-            text,
-            ariaLabel,
-            title,
-            name,
-            id,
-            className,
-            href,
-            x: Math.round(rect.left || 0),
-            y: Math.round(rect.top || 0),
-            w: Math.round(rect.width || 0),
-            h: Math.round(rect.height || 0),
-            summary,
-          };
-        })
-        .slice(0, 40);
+        .map(toPlainClickable)
+        .filter(item => item && typeof item === 'object')
+        .slice(0, 24);
 
       const headerClickables = clickableInventory
         .filter(item => item.y >= 0 && item.y <= 220)
-        .slice(0, 20);
+        .slice(0, 12);
 
       const keywordClickables = clickableInventory
         .filter(item => /sign|login|log in|continue|email|account|profile|user|avatar/i.test(item.summary || ''))
-        .slice(0, 20);
+        .slice(0, 12);
 
-      const inputs = Array.from(document.querySelectorAll('input, textarea'))
+      const visibleInputs = Array.from(document.querySelectorAll('input, textarea'))
         .filter(visible)
         .map(element => ({
           tag: String(element.tagName || '').toLowerCase(),
@@ -231,16 +233,16 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         }))
         .slice(0, 20);
 
-      return {
+      return JSON.parse(JSON.stringify({
         url: String(window.location.href || ''),
         title: normalize(document.title || ''),
         bodyPreview: bodyText.slice(0, 500),
-        visibleButtons: buttons,
-        visibleInputs: inputs,
+        visibleButtons,
+        visibleInputs,
         clickableInventory,
         headerClickables,
         keywordClickables,
-      };
+      }));
     }).catch(() => ({
       url: String(page?.url ? page.url() : ''),
       title: '',
@@ -251,6 +253,17 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       headerClickables: [],
       keywordClickables: [],
     }));
+
+    return {
+      url: String(snapshot?.url || ''),
+      title: String(snapshot?.title || ''),
+      bodyPreview: String(snapshot?.bodyPreview || ''),
+      visibleButtons: Array.isArray(snapshot?.visibleButtons) ? snapshot.visibleButtons : [],
+      visibleInputs: Array.isArray(snapshot?.visibleInputs) ? snapshot.visibleInputs : [],
+      clickableInventory: Array.isArray(snapshot?.clickableInventory) ? snapshot.clickableInventory : [],
+      headerClickables: Array.isArray(snapshot?.headerClickables) ? snapshot.headerClickables : [],
+      keywordClickables: Array.isArray(snapshot?.keywordClickables) ? snapshot.keywordClickables : [],
+    };
   }
 
   function isEntryPageLikelyUsableForFinalGrace(input = {}) {
