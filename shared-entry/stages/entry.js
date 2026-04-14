@@ -93,6 +93,7 @@ async function runEntryStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  const timingBreakdown = {};
 
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
@@ -109,6 +110,7 @@ async function runEntryStage(options = {}) {
   logStageProgress('entry', '打开入口页 / 校正入口上下文', {
     context: buildStageLogContext(options),
   });
+  const openStartMs = stageTimer.elapsedMs();
   const entryOpenResult = openEntryPage
     ? await openEntryPage(page, runtime, context)
     : {
@@ -118,6 +120,7 @@ async function runEntryStage(options = {}) {
         value: '',
         strength: '',
       };
+  timingBreakdown.openEntryPageMs = Math.max(0, stageTimer.elapsedMs() - openStartMs);
 
   // 如果入口页打开就已经明确失败，则直接收口。
   if (entryOpenResult && entryOpenResult.ok === false) {
@@ -150,6 +153,7 @@ async function runEntryStage(options = {}) {
         entryOpenResult,
         entryReadyResult: null,
         classified,
+        timingBreakdown,
       },
     });
   }
@@ -159,6 +163,7 @@ async function runEntryStage(options = {}) {
   logStageProgress('entry', '检查入口页健康状态', {
     context: buildStageLogContext(options),
   });
+  const healthStartMs = stageTimer.elapsedMs();
   const entryHealthResult = checkEntryHealth
     ? await checkEntryHealth(page, runtime, context)
     : {
@@ -168,6 +173,7 @@ async function runEntryStage(options = {}) {
         value: '',
         strength: '',
       };
+  timingBreakdown.checkEntryHealthMs = Math.max(0, stageTimer.elapsedMs() - healthStartMs);
 
   // 如果健康检查明确失败，则直接收口。
   if (entryHealthResult && entryHealthResult.ok === false) {
@@ -202,6 +208,7 @@ async function runEntryStage(options = {}) {
         entryHealthResult,
         entryReadyResult: null,
         classified,
+        timingBreakdown,
       },
     });
   }
@@ -224,6 +231,7 @@ async function runEntryStage(options = {}) {
         recoveryTrace: null,
         entryOpenResult,
         entryHealthResult,
+        timingBreakdown,
       },
     });
   }
@@ -233,9 +241,12 @@ async function runEntryStage(options = {}) {
   logStageProgress('entry', '等待入口 ready / 恢复入口信号', {
     context: buildStageLogContext(options),
   });
+  const readyStartMs = stageTimer.elapsedMs();
   const entryReadyResult = confirmEntryReadyWithRecovery
     ? await confirmEntryReadyWithRecovery(page, runtime, context)
     : await waitForEntryReady(page, runtime, context);
+  timingBreakdown.confirmEntryReadyMs = Math.max(0, stageTimer.elapsedMs() - readyStartMs);
+  timingBreakdown.totalBeforeSettleMs = Math.max(0, stageTimer.elapsedMs());
 
   // 如果入口 ready 成功，就直接返回成功结构。
   if (entryReadyResult?.ok) {
@@ -270,6 +281,7 @@ async function runEntryStage(options = {}) {
         entryReadyResult,
         recoveryResult: entryReadyResult?.recoveryResult || null,
         classified: null,
+        timingBreakdown,
       },
     });
   }
@@ -307,6 +319,7 @@ async function runEntryStage(options = {}) {
       entryReadyResult,
       recoveryResult: entryReadyResult?.recoveryResult || null,
       classified,
+      timingBreakdown,
     },
   });
 }
