@@ -115,7 +115,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     }
 
     const checkboxInput = page.locator('label.lv-checkbox.privacyCheck input[type="checkbox"]').first();
-    const checkboxMask = page.locator('.lv-checkbox-mask').first();
+    const checkboxMask = page.locator('label.lv-checkbox.privacyCheck .lv-checkbox-mask').first();
     const signInText = page.getByText('Sign in', { exact: false }).first();
 
     const signInVisible = await signInText.isVisible().catch(() => false);
