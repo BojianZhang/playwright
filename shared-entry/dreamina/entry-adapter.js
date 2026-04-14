@@ -125,6 +125,19 @@ async function openEntryPage(page, runtime = {}, context = {}) {
   // 读取当前 URL。
   const currentUrl = String(page.url ? page.url() : '').trim();
 
+  const openTrace = {
+    entryUrl,
+    currentUrl,
+    finalUrl: currentUrl,
+    title: '',
+    waitUntil: 'domcontentloaded',
+    timeoutMs: Number(runtime?.entryGotoTimeoutMs || 30000),
+    navigationOk: false,
+    navigationErrorName: '',
+    navigationErrorMessage: '',
+    bodyTextLength: 0,
+  };
+
   // 如果当前 URL 已经包含 Dreamina 域名片段，则认为入口页打开步骤可以跳过。
   if (currentUrl && currentUrl.includes('dreamina.com')) {
     if (typeof logInfo === 'function') logInfo(`dreamina.entry.open | source=url | value=${currentUrl} | strength=weak`);
@@ -135,14 +148,23 @@ async function openEntryPage(page, runtime = {}, context = {}) {
       value: currentUrl,
       strength: 'weak',
       stateChanged: false,
+      detail: {
+        openTrace,
+      },
     };
   }
 
   try {
     // 执行 goto 到 entryUrl。
-    await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: Number(runtime?.entryGotoTimeoutMs || 30000) });
+    await page.goto(entryUrl, { waitUntil: 'domcontentloaded', timeout: openTrace.timeoutMs });
+    openTrace.navigationOk = true;
+    openTrace.finalUrl = String(page.url ? page.url() : '').trim();
+    openTrace.title = String(await page.title().catch(() => '') || '').trim();
+    openTrace.bodyTextLength = Number(await page.evaluate(() => (document.body?.innerText || '').trim().length).catch(() => 0) || 0);
     // 如果有日志函数，记录本轮 goto。
-    if (typeof logInfo === 'function') logInfo(`dreamina.entry.open | source=goto | value=${entryUrl} | strength=strong`);
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.entry.open | source=goto | value=${entryUrl} | finalUrl=${openTrace.finalUrl} | title=${openTrace.title || '-'} | bodyTextLength=${openTrace.bodyTextLength} | strength=strong`);
+    }
     return {
       ok: true,
       state: 'ENTRY_PAGE_OPENED',
@@ -150,16 +172,31 @@ async function openEntryPage(page, runtime = {}, context = {}) {
       value: entryUrl,
       strength: 'strong',
       stateChanged: true,
+      detail: {
+        openTrace,
+      },
     };
   } catch (error) {
+    openTrace.navigationOk = false;
+    openTrace.navigationErrorName = String(error?.name || '').trim();
+    openTrace.navigationErrorMessage = String(error?.message || entryUrl).trim();
+    openTrace.finalUrl = String(page.url ? page.url() : '').trim();
+    openTrace.title = String(await page.title().catch(() => '') || '').trim();
+    openTrace.bodyTextLength = Number(await page.evaluate(() => (document.body?.innerText || '').trim().length).catch(() => 0) || 0);
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.entry.open.fail | source=goto | value=${entryUrl} | finalUrl=${openTrace.finalUrl} | errorName=${openTrace.navigationErrorName || '-'} | error=${openTrace.navigationErrorMessage} | title=${openTrace.title || '-'} | bodyTextLength=${openTrace.bodyTextLength}`);
+    }
     // goto 异常时，返回统一失败结构。
     return {
       ok: false,
       state: 'ENTRY_PAGE_OPEN_FAILED',
-      source: 'goto',
+      source: 'goto-login-entry',
       value: error?.message || entryUrl,
       strength: 'strong',
       stateChanged: false,
+      detail: {
+        openTrace,
+      },
     };
   }
 }
