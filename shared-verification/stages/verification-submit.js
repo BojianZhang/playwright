@@ -219,7 +219,12 @@ async function runVerificationSubmitStage(options = {}) {
       reason: classified?.siteReason || classified?.reason || verificationReady?.state || 'VERIFICATION_STAGE_NOT_READY',
       signalStrength: verificationReady?.strength || '',
       detectionSource: verificationReady?.source || '',
-      detail: { verificationReady, classified },
+      detail: {
+        provider: '',
+        matchMode: '',
+        verificationReady,
+        classified,
+      },
     });
   }
 
@@ -331,7 +336,14 @@ async function runVerificationSubmitStage(options = {}) {
         reason: classified?.siteReason || classified?.reason || fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',
         detectionSource: fetchCodeResult?.source || '',
         retryCount: attemptIndex - 1,
-        detail: { verificationReady, fetchCodeResult, classified, retrySummary },
+        detail: {
+          provider: String(fetchCodeResult?.provider || ''),
+          matchMode: String(fetchCodeResult?.matchMode || ''),
+          verificationReady,
+          fetchCodeResult,
+          classified,
+          retrySummary,
+        },
       });
     }
 
@@ -378,7 +390,15 @@ async function runVerificationSubmitStage(options = {}) {
         signalStrength: codeInputResolution?.strength || '',
         detectionSource: codeInputResolution?.source || '',
         retryCount: attemptIndex - 1,
-        detail: { verificationReady, fetchCodeResult, codeInputResolution, classified, retrySummary },
+        detail: {
+          provider: String(fetchCodeResult?.provider || ''),
+          matchMode: String(fetchCodeResult?.matchMode || ''),
+          verificationReady,
+          fetchCodeResult,
+          codeInputResolution,
+          classified,
+          retrySummary,
+        },
       });
     }
 
@@ -424,7 +444,17 @@ async function runVerificationSubmitStage(options = {}) {
         detectionSource: fillResult?.source || '',
         stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
         retryCount: attemptIndex - 1,
-        detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, classified, retrySummary },
+        detail: {
+          provider: String(fetchCodeResult?.provider || ''),
+          matchMode: String(fetchCodeResult?.matchMode || ''),
+          stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+          verificationReady,
+          fetchCodeResult,
+          codeInputResolution,
+          fillResult,
+          classified,
+          retrySummary,
+        },
       });
     }
 
@@ -468,7 +498,17 @@ async function runVerificationSubmitStage(options = {}) {
         detectionSource: confirmResult?.source || '',
         stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
         retryCount: attemptIndex - 1,
-        detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, retrySummary },
+        detail: {
+          provider: String(fetchCodeResult?.provider || ''),
+          matchMode: String(fetchCodeResult?.matchMode || ''),
+          stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+          verificationReady,
+          fetchCodeResult,
+          codeInputResolution,
+          fillResult,
+          confirmResult,
+          retrySummary,
+        },
       });
     }
 
@@ -542,7 +582,18 @@ async function runVerificationSubmitStage(options = {}) {
       detectionSource: confirmResult?.source || '',
       stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
       retryCount: attemptIndex - 1,
-      detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, classified, retrySummary },
+      detail: {
+        provider: String(fetchCodeResult?.provider || ''),
+        matchMode: String(fetchCodeResult?.matchMode || ''),
+        stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+        verificationReady,
+        fetchCodeResult,
+        codeInputResolution,
+        fillResult,
+        confirmResult,
+        classified,
+        retrySummary,
+      },
     });
   }
 
@@ -562,7 +613,17 @@ async function runVerificationSubmitStage(options = {}) {
     detectionSource: confirmResult?.source || '',
     stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
     retryCount: Math.max(0, verificationRetryMaxAttempts - 1),
-    detail: { verificationReady, fetchCodeResult, codeInputResolution, fillResult, confirmResult, retrySummary },
+    detail: {
+      provider: String(fetchCodeResult?.provider || ''),
+      matchMode: String(fetchCodeResult?.matchMode || ''),
+      stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
+      verificationReady,
+      fetchCodeResult,
+      codeInputResolution,
+      fillResult,
+      confirmResult,
+      retrySummary,
+    },
   });
 }
 

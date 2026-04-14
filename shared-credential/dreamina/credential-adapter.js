@@ -386,9 +386,17 @@ async function waitForDreaminaCredentialFormReady(page, runtime = {}, context = 
       return {
         ok: true,
         state: 'FORM_READY',
+        source: 'form-signals',
+        signalStrength: 'strong',
         emailField,
         passwordField,
         submit,
+        formSignals: {
+          emailField: emailField?.selector || '',
+          passwordField: passwordField?.selector || '',
+          submitSource: submit?.source || '',
+          submitValue: submit?.value || '',
+        },
         waitStepMs: waitMs,
         authModeResult,
         intentResult,
@@ -442,6 +450,8 @@ async function fillDreaminaCredentialEmail(page, account, runtime = {}, context 
   return {
     ok: true,
     state: 'EMAIL_FILLED',
+    source: 'selector',
+    signalStrength: 'strong',
     selector: emailField.selector,
     account: account?.email || '',
   };
@@ -478,6 +488,8 @@ async function fillDreaminaCredentialPassword(page, account, runtime = {}, conte
   return {
     ok: true,
     state: 'PASSWORD_FILLED',
+    source: 'selector',
+    signalStrength: 'strong',
     selector: passwordField.selector,
   };
 }
@@ -742,12 +754,20 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
       return {
         ok: true,
         state: 'FORM_SUBMITTED',
+        source: 'submit-action',
+        signalStrength: finalResult.hasStateChange ? 'medium' : 'weak',
+        settleStage: finalResult.settlementResult?.stage || '',
         submit: submitLabel,
         submitMode: strategy.mode,
         beforeSnapshot: finalResult.beforeSnapshot,
         afterSnapshot: finalResult.afterSnapshot,
         hasStateChange: finalResult.hasStateChange,
         settlementResult: finalResult.settlementResult,
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED'],
+        formSignals: {
+          submitLabel,
+          submitMode: strategy.mode,
+        },
         attempts,
       };
     }
@@ -760,12 +780,20 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   return {
     ok: true,
     state: 'FORM_SUBMITTED',
+    source: 'submit-action',
+    signalStrength: finalResult?.hasStateChange ? 'medium' : 'weak',
+    settleStage: finalResult?.settlementResult?.stage || '',
     submit: submitLabel,
     submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
     beforeSnapshot: finalResult?.beforeSnapshot || null,
     afterSnapshot: finalResult?.afterSnapshot || null,
     hasStateChange: Boolean(finalResult?.hasStateChange),
     settlementResult: finalResult?.settlementResult || null,
+    stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED'],
+    formSignals: {
+      submitLabel,
+      submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
+    },
     attempts,
   };
 }
@@ -909,6 +937,11 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
             value: 'ACCOUNT_ALREADY_EXISTS_LOGIN_OK',
             strength: 'strong',
             settleStage: signinSettlement.stage,
+            stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', 'EXISTS_ACCOUNT_SIGNIN_OK'],
+            formSignals: {
+              submitMode: signinSubmitResult?.submitMode || '',
+              submitLabel: signinSubmitResult?.submit || '',
+            },
           };
         }
       }
@@ -931,6 +964,11 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
       ...settlementResult.verificationReady,
       settleStage: settlementResult.stage,
       strength: settlementResult.verificationReady?.strength || '',
+      stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', settlementResult.verificationReady?.state || 'CREDENTIAL_SUBMIT_OK'],
+      formSignals: {
+        submitMode: submitResult?.submitMode || '',
+        submitLabel: submitResult?.submit || '',
+      },
     };
   }
 
@@ -1058,6 +1096,11 @@ async function confirmDreaminaCredentialSubmitResult(page, runtime = {}, context
         value: 'FOLLOWUP_VERIFICATION_VISIBLE',
         strength: 'weak',
         settleStage: settlementResult?.stage || 'followup-check',
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', 'CREDENTIAL_SUBMIT_OK'],
+        formSignals: {
+          submitMode: submitResult?.submitMode || '',
+          submitLabel: submitResult?.submit || '',
+        },
       };
     }
 
