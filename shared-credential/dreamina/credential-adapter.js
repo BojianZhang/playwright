@@ -759,28 +759,57 @@ async function waitDreaminaCredentialSubmitSettlement(page, runtime = {}, contex
 // 这是阶段 2 真正的收口层，也是最需要警惕策略膨胀的区域。
 // ==============================
 
-async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
-  const { logInfo = null, formReady = null } = context;
+async function resolveDreaminaCredentialSubmitTarget(page, runtime = {}, context = {}) {
+  const { formReady = null } = context;
   const profile = loadDreaminaCredentialProfile();
-
   const submit = formReady?.submit?.ok ? formReady.submit : null;
-  let submitLocator = submit?.locator || null;
-  let submitLabel = submit?.value || '';
 
-  if (!submitLocator) {
-    const submitBySelector = await findFirstVisibleBySelectors(page, profile?.submit?.selectors || []);
-    if (submitBySelector.ok) {
-      submitLocator = submitBySelector.locator;
-      submitLabel = submitBySelector.selector;
-    }
+  if (submit?.locator) {
+    return {
+      ok: true,
+      source: 'form-ready',
+      submit,
+      submitLocator: submit.locator,
+      submitLabel: submit.value || '',
+    };
   }
-  if (!submitLocator) {
-    const submitByText = await findFirstVisibleByTexts(page, profile?.submit?.texts || []);
-    if (submitByText.ok) {
-      submitLocator = submitByText.locator;
-      submitLabel = submitByText.text;
-    }
+
+  const submitBySelector = await findFirstVisibleBySelectors(page, profile?.submit?.selectors || []);
+  if (submitBySelector.ok) {
+    return {
+      ok: true,
+      source: 'selector',
+      submit: { ok: true, source: 'selector', value: submitBySelector.selector, locator: submitBySelector.locator },
+      submitLocator: submitBySelector.locator,
+      submitLabel: submitBySelector.selector,
+    };
   }
+
+  const submitByText = await findFirstVisibleByTexts(page, profile?.submit?.texts || []);
+  if (submitByText.ok) {
+    return {
+      ok: true,
+      source: 'text',
+      submit: { ok: true, source: 'text', value: submitByText.text, locator: submitByText.locator },
+      submitLocator: submitByText.locator,
+      submitLabel: submitByText.text,
+    };
+  }
+
+  return {
+    ok: false,
+    source: '',
+    submit: null,
+    submitLocator: null,
+    submitLabel: '',
+  };
+}
+
+async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const submitTarget = await resolveDreaminaCredentialSubmitTarget(page, runtime, context);
+  const submitLocator = submitTarget?.submitLocator || null;
+  const submitLabel = submitTarget?.submitLabel || '';
 
   if (!submitLocator) {
     return {
@@ -1499,6 +1528,7 @@ module.exports = {
   captureDreaminaCredentialSubmitSnapshot,
   hasMeaningfulCredentialSubmitStateChange,
   waitDreaminaCredentialSubmitSettlement,
+  resolveDreaminaCredentialSubmitTarget,
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
