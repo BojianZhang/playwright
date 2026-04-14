@@ -225,51 +225,57 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
   }
 
   async function observeDreaminaLoginPageAfterSignIn(page, runtime = {}, context = {}) {
-    const observeMs = Number(runtime?.dreaminaLoginPostClickObserveMs || 3500);
-    const deadline = Date.now() + Math.max(500, observeMs);
+    const settleWaitMs = Number(runtime?.dreaminaLoginPostClickSettleWaitMs || 1500);
+    await page.waitForTimeout(settleWaitMs).catch(() => null);
+
+    const modalVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
+    const emailVisible = await page.locator("input[type='email']").first().isVisible().catch(() => false)
+      || await page.locator("input[placeholder*='email' i]").first().isVisible().catch(() => false);
+    const continueVisible = await page.getByText('Continue with email', { exact: false }).first().isVisible().catch(() => false);
+    const googleVisible = await page.getByText('Continue with Google', { exact: false }).first().isVisible().catch(() => false);
+    const tiktokVisible = await page.getByText('Continue with TikTok', { exact: false }).first().isVisible().catch(() => false);
+    const facebookVisible = await page.getByText('Continue with Facebook', { exact: false }).first().isVisible().catch(() => false);
+
+    if (emailVisible || continueVisible || modalVisible || googleVisible || tiktokVisible || facebookVisible) {
+      return {
+        ok: true,
+        state: 'ENTRY_READY',
+        source: 'login-page-post-click-observe',
+        value: emailVisible
+          ? 'EMAIL_GATE_VISIBLE'
+          : (continueVisible
+            ? 'CONTINUE_WITH_EMAIL_VISIBLE'
+            : 'LOGIN_MODAL_VISIBLE'),
+        strength: 'strong',
+        stateChanged: true,
+        detail: {
+          readyTrace: {
+            decision: 'login-page-post-click-signal-visible',
+            modalVisible,
+            emailVisible,
+            continueVisible,
+            googleVisible,
+            tiktokVisible,
+            facebookVisible,
+          },
+        },
+      };
+    }
+
     let lastGateResult = null;
-
-    while (Date.now() < deadline) {
-      if (typeof siteAdapter?.confirmDreaminaLoginGate === 'function') {
-        lastGateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
-        if (lastGateResult?.ok && lastGateResult?.state === 'EMAIL_GATE_READY') {
-          return {
-            ok: true,
-            state: 'ENTRY_READY',
-            source: 'login-page-post-click-observe',
-            value: 'EMAIL_GATE_READY',
-            strength: 'strong',
-            stateChanged: true,
-            detail: {
-              readyTrace: {
-                decision: 'login-page-post-click-gate-success',
-                gateState: lastGateResult?.state || '',
-                gateReason: lastGateResult?.value || lastGateResult?.reason || '',
-                gateResult: lastGateResult,
-              },
-              loginSignal: lastGateResult?.detail?.loginSignal || null,
-              signalTimeline: lastGateResult?.detail?.signalTimeline || null,
-            },
-          };
-        }
-      }
-
-      const continueVisible = await page.getByText('Continue with email', { exact: false }).first().isVisible().catch(() => false);
-      const emailVisible = await page.locator("input[type='email']").first().isVisible().catch(() => false)
-        || await page.locator("input[placeholder*='email' i]").first().isVisible().catch(() => false);
-      const modalVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
-
-      if (continueVisible || emailVisible || modalVisible) {
+    if (typeof siteAdapter?.confirmDreaminaLoginGate === 'function') {
+      lastGateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+      if (lastGateResult?.ok && lastGateResult?.state === 'EMAIL_GATE_READY') {
         return {
           ok: true,
           state: 'ENTRY_READY',
           source: 'login-page-post-click-observe',
-          value: emailVisible ? 'EMAIL_GATE_VISIBLE' : (continueVisible ? 'CONTINUE_WITH_EMAIL_VISIBLE' : 'LOGIN_MODAL_VISIBLE'),
+          value: 'EMAIL_GATE_READY',
           strength: 'strong',
           stateChanged: true,
           detail: {
             readyTrace: {
-              decision: 'login-page-post-click-signal-visible',
+              decision: 'login-page-post-click-gate-success',
               gateState: lastGateResult?.state || '',
               gateReason: lastGateResult?.value || lastGateResult?.reason || '',
               gateResult: lastGateResult,
@@ -279,8 +285,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           },
         };
       }
-
-      await page.waitForTimeout(250).catch(() => null);
     }
 
     return {
@@ -296,6 +300,12 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           gateState: lastGateResult?.state || '',
           gateReason: lastGateResult?.value || lastGateResult?.reason || '',
           gateResult: lastGateResult,
+          modalVisible,
+          emailVisible,
+          continueVisible,
+          googleVisible,
+          tiktokVisible,
+          facebookVisible,
         },
       },
     };
