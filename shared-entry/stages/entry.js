@@ -331,7 +331,7 @@ async function runEntryStage(options = {}) {
   entryPhaseTrace.confirmStartedAtMs = readyStartMs;
   const entryReadyContext = {
     ...context,
-    openEntryPageResult: entryPageResult,
+    openEntryPageResult: entryOpenResult,
   };
 
   const entryReadyResult = confirmEntryReadyWithRecovery
