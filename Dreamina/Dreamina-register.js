@@ -115,6 +115,8 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       page.getByText('Login').first(),
       page.getByText('Sign up').first(),
       page.getByText('Continue with email').first(),
+      page.getByText('Explore Create Assets').first(),
+      page.getByText('Start Creating With AI Agent').first(),
       page.getByRole('button', { name: /sign in|log in|login|sign up|continue with email/i }).first(),
       page.getByRole('link', { name: /sign in|log in|login|sign up/i }).first(),
       page.locator("input[type='email']").first(),
@@ -133,8 +135,8 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
   async function recoverEntrySignals(page, runtime = {}) {
     await preprocessEntryOverlays(page);
 
-    const firstObservationMs = Number(runtime?.entrySignalObservationMs || 6000);
-    const secondObservationMs = Number(runtime?.entrySignalObservationAfterReloadMs || 10000);
+    const firstObservationMs = Number(runtime?.entrySignalObservationMs || 2200);
+    const secondObservationMs = Number(runtime?.entrySignalObservationAfterReloadMs || 4500);
     const observe = async totalMs => {
       const rounds = Math.max(1, Math.ceil(totalMs / 1000));
       for (let index = 0; index < rounds; index++) {
