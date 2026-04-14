@@ -440,30 +440,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         if (isStrongHomeReadySignal) {
           phaseTrace.gateResolvedState = 'HOME_READY_TEXT_VISIBLE';
           phaseTrace.gateResolvedReason = 'LOGIN_ENTRY_NOT_FOUND_BUT_HOME_READY';
-          return {
-            ok: true,
-            state: 'ENTRY_READY',
-            source: timelineResult?.source || 'home-ready-text',
-            value: timelineMatchedValue || timelineResult?.value || 'HOME_READY_TEXT_VISIBLE',
-            strength: 'medium',
-            stateChanged: false,
-            detail: {
-              readyTrace: {
-                decision: 'home-ready-text-bridge-success',
-                confirmTrace: timelineResult?.detail?.confirmTrace || null,
-                gateState: gateResult?.state || '',
-                gateReason: gateResult?.reason || '',
-                gateResult,
-                timelineResult,
-                waitForEntryReadyPhaseTrace: {
-                  ...phaseTrace,
-                  resolvedPath: 'home-ready-text-bridge-success',
-                },
-              },
-              loginSignal: timelineSignal,
-              signalTimeline: timelineResult?.detail?.signalTimeline || null,
-            },
-          };
         }
 
         const recoverSignalsStartedAt = Date.now();
