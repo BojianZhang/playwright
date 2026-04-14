@@ -1462,13 +1462,13 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
    */
   if (gateState.ok && gateState.state === 'LOGIN_GATE_LAYER_READY') {
     if (typeof logInfo === 'function') {
-      logInfo('dreamina.adapter.ensureDreaminaLoginGate | 当前只进入登录门外层，停止在第一跳，不再执行高副作用 second jump');
+      logInfo('dreamina.adapter.ensureDreaminaLoginGate | 已进入登录门外层，视为第一阶段成功，后续由下阶段继续推进 Continue with email');
     }
 
     return {
-      success: false,
-      reason: 'LOGIN_GATE_NOT_CONFIRMED',
-      state: gateState.state === 'ERROR_MODAL_VISIBLE' ? 'ERROR_MODAL_VISIBLE' : 'LOGIN_GATE_LAYER_ONLY',
+      success: true,
+      reason: 'LOGIN_GATE_LAYER_READY',
+      state: gateState.state,
       openResult,
       gateState,
       detail: gateState?.detail && typeof gateState.detail === 'object'
@@ -1480,7 +1480,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_LAYER_ONLY_NO_SECOND_JUMP',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           }
         : {
@@ -1490,7 +1490,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
               ...gateTrace,
               resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
               resolvedState: gateState.state || '',
-              resolvedReason: 'LOGIN_GATE_LAYER_ONLY_NO_SECOND_JUMP',
+              resolvedReason: 'LOGIN_GATE_LAYER_READY',
             },
           },
     };
