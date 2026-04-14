@@ -583,14 +583,24 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
           const recheckSignal = await detectDreaminaLoginEntrySignals(page, runtime, context);
           recordTimeline(recheckSignal, elapsedMs);
           const postClickGateReadyMs = Math.max(0, elapsedMs - clickStartMs);
-          if (recheckSignal.found && recheckSignal.label === 'email-input') {
+          const recheckFound = Boolean(recheckSignal?.found);
+          const recheckLabel = String(recheckSignal?.label || '');
+          const recheckSource = String(recheckSignal?.source || '');
+          const recheckValue = String(recheckSignal?.value || '');
+          const gateLayerReady = recheckFound && (
+            recheckLabel === 'email-input'
+            || recheckLabel === 'continue-with-email'
+            || recheckLabel === 'continue-with-email-modal'
+            || recheckLabel === 'continue-with-email-modal-button'
+          );
+          if (gateLayerReady) {
             if (typeof logInfo === 'function') {
-              logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
+              logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | recheck=${recheckLabel} | round=${round} | elapsedMs=${elapsedMs}`);
             }
-            roundTrace.recheckFound = Boolean(recheckSignal?.found);
-            roundTrace.recheckLabel = String(recheckSignal?.label || '');
-            roundTrace.recheckSource = String(recheckSignal?.source || '');
-            roundTrace.recheckValue = String(recheckSignal?.value || '');
+            roundTrace.recheckFound = recheckFound;
+            roundTrace.recheckLabel = recheckLabel;
+            roundTrace.recheckSource = recheckSource;
+            roundTrace.recheckValue = recheckValue;
             roundTrace.ctaSource = String(signal.value || signal.label || '');
             roundTrace.ctaOpenedGateMs = clickStartMs;
             roundTrace.postClickGateReadyMs = postClickGateReadyMs;
@@ -598,16 +608,20 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
             roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
             roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
             confirmTrace.rounds.push(roundTrace);
-            confirmTrace.resolvedBy = 'cta-recheck-email-input';
+            confirmTrace.resolvedBy = recheckLabel === 'email-input' ? 'cta-recheck-email-input' : 'cta-recheck-login-gate-layer';
             confirmTrace.resolvedAtMs = elapsedMs;
             confirmTrace.resolvedState = 'ENTRY_READY';
-            confirmTrace.resolvedReason = 'EMAIL_INPUT_VISIBLE_AFTER_CTA';
+            confirmTrace.resolvedReason = recheckLabel === 'email-input'
+              ? 'EMAIL_INPUT_VISIBLE_AFTER_CTA'
+              : 'LOGIN_GATE_LAYER_VISIBLE_AFTER_CTA';
             confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
             return {
               ok: true,
               state: 'ENTRY_READY',
-              source: recheckSignal.source || signal.source || '',
-              value: recheckSignal.value || recheckSignal.label || signal.value || '',
+              source: recheckLabel === 'email-input'
+                ? (recheckSignal.source || signal.source || '')
+                : 'LOGIN_GATE_LAYER_READY',
+              value: recheckValue || recheckLabel || signal.value || '',
               strength: 'strong',
               waitStepMs: elapsedMs,
               detail: {
