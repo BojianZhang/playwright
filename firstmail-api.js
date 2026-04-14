@@ -351,17 +351,19 @@ async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = 
     }
 
     const sources = [];
-    const messageListResult = await fetchMessagesList({ account, config }).catch(error => ({ error }));
+    const [messageListResult, unreadResult, latestResult] = await Promise.all([
+      fetchMessagesList({ account, config }).catch(error => ({ error })),
+      fetchUnreadMessages({ account, config }).catch(error => ({ error })),
+      fetchLatestMessage({ account, config }).catch(error => ({ error })),
+    ]);
     if (!messageListResult?.error) {
       sources.push({ kind: 'messages', ...messageListResult });
     }
 
-    const unreadResult = await fetchUnreadMessages({ account, config }).catch(error => ({ error }));
     if (!unreadResult?.error) {
       sources.push({ kind: 'unread', ...unreadResult });
     }
 
-    const latestResult = await fetchLatestMessage({ account, config }).catch(error => ({ error }));
     if (!latestResult?.error) {
       sources.push({ kind: 'latest', ...latestResult });
     }
