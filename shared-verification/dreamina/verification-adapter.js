@@ -1147,8 +1147,8 @@ async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context
  * 当前边界：
  * - 先做输入激活
  * - 优先走主路径 direct-fill
- * - legacy / fallback 路径只在明确开启时继续尝试
- * - fallback-keyboard-type 更偏 debug-only，默认不应视作正式主链
+ * - legacy 路径只在 `verificationEnableLegacyFallbacks` 显式开启时继续尝试
+ * - fallback-keyboard-type 只在 `verificationEnableDebugFallbacks` 显式开启时参与
  * - 这里只负责编排填写策略，不承担 verification 阶段总重试循环
  */
 async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
@@ -1168,6 +1168,7 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
 
   const normalizedCode = String(code || '').trim();
   const enableLegacyFallbacks = Boolean(runtime?.verificationEnableLegacyFallbacks);
+  const enableDebugFallbacks = Boolean(runtime?.verificationEnableDebugFallbacks);
   if (!normalizedCode) {
     return {
       ok: false,
@@ -1295,28 +1296,32 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
   }
 
   // debug-oriented fallback：普通 keyboard/fill 兜底
-  const fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-  await recordAttempt('fallback-keyboard-type', fallbackResult);
-  if (fallbackResult.ok) {
-    return {
-      ok: true,
-      state: 'VERIFICATION_CODE_FILLED',
-      mode: fallbackResult.mode,
-      source: 'verification-input',
-      value: fallbackResult.value,
-      stateChanged: fallbackResult.stateChanged,
-      attempts,
-      activationResult,
-      charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
-    };
+  let fallbackResult = null;
+  if (enableDebugFallbacks) {
+    // debug-oriented fallback：普通 keyboard/fill 兜底，仅在显式 debug 开关下参与
+    fallbackResult = await tryDreaminaFallbackFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+    await recordAttempt('fallback-keyboard-type', fallbackResult);
+    if (fallbackResult.ok) {
+      return {
+        ok: true,
+        state: 'VERIFICATION_CODE_FILLED',
+        mode: fallbackResult.mode,
+        source: 'verification-input',
+        value: fallbackResult.value,
+        stateChanged: fallbackResult.stateChanged,
+        attempts,
+        activationResult,
+        charSteps: Array.isArray(charByCharResult?.charSteps) ? charByCharResult.charSteps : [],
+      };
+    }
   }
 
   return {
     ok: false,
     state: 'VERIFICATION_CODE_FILL_FAILED',
-    mode: fallbackResult.mode || wrapperResult.mode || hiddenInputResult.mode || charByCharResult.mode || '',
+    mode: fallbackResult?.mode || wrapperResult.mode || hiddenInputResult.mode || charByCharResult.mode || directFillResult.mode || '',
     source: 'verification-input',
-    value: fallbackResult.value || wrapperResult.value || hiddenInputResult.value || charByCharResult.value || 'UNKNOWN',
+    value: fallbackResult?.value || wrapperResult.value || hiddenInputResult.value || charByCharResult.value || directFillResult.value || 'UNKNOWN',
     stateChanged: false,
     attempts,
     activationResult,
