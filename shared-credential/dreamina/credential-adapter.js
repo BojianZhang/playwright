@@ -805,8 +805,37 @@ async function resolveDreaminaCredentialSubmitTarget(page, runtime = {}, context
   };
 }
 
+async function runDreaminaCredentialSubmitAttempt(page, runtime = {}, context = {}) {
+  const { mode = '', runner = null } = context;
+  const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+  if (typeof runner === 'function') {
+    await runner();
+  }
+  const settlementResult = await waitDreaminaCredentialSubmitSettlement(page, runtime, context);
+  const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
+  const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot);
+
+  return {
+    mode,
+    beforeSnapshot,
+    afterSnapshot,
+    settlementResult,
+    hasStateChange,
+    attemptSummary: {
+      mode,
+      beforeAuthMode: beforeSnapshot?.authMode || '',
+      afterAuthMode: afterSnapshot?.authMode || '',
+      continueEnabled: beforeSnapshot?.continueEnabled,
+      verificationVisible: afterSnapshot?.verificationVisible,
+      inlineError: afterSnapshot?.hasInlineError,
+      stateChanged: hasStateChange,
+      settlementStage: settlementResult?.stage || '',
+    },
+  };
+}
+
 async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
-  const { logInfo = null } = context;
+  const { logInfo = null, formReady = null } = context;
   const submitTarget = await resolveDreaminaCredentialSubmitTarget(page, runtime, context);
   const submitLocator = submitTarget?.submitLocator || null;
   const submitLabel = submitTarget?.submitLabel || '';
@@ -819,24 +848,6 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   }
 
   const attempts = [];
-  const runAttempt = async (mode, runner) => {
-    const beforeSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
-    await runner();
-    const settlementResult = await waitDreaminaCredentialSubmitSettlement(page, runtime, context);
-    const afterSnapshot = await captureDreaminaCredentialSubmitSnapshot(page, context);
-    const hasStateChange = hasMeaningfulCredentialSubmitStateChange(beforeSnapshot, afterSnapshot);
-    attempts.push({
-      mode,
-      beforeAuthMode: beforeSnapshot.authMode,
-      afterAuthMode: afterSnapshot.authMode,
-      continueEnabled: beforeSnapshot.continueEnabled,
-      verificationVisible: afterSnapshot.verificationVisible,
-      inlineError: afterSnapshot.hasInlineError,
-      stateChanged: hasStateChange,
-      settlementStage: settlementResult?.stage || '',
-    });
-    return { beforeSnapshot, afterSnapshot, settlementResult, hasStateChange };
-  };
 
   const strategies = [
     {
@@ -863,7 +874,12 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
 
   let finalResult = null;
   for (const strategy of strategies) {
-    finalResult = await runAttempt(strategy.mode, strategy.run);
+    finalResult = await runDreaminaCredentialSubmitAttempt(page, runtime, {
+      ...context,
+      mode: strategy.mode,
+      runner: strategy.run,
+    });
+    attempts.push(finalResult.attemptSummary);
     if (finalResult.hasStateChange || finalResult.settlementResult?.quickFailure?.hit || finalResult.settlementResult?.verificationReady?.ok) {
       if (typeof logInfo === 'function') {
         logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | mode=${strategy.mode} | settlementStage=${finalResult.settlementResult?.stage || ''} | stateChanged=${finalResult.hasStateChange ? 'Y' : 'N'}`);
@@ -1529,6 +1545,7 @@ module.exports = {
   hasMeaningfulCredentialSubmitStateChange,
   waitDreaminaCredentialSubmitSettlement,
   resolveDreaminaCredentialSubmitTarget,
+  runDreaminaCredentialSubmitAttempt,
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
