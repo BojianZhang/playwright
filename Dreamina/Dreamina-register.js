@@ -206,6 +206,91 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     }));
   }
 
+  function isEntryPageLikelyUsableForFinalGrace(input = {}) {
+    const timelineResult = input?.timelineResult && typeof input.timelineResult === 'object' ? input.timelineResult : null;
+    const gateResult = input?.gateResult && typeof input.gateResult === 'object' ? input.gateResult : null;
+    const signalTimeline = timelineResult?.detail?.signalTimeline || gateResult?.detail?.signalTimeline || null;
+    const loginSignal = timelineResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || null;
+    const matchedKind = String(loginSignal?.kind || loginSignal?.label || '').trim().toLowerCase();
+    const matchedValue = String(loginSignal?.value || timelineResult?.value || '').trim();
+    const timelineText = signalTimeline && typeof signalTimeline === 'object'
+      ? Object.keys(signalTimeline).join(' ')
+      : '';
+    const combinedText = `${matchedValue} ${timelineText}`;
+    const gateReason = String(gateResult?.reason || '').trim().toUpperCase();
+
+    if (/HTTP ERROR 5\d\d|该网页无法正常运作|目前无法处理此请求/i.test(combinedText)) {
+      return false;
+    }
+
+    if (gateReason && gateReason !== 'LOGIN_ENTRY_NOT_FOUND') {
+      return false;
+    }
+
+    return (
+      matchedKind.includes('strong-text')
+      || matchedKind === 'ready-text'
+      || /Explore Create Assets|Start Creating With AI Agent|dreamina|capcut/i.test(combinedText)
+    );
+  }
+
+  async function attemptFinalGraceLoginGate(page, runtime = {}, context = {}) {
+    const finalGraceWaitMs = Number(runtime?.entryFinalGraceWaitMs || 2000);
+    const finalGracePollMs = Number(runtime?.entryFinalGracePollMs || 400);
+    const rounds = Math.max(1, Math.ceil(finalGraceWaitMs / Math.max(100, finalGracePollMs)));
+    const trace = {
+      enabled: finalGraceWaitMs > 0,
+      finalGraceWaitMs,
+      finalGracePollMs,
+      rounds,
+      matchedAtRound: 0,
+      openAttempted: false,
+      finalState: '',
+      finalValue: '',
+    };
+
+    if (typeof siteAdapter.confirmDreaminaLoginGate !== 'function') {
+      trace.finalState = 'adapter-method-missing';
+      trace.finalValue = 'confirmDreaminaLoginGate';
+      return { ok: false, trace, gateResult: null };
+    }
+
+    for (let round = 1; round <= rounds; round++) {
+      if (typeof siteAdapter.preprocessDreaminaEntryOverlays === 'function') {
+        await siteAdapter.preprocessDreaminaEntryOverlays(page, runtime, context).catch(() => null);
+      }
+      const gateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+      if (gateResult?.ok && gateResult?.state === 'EMAIL_GATE_READY') {
+        trace.matchedAtRound = round;
+        trace.finalState = String(gateResult?.state || '');
+        trace.finalValue = String(gateResult?.value || '');
+        return { ok: true, trace, gateResult };
+      }
+      if (round < rounds) {
+        await page.waitForTimeout(finalGracePollMs).catch(() => null);
+      }
+    }
+
+    if (typeof siteAdapter.openDreaminaLoginEntry === 'function') {
+      trace.openAttempted = true;
+      await siteAdapter.openDreaminaLoginEntry(page, runtime, context).catch(() => null);
+      if (typeof siteAdapter.preprocessDreaminaEntryOverlays === 'function') {
+        await siteAdapter.preprocessDreaminaEntryOverlays(page, runtime, context).catch(() => null);
+      }
+      const gateResult = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+      trace.finalState = String(gateResult?.state || '');
+      trace.finalValue = String(gateResult?.value || '');
+      if (gateResult?.ok && gateResult?.state === 'EMAIL_GATE_READY') {
+        return { ok: true, trace, gateResult };
+      }
+      return { ok: false, trace, gateResult };
+    }
+
+    trace.finalState = 'open-entry-missing';
+    trace.finalValue = 'openDreaminaLoginEntry';
+    return { ok: false, trace, gateResult: null };
+  }
+
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
       const homeUrl = String(runtime?.dreaminaHomeUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
@@ -552,6 +637,50 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                   || null,
               },
             };
+          }
+
+          if (String(gateResult?.reason || '').trim().toUpperCase() === 'LOGIN_ENTRY_NOT_FOUND'
+            && isEntryPageLikelyUsableForFinalGrace({ timelineResult, gateResult })) {
+            const finalGraceStartedAt = Date.now();
+            const finalGraceResult = await attemptFinalGraceLoginGate(page, runtime, context);
+            phaseTrace.finalGraceMs = Math.max(0, Date.now() - finalGraceStartedAt);
+            phaseTrace.finalGraceTriggered = true;
+            phaseTrace.finalGraceMatched = Boolean(finalGraceResult?.ok);
+            phaseTrace.finalGraceTrace = finalGraceResult?.trace || null;
+            if (finalGraceResult?.ok && finalGraceResult?.gateResult?.state === 'EMAIL_GATE_READY') {
+              phaseTrace.gateResolvedState = String(finalGraceResult?.gateResult?.state || '');
+              phaseTrace.gateResolvedReason = 'LOGIN_GATE_READY_AFTER_FINAL_GRACE';
+              return {
+                ok: true,
+                state: 'ENTRY_READY',
+                source: finalGraceResult.gateResult.state || timelineResult?.source || 'login-gate',
+                value: finalGraceResult.gateResult.value || finalGraceResult.gateResult.state || timelineResult?.value || 'LOGIN_GATE_READY',
+                strength: 'strong',
+                stateChanged: true,
+                detail: {
+                  readyTrace: {
+                    decision: 'gate-success-after-final-grace',
+                    confirmTrace: timelineResult?.detail?.confirmTrace || null,
+                    gateState: finalGraceResult?.gateResult?.state || '',
+                    gateReason: finalGraceResult?.gateResult?.value || '',
+                    recovered: true,
+                    finalGrace: true,
+                    finalGraceTrace: finalGraceResult?.trace || null,
+                    gateResult: finalGraceResult?.gateResult,
+                    timelineResult,
+                    waitForEntryReadyPhaseTrace: {
+                      ...phaseTrace,
+                      resolvedPath: 'recover-final-grace-gate-success',
+                    },
+                  },
+                  loginSignal: finalGraceResult?.gateResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
+                  signalTimeline: finalGraceResult?.gateResult?.detail?.signalTimeline
+                    || timelineResult?.detail?.signalTimeline
+                    || gateResult?.detail?.signalTimeline
+                    || null,
+                },
+              };
+            }
           }
         }
       }
