@@ -26,6 +26,13 @@ const { syncStageStep } = require('../../shared-stage-runtime');
  * - 某站点的具体 selector
  * - 某站点的具体错误提示
  * - 某站点的具体成功信号
+ * - 某站点内部的轮询 / 等待 / retry 循环
+ * - 某站点内部的 recover / fallback / 特殊补救策略
+ *
+ * 边界原则：
+ * - 这是 shared stage orchestrator，不是站点实现层
+ * - 公共层只做串行编排与结果收口
+ * - 真正的等待、轮询、重试、站点分支判断应由 adapter 提供
  */
 
 /**
@@ -92,6 +99,10 @@ async function runCredentialSubmitStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  // optional site hook result:
+  // - 若后续真正接入 refreshPasswordFieldAfterPrecheck(...)，该对象用于承接刷新后的 password field 状态
+  // - 若站点未实现该 hook，则保持 null
+  // TODO: 后续明确这条链是“补接”还是“删除残留”，避免共享层长期保留语义不清的中间变量。
   let passwordRefreshResult = null;
 
   if (!adapter) {
@@ -109,7 +120,11 @@ async function runCredentialSubmitStage(options = {}) {
 
   const waitForFormReady = resolveAdapterMethod(adapter, ['waitForCredentialFormReady', 'waitForDreaminaCredentialFormReady']);
   const fillEmail = resolveAdapterMethod(adapter, ['fillCredentialEmail', 'fillDreaminaCredentialEmail']);
+  // optional site hook: 用于“填完邮箱后，提交前先检查账号是否已存在”的站点专项分支。
+  // 不属于 credential submit 的 shared 最小主链，没有这个 hook 也不应影响阶段 2 主路径成立。
   const precheckExists = resolveAdapterMethod(adapter, ['precheckAccountExistsAfterEmail', 'precheckDreaminaAccountExistsAfterEmail', 'precheckAccountExists', 'precheckDreaminaAccountExists']);
+  // optional site hook: 某些站点在 exists precheck 或 email 动作后，password 输入框会失活/重渲染。
+  // 这个 hook 仅用于站点专项修复，不应被视为 shared 阶段 2 的固定步骤。
   const refreshPasswordField = resolveAdapterMethod(adapter, ['refreshPasswordFieldAfterPrecheck', 'refreshDreaminaPasswordFieldAfterPrecheck']);
   const fillPassword = resolveAdapterMethod(adapter, ['fillCredentialPassword', 'fillDreaminaCredentialPassword']);
   const submitForm = resolveAdapterMethod(adapter, ['submitCredentialForm', 'submitDreaminaCredentialForm']);
@@ -228,6 +243,14 @@ async function runCredentialSubmitStage(options = {}) {
   }
 
 
+  /**
+   * 可选分支：提交前 exists 预检查。
+   *
+   * 边界：
+   * - 这是站点专项 hook，不是 shared credential 主干固定步骤
+   * - 只在 adapter 提供该能力且 runtime 未显式跳过时才执行
+   * - 命中已存在账号时允许直接在阶段 2 收口失败，避免继续浪费后续 submit 成本
+   */
   if (precheckExists && !runtime?.skipCredentialExistsPrecheckAfterEmail) {
     syncStageStep(options, { stage: 'credential-submit', step: 'precheck-exists-after-email' });
     logStageProgress('credential-submit', '提交前检查账号是否已存在', {
