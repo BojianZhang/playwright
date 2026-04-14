@@ -834,21 +834,9 @@ async function runDreaminaCredentialSubmitAttempt(page, runtime = {}, context = 
   };
 }
 
-async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
-  const { logInfo = null, formReady = null } = context;
-  const submitTarget = await resolveDreaminaCredentialSubmitTarget(page, runtime, context);
-  const submitLocator = submitTarget?.submitLocator || null;
-  const submitLabel = submitTarget?.submitLabel || '';
-
-  if (!submitLocator) {
-    return {
-      ok: false,
-      state: 'SUBMIT_BUTTON_NOT_FOUND',
-    };
-  }
-
+async function runDreaminaCredentialSubmitStrategies(page, runtime = {}, context = {}) {
+  const { logInfo = null, formReady = null, submitLocator = null, submitLabel = '' } = context;
   const attempts = [];
-
   const strategies = [
     {
       mode: 'click',
@@ -885,23 +873,10 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
         logInfo(`dreamina.credential.submitForm | submit=${submitLabel} | mode=${strategy.mode} | settlementStage=${finalResult.settlementResult?.stage || ''} | stateChanged=${finalResult.hasStateChange ? 'Y' : 'N'}`);
       }
       return {
-        ok: true,
-        state: 'FORM_SUBMITTED',
-        source: 'submit-action',
-        signalStrength: finalResult.hasStateChange ? 'medium' : 'weak',
-        settleStage: finalResult.settlementResult?.stage || '',
-        submit: submitLabel,
-        submitMode: strategy.mode,
-        beforeSnapshot: finalResult.beforeSnapshot,
-        afterSnapshot: finalResult.afterSnapshot,
-        hasStateChange: finalResult.hasStateChange,
-        settlementResult: finalResult.settlementResult,
-        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED'],
-        formSignals: {
-          submitLabel,
-          submitMode: strategy.mode,
-        },
+        matched: true,
+        finalResult,
         attempts,
+        submitMode: strategy.mode,
       };
     }
   }
@@ -911,13 +886,42 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
   }
 
   return {
+    matched: false,
+    finalResult,
+    attempts,
+    submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
+  };
+}
+
+async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
+  const submitTarget = await resolveDreaminaCredentialSubmitTarget(page, runtime, context);
+  const submitLocator = submitTarget?.submitLocator || null;
+  const submitLabel = submitTarget?.submitLabel || '';
+
+  if (!submitLocator) {
+    return {
+      ok: false,
+      state: 'SUBMIT_BUTTON_NOT_FOUND',
+    };
+  }
+
+  const strategyResult = await runDreaminaCredentialSubmitStrategies(page, runtime, {
+    ...context,
+    submitLocator,
+    submitLabel,
+  });
+  const finalResult = strategyResult?.finalResult || null;
+  const attempts = strategyResult?.attempts || [];
+  const submitMode = strategyResult?.submitMode || '';
+
+  return {
     ok: true,
     state: 'FORM_SUBMITTED',
     source: 'submit-action',
     signalStrength: finalResult?.hasStateChange ? 'medium' : 'weak',
     settleStage: finalResult?.settlementResult?.stage || '',
     submit: submitLabel,
-    submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
+    submitMode,
     beforeSnapshot: finalResult?.beforeSnapshot || null,
     afterSnapshot: finalResult?.afterSnapshot || null,
     hasStateChange: Boolean(finalResult?.hasStateChange),
@@ -925,7 +929,7 @@ async function submitDreaminaCredentialForm(page, runtime = {}, context = {}) {
     stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED'],
     formSignals: {
       submitLabel,
-      submitMode: finalResult ? attempts[attempts.length - 1]?.mode || '' : '',
+      submitMode,
     },
     attempts,
   };
@@ -1546,6 +1550,7 @@ module.exports = {
   waitDreaminaCredentialSubmitSettlement,
   resolveDreaminaCredentialSubmitTarget,
   runDreaminaCredentialSubmitAttempt,
+  runDreaminaCredentialSubmitStrategies,
   submitDreaminaCredentialForm,
   runDreaminaCredentialImmediateFailureChecks,
   detectDreaminaVerificationStageReady,
