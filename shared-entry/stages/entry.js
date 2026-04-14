@@ -34,7 +34,14 @@ function resolveAdapterMethod(adapter, methodName) {
  * - 把 success / stage / reason / detail 等字段统一收敛
  */
 function pickEntrySignalTimeline(...candidates) {
-  for (const candidate of candidates) {
+  // 新路径优先：shared 层默认只消费 adapter 直接产出的稳定 signalTimeline。
+  const [directTimeline, ...fallbackCandidates] = candidates;
+  if (directTimeline && typeof directTimeline === 'object' && Object.keys(directTimeline).length) {
+    return directTimeline;
+  }
+
+  // 旧路径兜底：兼容 legacy flow 历史 detail 结构，后续待稳定后继续收缩。
+  for (const candidate of fallbackCandidates) {
     if (candidate && typeof candidate === 'object' && Object.keys(candidate).length) {
       return candidate;
     }
