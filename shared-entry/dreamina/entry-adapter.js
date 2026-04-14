@@ -593,51 +593,52 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
             || recheckLabel === 'continue-with-email-modal'
             || recheckLabel === 'continue-with-email-modal-button'
           );
-          if (gateLayerReady) {
-            if (typeof logInfo === 'function') {
-              logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | recheck=${recheckLabel} | round=${round} | elapsedMs=${elapsedMs}`);
-            }
-            roundTrace.recheckFound = recheckFound;
-            roundTrace.recheckLabel = recheckLabel;
-            roundTrace.recheckSource = recheckSource;
-            roundTrace.recheckValue = recheckValue;
-            roundTrace.ctaSource = String(signal.value || signal.label || '');
-            roundTrace.ctaOpenedGateMs = clickStartMs;
-            roundTrace.postClickGateReadyMs = postClickGateReadyMs;
-            roundTrace.elapsedAfterActionMs = elapsedMs;
-            roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
-            roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
-            confirmTrace.rounds.push(roundTrace);
-            confirmTrace.resolvedBy = recheckLabel === 'email-input' ? 'cta-recheck-email-input' : 'cta-recheck-login-gate-layer';
-            confirmTrace.resolvedAtMs = elapsedMs;
-            confirmTrace.resolvedState = 'ENTRY_READY';
-            confirmTrace.resolvedReason = recheckLabel === 'email-input'
-              ? 'EMAIL_INPUT_VISIBLE_AFTER_CTA'
-              : 'LOGIN_GATE_LAYER_VISIBLE_AFTER_CTA';
-            confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
-            return {
-              ok: true,
-              state: 'ENTRY_READY',
-              source: recheckLabel === 'email-input'
-                ? (recheckSignal.source || signal.source || '')
-                : 'LOGIN_GATE_LAYER_READY',
-              value: recheckValue || recheckLabel || signal.value || '',
-              strength: 'strong',
-              waitStepMs: elapsedMs,
-              detail: {
-                loginSignal: recheckSignal,
-                ctaSignal: signal,
-                round,
-                elapsedMs,
-                signalTimeline,
-                confirmTrace,
-                ctaSource: signal.value || signal.label || '',
-                ctaOpenedGateMs: clickStartMs,
-                postClickGateReadyMs,
-              },
-            };
+
+          roundTrace.recheckFound = recheckFound;
+          roundTrace.recheckLabel = recheckLabel;
+          roundTrace.recheckSource = recheckSource;
+          roundTrace.recheckValue = recheckValue;
+          roundTrace.ctaSource = String(signal.value || signal.label || '');
+          roundTrace.ctaOpenedGateMs = clickStartMs;
+          roundTrace.postClickGateReadyMs = postClickGateReadyMs;
+          roundTrace.elapsedAfterActionMs = elapsedMs;
+          roundTrace.roundWallClockMs = Math.max(0, Date.now() - roundStartedAt);
+          roundTrace.accumulatedWallClockAfterMs = Math.max(0, Date.now() - wallClockStartedAt);
+          confirmTrace.rounds.push(roundTrace);
+
+          if (typeof logInfo === 'function') {
+            logInfo(`dreamina.entry.loginSignal.cta-clicked | via=${signal.value} | recheck=${recheckLabel || 'none'} | gateLayerReady=${gateLayerReady ? 'Y' : 'N'} | round=${round} | elapsedMs=${elapsedMs}`);
           }
-          continue;
+
+          confirmTrace.resolvedBy = gateLayerReady ? 'cta-click-gate-layer-confirmed' : 'cta-clicked-exit-loop';
+          confirmTrace.resolvedAtMs = elapsedMs;
+          confirmTrace.resolvedState = 'ENTRY_READY';
+          confirmTrace.resolvedReason = gateLayerReady
+            ? (recheckLabel === 'email-input' ? 'EMAIL_INPUT_VISIBLE_AFTER_CTA' : 'LOGIN_GATE_LAYER_VISIBLE_AFTER_CTA')
+            : 'CTA_CLICKED_ASSUME_GATE_TRANSITION';
+          confirmTrace.totalWallClockMs = Math.max(0, Date.now() - wallClockStartedAt);
+          return {
+            ok: true,
+            state: 'ENTRY_READY',
+            source: gateLayerReady
+              ? (recheckLabel === 'email-input' ? (recheckSignal.source || signal.source || '') : 'LOGIN_GATE_LAYER_READY')
+              : 'LOGIN_ENTRY_CLICKED',
+            value: recheckValue || recheckLabel || signal.value || signal.label || '',
+            strength: 'strong',
+            waitStepMs: elapsedMs,
+            detail: {
+              loginSignal: gateLayerReady ? recheckSignal : signal,
+              ctaSignal: signal,
+              round,
+              elapsedMs,
+              signalTimeline,
+              confirmTrace,
+              ctaSource: signal.value || signal.label || '',
+              ctaOpenedGateMs: clickStartMs,
+              postClickGateReadyMs,
+              gateLayerReady,
+            },
+          };
         }
 
         if (signal.label === 'email-input') {
