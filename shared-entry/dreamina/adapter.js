@@ -100,6 +100,11 @@ const DREAMINA_STRONG_READY_SELECTORS = [
  */
 const DREAMINA_LOGIN_ENTRY_CANDIDATES = [
   {
+    type: 'home-sidebar-sign-in',
+    text: null,
+    selector: '[class*="sider"] :text("Sign in"), nav :text("Sign in"), aside :text("Sign in")',
+  },
+  {
     type: 'continue-with-email',
     text: 'Continue with email',
     selector: null,
@@ -980,6 +985,48 @@ async function waitAfterLoginEntryAction(page, context = {}) {
  *
  * 这个方法只负责“识别状态和入口”，不负责点击，不负责最终确认登录门是否真的打开。
  */
+async function findDreaminaHomeSidebarSignIn(page, context = {}) {
+  const { logInfo = null } = context;
+  const candidateLocators = [
+    page.locator('[class*="sider"]').getByText('Sign in', { exact: false }).first(),
+    page.locator('nav').getByText('Sign in', { exact: false }).first(),
+    page.locator('aside').getByText('Sign in', { exact: false }).first(),
+    page.locator('[class*="menu"]').getByText('Sign in', { exact: false }).first(),
+  ];
+
+  for (const locator of candidateLocators) {
+    const visible = await locator.isVisible().catch(() => false);
+    if (!visible) continue;
+    const box = await locator.boundingBox().catch(() => null);
+    const lowOnPage = box && Number(box.y || 0) >= 400;
+    if (!lowOnPage) continue;
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.adapter.findDreaminaHomeSidebarSignIn | 命中 home 左下 Sign in | y=${Math.round(box.y || 0)}`);
+    }
+    return {
+      found: true,
+      type: 'home-sidebar-sign-in',
+      matchType: 'selector',
+      text: 'Sign in',
+      selector: 'home-sidebar-sign-in',
+      locator,
+      alreadyInGate: false,
+      nextExpectedState: 'LOGIN_GATE_LAYER_READY',
+    };
+  }
+
+  return {
+    found: false,
+    type: '',
+    matchType: '',
+    text: null,
+    selector: null,
+    locator: null,
+    alreadyInGate: false,
+    nextExpectedState: '',
+  };
+}
+
 async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
 
@@ -1005,7 +1052,15 @@ async function findDreaminaLoginEntry(page, runtime = {}, context = {}) {
   }
 
   /**
-   * 第二步：按登录入口优先级扫描候选。
+   * 第二步：优先处理 home 页左下真实可点击的 Sign in。
+   */
+  const homeSidebarSignIn = await findDreaminaHomeSidebarSignIn(page, context);
+  if (homeSidebarSignIn.found) {
+    return homeSidebarSignIn;
+  }
+
+  /**
+   * 第三步：按登录入口优先级扫描候选。
    *
    * 当前优先级原则：
    * 1. Sign in / Login / Log in / Sign up
@@ -1156,7 +1211,19 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
   const beforeSnapshot = await captureDreaminaLoginGateSnapshot(page, context);
 
   try {
-    await entry.locator.click({ timeout: 1500 });
+    if (entry.type === 'home-sidebar-sign-in') {
+      await entry.locator.scrollIntoViewIfNeeded().catch(() => {});
+      await entry.locator.click({ timeout: 1500 }).catch(async () => {
+        const box = await entry.locator.boundingBox().catch(() => null);
+        if (box) {
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        } else {
+          await entry.locator.click({ force: true, timeout: 1500 });
+        }
+      });
+    } else {
+      await entry.locator.click({ timeout: 1500 });
+    }
 
     /**
      * 点击后做一次很轻的保护性等待。
