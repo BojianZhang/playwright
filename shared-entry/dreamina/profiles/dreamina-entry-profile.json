@@ -1,7 +1,7 @@
 {
     "site":  "dreamina",
     "stage":  "entry",
-    "entryUrl":  "https://dreamina.capcut.com/ai-tool/login",
+    "entryUrl":  "https://dreamina.capcut.com/ai-tool/home",
     "readySignals":  {
                          "selectors":  [
 
@@ -33,14 +33,12 @@
                                             "Sign in",
                                             "Log in",
                                             "Login",
-                                            "Sign up",
-                                            "Try it now",
-                                            "See results",
-                                            "Canvas"
+                                            "Sign up"
                                         ],
                          "readyTexts":  [
                                             "Explore Create Assets",
-                                            "Start Creating With AI Agent"
+                                            "Start Creating With AI Agent",
+                                            "Canvas"
                                         ],
                          "entryRolePattern":  "sign in|log in|login|sign up",
                          "emailInputRoleName":  "Enter email",

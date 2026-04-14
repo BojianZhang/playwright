@@ -851,6 +851,37 @@ async function captureDreaminaEntryDebugSnapshot(page) {
       const rect = element.getBoundingClientRect();
       return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
     };
+    const toPlainClickable = (element) => {
+      const rect = element.getBoundingClientRect();
+      const text = normalize(element.innerText || element.textContent || '');
+      const ariaLabel = normalize(element.getAttribute('aria-label') || '');
+      const role = normalize(element.getAttribute('role') || '');
+      const className = normalize(typeof element.className === 'string' ? element.className : '');
+      const id = normalize(element.getAttribute('id') || '');
+      const href = normalize(element.getAttribute('href') || '');
+      const name = normalize(element.getAttribute('name') || '');
+      const title = normalize(element.getAttribute('title') || '');
+      const tag = String(element.tagName || '').toLowerCase();
+      const textPreview = normalize((element.innerText || element.textContent || '').slice(0, 240));
+      const clickableHint = [text, ariaLabel, title, name, id, className].filter(Boolean).join(' | ');
+      return {
+        tag,
+        role,
+        text,
+        textPreview,
+        ariaLabel,
+        title,
+        name,
+        id,
+        className,
+        href,
+        x: Number(Math.round(rect.left || 0)),
+        y: Number(Math.round(rect.top || 0)),
+        w: Number(Math.round(rect.width || 0)),
+        h: Number(Math.round(rect.height || 0)),
+        summary: clickableHint,
+      };
+    };
 
     const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'))
       .filter(visible)
@@ -869,12 +900,29 @@ async function captureDreaminaEntryDebugSnapshot(page) {
       }))
       .slice(0, 20);
 
+    const clickableInventory = Array.from(document.querySelectorAll('button, [role="button"], a, [tabindex], input[type="button"], input[type="submit"]'))
+      .filter(visible)
+      .map(toPlainClickable)
+      .filter(item => item && typeof item === 'object')
+      .slice(0, 32);
+
+    const headerClickables = clickableInventory
+      .filter(item => item.y >= 0 && item.y <= 220)
+      .slice(0, 16);
+
+    const keywordClickables = clickableInventory
+      .filter(item => /sign in|log in|login|continue with email|email|account|profile|user|avatar/i.test(String(item.summary || '')))
+      .slice(0, 16);
+
     return {
       url: String(window.location.href || ''),
       title: normalize(document.title || ''),
       bodyPreview: normalize(document.body?.innerText || '').slice(0, 800),
       visibleButtons: buttons,
       visibleInputs: inputs,
+      clickableInventory,
+      headerClickables,
+      keywordClickables,
     };
   }).catch(() => ({
     url: String(page?.url ? page.url() : ''),
@@ -882,6 +930,9 @@ async function captureDreaminaEntryDebugSnapshot(page) {
     bodyPreview: '',
     visibleButtons: [],
     visibleInputs: [],
+    clickableInventory: [],
+    headerClickables: [],
+    keywordClickables: [],
   }));
 }
 
@@ -982,6 +1033,9 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
   const mergedDetail = {
     ...(readyResult?.detail && typeof readyResult.detail === 'object' ? readyResult.detail : {}),
     debugSnapshot: failureSnapshot,
+    clickableInventory: Array.isArray(failureSnapshot?.clickableInventory) ? failureSnapshot.clickableInventory : [],
+    headerClickables: Array.isArray(failureSnapshot?.headerClickables) ? failureSnapshot.headerClickables : [],
+    keywordClickables: Array.isArray(failureSnapshot?.keywordClickables) ? failureSnapshot.keywordClickables : [],
     matchedTexts: Array.isArray(readyResult?.detail?.matchedTexts) ? readyResult.detail.matchedTexts : [],
     matchedSelectors: Array.isArray(readyResult?.detail?.matchedSelectors) ? readyResult.detail.matchedSelectors : [],
   };
