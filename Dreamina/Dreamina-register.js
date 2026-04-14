@@ -306,6 +306,20 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           waitForDreaminaReadyMs,
         },
       };
+      const waitRounds = Array.isArray(healthTrace?.detail?.waitTrace?.rounds) ? healthTrace.detail.waitTrace.rounds : [];
+      const bodyPreviewText = waitRounds.map(round => String(round?.observedBodyPreview || '')).join(' ');
+      const hasHardHttpErrorPreview = /HTTP ERROR 5\d\d|该网页无法正常运作|目前无法处理此请求/i.test(bodyPreviewText);
+      if (hasHardHttpErrorPreview) {
+        return {
+          ok: false,
+          state: 'ENTRY_HEALTH_FAILED',
+          source: 'http-error-preview',
+          value: 'DREAMINA_HTTP_ERROR_PAGE',
+          strength: 'strong',
+          stateChanged: null,
+          healthTrace,
+        };
+      }
       if (readyResult?.ok) {
         return {
           ok: true,
@@ -412,11 +426,16 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       if (String(gateResult?.reason || '').trim().toUpperCase() === 'LOGIN_ENTRY_NOT_FOUND') {
         const timelineSignal = timelineResult?.detail?.loginSignal || null;
         const timelineMatchedKind = String(timelineSignal?.kind || timelineSignal?.label || '').trim().toLowerCase();
-        const timelineMatchedValue = String(timelineSignal?.value || '').trim();
+        const timelineMatchedValue = String(timelineSignal?.value || timelineResult?.value || '').trim();
+        const signalTimeline = timelineResult?.detail?.signalTimeline || null;
+        const fallbackTimelineText = signalTimeline && typeof signalTimeline === 'object'
+          ? Object.keys(signalTimeline).join(' ')
+          : '';
         const isStrongHomeReadySignal = (
           timelineMatchedKind.includes('strong-text')
           || timelineMatchedKind === 'ready-text'
-        ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue);
+          || /Explore Create Assets|Start Creating With AI Agent/i.test(fallbackTimelineText)
+        ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue || fallbackTimelineText);
 
         if (isStrongHomeReadySignal) {
           phaseTrace.gateResolvedState = 'HOME_READY_TEXT_VISIBLE';
