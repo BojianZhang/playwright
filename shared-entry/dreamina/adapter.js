@@ -1462,44 +1462,7 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
    */
   if (gateState.ok && gateState.state === 'LOGIN_GATE_LAYER_READY') {
     if (typeof logInfo === 'function') {
-      logInfo('dreamina.adapter.ensureDreaminaLoginGate | 当前只进入登录门外层，准备执行第二跳 Continue with email');
-    }
-
-    const secondJumpStartAt = Date.now();
-    const secondJumpResult = await openDreaminaLoginEntry(page, runtime, context);
-    gateTrace.secondJumpMs = Math.max(0, Date.now() - secondJumpStartAt);
-    if (!secondJumpResult.success) {
-      return {
-        success: false,
-        reason: secondJumpResult.reason,
-        state: 'LOGIN_GATE_SECOND_JUMP_FAILED',
-        openResult,
-        secondJumpResult,
-      };
-    }
-
-    const postSecondJumpConfirmStartAt = Date.now();
-    gateState = await confirmDreaminaLoginGate(page, runtime, context);
-    gateTrace.postSecondJumpConfirmMs = Math.max(0, Date.now() - postSecondJumpConfirmStartAt);
-    if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
-      return {
-        success: true,
-        reason: 'LOGIN_GATE_READY',
-        state: gateState.state,
-        openResult,
-        secondJumpResult,
-        gateState,
-        detail: gateState?.detail && typeof gateState.detail === 'object'
-          ? {
-              ...gateState.detail,
-              loginSignal: gateState?.detail?.loginSignal || gateState,
-              signalTimeline: gateState?.detail?.signalTimeline || gateState?.detail?.loginSignal?.timelineSignals || null,
-            }
-          : {
-              loginSignal: gateState,
-              signalTimeline: null,
-            },
-      };
+      logInfo('dreamina.adapter.ensureDreaminaLoginGate | 当前只进入登录门外层，停止在第一跳，不再执行高副作用 second jump');
     }
 
     return {
@@ -1507,8 +1470,29 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
       reason: 'LOGIN_GATE_NOT_CONFIRMED',
       state: gateState.state === 'ERROR_MODAL_VISIBLE' ? 'ERROR_MODAL_VISIBLE' : 'LOGIN_GATE_LAYER_ONLY',
       openResult,
-      secondJumpResult,
       gateState,
+      detail: gateState?.detail && typeof gateState.detail === 'object'
+        ? {
+            ...gateState.detail,
+            loginSignal: gateState?.detail?.loginSignal || gateState,
+            signalTimeline: gateState?.detail?.signalTimeline || gateState?.detail?.loginSignal?.timelineSignals || null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_LAYER_ONLY_NO_SECOND_JUMP',
+            },
+          }
+        : {
+            loginSignal: gateState,
+            signalTimeline: null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_LAYER_ONLY_NO_SECOND_JUMP',
+            },
+          },
     };
   }
 
