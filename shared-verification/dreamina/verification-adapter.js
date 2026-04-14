@@ -1168,8 +1168,60 @@ async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context
  * - fallback-keyboard-type 只在 `verificationEnableDebugFallbacks` 显式开启时参与
  * - 这里只负责编排填写策略，不承担 verification 阶段总重试循环
  */
-async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
+async function runDreaminaVerificationPrimaryFill(page, code, runtime = {}, context = {}) {
   const { codeInputResolution = null, logInfo = null } = context;
+  const normalizedCode = String(code || '').trim();
+
+  const activationResult = await activateDreaminaVerificationInput(page, codeInputResolution.locator, runtime, context);
+  if (!activationResult?.ok) {
+    return {
+      ok: false,
+      state: 'VERIFICATION_INPUT_ACTIVATION_FAILED',
+      mode: activationResult?.mode || '',
+      source: 'verification-input',
+      value: activationResult?.activeTag || 'ACTIVE_ELEMENT_STUCK_ON_BODY',
+      stateChanged: false,
+      attempts: activationResult?.attempts || [],
+      activationResult,
+      directFillResult: null,
+    };
+  }
+
+  const attempts = Array.isArray(activationResult?.attempts) ? [...activationResult.attempts] : [];
+  const recordAttempt = async (label, result) => {
+    const state = await readDreaminaVerificationInputState(page);
+    attempts.push({
+      mode: result?.mode || label,
+      ok: Boolean(result?.ok),
+      value: String(result?.value || ''),
+      inputValue: String(state?.inputValue || ''),
+      boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
+      activeTag: String(state?.activeTag || ''),
+      activeClass: String(state?.activeClass || ''),
+      activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
+      stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
+    });
+  };
+
+  const directFillResult = await tryDreaminaDirectFill(page, codeInputResolution.locator, normalizedCode, logInfo);
+  await recordAttempt('dreamina-direct-fill', directFillResult);
+
+  return {
+    ok: Boolean(directFillResult?.ok),
+    state: directFillResult?.ok ? 'VERIFICATION_CODE_FILLED' : 'VERIFICATION_CODE_FILL_FAILED',
+    mode: directFillResult?.mode || 'dreamina-direct-fill',
+    source: 'verification-input',
+    value: directFillResult?.value || '',
+    stateChanged: typeof directFillResult?.stateChanged === 'boolean' ? directFillResult.stateChanged : false,
+    attempts,
+    activationResult,
+    directFillResult,
+    charSteps: [],
+  };
+}
+
+async function fillDreaminaVerificationCode(page, code, runtime = {}, context = {}) {
+  const { codeInputResolution = null } = context;
   if (!codeInputResolution?.ok || !codeInputResolution?.locator) {
     return {
       ok: false,
@@ -1199,47 +1251,22 @@ async function fillDreaminaVerificationCode(page, code, runtime = {}, context = 
     };
   }
 
-  const activationResult = await activateDreaminaVerificationInput(page, codeInputResolution.locator, runtime, context);
-  if (!activationResult?.ok) {
-    return {
-      ok: false,
-      state: 'VERIFICATION_INPUT_ACTIVATION_FAILED',
-      mode: activationResult?.mode || '',
-      source: 'verification-input',
-      value: activationResult?.activeTag || 'ACTIVE_ELEMENT_STUCK_ON_BODY',
-      stateChanged: false,
-      attempts: activationResult?.attempts || [],
-      activationResult,
-    };
+  const primaryFillResult = await runDreaminaVerificationPrimaryFill(page, normalizedCode, runtime, context);
+  if (primaryFillResult?.state === 'VERIFICATION_INPUT_ACTIVATION_FAILED') {
+    return primaryFillResult;
   }
 
-  const attempts = Array.isArray(activationResult?.attempts) ? [...activationResult.attempts] : [];
-  const recordAttempt = async (label, result) => {
-    const state = await readDreaminaVerificationInputState(page);
-    attempts.push({
-      mode: result?.mode || label,
-      ok: Boolean(result?.ok),
-      value: String(result?.value || ''),
-      inputValue: String(state?.inputValue || ''),
-      boxTexts: Array.isArray(state?.boxTexts) ? state.boxTexts : [],
-      activeTag: String(state?.activeTag || ''),
-      activeClass: String(state?.activeClass || ''),
-      activeInsideVerificationWrapper: Boolean(state?.activeInsideVerificationWrapper),
-      stateChanged: typeof result?.stateChanged === 'boolean' ? result.stateChanged : null,
-    });
-  };
-
-  // 主路径：direct-fill
-  const directFillResult = await tryDreaminaDirectFill(page, codeInputResolution.locator, normalizedCode, logInfo);
-  await recordAttempt('dreamina-direct-fill', directFillResult);
-  if (directFillResult.ok) {
+  const activationResult = primaryFillResult?.activationResult || null;
+  const attempts = Array.isArray(primaryFillResult?.attempts) ? [...primaryFillResult.attempts] : [];
+  const directFillResult = primaryFillResult?.directFillResult || null;
+  if (primaryFillResult?.ok) {
     return {
       ok: true,
       state: 'VERIFICATION_CODE_FILLED',
-      mode: directFillResult.mode,
-      source: 'verification-input',
-      value: directFillResult.value,
-      stateChanged: directFillResult.stateChanged,
+      mode: primaryFillResult.mode,
+      source: primaryFillResult.source,
+      value: primaryFillResult.value,
+      stateChanged: primaryFillResult.stateChanged,
       attempts,
       activationResult,
       charSteps: [],
@@ -1682,6 +1709,7 @@ module.exports = {
   // 导出验证码输入目标解析能力。
   resolveDreaminaVerificationInput,
   // 导出验证码输入能力。
+  runDreaminaVerificationPrimaryFill,
   fillDreaminaVerificationCode,
   // 导出验证码提交结果确认能力。
   confirmDreaminaVerificationSubmitResult,
