@@ -171,17 +171,28 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       return { ok: false, skipped: true, reason: 'LOGIN_PAGE_CHECKBOX_NOT_CONFIRMED', checkboxClickTarget };
     }
 
+    const signInButtonEnabledBefore = await signInButton.isEnabled().catch(() => false);
+    const signInButtonClassBefore = await signInButton.evaluate(node => String(node?.className || '')).catch(() => '');
+
     await signInButton.click({ timeout: 2000 }).catch(async () => {
       await signInButton.click({ force: true, timeout: 2000 }).catch(() => null);
     });
     await page.waitForTimeout(Number(runtime?.dreaminaLoginSignInWaitMs || 800)).catch(() => null);
 
+    const signInButtonEnabledAfter = await signInButton.isEnabled().catch(() => false);
+    const signInButtonClassAfter = await signInButton.evaluate(node => String(node?.className || '')).catch(() => '');
+
     return {
       ok: true,
       skipped: false,
       reason: 'LOGIN_PAGE_SIGN_IN_CLICKED',
-      checked: checkedAfter,
+      checkedBefore,
+      checkedAfter,
       checkboxClickTarget,
+      signInButtonEnabledBefore,
+      signInButtonEnabledAfter,
+      signInButtonClassBefore,
+      signInButtonClassAfter,
     };
   }
 
