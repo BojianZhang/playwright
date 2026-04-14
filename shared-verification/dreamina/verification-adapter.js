@@ -25,6 +25,15 @@
  * - `ensureDreaminaVerificationInputAlive(...)` 只做局部保活，不承担路径决策
  * - 默认主路径保持为 activation + direct-fill
  * - legacy / debug 路径只在显式开关下参与
+ *
+ * 代码级 TODO：
+ * - 保持默认链只走 `activation + direct-fill`
+ * - 将 `fillDreaminaVerificationCode(...)` 进一步拆成 primary / legacy / debug 三层执行器
+ * - 继续把 `tryDreaminaCharByCharInput(...)` 维持在 legacy-only，不再加新修复逻辑
+ * - `tryDreaminaFallbackFill(...)` 保持 debug-only，不回退为默认链成员
+ * - 后续基于真实 run 统计 activation mode 与 legacy fallback 命中率，再决定删减候选
+ * - 不在 `ensureDreaminaVerificationInputAlive(...)` 中增加策略决策职责
+ * - 不在 `confirmDreaminaVerificationSubmitResult(...)` 中增加 resend / retry 编排
  */
 
 // 引入文件系统模块，用来读取 Dreamina verification profile JSON 配置文件。
