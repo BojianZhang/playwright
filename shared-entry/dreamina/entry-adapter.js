@@ -147,9 +147,28 @@ async function checkEntryHealth(page, runtime = {}, context = {}) {
   // 读取错误文本规则。
   const errorTexts = profile?.healthSignals?.errorTexts || [];
 
+  const healthTrace = {
+    overlayHandled: false,
+    errorTextHit: null,
+    loginSignalFound: false,
+    loginSignalLabel: '',
+    loginSignalSource: '',
+    loginSignalValue: '',
+    bodyTextLength: 0,
+    whiteScreenThreshold: Number(profile?.healthSignals?.whiteScreenMinTextLength || 0),
+    bodyLooksTooShort: false,
+    decision: '',
+  };
+
+  // 先做一次 overlay 预处理，避免 cookie 弹层/引导层把健康页误拖进后续长轮询。
+  const overlayResult = await preprocessDreaminaEntryOverlays(page, runtime, context).catch(() => ({ handled: false }));
+  healthTrace.overlayHandled = Boolean(overlayResult?.handled);
+
   // 优先检测错误文本。
   const errorTextHit = await findFirstVisibleByTexts(page, errorTexts);
   if (errorTextHit.ok) {
+    healthTrace.errorTextHit = String(errorTextHit.text || '');
+    healthTrace.decision = 'error-text';
     return {
       ok: false,
       state: 'ENTRY_ERROR_PAGE',
@@ -157,13 +176,39 @@ async function checkEntryHealth(page, runtime = {}, context = {}) {
       value: errorTextHit.text,
       strength: 'strong',
       stateChanged: null,
+      overlayHandled: Boolean(overlayResult?.handled),
+      healthTrace,
+    };
+  }
+
+  // 如果登录入口信号已经出现，直接判健康，不必再把可用页面当成“仅 body 文本检查通过”。
+  const loginSignal = await detectDreaminaLoginEntrySignals(page, runtime, context).catch(() => ({ found: false }));
+  healthTrace.loginSignalFound = Boolean(loginSignal?.found);
+  healthTrace.loginSignalLabel = String(loginSignal?.label || '');
+  healthTrace.loginSignalSource = String(loginSignal?.source || '');
+  healthTrace.loginSignalValue = String(loginSignal?.value || '');
+  if (loginSignal?.found) {
+    healthTrace.decision = 'login-signal';
+    return {
+      ok: true,
+      state: 'ENTRY_HEALTH_OK',
+      source: loginSignal.source || 'login-signal',
+      value: loginSignal.value || loginSignal.label || 'LOGIN_SIGNAL_READY',
+      strength: loginSignal.label === 'email-input' ? 'strong' : 'medium',
+      stateChanged: Boolean(overlayResult?.handled),
+      overlayHandled: Boolean(overlayResult?.handled),
+      loginSignal,
+      healthTrace,
     };
   }
 
   // 读取页面 body 文本。
   const bodyText = await page.evaluate(() => (document.body?.innerText || '').trim()).catch(() => '');
+  healthTrace.bodyTextLength = String(bodyText || '').length;
+  healthTrace.bodyLooksTooShort = healthTrace.bodyTextLength <= healthTrace.whiteScreenThreshold;
   // 当文本长度极短时，按接近白屏处理。
-  if (String(bodyText || '').length <= Number(profile?.healthSignals?.whiteScreenMinTextLength || 0)) {
+  if (healthTrace.bodyLooksTooShort) {
+    healthTrace.decision = 'white-screen';
     return {
       ok: false,
       state: 'ENTRY_WHITE_SCREEN',
@@ -171,17 +216,22 @@ async function checkEntryHealth(page, runtime = {}, context = {}) {
       value: 'BODY_TEXT_TOO_SHORT',
       strength: 'weak',
       stateChanged: null,
+      overlayHandled: Boolean(overlayResult?.handled),
+      healthTrace,
     };
   }
 
   // 健康检查通过。
+  healthTrace.decision = 'body-text-ok';
   return {
     ok: true,
     state: 'ENTRY_HEALTH_OK',
     source: 'health-check',
     value: 'HEALTH_OK',
     strength: 'weak',
-    stateChanged: null,
+    stateChanged: Boolean(overlayResult?.handled),
+    overlayHandled: Boolean(overlayResult?.handled),
+    healthTrace,
   };
 }
 
@@ -288,34 +338,43 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
 
   const matchedTexts = [];
   const matchedSelectors = [];
+  const timelineSignals = {};
 
   const emailInput = page.getByRole('textbox', { name: emailInputRoleName }).first();
-  if (await isVisible(emailInput)) {
+  const emailInputVisible = await isVisible(emailInput);
+  timelineSignals.emailInputVisible = emailInputVisible;
+  if (emailInputVisible) {
     matchedSelectors.push(`role=textbox[name=${emailInputRoleName}]`);
-    return { found: true, clickable: false, label: 'email-input', source: 'role', value: emailInputRoleName, matchedTexts, matchedSelectors };
+    return { found: true, clickable: false, label: 'email-input', source: 'role', value: emailInputRoleName, matchedTexts, matchedSelectors, timelineSignals };
   }
 
   const continueWithEmail = page.getByText(continueWithEmailText, { exact: false }).first();
-  if (await isVisible(continueWithEmail)) {
+  const continueWithEmailVisible = await isVisible(continueWithEmail);
+  timelineSignals.continueWithEmailVisible = continueWithEmailVisible;
+  if (continueWithEmailVisible) {
     matchedTexts.push(continueWithEmailText);
-    return { found: true, clickable: true, locator: continueWithEmail, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors };
+    return { found: true, clickable: true, locator: continueWithEmail, label: 'continue-with-email', source: 'text', value: continueWithEmailText, matchedTexts, matchedSelectors, timelineSignals };
   }
 
   for (const text of entryTexts) {
     const locator = page.getByText(String(text || ''), { exact: false }).first();
-    if (await isVisible(locator)) {
+    const visible = await isVisible(locator);
+    timelineSignals[`text:${String(text || '')}`] = visible;
+    if (visible) {
       matchedTexts.push(String(text || ''));
-      return { found: true, clickable: true, locator, label: 'entry-text', source: 'text', value: text, matchedTexts, matchedSelectors };
+      return { found: true, clickable: true, locator, label: 'entry-text', source: 'text', value: text, matchedTexts, matchedSelectors, timelineSignals };
     }
   }
 
   const roleLocator = page.getByRole('button', { name: new RegExp(entryRolePattern || 'sign in|log in|login|sign up', 'i') }).first();
-  if (await isVisible(roleLocator)) {
+  const roleVisible = await isVisible(roleLocator);
+  timelineSignals.entryRoleVisible = roleVisible;
+  if (roleVisible) {
     matchedSelectors.push(`role=button[name~=${entryRolePattern}]`);
-    return { found: true, clickable: true, locator: roleLocator, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors };
+    return { found: true, clickable: true, locator: roleLocator, label: 'entry-role', source: 'role', value: entryRolePattern, matchedTexts, matchedSelectors, timelineSignals };
   }
 
-  return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors };
+  return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors, timelineSignals };
 }
 
 /**
@@ -328,6 +387,22 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
 
   let elapsedMs = 0;
   let round = 0;
+  const signalTimeline = {};
+
+  function recordTimeline(signal = {}, currentElapsedMs = 0) {
+    const signals = signal?.timelineSignals && typeof signal.timelineSignals === 'object'
+      ? signal.timelineSignals
+      : {};
+    for (const [key, visible] of Object.entries(signals)) {
+      if (!visible) continue;
+      if (!signalTimeline[key]) {
+        signalTimeline[key] = {
+          firstSeenMs: currentElapsedMs,
+          round,
+        };
+      }
+    }
+  }
 
   for (const stage of stages) {
     const seconds = Number(stage.seconds || 0);
@@ -338,13 +413,19 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
 
       await preprocessDreaminaEntryOverlays(page, runtime, context);
       const signal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+      recordTimeline(signal, elapsedMs);
       if (signal.found) {
         if (signal.clickable && signal.locator) {
+          const clickStartMs = elapsedMs;
           await signal.locator.click({ timeout: 1500 }).catch(async () => {
             await signal.locator.click({ force: true, timeout: 1500 }).catch(() => {});
           });
-          await page.waitForTimeout(Number(runtime?.entryPostCtaClickWaitMs || 1200)).catch(() => {});
+          const postCtaWaitMs = Number(runtime?.entryPostCtaClickWaitMs || 600);
+          await page.waitForTimeout(postCtaWaitMs).catch(() => {});
+          elapsedMs += postCtaWaitMs;
           const recheckSignal = await detectDreaminaLoginEntrySignals(page, runtime, context);
+          recordTimeline(recheckSignal, elapsedMs);
+          const postClickGateReadyMs = Math.max(0, elapsedMs - clickStartMs);
           if (recheckSignal.found && recheckSignal.label === 'email-input') {
             if (typeof logInfo === 'function') {
               logInfo(`dreamina.entry.loginSignal.cta-opened-gate | via=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
@@ -361,28 +442,39 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
                 ctaSignal: signal,
                 round,
                 elapsedMs,
+                signalTimeline,
+                ctaSource: signal.value || signal.label || '',
+                ctaOpenedGateMs: clickStartMs,
+                postClickGateReadyMs,
               },
             };
           }
+          continue;
         }
 
-        if (typeof logInfo === 'function') {
-          logInfo(`dreamina.entry.loginSignal.ready | label=${signal.label} | source=${signal.source} | value=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
-        }
+        if (signal.label === 'email-input') {
+          if (typeof logInfo === 'function') {
+            logInfo(`dreamina.entry.loginSignal.ready | label=${signal.label} | source=${signal.source} | value=${signal.value} | round=${round} | elapsedMs=${elapsedMs}`);
+          }
 
-        return {
-          ok: true,
-          state: 'ENTRY_READY',
-          source: signal.source || '',
-          value: signal.value || signal.label || '',
-          strength: signal.label === 'email-input' ? 'strong' : 'weak',
-          waitStepMs: elapsedMs,
-          detail: {
-            loginSignal: signal,
-            round,
-            elapsedMs,
-          },
-        };
+          return {
+            ok: true,
+            state: 'ENTRY_READY',
+            source: signal.source || '',
+            value: signal.value || signal.label || '',
+            strength: 'strong',
+            waitStepMs: elapsedMs,
+            detail: {
+              loginSignal: signal,
+              round,
+              elapsedMs,
+              signalTimeline,
+              ctaSource: signal.value || signal.label || '',
+              ctaOpenedGateMs: null,
+              postClickGateReadyMs: null,
+            },
+          };
+        }
       }
 
       await page.waitForTimeout(intervalMs).catch(() => {});
@@ -402,6 +494,10 @@ async function waitForDreaminaLoginEntryReady(page, runtime = {}, context = {}) 
       loginSignal: null,
       round,
       elapsedMs,
+      signalTimeline,
+      ctaSource: '',
+      ctaOpenedGateMs: null,
+      postClickGateReadyMs: null,
       debugSnapshot,
       matchedTexts: [],
       matchedSelectors: [],
@@ -592,6 +688,7 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
       strength: readyResult?.strength || '',
       waitStepMs: Number(readyResult?.waitStepMs || 0),
       recoveryResult: null,
+      detail: readyResult?.detail || null,
     };
   }
 
@@ -627,6 +724,11 @@ async function confirmEntryReadyWithRecovery(page, runtime = {}, context = {}) {
         strength: readyAfterRecovery?.strength || '',
         waitStepMs: Number(readyAfterRecovery?.waitStepMs || 0),
         recoveryResult,
+        detail: {
+          ...(readyAfterRecovery?.detail && typeof readyAfterRecovery.detail === 'object' ? readyAfterRecovery.detail : {}),
+          recoveryAction: recoveryResult?.action || '',
+          recoveryReason: recoveryResult?.reason || '',
+        },
       };
     }
   }

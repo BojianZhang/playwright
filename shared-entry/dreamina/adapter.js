@@ -345,14 +345,17 @@ function filterStrongReadySelectors(selectors = []) {
  * - 给 waitForDreaminaReady / 登录入口检测复用
  */
 async function findVisibleReadyText(page, texts = []) {
+  const timelineSignals = {};
   for (const text of texts) {
     const locator = page.getByText(text, { exact: false }).first();
     const visible = await locator.isVisible().catch(() => false);
+    timelineSignals[`text:${String(text || '')}`] = visible;
     if (visible) {
       return {
         ok: true,
         source: 'text',
         value: text,
+        timelineSignals,
       };
     }
   }
@@ -361,6 +364,7 @@ async function findVisibleReadyText(page, texts = []) {
     ok: false,
     source: '',
     value: '',
+    timelineSignals,
   };
 }
 
@@ -372,14 +376,17 @@ async function findVisibleReadyText(page, texts = []) {
  * - 给 waitForDreaminaReady / 登录门确认复用
  */
 async function findVisibleReadySelector(page, selectors = []) {
+  const timelineSignals = {};
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
     const visible = await locator.isVisible().catch(() => false);
+    timelineSignals[`selector:${String(selector || '')}`] = visible;
     if (visible) {
       return {
         ok: true,
         source: 'selector',
         value: selector,
+        timelineSignals,
       };
     }
   }
@@ -388,6 +395,7 @@ async function findVisibleReadySelector(page, selectors = []) {
     ok: false,
     source: '',
     value: '',
+    timelineSignals,
   };
 }
 
@@ -439,46 +447,97 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
   const strongTexts = [...new Set([...(DREAMINA_STRONG_READY_TEXTS || []), ...((runtime.readyTextSignals || []).filter(Boolean))])];
   const start = Date.now();
   const maxWaitMs = Number(runtime.firstLoadGraceWaitMs || 0);
-  const steps = maxWaitMs > 0 ? [0, Math.min(800, maxWaitMs), maxWaitMs] : [0];
+  const earlyMidWaitMs = maxWaitMs > 0 ? Math.min(2000, maxWaitMs) : 0;
+  const midWaitMs = maxWaitMs > 0 ? Math.min(4000, maxWaitMs) : 0;
+  const steps = maxWaitMs > 0 ? [0, Math.min(800, maxWaitMs), earlyMidWaitMs, midWaitMs, maxWaitMs] : [0];
+  const uniqueSteps = [...new Set(steps)];
+  const trace = {
+    maxWaitMs,
+    steps: uniqueSteps,
+    rounds: [],
+    matchedKind: '',
+    matchedValue: '',
+  };
 
-  for (const waitMs of [...new Set(steps)]) {
-    if (waitMs > 0) {
-      await page.waitForTimeout(waitMs);
+  let lastTargetWaitMs = 0;
+
+  for (const waitMs of uniqueSteps) {
+    const round = {
+      waitMs,
+      deltaWaitMs: Math.max(0, waitMs - lastTargetWaitMs),
+      elapsedBeforeWaitMs: Date.now() - start,
+      elapsedAfterWaitMs: null,
+      selectorHit: null,
+      textHit: null,
+      bodyPatternHit: null,
+    };
+
+    if (round.deltaWaitMs > 0) {
+      await page.waitForTimeout(round.deltaWaitMs);
     }
+    lastTargetWaitMs = waitMs;
+    round.elapsedAfterWaitMs = Date.now() - start;
 
     const strongSelectorHit = await findVisibleReadySelector(page, strongSelectors);
+    round.selectorHit = strongSelectorHit?.ok ? String(strongSelectorHit.value || '') : null;
     if (strongSelectorHit.ok) {
+      trace.rounds.push(round);
+      trace.matchedKind = 'strong-selector';
+      trace.matchedValue = String(strongSelectorHit.value || '');
+      strongSelectorHit.detail = {
+        ...(strongSelectorHit.detail && typeof strongSelectorHit.detail === 'object' ? strongSelectorHit.detail : {}),
+        waitTrace: trace,
+      };
       if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强 selector ready 信号: ${strongSelectorHit.value} | elapsed=${Date.now() - start}ms`);
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强 selector ready 信号: ${strongSelectorHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return strongSelectorHit;
     }
 
     const strongTextHit = await findVisibleReadyText(page, strongTexts);
+    round.textHit = strongTextHit?.ok ? String(strongTextHit.value || '') : null;
     if (strongTextHit.ok) {
+      trace.rounds.push(round);
+      trace.matchedKind = 'strong-text';
+      trace.matchedValue = String(strongTextHit.value || '');
+      strongTextHit.detail = {
+        ...(strongTextHit.detail && typeof strongTextHit.detail === 'object' ? strongTextHit.detail : {}),
+        waitTrace: trace,
+      };
       if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强文本 ready 信号: ${strongTextHit.value} | elapsed=${Date.now() - start}ms`);
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强文本 ready 信号: ${strongTextHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return strongTextHit;
     }
 
     const bodyPatternHit = await findBodyPatternReady(page, runtime.readyBodyPatterns || []);
+    round.bodyPatternHit = bodyPatternHit?.ok ? String(bodyPatternHit.value || '') : null;
+    trace.rounds.push(round);
     if (bodyPatternHit.ok) {
+      trace.matchedKind = 'body-pattern';
+      trace.matchedValue = String(bodyPatternHit.value || '');
+      bodyPatternHit.detail = {
+        ...(bodyPatternHit.detail && typeof bodyPatternHit.detail === 'object' ? bodyPatternHit.detail : {}),
+        waitTrace: trace,
+      };
       if (typeof logInfo === 'function') {
-        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中 body pattern 兜底信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms`);
+        logInfo(`dreamina.adapter.waitForDreaminaReady | 命中 body pattern 兜底信号: ${bodyPatternHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return bodyPatternHit;
     }
   }
 
   if (typeof logInfo === 'function') {
-    logInfo(`dreamina.adapter.waitForDreaminaReady | 未命中 Dreamina ready 信号 | elapsed=${Date.now() - start}ms`);
+    logInfo(`dreamina.adapter.waitForDreaminaReady | 未命中 Dreamina ready 信号 | elapsed=${Date.now() - start}ms | steps=${uniqueSteps.join(',')}`);
   }
 
   return {
     ok: false,
     source: '',
     value: '',
+    detail: {
+      waitTrace: trace,
+    },
   };
 }
 
@@ -731,6 +790,20 @@ async function detectDreaminaEmailGateReady(page, context = {}) {
       state: 'EMAIL_GATE_READY',
       source: emailGate.source,
       value: emailGate.value,
+      detail: {
+        loginSignal: emailGate,
+        signalTimeline: emailGate?.timelineSignals && typeof emailGate.timelineSignals === 'object'
+          ? Object.fromEntries(
+              Object.entries(emailGate.timelineSignals)
+                .filter(([, visible]) => Boolean(visible))
+                .map(([key]) => [key, {
+                  firstSeenAt: new Date().toISOString(),
+                  elapsedMs: 0,
+                  round: 1,
+                }])
+            )
+          : null,
+      },
     };
   }
 
@@ -739,6 +812,10 @@ async function detectDreaminaEmailGateReady(page, context = {}) {
     state: 'EMAIL_GATE_NOT_READY',
     source: '',
     value: '',
+    detail: {
+      loginSignal: emailGate,
+      signalTimeline: null,
+    },
   };
 }
 
@@ -1077,6 +1154,28 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
  */
 async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
+  const startAt = Date.now();
+  const buildTimeline = (signal = {}, round = 1) => {
+    const timelineSignals = signal?.timelineSignals && typeof signal.timelineSignals === 'object'
+      ? signal.timelineSignals
+      : null;
+    if (!timelineSignals) {
+      return null;
+    }
+
+    const signalTimeline = {};
+    for (const [key, visible] of Object.entries(timelineSignals)) {
+      if (!visible) {
+        continue;
+      }
+      signalTimeline[key] = {
+        firstSeenAt: new Date().toISOString(),
+        elapsedMs: Math.max(0, Date.now() - startAt),
+        round,
+      };
+    }
+    return Object.keys(signalTimeline).length ? signalTimeline : null;
+  };
 
   /**
    * 先识别 Dreamina 专属错误弹窗。
@@ -1110,6 +1209,10 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
       state: 'EMAIL_GATE_READY',
       source: emailGate.source,
       value: emailGate.value,
+      detail: {
+        loginSignal: emailGate,
+        signalTimeline: buildTimeline(emailGate),
+      },
     };
   }
 
@@ -1129,6 +1232,10 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
       state: 'LOGIN_GATE_LAYER_READY',
       source: continueLayer.source,
       value: continueLayer.value,
+      detail: {
+        loginSignal: continueLayer,
+        signalTimeline: buildTimeline(continueLayer),
+      },
     };
   }
 
@@ -1162,6 +1269,18 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
  */
 async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
   const { logInfo = null, logWarn = null } = context;
+  const gateStartAt = Date.now();
+  const gateTrace = {
+    preprocessOverlaysMs: 0,
+    initialConfirmMs: 0,
+    openEntryMs: 0,
+    postOpenConfirmMs: 0,
+    secondJumpMs: 0,
+    postSecondJumpConfirmMs: 0,
+    resolvedAtMs: null,
+    resolvedState: '',
+    resolvedReason: '',
+  };
 
   /**
    * 先清一次挡板。
@@ -1170,25 +1289,53 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
    * - 首页入口经常会被 cookie / onboarding / 提示层挡住
    * - 不先清挡板，后续入口判断和点击都可能失真
    */
+  const preprocessStartAt = Date.now();
   await preprocessOverlays(page, context);
+  gateTrace.preprocessOverlaysMs = Math.max(0, Date.now() - preprocessStartAt);
 
   /**
    * 第一步确认：是不是已经在 email gate。
    */
+  const initialConfirmStartAt = Date.now();
   let gateState = await confirmDreaminaLoginGate(page, runtime, context);
+  gateTrace.initialConfirmMs = Math.max(0, Date.now() - initialConfirmStartAt);
   if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
     return {
       success: true,
       reason: 'LOGIN_GATE_READY',
       state: gateState.state,
       gateState,
+      detail: gateState?.detail && typeof gateState.detail === 'object'
+        ? {
+            ...gateState.detail,
+            loginSignal: gateState?.detail?.loginSignal || gateState,
+            signalTimeline: gateState?.detail?.signalTimeline || gateState?.detail?.loginSignal?.timelineSignals || null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_READY',
+            },
+          }
+        : {
+            loginSignal: gateState,
+            signalTimeline: null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_READY',
+            },
+          },
     };
   }
 
   /**
    * 第二步：尝试点击首页登录入口。
    */
+  const openEntryStartAt = Date.now();
   const openResult = await openDreaminaLoginEntry(page, runtime, context);
+  gateTrace.openEntryMs = Math.max(0, Date.now() - openEntryStartAt);
   if (!openResult.success) {
     return {
       success: false,
@@ -1201,7 +1348,9 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
   /**
    * 第三步：点击后先做一轮 gate 确认。
    */
+  const postOpenConfirmStartAt = Date.now();
   gateState = await confirmDreaminaLoginGate(page, runtime, context);
+  gateTrace.postOpenConfirmMs = Math.max(0, Date.now() - postOpenConfirmStartAt);
   if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
     return {
       success: true,
@@ -1209,6 +1358,28 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
       state: gateState.state,
       openResult,
       gateState,
+      detail: gateState?.detail && typeof gateState.detail === 'object'
+        ? {
+            ...gateState.detail,
+            loginSignal: gateState?.detail?.loginSignal || gateState,
+            signalTimeline: gateState?.detail?.signalTimeline || gateState?.detail?.loginSignal?.timelineSignals || null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_READY',
+            },
+          }
+        : {
+            loginSignal: gateState,
+            signalTimeline: null,
+            gateTrace: {
+              ...gateTrace,
+              resolvedAtMs: Math.max(0, Date.now() - gateStartAt),
+              resolvedState: gateState.state || '',
+              resolvedReason: 'LOGIN_GATE_READY',
+            },
+          },
     };
   }
 
@@ -1224,7 +1395,9 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
       logInfo('dreamina.adapter.ensureDreaminaLoginGate | 当前只进入登录门外层，准备执行第二跳 Continue with email');
     }
 
+    const secondJumpStartAt = Date.now();
     const secondJumpResult = await openDreaminaLoginEntry(page, runtime, context);
+    gateTrace.secondJumpMs = Math.max(0, Date.now() - secondJumpStartAt);
     if (!secondJumpResult.success) {
       return {
         success: false,
@@ -1235,7 +1408,9 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
       };
     }
 
+    const postSecondJumpConfirmStartAt = Date.now();
     gateState = await confirmDreaminaLoginGate(page, runtime, context);
+    gateTrace.postSecondJumpConfirmMs = Math.max(0, Date.now() - postSecondJumpConfirmStartAt);
     if (gateState.ok && gateState.state === 'EMAIL_GATE_READY') {
       return {
         success: true,
@@ -1244,6 +1419,16 @@ async function ensureDreaminaLoginGate(page, runtime = {}, context = {}) {
         openResult,
         secondJumpResult,
         gateState,
+        detail: gateState?.detail && typeof gateState.detail === 'object'
+          ? {
+              ...gateState.detail,
+              loginSignal: gateState?.detail?.loginSignal || gateState,
+              signalTimeline: gateState?.detail?.signalTimeline || gateState?.detail?.loginSignal?.timelineSignals || null,
+            }
+          : {
+              loginSignal: gateState,
+              signalTimeline: null,
+            },
       };
     }
 
