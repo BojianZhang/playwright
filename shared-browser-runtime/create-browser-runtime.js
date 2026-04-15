@@ -2,12 +2,7 @@
 
 const { chromium } = require('playwright');
 const { buildContextFingerprintOptions } = require('./fingerprint');
-
-function normalizeBlockedResourceTypes(input = null) {
-  return Array.isArray(input)
-    ? input.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
-    : ['image', 'media', 'font'];
-}
+const { applyResourcePolicy } = require('./resource-policy');
 
 function buildLaunchOptions(options = {}) {
   const headed = Boolean(options?.headed);
@@ -39,19 +34,6 @@ function buildLaunchOptions(options = {}) {
   return launchOptions;
 }
 
-async function applyResourcePolicy(context, blockedResourceTypes = []) {
-  const blocked = normalizeBlockedResourceTypes(blockedResourceTypes);
-  await context.route('**/*', async route => {
-    const request = route.request();
-    const resourceType = String(request.resourceType() || '').trim().toLowerCase();
-    if (blocked.includes(resourceType)) {
-      await route.abort().catch(() => {});
-      return;
-    }
-    await route.continue().catch(() => {});
-  });
-}
-
 async function createBrowserRuntime(options = {}) {
   const runtime = options?.runtime && typeof options.runtime === 'object' ? options.runtime : {};
   const windowLayout = options?.windowLayout && typeof options.windowLayout === 'object' ? options.windowLayout : null;
@@ -73,8 +55,6 @@ async function createBrowserRuntime(options = {}) {
 }
 
 module.exports = {
-  normalizeBlockedResourceTypes,
   buildLaunchOptions,
-  applyResourcePolicy,
   createBrowserRuntime,
 };
