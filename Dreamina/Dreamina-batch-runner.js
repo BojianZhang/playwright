@@ -41,6 +41,7 @@ const {
   sortProxiesByHealth,
   buildProxyHealthPolicy,
   computeDecayedHealthScore,
+  isProxyHardBlocked,
 } = require('../shared-proxy-precheck/proxy-health-store');
 
 const {
@@ -209,15 +210,23 @@ function acquireNextProxy(batchContext) {
   const list = batchContext?.proxies?.list || [];
   if (!list.length) return null;
 
+  const records = batchContext?.proxies?.healthStore?.records || {};
+  const activeList = list.filter(proxy => {
+    const proxyKey = proxy?.proxyKey || '';
+    const record = proxyKey ? records[proxyKey] : null;
+    return !isProxyHardBlocked(record || {});
+  });
+  if (!activeList.length) return null;
+
   const preferred = [];
   const fallback = [];
-  for (const proxy of list) {
+  for (const proxy of activeList) {
     const tier = getProxySelectionTier(proxy);
     if (tier >= 2) preferred.push(proxy);
     else fallback.push(proxy);
   }
 
-  const sourceList = preferred.length ? preferred : list;
+  const sourceList = preferred.length ? preferred : activeList;
   const cursor = batchContext.proxies.cursor % sourceList.length;
   const proxy = sourceList[cursor] || null;
   batchContext.proxies.cursor = (cursor + 1) % sourceList.length;
@@ -1393,6 +1402,10 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
     if (proxy) {
       const runtimeUpdated = upsertProxyHealthFromRuntime(batchContext?.proxies?.healthStore || {}, proxy, result);
       batchContext.proxies.healthStore = runtimeUpdated.store;
+      if (isProxyHardBlocked(runtimeUpdated?.record || {})) {
+        const blockedKey = String(runtimeUpdated?.record?.proxyKey || proxy?.proxyKey || '').trim();
+        batchContext.proxies.list = (batchContext.proxies.list || []).filter(item => String(item?.proxyKey || '').trim() !== blockedKey);
+      }
     }
 
     await updateBatchSummary(batchContext, result, {
@@ -1540,7 +1553,10 @@ async function runDreaminaBatch(argv = []) {
     providerStats: {},
     mode: 'fresh-batch-no-history',
   };
-  const proxies = loadLocalProxies();
+  const proxies = loadLocalProxies().map((proxy, index) => ({
+    ...proxy,
+    proxyKey: String(proxy?.proxyKey || `${proxy?.host || 'proxy'}:${proxy?.port || ''}:${proxy?.username || proxy?.id || index}`),
+  }));
 
   if (!accounts.length) {
     throw new Error('Dreamina batch runner: no accounts available from Dreamina/local-accounts.json');

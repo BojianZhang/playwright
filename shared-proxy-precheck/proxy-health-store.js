@@ -92,6 +92,9 @@ function normalizeProxyHealthRecord(record = {}, proxy = {}) {
     consecutiveEntryFails: Number(normalized.consecutiveEntryFails || 0),
     consecutiveBusinessFails: Number(normalized.consecutiveBusinessFails || 0),
     cooldownPenaltyUntil: Number(normalized.cooldownPenaltyUntil || 0),
+    blocked: Boolean(normalized.blocked),
+    blockedReason: String(normalized.blockedReason || '').trim(),
+    blockedAt: String(normalized.blockedAt || '').trim(),
     lastProxyPrecheckSummary: normalized.lastProxyPrecheckSummary && typeof normalized.lastProxyPrecheckSummary === 'object'
       ? normalized.lastProxyPrecheckSummary
       : null,
@@ -102,10 +105,20 @@ function normalizeProxyHealthRecord(record = {}, proxy = {}) {
   };
 }
 
+function isProxyHardBlocked(record = {}) {
+  const normalized = normalizeProxyHealthRecord(record, {});
+  if (normalized.blocked) return true;
+  if (normalized.cooldownPenaltyUntil && Date.now() < normalized.cooldownPenaltyUntil) return true;
+  return false;
+}
+
 function computeDecayedHealthScore(record = {}) {
   const normalized = normalizeProxyHealthRecord(record, {});
   let score = Number(normalized.healthScore || 0);
   const now = Date.now();
+  if (normalized.blocked) {
+    return 0;
+  }
   if (normalized.cooldownPenaltyUntil && now < normalized.cooldownPenaltyUntil) {
     score = Math.max(0, score - 15);
   }
@@ -186,10 +199,16 @@ function upsertProxyHealthFromRuntime(store = {}, proxy = {}, runtimeOutcome = n
     next.consecutiveEntryFails = 0;
     next.consecutiveBusinessFails = 0;
     next.cooldownPenaltyUntil = 0;
+    next.blocked = false;
+    next.blockedReason = '';
+    next.blockedAt = '';
     next.healthScore = Math.min(100, Math.max(Number(next.healthScore || 0) + 6, 75));
   } else if (/DREAMINA_PROXY_CONNECTIVITY_FAILED|PROXY_CONNECTIVITY_FAILED/.test(finalReason)) {
-    next.healthScore = Math.max(0, Number(next.healthScore || 0) - (22 + next.consecutiveConnectivityFails * 6));
-    next.cooldownPenaltyUntil = Date.now() + 30 * 60 * 1000;
+    next.healthScore = 0;
+    next.cooldownPenaltyUntil = Date.now() + 12 * 60 * 60 * 1000;
+    next.blocked = true;
+    next.blockedReason = finalReason || 'PROXY_CONNECTIVITY_FAILED';
+    next.blockedAt = new Date().toISOString();
   } else if (/DREAMINA_HOME_SHELL_WITHOUT_LOGIN_ENTRY/.test(finalReason)) {
     next.healthScore = Math.max(0, Number(next.healthScore || 0) - (16 + next.consecutiveEntryFails * 4));
     next.cooldownPenaltyUntil = Date.now() + 20 * 60 * 1000;
@@ -275,4 +294,5 @@ module.exports = {
   computeDecayedHealthScore,
   sortProxiesByHealth,
   buildProxyHealthPolicy,
+  isProxyHardBlocked,
 };
