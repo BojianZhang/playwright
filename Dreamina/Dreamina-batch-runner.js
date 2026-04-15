@@ -1533,8 +1533,14 @@ async function runDreaminaBatch(argv = []) {
   const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
   const loadedProxyHealthStore = loadProxyHealthStore();
   const proxyHealthStore = resetProxyPrecheckState(loadedProxyHealthStore);
-  const proxyHealthPolicy = buildProxyHealthPolicy(proxyHealthStore);
-  const proxies = sortProxiesByHealth(loadLocalProxies(), proxyHealthStore, proxyHealthPolicy);
+  const proxyHealthPolicy = {
+    blockedCountries: [],
+    blockedProviders: [],
+    countryStats: {},
+    providerStats: {},
+    mode: 'fresh-batch-no-history',
+  };
+  const proxies = loadLocalProxies();
 
   if (!accounts.length) {
     throw new Error('Dreamina batch runner: no accounts available from Dreamina/local-accounts.json');
@@ -1573,7 +1579,7 @@ async function runDreaminaBatch(argv = []) {
   await resetFile(SESSION_RECORDS_LATEST_JSONL);
 
   console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
-  console.log('[Dreamina Batch] Proxy precheck cache reset: Y | strategy=reinspect-every-batch');
+  console.log('[Dreamina Batch] Proxy precheck cache reset: Y | history-ordering: N | strategy=fresh-batch-no-history');
   if (!cli.ignoreKnownExists && pruneResult.removedCount > 0) {
     console.log(`[Dreamina Batch] 启动前已将已知已注册账号迁出待注册池，并保留到 registered-accounts.json | moved=${pruneResult.removedCount}`);
   }
