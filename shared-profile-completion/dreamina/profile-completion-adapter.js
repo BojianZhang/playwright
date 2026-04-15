@@ -1,5 +1,28 @@
 'use strict';
 
+/**
+ * Dreamina profile-completion adapter
+ *
+ * Layering:
+ * 1. profile load / visibility helpers
+ * 2. ready detection
+ * 3. birthday plan generation
+ * 4. birthday field read / fill helpers
+ * 5. dropdown / trigger interaction helpers
+ * 6. submit / snapshot / state-change helpers
+ * 7. confirm / classify
+ * 8. continuous-flow primary path
+ *
+ * Adapter boundary:
+ * - Own Dreamina-specific selectors, DOM interaction, trigger activation, dropdown selection, submit/confirm signals
+ * - Expose normalized stage-4 hooks for shared-profile-completion/stages/profile-completion-submit.js
+ *
+ * Adapter does NOT:
+ * - Own stage-level orchestration across S4 and later stages
+ * - Decide shared retry policy outside local helper attempts
+ * - Replace shared stage normalization / logging contracts
+ */
+
 // 引入文件系统模块，用来读取 Dreamina profile-completion profile JSON 配置文件。
 const fs = require('fs');
 // 引入 path 模块，用来安全拼接当前目录下的 profile 文件路径。
@@ -10,6 +33,10 @@ const DREAMINA_PROFILE_COMPLETION_PROFILE_PATH = path.join(__dirname, 'profiles'
 
 // profile 缓存对象，避免每次调用 adapter 方法都重复读取磁盘文件。
 let dreaminaProfileCompletionProfileCache = null;
+
+// -----------------------------------------------------------------------------
+// 基础工具层：profile load / visibility / first-visible helpers
+// -----------------------------------------------------------------------------
 
 /**
  * 读取 Dreamina 第四阶段 profile。
@@ -77,6 +104,10 @@ async function findFirstVisibleByTexts(page, texts = []) {
   // 如果所有文本都没命中，就返回统一失败结构。
   return { ok: false, text: '', locator: null };
 }
+
+// -----------------------------------------------------------------------------
+// ready 检测层：只判断是否进入 S4 可操作区，不负责填写/提交
+// -----------------------------------------------------------------------------
 
 /**
  * 检测 Dreamina 第四阶段的强 selector ready 信号。
@@ -261,6 +292,10 @@ async function waitForDreaminaProfileCompletionReady(page, runtime = {}, context
     waitStepMs: lastWaitStepMs,
   };
 }
+
+// -----------------------------------------------------------------------------
+// birthday plan 层：只生成计划，不操作页面
+// -----------------------------------------------------------------------------
 
 /**
  * 规范化 birthday 年份范围。
@@ -450,6 +485,10 @@ async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, c
   };
 }
 
+// -----------------------------------------------------------------------------
+// birthday 字段读写层：year / month / day 的页面状态读取与单字段填写
+// -----------------------------------------------------------------------------
+
 /**
  * 读取当前 birthday year 输入值。
  *
@@ -522,6 +561,11 @@ async function readDreaminaBirthdayNextState(page, profile) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// dropdown / trigger helper 层：负责局部交互激活与 option 选择
+// 不负责 stage 成败归类，不负责跨阶段 orchestration
+// -----------------------------------------------------------------------------
+
 async function readDreaminaBirthdayTriggerState(page, kind, profile) {
   const label = kind === 'day' ? 'Day' : 'Month';
   const roleLocator = kind === 'day'
@@ -579,6 +623,14 @@ async function readDreaminaBirthdayTriggerState(page, kind, profile) {
   };
 }
 
+/**
+ * 激活 birthday month/day trigger。
+ *
+ * 边界：
+ * - 只负责让 trigger 进入 opened / active / focused 之一的可操作态
+ * - 允许使用少量局部 click plans 做兼容性激活
+ * - 不负责真正选择 option，不负责判定 stage 成功
+ */
 async function activateDreaminaBirthdayTrigger(page, kind, profile, context = {}) {
   const { logInfo = null } = context;
   const label = kind === 'day' ? 'Day' : 'Month';
@@ -932,6 +984,15 @@ async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {})
  * - 在填写前后读取 day 输入框当前值
  * - 避免只看 fill/type 是否报错，而不看页面真实值
  */
+/**
+ * 尝试从 Dreamina birthday dropdown 中选择一个 option。
+ *
+ * 维护提示：
+ * - 这是当前 adapter 的高复杂 helper 之一
+ * - 当前虽然名字带 month，但实际承担的是通用 dropdown option picker 角色，day 路径也会复用
+ * - 它只负责“候选 option 遍历 + 点击位点尝试 + selected/panel 状态确认”
+ * - 不要继续向这里叠加更重的 retry / recover / 阶段判断逻辑
+ */
 async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidates = [], logInfo = null) {
   const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
   const normalizedCandidates = Array.isArray(monthCandidates)
@@ -1180,6 +1241,10 @@ async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// submit / snapshot / state-change 层：负责提交前后观察，不负责最终阶段归类
+// -----------------------------------------------------------------------------
+
 /**
  * 读取第四阶段提交前后的轻量页面快照。
  *
@@ -1378,6 +1443,10 @@ async function submitDreaminaProfileCompletion(page, runtime = {}, context = {})
     };
   }
 }
+
+// -----------------------------------------------------------------------------
+// confirm / classify 层：负责 S4 结果确认与 Dreamina 专属失败收口
+// -----------------------------------------------------------------------------
 
 /**
  * 检测 Dreamina 是否已经进入 post-auth-ready。
@@ -1707,8 +1776,25 @@ function classifyDreaminaProfileCompletionFailure(input = {}) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// continuous-flow 主路径层：当前 Dreamina S4 首选路径
+// -----------------------------------------------------------------------------
+
 // 导出 Dreamina 第四阶段 adapter 的所有公开能力。
 
+/**
+ * 连续执行 Dreamina birthday 主路径。
+ *
+ * 边界：
+ * - 负责按 Year -> Month -> Day -> Next 串行推进
+ * - 负责记录 phaseTrace，帮助后续定位固定等待与动作耗时
+ * - 允许在本函数内直接执行 submit/next 点击，并通过 detail.submitPerformed 暴露给 shared stage
+ *
+ * 不负责：
+ * - stage 级最终成败归类
+ * - post-auth-ready 的长期确认
+ * - shared 层输出结构规范化
+ */
 async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, context = {}) {
   const { logInfo = null } = context;
   const yearValue = String(plan?.birthdayPlan?.year || '').trim();
