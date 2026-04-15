@@ -32,6 +32,13 @@ const {
   createDreaminaCliRuntime,
 } = require('./Dreamina-register');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
+const {
+  loadProxyHealthStore,
+  saveProxyHealthStore,
+  upsertProxyHealthFromPrecheck,
+  upsertProxyHealthFromRuntime,
+  sortProxiesByHealth,
+} = require('../shared-proxy-precheck/proxy-health-store');
 
 const {
   updateWorkerStatus,
@@ -540,7 +547,8 @@ function createBatchRunContext(options = {}) {
       total: Array.isArray(options.proxies) ? options.proxies.length : 0,
       list: Array.isArray(options.proxies) ? options.proxies : [],
       cursor: Math.max(0, Number(options.proxyStart || 0)),
-      selectionPolicy: 'prefer-business-capable-proxies',
+      selectionPolicy: 'prefer-healthier-business-capable-proxies',
+      healthStore: options.proxyHealthStore || { updatedAt: '', records: {} },
     },
 
     knownExistsAccounts,
@@ -1151,6 +1159,7 @@ async function writeBatchSummaryFile(batchContext) {
 
   await fs.promises.writeFile(batchContext.paths.summaryFile, JSON.stringify(summary, null, 2), 'utf8');
   await fs.promises.writeFile(batchContext.paths.latestSummaryFile, JSON.stringify(summary, null, 2), 'utf8');
+  saveProxyHealthStore(batchContext?.proxies?.healthStore || { updatedAt: '', records: {} });
   await writeKnownExistsAccounts(batchContext);
 
   let indexData = [];
@@ -1360,6 +1369,12 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
 
     if (proxy && result?.proxyPrecheckSummary && typeof result.proxyPrecheckSummary === 'object') {
       proxy.lastProxyPrecheckSummary = result.proxyPrecheckSummary;
+      const precheckUpdated = upsertProxyHealthFromPrecheck(batchContext?.proxies?.healthStore || {}, proxy, result.proxyPrecheckSummary);
+      batchContext.proxies.healthStore = precheckUpdated.store;
+    }
+    if (proxy) {
+      const runtimeUpdated = upsertProxyHealthFromRuntime(batchContext?.proxies?.healthStore || {}, proxy, result);
+      batchContext.proxies.healthStore = runtimeUpdated.store;
     }
 
     await updateBatchSummary(batchContext, result, {
@@ -1485,7 +1500,8 @@ async function runDreaminaBatch(argv = []) {
     ? { removedCount: 0, removedEmails: [], remainingAccounts: loadLocalAccounts() }
     : await pruneKnownRegisteredFromLocalPool(knownExistsAccounts);
   const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
-  const proxies = loadLocalProxies();
+  const proxyHealthStore = loadProxyHealthStore();
+  const proxies = sortProxiesByHealth(loadLocalProxies(), proxyHealthStore);
 
   if (!accounts.length) {
     throw new Error('Dreamina batch runner: no accounts available from Dreamina/local-accounts.json');
@@ -1502,6 +1518,7 @@ async function runDreaminaBatch(argv = []) {
     layoutProfilePath,
     accounts,
     proxies,
+    proxyHealthStore,
   });
 
   const resolvedLayoutPreset = layoutPlanner.resolve(1, batchContext.config.concurrency);
