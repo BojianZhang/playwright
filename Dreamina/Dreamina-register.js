@@ -14,6 +14,7 @@ const {
   formatDurationMs,
 } = require('../shared-stage-logger');
 const { updateWorkerStatus } = require('../worker-status-tracker');
+const { buildContextFingerprintOptions } = require('../shared-browser-runtime/fingerprint');
 
 // ==============================
 // Dreamina 主链编排层：阶段公共 runner 引入
@@ -532,7 +533,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
 
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
-      const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://dreamina.capcut.com/ai-tool/login').trim();
+      const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
       const gotoTimeout = Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000);
 
       const attemptGoto = async (targetUrl, sourceLabel) => {
@@ -2112,18 +2113,8 @@ async function createDreaminaCliRuntime(options = {}) {
   }
 
   const browser = await chromium.launch(launchOptions);
-  const context = await browser.newContext({
-    viewport: windowLayout?.viewport && Number(windowLayout.viewport.width) > 0 && Number(windowLayout.viewport.height) > 0
-      ? {
-          width: Number(windowLayout.viewport.width),
-          height: Number(windowLayout.viewport.height),
-        }
-      : { width: 1440, height: 900 },
-    locale: 'en-US',
-    timezoneId: 'Asia/Shanghai',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-    ignoreHTTPSErrors: true,
-  });
+  const { fingerprint, contextOptions } = buildContextFingerprintOptions(runtime, { windowLayout });
+  const context = await browser.newContext(contextOptions);
 
   await context.route('**/*', async route => {
     const request = route.request();
@@ -2140,6 +2131,7 @@ async function createDreaminaCliRuntime(options = {}) {
   return {
     browser,
     context,
+    fingerprint,
     page,
   };
 }
@@ -2250,7 +2242,7 @@ async function runDreaminaRegisterCli(argv = []) {
         selectedProxyIndex: proxySelection.selectedProxyIndex,
         skippedProxyIds: proxySelection.skippedProxyIds,
         dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
-        dreaminaEntryUrl: 'https://dreamina.capcut.com/ai-tool/login',
+        dreaminaEntryUrl: 'https://dreamina.capcut.com/ai-tool/home',
         entryGotoTimeoutMs: 120000,
         dreaminaNavigationTimeoutMs: 120000,
         firstLoadGraceWaitMs: 12000,
