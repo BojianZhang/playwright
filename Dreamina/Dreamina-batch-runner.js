@@ -1437,7 +1437,7 @@ async function runDreaminaBatch(argv = []) {
     throw new Error('Dreamina batch runner: no proxies available from local proxy source');
   }
 
-  const layoutProfilePath = path.join(__dirname, 'dreamina-layout-profile.json');
+  const layoutProfilePath = path.join(__dirname, '..', 'shared-window-layout', 'window-layout-profile.json');
   const layoutPlanner = createWindowLayoutPlanner({ profilePath: layoutProfilePath });
 
   const batchContext = createBatchRunContext({
