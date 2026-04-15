@@ -1231,19 +1231,6 @@ async function detectDirectDreaminaCredentialOutcome(page, runtime = {}, context
     };
   }
 
-  if (submitResult && submitResult.hasStateChange === false) {
-    return {
-      ok: false,
-      handled: true,
-      state: 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE',
-      nextStage: '',
-      source: 'snapshot',
-      value: 'SUBMIT_NO_STATE_CHANGE',
-      strength: 'weak',
-      settleStage: settlementResult?.stage || 'snapshot-check',
-    };
-  }
-
   return {
     ok: false,
     handled: false,
@@ -1254,6 +1241,32 @@ async function resolveDreaminaAmbiguousCredentialOutcome(page, runtime = {}, con
   const { logInfo = null, submitResult = null } = context;
   const settlementResult = submitResult?.settlementResult || null;
   const afterSnapshot = submitResult?.afterSnapshot || null;
+
+  const resolveFollowupVerificationReady = async () => {
+    const followupVerification = await detectDreaminaVerificationStageReady(page, context).catch(() => null);
+    if (followupVerification?.ok) {
+      return {
+        ok: true,
+        handled: true,
+        state: followupVerification.state || 'CREDENTIAL_SUBMIT_OK',
+        nextStage: followupVerification.nextStage || 'verification',
+        source: 'followup-verification-ready',
+        value: followupVerification.value || 'FOLLOWUP_VERIFICATION_READY',
+        strength: followupVerification.strength || 'weak',
+        settleStage: settlementResult?.stage || 'followup-check',
+        stateTrace: ['FORM_READY', 'EMAIL_FILLED', 'PASSWORD_FILLED', 'FORM_SUBMITTED', followupVerification.state || 'CREDENTIAL_SUBMIT_OK'],
+        formSignals: {
+          submitMode: submitResult?.submitMode || '',
+          submitLabel: submitResult?.submit || '',
+        },
+        detail: {
+          resolutionType: 'followup-verification-ready',
+          followupVerification,
+        },
+      };
+    }
+    return null;
+  };
 
   const signupOverlayStillOpen = Boolean(
     afterSnapshot
@@ -1312,6 +1325,12 @@ async function resolveDreaminaAmbiguousCredentialOutcome(page, runtime = {}, con
           followupSnapshot,
         },
       };
+    }
+
+    const followupVerificationReadyResult = await resolveFollowupVerificationReady();
+    if (followupVerificationReadyResult) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup verification ready after signup-still-open | stage=${settlementResult?.stage || 'none'}`);
+      return followupVerificationReadyResult;
     }
 
     if (!followupRecovered) {
@@ -1429,6 +1448,12 @@ async function resolveDreaminaAmbiguousCredentialOutcome(page, runtime = {}, con
       };
     }
 
+    const followupVerificationReadyResult = await resolveFollowupVerificationReady();
+    if (followupVerificationReadyResult) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | followup verification ready after initial dismiss | stage=${settlementResult?.stage || 'none'}`);
+      return followupVerificationReadyResult;
+    }
+
     if (typeof logInfo === 'function') {
       logInfo(`dreamina.credential.confirmResult | signup overlay dismissed without verification or failure | stage=${settlementResult?.stage || 'none'} | followup=${followupStillDismissedWithoutOutcome ? 'same-dismissed' : 'changed'}`);
     }
@@ -1448,6 +1473,24 @@ async function resolveDreaminaAmbiguousCredentialOutcome(page, runtime = {}, con
         followupObservation,
         followupSnapshot,
         followupStillDismissedWithoutOutcome,
+      },
+    };
+  }
+
+  if (submitResult && submitResult.hasStateChange === false) {
+    if (typeof logInfo === 'function') logInfo(`dreamina.credential.confirmResult | no state change after followup | stage=${settlementResult?.stage || 'none'}`);
+    return {
+      ok: false,
+      handled: true,
+      state: 'CREDENTIAL_SUBMIT_NO_STATE_CHANGE',
+      nextStage: '',
+      source: 'snapshot-followup',
+      value: 'SUBMIT_NO_STATE_CHANGE_AFTER_FOLLOWUP',
+      strength: 'weak',
+      settleStage: settlementResult?.stage || 'followup-check',
+      detail: {
+        resolutionType: 'no-state-change-after-followup',
+        afterSnapshot,
       },
     };
   }
