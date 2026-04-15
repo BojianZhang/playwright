@@ -572,6 +572,8 @@ function createBatchRunContext(options = {}) {
       skippedCount: 0,
       existsCount: 0,
       knownExistsSkippedCount: 0,
+      retiredProxyCount: 0,
+      retiredProxyKeys: [],
       failureReasonBuckets: {},
       existsReasonBuckets: {},
       finalStageBuckets: {},
@@ -1175,6 +1177,8 @@ async function writeBatchSummaryFile(batchContext) {
     },
     proxyHealthTopGood,
     proxyHealthTopBad,
+    retiredProxyCount: Number(batchContext.summary.retiredProxyCount || 0),
+    retiredProxyKeys: Array.isArray(batchContext.summary.retiredProxyKeys) ? batchContext.summary.retiredProxyKeys : [],
     entrySlowSamples,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
@@ -1404,7 +1408,13 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
       batchContext.proxies.healthStore = runtimeUpdated.store;
       if (isProxyHardBlocked(runtimeUpdated?.record || {})) {
         const blockedKey = String(runtimeUpdated?.record?.proxyKey || proxy?.proxyKey || '').trim();
+        const beforeCount = (batchContext.proxies.list || []).length;
         batchContext.proxies.list = (batchContext.proxies.list || []).filter(item => String(item?.proxyKey || '').trim() !== blockedKey);
+        const removed = beforeCount !== (batchContext.proxies.list || []).length;
+        if (removed && blockedKey && !batchContext.summary.retiredProxyKeys.includes(blockedKey)) {
+          batchContext.summary.retiredProxyKeys.push(blockedKey);
+          batchContext.summary.retiredProxyCount = batchContext.summary.retiredProxyKeys.length;
+        }
       }
     }
 
@@ -1503,6 +1513,9 @@ function buildBatchFinalSummaryLines(summary = {}) {
     const blockedCountries = Array.isArray(summary.proxyHealthPolicy.blockedCountries) ? summary.proxyHealthPolicy.blockedCountries.join(',') : '';
     const blockedProviders = Array.isArray(summary.proxyHealthPolicy.blockedProviders) ? summary.proxyHealthPolicy.blockedProviders.join(',') : '';
     lines.push(`[Dreamina Batch] ProxyHealthPolicy: blockedCountries=${blockedCountries || '-'} | blockedProviders=${blockedProviders || '-'}`);
+  }
+  if (typeof summary?.retiredProxyCount === 'number') {
+    lines.push(`[Dreamina Batch] RetiredProxies: count=${summary.retiredProxyCount} | keys=${Array.isArray(summary?.retiredProxyKeys) && summary.retiredProxyKeys.length ? summary.retiredProxyKeys.join(',') : '-'}`);
   }
   if (Array.isArray(summary?.proxyHealthTopGood) && summary.proxyHealthTopGood.length) {
     const topGood = summary.proxyHealthTopGood.map(item => `${item.proxyId || item.host}:${item.healthScore}`).join(' | ');
