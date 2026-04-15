@@ -41,6 +41,26 @@ function saveProxyHealthStore(store = {}, options = {}) {
   return payload;
 }
 
+function resetProxyPrecheckState(store = {}) {
+  const records = ensureObject(store?.records);
+  const nextRecords = {};
+  for (const [proxyKey, record] of Object.entries(records)) {
+    const normalized = normalizeProxyHealthRecord(record, {});
+    nextRecords[proxyKey] = normalizeProxyHealthRecord({
+      ...normalized,
+      capabilityGrade: '',
+      businessGrade: '',
+      proxyGrade: '',
+      lastProxyPrecheckSummary: null,
+      updatedAt: new Date().toISOString(),
+    }, {});
+  }
+  return {
+    updatedAt: new Date().toISOString(),
+    records: nextRecords,
+  };
+}
+
 function buildProxyHealthKey(proxy = {}) {
   const host = String(proxy?.host || '').trim().toLowerCase();
   const port = String(proxy?.port || '').trim();
@@ -248,6 +268,7 @@ module.exports = {
   buildProxyHealthKey,
   loadProxyHealthStore,
   saveProxyHealthStore,
+  resetProxyPrecheckState,
   normalizeProxyHealthRecord,
   upsertProxyHealthFromPrecheck,
   upsertProxyHealthFromRuntime,

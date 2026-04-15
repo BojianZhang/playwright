@@ -35,6 +35,7 @@ const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/l
 const {
   loadProxyHealthStore,
   saveProxyHealthStore,
+  resetProxyPrecheckState,
   upsertProxyHealthFromPrecheck,
   upsertProxyHealthFromRuntime,
   sortProxiesByHealth,
@@ -1530,7 +1531,8 @@ async function runDreaminaBatch(argv = []) {
     ? { removedCount: 0, removedEmails: [], remainingAccounts: loadLocalAccounts() }
     : await pruneKnownRegisteredFromLocalPool(knownExistsAccounts);
   const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
-  const proxyHealthStore = loadProxyHealthStore();
+  const loadedProxyHealthStore = loadProxyHealthStore();
+  const proxyHealthStore = resetProxyPrecheckState(loadedProxyHealthStore);
   const proxyHealthPolicy = buildProxyHealthPolicy(proxyHealthStore);
   const proxies = sortProxiesByHealth(loadLocalProxies(), proxyHealthStore, proxyHealthPolicy);
 
@@ -1571,6 +1573,7 @@ async function runDreaminaBatch(argv = []) {
   await resetFile(SESSION_RECORDS_LATEST_JSONL);
 
   console.log(`[Dreamina Batch] runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${accounts.length} | proxies=${proxies.length} | ignoreKnownExists=${batchContext.config.ignoreKnownExists ? 'Y' : 'N'}`);
+  console.log('[Dreamina Batch] Proxy precheck cache reset: Y | strategy=reinspect-every-batch');
   if (!cli.ignoreKnownExists && pruneResult.removedCount > 0) {
     console.log(`[Dreamina Batch] 启动前已将已知已注册账号迁出待注册池，并保留到 registered-accounts.json | moved=${pruneResult.removedCount}`);
   }
