@@ -21,5 +21,48 @@
       "method": "GET",
       "timeoutMs": 15000
     }
+  },
+  "homepageShell": {
+    "url": "https://www.dreamina.com/",
+    "method": "GET",
+    "timeoutMs": 15000,
+    "minBodyTextLength": 120,
+    "titlePatterns": [
+      "Dreamina",
+      "CapCut"
+    ],
+    "shellTexts": [
+      "Explore Create Assets",
+      "Start Creating With AI Agent",
+      "AI Image",
+      "Canvas",
+      "Create realistic talk"
+    ],
+    "errorTexts": [
+      "Something went wrong",
+      "Refresh the page and try again",
+      "Access denied",
+      "Too many requests"
+    ]
+  },
+  "loginAffordance": {
+    "texts": [
+      "Sign in",
+      "Log in",
+      "Login",
+      "Continue with email",
+      "Sign up"
+    ],
+    "selectorHints": [
+      "SiderMenuLogin",
+      "continue with email",
+      "sign in"
+    ],
+    "minAffordanceCount": 1
+  },
+  "healthGrades": {
+    "strongOkScore": 90,
+    "okScore": 75,
+    "weakScore": 55
   }
 }

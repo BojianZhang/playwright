@@ -53,6 +53,95 @@ function extractIpFromResponseBody(body) {
   return plainIpMatch ? plainIpMatch[0].trim() : '';
 }
 
+function extractHtmlTitle(body) {
+  const text = String(body || '');
+  const match = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? String(match[1] || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+function stripHtmlToText(body) {
+  return String(body || '')
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function findFirstMatchedPattern(text, patterns = []) {
+  const haystack = String(text || '');
+  for (const pattern of patterns) {
+    const candidate = String(pattern || '').trim();
+    if (!candidate) continue;
+    if (new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(haystack)) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function countMatchedPatterns(text, patterns = []) {
+  const haystack = String(text || '');
+  let count = 0;
+  for (const pattern of patterns) {
+    const candidate = String(pattern || '').trim();
+    if (!candidate) continue;
+    if (new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(haystack)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function buildProxyBusinessHealthSummary(input = {}) {
+  const connectivity = input.connectivity || null;
+  const exitIp = input.exitIp || null;
+  const primaryTarget = input.primaryTarget || null;
+  const secondaryTarget = input.secondaryTarget || null;
+  const homepageShell = input.homepageShell || null;
+  const loginAffordance = input.loginAffordance || null;
+
+  const transportOk = Boolean(connectivity?.ok);
+  const exitIpOk = Boolean(exitIp?.ok);
+  const primaryOk = Boolean(primaryTarget?.ok);
+  const secondaryOk = Boolean(secondaryTarget?.ok);
+  const homepageShellOk = Boolean(homepageShell?.ok);
+  const loginAffordanceOk = Boolean(loginAffordance?.ok);
+
+  let healthScore = 0;
+  if (transportOk) healthScore += 25;
+  if (exitIpOk) healthScore += 10;
+  if (primaryOk) healthScore += 20;
+  if (secondaryOk) healthScore += 10;
+  if (homepageShellOk) healthScore += 20;
+  if (loginAffordanceOk) healthScore += 15;
+
+  let capabilityGrade = 'DEAD';
+  if (transportOk) capabilityGrade = 'TUNNEL_ONLY';
+  if (primaryOk || exitIpOk) capabilityGrade = 'HTTP_REACHABLE';
+  if (homepageShellOk) capabilityGrade = 'HOMEPAGE_USABLE';
+  if (loginAffordanceOk) capabilityGrade = 'ENTRY_READY_CAPABLE';
+
+  let businessGrade = 'BAD';
+  if (healthScore >= 90) businessGrade = 'STRONG';
+  else if (healthScore >= 75) businessGrade = 'OK';
+  else if (healthScore >= 55) businessGrade = 'WEAK';
+
+  return {
+    transportOk,
+    exitIpOk,
+    primaryOk,
+    secondaryOk,
+    homepageShellOk,
+    loginAffordanceOk,
+    capabilityGrade,
+    businessGrade,
+    healthScore,
+  };
+}
+
 // ==============================
 // transport 层
 // 负责一次性 HTTP CONNECT -> TLS -> HTTPS 请求，不负责业务结果判定。
@@ -238,6 +327,94 @@ async function checkDreaminaSecondaryTarget(proxy, runtime = {}, context = {}) {
   };
 }
 
+async function checkDreaminaHomepageShell(proxy, runtime = {}, context = {}) {
+  const profile = loadDreaminaProxyPrecheckProfile();
+  const shellProfile = profile?.homepageShell || {};
+  const response = await requestViaHttpProxy(
+    proxy,
+    String(shellProfile.url || profile?.targets?.primary?.url || ''),
+    String(shellProfile.method || 'GET').toUpperCase(),
+    Number(runtime?.proxyHomepageShellTimeoutMs || shellProfile.timeoutMs || 15000)
+  );
+
+  const title = response.success ? extractHtmlTitle(response.body) : '';
+  const bodyText = response.success ? stripHtmlToText(response.body) : '';
+  const titleHit = findFirstMatchedPattern(title, shellProfile.titlePatterns || []);
+  const shellTextHit = findFirstMatchedPattern(bodyText, shellProfile.shellTexts || []);
+  const errorTextHit = findFirstMatchedPattern(bodyText, shellProfile.errorTexts || []);
+  const bodyTextLength = bodyText.length;
+  const ok = Boolean(
+    response.success
+    && response.status >= 200
+    && response.status <= 399
+    && bodyTextLength >= Number(shellProfile.minBodyTextLength || 120)
+    && !errorTextHit
+    && (titleHit || shellTextHit)
+  );
+
+  return {
+    ok,
+    state: ok ? 'DREAMINA_HOMEPAGE_SHELL_OK' : 'DREAMINA_HOMEPAGE_SHELL_FAILED',
+    source: 'homepage-shell',
+    value: shellTextHit || titleHit || String(response.reason || response.target || ''),
+    strength: ok ? 'medium' : 'medium',
+    elapsedMs: response.elapsedMs,
+    evidence: {
+      title,
+      titleHit,
+      shellTextHit,
+      errorTextHit,
+      bodyTextLength,
+      bodyPreview: bodyText.slice(0, 240),
+    },
+    response,
+  };
+}
+
+async function checkDreaminaLoginAffordance(proxy, runtime = {}, context = {}) {
+  const profile = loadDreaminaProxyPrecheckProfile();
+  const affordanceProfile = profile?.loginAffordance || {};
+  const shellProfile = profile?.homepageShell || {};
+  const response = await requestViaHttpProxy(
+    proxy,
+    String(shellProfile.url || profile?.targets?.primary?.url || ''),
+    String(shellProfile.method || 'GET').toUpperCase(),
+    Number(runtime?.proxyLoginAffordanceTimeoutMs || affordanceProfile.timeoutMs || shellProfile.timeoutMs || 15000)
+  );
+
+  const html = String(response.body || '');
+  const bodyText = stripHtmlToText(html);
+  const textHit = findFirstMatchedPattern(bodyText, affordanceProfile.texts || []);
+  const selectorHintHit = findFirstMatchedPattern(html, affordanceProfile.selectorHints || []);
+  const affordanceCount = countMatchedPatterns(`${bodyText} ${html}`, [
+    ...(affordanceProfile.texts || []),
+    ...(affordanceProfile.selectorHints || []),
+  ]);
+  const ok = Boolean(
+    response.success
+    && response.status >= 200
+    && response.status <= 399
+    && affordanceCount >= Number(affordanceProfile.minAffordanceCount || 1)
+    && (textHit || selectorHintHit)
+  );
+
+  return {
+    ok,
+    state: ok ? 'DREAMINA_LOGIN_AFFORDANCE_OK' : 'DREAMINA_LOGIN_AFFORDANCE_MISSING',
+    source: 'login-affordance',
+    value: textHit || selectorHintHit || String(response.reason || response.target || ''),
+    strength: ok ? 'medium' : 'medium',
+    elapsedMs: response.elapsedMs,
+    evidence: {
+      textHit,
+      selectorHintHit,
+      affordanceCount,
+      bodyPreview: bodyText.slice(0, 240),
+    },
+    response,
+  };
+}
+
 // ==============================
 // 业务确认 / 分类层
 // 负责消费已有 probe 结果并给出 Dreamina 代理预检结论。
@@ -258,7 +435,23 @@ async function checkDreaminaSecondaryTarget(proxy, runtime = {}, context = {}) {
  * - 不重新发请求，不做补探测
  */
 async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
-  const { connectivity = null, exitIp = null, primaryTarget = null, secondaryTarget = null } = context;
+  const {
+    connectivity = null,
+    exitIp = null,
+    primaryTarget = null,
+    secondaryTarget = null,
+    homepageShell = null,
+    loginAffordance = null,
+  } = context;
+
+  const healthSummary = buildProxyBusinessHealthSummary({
+    connectivity,
+    exitIp,
+    primaryTarget,
+    secondaryTarget,
+    homepageShell,
+    loginAffordance,
+  });
 
   if (!connectivity?.ok) {
     return {
@@ -266,6 +459,9 @@ async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
       state: 'PROXY_PRECHECK_BAD',
       nextStage: '',
       proxyGrade: 'BAD',
+      capabilityGrade: healthSummary.capabilityGrade,
+      businessGrade: healthSummary.businessGrade,
+      healthScore: healthSummary.healthScore,
       source: 'connectivity',
       value: String(connectivity?.state || ''),
       strength: 'strong',
@@ -274,15 +470,35 @@ async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
     };
   }
 
-  if (primaryTarget?.ok && secondaryTarget?.ok) {
+  if (loginAffordance?.ok && homepageShell?.ok && primaryTarget?.ok) {
     return {
       ok: true,
       state: 'PROXY_PRECHECK_OK',
       nextStage: 'proxy-precheck-complete',
       proxyGrade: 'OK',
-      source: 'target-checks',
-      value: 'primary+secondary',
+      capabilityGrade: healthSummary.capabilityGrade,
+      businessGrade: healthSummary.businessGrade,
+      healthScore: healthSummary.healthScore,
+      source: 'business-target-checks',
+      value: 'homepage+login-affordance',
       strength: 'strong',
+      settleStage: 'result-confirmation',
+      retryCount: 0,
+    };
+  }
+
+  if (homepageShell?.ok && (primaryTarget?.ok || exitIp?.ok)) {
+    return {
+      ok: true,
+      state: 'PROXY_PRECHECK_WEAK_OK',
+      nextStage: 'proxy-precheck-complete',
+      proxyGrade: 'WEAK',
+      capabilityGrade: healthSummary.capabilityGrade,
+      businessGrade: healthSummary.businessGrade,
+      healthScore: healthSummary.healthScore,
+      source: 'homepage-shell',
+      value: loginAffordance?.ok ? 'homepage+entry-weak' : 'homepage-only',
+      strength: 'weak',
       settleStage: 'result-confirmation',
       retryCount: 0,
     };
@@ -294,6 +510,9 @@ async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
       state: 'PROXY_PRECHECK_WEAK_OK',
       nextStage: 'proxy-precheck-complete',
       proxyGrade: 'WEAK',
+      capabilityGrade: healthSummary.capabilityGrade,
+      businessGrade: healthSummary.businessGrade,
+      healthScore: healthSummary.healthScore,
       source: primaryTarget?.ok ? 'primary-target' : 'exit-ip',
       value: primaryTarget?.ok ? 'primary-only' : 'exit-ip-only',
       strength: 'weak',
@@ -307,6 +526,9 @@ async function confirmProxyPrecheckResult(proxy, runtime = {}, context = {}) {
     state: 'PROXY_PRECHECK_BAD',
     nextStage: '',
     proxyGrade: 'BAD',
+    capabilityGrade: healthSummary.capabilityGrade,
+    businessGrade: healthSummary.businessGrade,
+    healthScore: healthSummary.healthScore,
     source: 'target-checks',
     value: 'no-usable-signals',
     strength: 'medium',
@@ -346,6 +568,9 @@ module.exports = {
   checkProxyExitIp,
   checkDreaminaPrimaryTarget,
   checkDreaminaSecondaryTarget,
+  checkDreaminaHomepageShell,
+  checkDreaminaLoginAffordance,
+  buildProxyBusinessHealthSummary,
   confirmProxyPrecheckResult,
   classifyProxyPrecheckFailure,
 };

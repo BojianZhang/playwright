@@ -91,6 +91,8 @@ async function runProxyPrecheckChain(options = {}) {
   const checkProxyExitIp = resolveAdapterMethod(adapter, 'checkProxyExitIp');
   const checkDreaminaPrimaryTarget = resolveAdapterMethod(adapter, 'checkDreaminaPrimaryTarget');
   const checkDreaminaSecondaryTarget = resolveAdapterMethod(adapter, 'checkDreaminaSecondaryTarget');
+  const checkDreaminaHomepageShell = resolveAdapterMethod(adapter, 'checkDreaminaHomepageShell');
+  const checkDreaminaLoginAffordance = resolveAdapterMethod(adapter, 'checkDreaminaLoginAffordance');
   const confirmProxyPrecheckResult = resolveAdapterMethod(adapter, 'confirmProxyPrecheckResult');
   const classifyProxyPrecheckFailure = resolveAdapterMethod(adapter, 'classifyProxyPrecheckFailure');
 
@@ -160,13 +162,27 @@ async function runProxyPrecheckChain(options = {}) {
         }),
   ]);
 
-  // Step 3: result confirmation
-  // 由 adapter 统一综合 connectivity + targets 结果，shared 层只负责承接与收口。
+  // Step 3: business probes
+  // 只在 transport/target 基础检查之后补首页业务健康信号，不在 shared 层引入策略循环。
+  logStageProgress('proxy-precheck', '检查 Dreamina 首页 shell / 登录入口 affordance', {
+    context: buildStageLogContext({ proxy, runtime, context }),
+  });
+  const [homepageShell, loginAffordance] = await Promise.all([
+    checkDreaminaHomepageShell
+      ? checkDreaminaHomepageShell(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget })
+      : Promise.resolve(null),
+    checkDreaminaLoginAffordance
+      ? checkDreaminaLoginAffordance(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget })
+      : Promise.resolve(null),
+  ]);
+
+  // Step 4: result confirmation
+  // 由 adapter 统一综合 transport + targets + business probes 结果，shared 层只负责承接与收口。
   logStageProgress('proxy-precheck', '确认代理预检结果', {
     context: buildStageLogContext({ proxy, runtime, context }),
   });
   const resultConfirmation = confirmProxyPrecheckResult
-    ? await confirmProxyPrecheckResult(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget })
+    ? await confirmProxyPrecheckResult(proxy, runtime, { ...context, connectivity, exitIp, primaryTarget, secondaryTarget, homepageShell, loginAffordance })
     : { ok: false, state: 'PROXY_PRECHECK_BAD', nextStage: '', proxyGrade: 'BAD', source: '', value: '', strength: '', settleStage: 'none' };
 
   if (resultConfirmation?.ok) {
@@ -198,9 +214,22 @@ async function runProxyPrecheckChain(options = {}) {
         exitIp,
         primaryTarget,
         secondaryTarget,
+        homepageShell,
+        loginAffordance,
         resultConfirmation,
         classified: null,
         proxySummary: context?.proxySummary || null,
+        healthEvidence: {
+          transportOk: Boolean(connectivity?.ok),
+          exitIpOk: Boolean(exitIp?.ok),
+          primaryOk: Boolean(primaryTarget?.ok),
+          secondaryOk: Boolean(secondaryTarget?.ok),
+          homepageShellOk: Boolean(homepageShell?.ok),
+          loginAffordanceOk: Boolean(loginAffordance?.ok),
+        },
+        capabilityGrade: String(resultConfirmation?.capabilityGrade || ''),
+        businessGrade: String(resultConfirmation?.businessGrade || ''),
+        healthScore: Number(resultConfirmation?.healthScore || 0),
       },
     });
   }
@@ -238,9 +267,22 @@ async function runProxyPrecheckChain(options = {}) {
       exitIp,
       primaryTarget,
       secondaryTarget,
+      homepageShell,
+      loginAffordance,
       resultConfirmation,
       classified,
       proxySummary: context?.proxySummary || null,
+      healthEvidence: {
+        transportOk: Boolean(connectivity?.ok),
+        exitIpOk: Boolean(exitIp?.ok),
+        primaryOk: Boolean(primaryTarget?.ok),
+        secondaryOk: Boolean(secondaryTarget?.ok),
+        homepageShellOk: Boolean(homepageShell?.ok),
+        loginAffordanceOk: Boolean(loginAffordance?.ok),
+      },
+      capabilityGrade: String(resultConfirmation?.capabilityGrade || ''),
+      businessGrade: String(resultConfirmation?.businessGrade || ''),
+      healthScore: Number(resultConfirmation?.healthScore || 0),
     },
   });
 }
