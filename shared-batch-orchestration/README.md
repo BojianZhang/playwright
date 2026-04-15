@@ -1,5 +1,29 @@
 # shared-batch-orchestration
 
+公共批量编排层。
+
+## 作用
+
+负责：
+- worker / queue / batch orchestration
+- worker state
+- task queue
+- batch-stage orchestration
+
+不负责：
+- layout planner canonical implementation
+- browser runtime 执行
+- 指纹 / 资源拦截
+- 站点业务逻辑
+
+## 当前布局
+
+- `index.js`：统一导出入口
+- `worker-state.js`：worker 状态模型
+- `task-queue.js`：任务队列
+- `stages/batch-orchestration.js`：批量编排主流程
+- `window-layout.js`：兼容转发层，canonical 实现已迁到 `../shared-window-layout`
+
 这个目录专门放“批量任务并发调度 / worker 生命周期 / 队列编排”相关的共享模块，避免继续把并发控制、worker 状态、任务分发逻辑散落在 batch-runner 或站点主链里。
 
 ## 计划放置内容
