@@ -334,8 +334,8 @@ async function runEntryStage(options = {}) {
     });
   }
 
-  // 第三步：如果没有 waitForEntryReady 方法，则返回结构化失败。
-  if (!confirmEntryReadyWithRecovery && !waitForEntryReady) {
+  // 第三步：adapter 至少要提供 direct flow 或 legacy ready 方法之一。
+  if (!runDreaminaEntryFlow && !confirmEntryReadyWithRecovery && !waitForEntryReady) {
     return normalizeEntryStageResult({
       success: false,
       state: 'ENTRY_ADAPTER_METHOD_MISSING',
@@ -347,7 +347,7 @@ async function runEntryStage(options = {}) {
       stateChanged: null,
       retryCount: 0,
       detail: {
-        missingMethod: 'confirmEntryReadyWithRecovery|waitForEntryReady',
+        missingMethod: 'runDreaminaEntryFlow|confirmEntryReadyWithRecovery|waitForEntryReady',
         entryHealth: entryHealthResult,
         healthTrace: entryHealthResult?.healthTrace || null,
         overlayHandled: Boolean(entryHealthResult?.overlayHandled),
