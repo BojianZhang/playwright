@@ -74,10 +74,44 @@ function normalizeAccountDeliveryStageResult(input = {}) {
   };
 }
 
+function buildAccountDeliveryStageDetail(input = {}) {
+  const {
+    deliveryReady = null,
+    accountSummary = null,
+    deliveryPayload = null,
+    sessionRecord = null,
+    resultConfirmation = null,
+    classified = null,
+    timingBreakdown = null,
+    extra = null,
+  } = input;
+
+  return {
+    deliveryReady,
+    accountSummary,
+    deliveryPayload,
+    sessionRecord,
+    resultConfirmation,
+    classified,
+    timingBreakdown,
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  };
+}
+
 /**
  * 运行第六阶段：account-delivery。
  *
- * 当前版本只先把骨架、顺序、字段和注释钉死：
+ * Shared boundary:
+ * - Own stage-6 orchestration only
+ * - Consume adapter hooks for ready / summary / payload / result / classify
+ * - Prefer explicit reuse of upstream post-auth-ready outputs instead of re-deriving them
+ *
+ * Shared does NOT:
+ * - Re-implement site-specific delivery business rules
+ * - Re-run post-auth-ready confirmation logic
+ * - Own extra retry / observation loops for delivery semantics
+ *
+ * 当前主流程：
  * 1. 等待第六阶段入口 ready
  * 2. 收集账号最终交付摘要
  * 3. 组装 delivery payload
@@ -95,6 +129,13 @@ async function runAccountDeliveryStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  const timingBreakdown = {
+    waitAccountDeliveryReadyMs: 0,
+    collectAccountSummaryMs: 0,
+    buildDeliveryPayloadMs: 0,
+    confirmDeliveryResultMs: 0,
+    totalMs: 0,
+  };
 
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
@@ -134,7 +175,9 @@ async function runAccountDeliveryStage(options = {}) {
   logStageProgress('account-delivery', '等待 account-delivery 阶段入口', {
     context: buildStageLogContext(options),
   });
+  const deliveryReadyStartMs = stageTimer.elapsedMs();
   const deliveryReady = await waitForAccountDeliveryReady(page, runtime, context);
+  timingBreakdown.waitAccountDeliveryReadyMs = Math.max(0, stageTimer.elapsedMs() - deliveryReadyStartMs);
   if (deliveryReady?.ok) {
     syncStageStep(options, { stage: 'account-delivery', step: 'stage-success' });
     logStageSuccess('account-delivery', 'account-delivery 阶段入口就绪', {
@@ -171,14 +214,15 @@ async function runAccountDeliveryStage(options = {}) {
       detectionSource: String(deliveryReady?.source || ''),
       stateChanged: typeof deliveryReady?.stateChanged === 'boolean' ? deliveryReady.stateChanged : null,
       retryCount: 0,
-      detail: {
+      detail: buildAccountDeliveryStageDetail({
         deliveryReady,
         accountSummary: null,
         deliveryPayload: null,
         sessionRecord: null,
         resultConfirmation: null,
         classified,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -193,6 +237,7 @@ async function runAccountDeliveryStage(options = {}) {
   logStageProgress('account-delivery', '收集账号最终交付摘要', {
     context: buildStageLogContext(options),
   });
+  const collectSummaryStartMs = stageTimer.elapsedMs();
   const accountSummary = collectAccountDeliverySummary
     ? await collectAccountDeliverySummary(page, account, runtime, {
         ...context,
@@ -203,12 +248,14 @@ async function runAccountDeliveryStage(options = {}) {
         postAuthResultConfirmation,
       })
     : null;
+  timingBreakdown.collectAccountSummaryMs = Math.max(0, stageTimer.elapsedMs() - collectSummaryStartMs);
 
   // 第三步：组装 delivery payload；如果 adapter 还没实现，就保留 null。
   syncStageStep(options, { stage: 'account-delivery', step: 'build-delivery-payload' });
   logStageProgress('account-delivery', '构建 delivery payload', {
     context: buildStageLogContext(options),
   });
+  const buildPayloadStartMs = stageTimer.elapsedMs();
   const deliveryPayload = buildAccountDeliveryPayload
     ? await buildAccountDeliveryPayload(page, account, runtime, {
         ...context,
@@ -220,12 +267,14 @@ async function runAccountDeliveryStage(options = {}) {
         postAuthResultConfirmation,
       })
     : null;
+  timingBreakdown.buildDeliveryPayloadMs = Math.max(0, stageTimer.elapsedMs() - buildPayloadStartMs);
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
   syncStageStep(options, { stage: 'account-delivery', step: 'confirm-account-delivery-result' });
   logStageProgress('account-delivery', '确认 account-delivery 最终结果', {
     context: buildStageLogContext(options),
   });
+  const confirmResultStartMs = stageTimer.elapsedMs();
   const resultConfirmation = confirmAccountDeliveryResult
     ? await confirmAccountDeliveryResult(page, account, runtime, {
         ...context,
@@ -246,6 +295,8 @@ async function runAccountDeliveryStage(options = {}) {
         strength: '',
         settleStage: 'none',
       };
+  timingBreakdown.confirmDeliveryResultMs = Math.max(0, stageTimer.elapsedMs() - confirmResultStartMs);
+  timingBreakdown.totalMs = stageTimer.elapsedMs();
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
@@ -272,14 +323,15 @@ async function runAccountDeliveryStage(options = {}) {
       detectionSource: String(resultConfirmation?.source || ''),
       stateChanged: typeof resultConfirmation?.stateChanged === 'boolean' ? resultConfirmation.stateChanged : null,
       retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
-      detail: {
+      detail: buildAccountDeliveryStageDetail({
         deliveryReady,
         accountSummary,
         deliveryPayload,
         sessionRecord: deliveryPayload?.sessionRecord || accountSummary?.sessionRecord || null,
         resultConfirmation,
         classified: null,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -312,14 +364,15 @@ async function runAccountDeliveryStage(options = {}) {
     detectionSource: String(resultConfirmation?.source || ''),
     stateChanged: typeof resultConfirmation?.stateChanged === 'boolean' ? resultConfirmation.stateChanged : null,
     retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
-    detail: {
+    detail: buildAccountDeliveryStageDetail({
       deliveryReady,
       accountSummary,
       deliveryPayload,
       sessionRecord: deliveryPayload?.sessionRecord || accountSummary?.sessionRecord || null,
       resultConfirmation,
       classified,
-    },
+      timingBreakdown,
+    }),
   });
 }
 
