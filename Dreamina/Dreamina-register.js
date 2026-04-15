@@ -445,6 +445,19 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     };
   }
 
+  async function detectLoginAffordanceSnapshot(page) {
+    const debugSnapshot = await captureEntryDebugSnapshot(page);
+    const keywordClickables = Array.isArray(debugSnapshot?.keywordClickables) ? debugSnapshot.keywordClickables : [];
+    const clickableInventory = Array.isArray(debugSnapshot?.clickableInventory) ? debugSnapshot.clickableInventory : [];
+    const hasLoginAffordance = keywordClickables.length > 0
+      || clickableInventory.some(item => /sign in|log in|login|continue with email|email|account|profile|user|avatar/i.test(String(item?.summary || '')));
+
+    return {
+      hasLoginAffordance,
+      debugSnapshot,
+    };
+  }
+
   function isEntryPageLikelyUsableForFinalGrace(input = {}) {
     const timelineResult = input?.timelineResult && typeof input.timelineResult === 'object' ? input.timelineResult : null;
     const gateResult = input?.gateResult && typeof input.gateResult === 'object' ? input.gateResult : null;
@@ -855,7 +868,9 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           || /Explore Create Assets|Start Creating With AI Agent/i.test(fallbackTimelineText)
         ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue || fallbackTimelineText);
 
+        const loginAffordanceSnapshot = await detectLoginAffordanceSnapshot(page);
         const earlyHomeShellWithoutLoginEntry = isStrongHomeReadySignal
+          && !loginAffordanceSnapshot?.hasLoginAffordance
           && !isEntryPageLikelyUsableForFinalGrace({ timelineResult, gateResult });
 
         if (isStrongHomeReadySignal) {
@@ -866,9 +881,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
         }
 
         if (earlyHomeShellWithoutLoginEntry) {
-          const debugSnapshotStartedAt = Date.now();
-          const debugSnapshot = await captureEntryDebugSnapshot(page);
-          phaseTrace.debugSnapshotMs = Math.max(0, Date.now() - debugSnapshotStartedAt);
+          phaseTrace.debugSnapshotMs = 0;
           return {
             ok: false,
             state: 'LOGIN_ENTRY_FAILED',
@@ -894,7 +907,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                 || gateResult?.detail?.loginSignal?.detail?.signalTimeline
                 || null,
               gateResult,
-              debugSnapshot,
+              debugSnapshot: loginAffordanceSnapshot?.debugSnapshot || null,
             },
           };
         }
