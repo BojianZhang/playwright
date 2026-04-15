@@ -71,6 +71,7 @@ function normalizeProxyHealthRecord(record = {}, proxy = {}) {
     consecutiveConnectivityFails: Number(normalized.consecutiveConnectivityFails || 0),
     consecutiveEntryFails: Number(normalized.consecutiveEntryFails || 0),
     consecutiveBusinessFails: Number(normalized.consecutiveBusinessFails || 0),
+    cooldownPenaltyUntil: Number(normalized.cooldownPenaltyUntil || 0),
     lastProxyPrecheckSummary: normalized.lastProxyPrecheckSummary && typeof normalized.lastProxyPrecheckSummary === 'object'
       ? normalized.lastProxyPrecheckSummary
       : null,
@@ -79,6 +80,16 @@ function normalizeProxyHealthRecord(record = {}, proxy = {}) {
       : null,
     updatedAt: String(normalized.updatedAt || '').trim(),
   };
+}
+
+function computeDecayedHealthScore(record = {}) {
+  const normalized = normalizeProxyHealthRecord(record, {});
+  let score = Number(normalized.healthScore || 0);
+  const now = Date.now();
+  if (normalized.cooldownPenaltyUntil && now < normalized.cooldownPenaltyUntil) {
+    score = Math.max(0, score - 15);
+  }
+  return Math.max(0, Math.min(100, score));
 }
 
 function upsertProxyHealthFromPrecheck(store = {}, proxy = {}, proxyPrecheckSummary = null) {
@@ -154,13 +165,19 @@ function upsertProxyHealthFromRuntime(store = {}, proxy = {}, runtimeOutcome = n
     next.consecutiveConnectivityFails = 0;
     next.consecutiveEntryFails = 0;
     next.consecutiveBusinessFails = 0;
-    next.healthScore = Math.min(100, Math.max(Number(next.healthScore || 0), 75));
+    next.cooldownPenaltyUntil = 0;
+    next.healthScore = Math.min(100, Math.max(Number(next.healthScore || 0) + 6, 75));
   } else if (/DREAMINA_PROXY_CONNECTIVITY_FAILED|PROXY_CONNECTIVITY_FAILED/.test(finalReason)) {
-    next.healthScore = Math.max(0, Number(next.healthScore || 0) - 25);
-  } else if (/DREAMINA_HOME_SHELL_WITHOUT_LOGIN_ENTRY|DREAMINA_READY_SIGNAL_MISSING/.test(finalReason)) {
-    next.healthScore = Math.max(0, Number(next.healthScore || 0) - 18);
+    next.healthScore = Math.max(0, Number(next.healthScore || 0) - (22 + next.consecutiveConnectivityFails * 6));
+    next.cooldownPenaltyUntil = Date.now() + 30 * 60 * 1000;
+  } else if (/DREAMINA_HOME_SHELL_WITHOUT_LOGIN_ENTRY/.test(finalReason)) {
+    next.healthScore = Math.max(0, Number(next.healthScore || 0) - (16 + next.consecutiveEntryFails * 4));
+    next.cooldownPenaltyUntil = Date.now() + 20 * 60 * 1000;
+  } else if (/DREAMINA_READY_SIGNAL_MISSING/.test(finalReason)) {
+    next.healthScore = Math.max(0, Number(next.healthScore || 0) - (12 + next.consecutiveEntryFails * 3));
+    next.cooldownPenaltyUntil = Date.now() + 15 * 60 * 1000;
   } else if (/DREAMINA_SIGNUP_REJECTED/.test(finalReason)) {
-    next.healthScore = Math.max(0, Number(next.healthScore || 0) - 8);
+    next.healthScore = Math.max(0, Number(next.healthScore || 0) - 4);
   }
 
   records[proxyKey] = next;
@@ -174,13 +191,56 @@ function upsertProxyHealthFromRuntime(store = {}, proxy = {}, runtimeOutcome = n
   };
 }
 
-function sortProxiesByHealth(proxies = [], store = {}) {
+function sortProxiesByHealth(proxies = [], store = {}, policy = {}) {
   const records = ensureObject(store?.records);
+  const blockedCountries = new Set(Array.isArray(policy?.blockedCountries) ? policy.blockedCountries : []);
+  const blockedProviders = new Set(Array.isArray(policy?.blockedProviders) ? policy.blockedProviders : []);
   return [...(Array.isArray(proxies) ? proxies : [])].sort((a, b) => {
     const aRecord = normalizeProxyHealthRecord(records[buildProxyHealthKey(a)], a);
     const bRecord = normalizeProxyHealthRecord(records[buildProxyHealthKey(b)], b);
-    return Number(bRecord.healthScore || 0) - Number(aRecord.healthScore || 0);
+    const aPenalty = (blockedCountries.has(aRecord.countryCode) ? 30 : 0) + (blockedProviders.has(aRecord.provider) ? 20 : 0);
+    const bPenalty = (blockedCountries.has(bRecord.countryCode) ? 30 : 0) + (blockedProviders.has(bRecord.provider) ? 20 : 0);
+    return (computeDecayedHealthScore(bRecord) - bPenalty) - (computeDecayedHealthScore(aRecord) - aPenalty);
   });
+}
+
+function buildProxyHealthPolicy(store = {}) {
+  const records = Object.values(ensureObject(store?.records)).map(item => normalizeProxyHealthRecord(item, {}));
+  const countryStats = {};
+  const providerStats = {};
+
+  for (const record of records) {
+    const countryKey = String(record.countryCode || '').trim();
+    const providerKey = String(record.provider || '').trim();
+    if (countryKey) {
+      const bucket = countryStats[countryKey] || { connectivityFails: 0, entryFails: 0, samples: 0 };
+      bucket.samples += 1;
+      bucket.connectivityFails += Number(record.consecutiveConnectivityFails || 0);
+      bucket.entryFails += Number(record.consecutiveEntryFails || 0);
+      countryStats[countryKey] = bucket;
+    }
+    if (providerKey) {
+      const bucket = providerStats[providerKey] || { connectivityFails: 0, entryFails: 0, samples: 0 };
+      bucket.samples += 1;
+      bucket.connectivityFails += Number(record.consecutiveConnectivityFails || 0);
+      bucket.entryFails += Number(record.consecutiveEntryFails || 0);
+      providerStats[providerKey] = bucket;
+    }
+  }
+
+  const blockedCountries = Object.entries(countryStats)
+    .filter(([, value]) => value.connectivityFails >= 3 || value.entryFails >= 4)
+    .map(([key]) => key);
+  const blockedProviders = Object.entries(providerStats)
+    .filter(([, value]) => value.connectivityFails >= 4 || value.entryFails >= 5)
+    .map(([key]) => key);
+
+  return {
+    blockedCountries,
+    blockedProviders,
+    countryStats,
+    providerStats,
+  };
 }
 
 module.exports = {
@@ -191,5 +251,7 @@ module.exports = {
   normalizeProxyHealthRecord,
   upsertProxyHealthFromPrecheck,
   upsertProxyHealthFromRuntime,
+  computeDecayedHealthScore,
   sortProxiesByHealth,
+  buildProxyHealthPolicy,
 };

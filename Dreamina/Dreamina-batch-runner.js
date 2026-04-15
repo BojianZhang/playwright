@@ -38,6 +38,8 @@ const {
   upsertProxyHealthFromPrecheck,
   upsertProxyHealthFromRuntime,
   sortProxiesByHealth,
+  buildProxyHealthPolicy,
+  computeDecayedHealthScore,
 } = require('../shared-proxy-precheck/proxy-health-store');
 
 const {
@@ -549,6 +551,7 @@ function createBatchRunContext(options = {}) {
       cursor: Math.max(0, Number(options.proxyStart || 0)),
       selectionPolicy: 'prefer-healthier-business-capable-proxies',
       healthStore: options.proxyHealthStore || { updatedAt: '', records: {} },
+      healthPolicy: options.proxyHealthPolicy || { blockedCountries: [], blockedProviders: [], countryStats: {}, providerStats: {} },
     },
 
     knownExistsAccounts,
@@ -1093,6 +1096,17 @@ async function writeBatchSummaryFile(batchContext) {
     .map(item => item?.proxyPrecheckSummary)
     .filter(item => item && typeof item === 'object');
 
+  const proxyHealthRecords = Object.values(batchContext?.proxies?.healthStore?.records || {}).map((item) => ({
+    ...item,
+    healthScore: computeDecayedHealthScore(item),
+  }));
+  const proxyHealthTopGood = [...proxyHealthRecords]
+    .sort((a, b) => Number(b.healthScore || 0) - Number(a.healthScore || 0))
+    .slice(0, 5);
+  const proxyHealthTopBad = [...proxyHealthRecords]
+    .sort((a, b) => Number(a.healthScore || 0) - Number(b.healthScore || 0))
+    .slice(0, 5);
+
   const proxyPrecheckGradeBuckets = proxyPrecheckSummaries.reduce((acc, item) => {
     const key = `${String(item?.proxyGrade || 'NA')}/${String(item?.capabilityGrade || 'NA')}/${String(item?.businessGrade || 'NA')}`;
     acc[key] = (acc[key] || 0) + 1;
@@ -1121,6 +1135,7 @@ async function writeBatchSummaryFile(batchContext) {
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     concurrencyPolicy: batchContext.concurrencyPolicy || null,
     proxySelectionPolicy: String(batchContext?.proxies?.selectionPolicy || ''),
+    proxyHealthPolicy: batchContext?.proxies?.healthPolicy || null,
     concurrencyProfileSnapshot,
     entryConcurrencyStats,
     layoutProfile: {
@@ -1148,6 +1163,8 @@ async function writeBatchSummaryFile(batchContext) {
       gradeBuckets: proxyPrecheckGradeBuckets,
       samples: proxyPrecheckSummaries.slice(0, 10),
     },
+    proxyHealthTopGood,
+    proxyHealthTopBad,
     entrySlowSamples,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
@@ -1468,6 +1485,19 @@ function buildBatchFinalSummaryLines(summary = {}) {
   if (summary?.proxySelectionPolicy) {
     lines.push(`[Dreamina Batch] ProxySelectionPolicy: ${summary.proxySelectionPolicy}`);
   }
+  if (summary?.proxyHealthPolicy) {
+    const blockedCountries = Array.isArray(summary.proxyHealthPolicy.blockedCountries) ? summary.proxyHealthPolicy.blockedCountries.join(',') : '';
+    const blockedProviders = Array.isArray(summary.proxyHealthPolicy.blockedProviders) ? summary.proxyHealthPolicy.blockedProviders.join(',') : '';
+    lines.push(`[Dreamina Batch] ProxyHealthPolicy: blockedCountries=${blockedCountries || '-'} | blockedProviders=${blockedProviders || '-'}`);
+  }
+  if (Array.isArray(summary?.proxyHealthTopGood) && summary.proxyHealthTopGood.length) {
+    const topGood = summary.proxyHealthTopGood.map(item => `${item.proxyId || item.host}:${item.healthScore}`).join(' | ');
+    lines.push(`[Dreamina Batch] ProxyHealthTopGood: ${topGood}`);
+  }
+  if (Array.isArray(summary?.proxyHealthTopBad) && summary.proxyHealthTopBad.length) {
+    const topBad = summary.proxyHealthTopBad.map(item => `${item.proxyId || item.host}:${item.healthScore}`).join(' | ');
+    lines.push(`[Dreamina Batch] ProxyHealthTopBad: ${topBad}`);
+  }
   const proxyPrecheckOverview = summary?.proxyPrecheckOverview || null;
   if (proxyPrecheckOverview && proxyPrecheckOverview.totalSamples > 0) {
     const gradeBuckets = Object.entries(proxyPrecheckOverview.gradeBuckets || {})
@@ -1501,7 +1531,8 @@ async function runDreaminaBatch(argv = []) {
     : await pruneKnownRegisteredFromLocalPool(knownExistsAccounts);
   const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
   const proxyHealthStore = loadProxyHealthStore();
-  const proxies = sortProxiesByHealth(loadLocalProxies(), proxyHealthStore);
+  const proxyHealthPolicy = buildProxyHealthPolicy(proxyHealthStore);
+  const proxies = sortProxiesByHealth(loadLocalProxies(), proxyHealthStore, proxyHealthPolicy);
 
   if (!accounts.length) {
     throw new Error('Dreamina batch runner: no accounts available from Dreamina/local-accounts.json');
@@ -1519,6 +1550,7 @@ async function runDreaminaBatch(argv = []) {
     accounts,
     proxies,
     proxyHealthStore,
+    proxyHealthPolicy,
   });
 
   const resolvedLayoutPreset = layoutPlanner.resolve(1, batchContext.config.concurrency);
