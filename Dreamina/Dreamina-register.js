@@ -945,7 +945,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                     timelineResult,
                     waitForEntryReadyPhaseTrace: {
                       ...phaseTrace,
-                      resolvedPath: 'recover-confirm-gate-success',
+                      resolvedPath: 'entry-ready-after-recover-confirm',
                     },
                   },
                   loginSignal: recoveredGateState?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
@@ -982,7 +982,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                     timelineResult,
                     waitForEntryReadyPhaseTrace: {
                       ...phaseTrace,
-                      resolvedPath: 'recover-open-gate-success',
+                      resolvedPath: 'entry-ready-after-recovery-open',
                     },
                   },
                   loginSignal: postRecoveryOpenGateState?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
@@ -1016,7 +1016,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
                   timelineResult,
                   waitForEntryReadyPhaseTrace: {
                     ...phaseTrace,
-                    resolvedPath: 'recover-signals-gate-success',
+                    resolvedPath: 'entry-ready-after-recover-signals',
                   },
                 },
                 loginSignal: gateResult?.gateState || gateResult?.detail?.loginSignal || timelineResult?.detail?.loginSignal || null,
@@ -1097,7 +1097,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
             timelineResult,
             waitForEntryReadyPhaseTrace: {
               ...phaseTrace,
-              resolvedPath: phaseTrace.recoveredSignals ? 'recover-signals-gate-failed' : 'initial-gate-failed',
+              resolvedPath: phaseTrace.recoveredSignals ? 'entry-not-ready-after-recover-signals' : 'entry-not-ready-initial-gate',
             },
           },
           loginSignal: timelineResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || null,
