@@ -995,6 +995,37 @@ async function waitAfterLoginEntryAction(page, context = {}) {
   return waitMs;
 }
 
+async function waitForDreaminaLoginGateTransition(page, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const timeoutMs = Number(runtime?.entryPostClickGateTransitionTimeoutMs || 3200);
+  const pollMs = Number(runtime?.entryPostClickGateTransitionPollMs || 250);
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const gateState = await confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
+    if (gateState?.ok && (
+      gateState?.state === 'EMAIL_GATE_READY'
+      || gateState?.state === 'LOGIN_GATE_LAYER_READY'
+    )) {
+      if (typeof logInfo === 'function') {
+        logInfo(`dreamina.adapter.waitForDreaminaLoginGateTransition | 点击后短轮询命中 gate | state=${gateState.state} | elapsedMs=${Math.max(0, Date.now() - startedAt)}`);
+      }
+      return {
+        ok: true,
+        gateState,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+      };
+    }
+    await page.waitForTimeout(pollMs);
+  }
+
+  return {
+    ok: false,
+    gateState: null,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+  };
+}
+
 /**
  * 查找 Dreamina 第一阶段登录入口。
  *
@@ -1257,9 +1288,23 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
 
     const afterSnapshot = await captureDreaminaLoginGateSnapshot(page, context);
     const hasStateChange = hasMeaningfulLoginGateStateChange(beforeSnapshot, afterSnapshot);
+    const postClickGateTransition = await waitForDreaminaLoginGateTransition(page, runtime, context);
 
     if (typeof logInfo === 'function') {
-      logInfo(`dreamina.adapter.openDreaminaLoginEntry | 已点击登录入口: ${entry.type} | stateChanged=${hasStateChange ? 'Y' : 'N'}`);
+      logInfo(`dreamina.adapter.openDreaminaLoginEntry | 已点击登录入口: ${entry.type} | stateChanged=${hasStateChange ? 'Y' : 'N'} | gateTransition=${postClickGateTransition?.ok ? 'Y' : 'N'}`);
+    }
+
+    if (postClickGateTransition?.ok) {
+      return {
+        success: true,
+        reason: 'LOGIN_GATE_LAYER_READY',
+        entry,
+        clicked: true,
+        nextExpectedState: postClickGateTransition?.gateState?.state || entry.nextExpectedState || 'LOGIN_GATE_LAYER_READY',
+        beforeSnapshot,
+        afterSnapshot,
+        postClickGateTransition,
+      };
     }
 
     if (!hasStateChange) {
@@ -1270,6 +1315,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
         clicked: true,
         beforeSnapshot,
         afterSnapshot,
+        postClickGateTransition,
       };
     }
 
@@ -1281,6 +1327,7 @@ async function openDreaminaLoginEntry(page, runtime = {}, context = {}) {
       nextExpectedState: entry.nextExpectedState || 'LOGIN_GATE_LAYER_READY',
       beforeSnapshot,
       afterSnapshot,
+      postClickGateTransition,
     };
   } catch (error) {
     if (typeof logWarn === 'function') {
@@ -1786,6 +1833,7 @@ module.exports = {
   hasMeaningfulLoginGateStateChange,
   detectDreaminaErrorModal,
   waitAfterLoginEntryAction,
+  waitForDreaminaLoginGateTransition,
   findDreaminaLoginEntry,
   openDreaminaLoginEntry,
   confirmDreaminaLoginGate,
