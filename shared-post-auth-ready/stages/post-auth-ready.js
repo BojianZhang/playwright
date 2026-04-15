@@ -74,19 +74,52 @@ function normalizePostAuthReadyStageResult(input = {}) {
   };
 }
 
+function buildPostAuthReadyStageDetail(input = {}) {
+  const {
+    postAuthReady = null,
+    sessionInspection = null,
+    initialSessionInspection = null,
+    sessionObservationTrace = [],
+    uiConfirmation = null,
+    resultConfirmation = null,
+    classified = null,
+    timingBreakdown = null,
+    extra = null,
+  } = input;
+
+  return {
+    postAuthReady,
+    sessionInspection,
+    initialSessionInspection,
+    sessionObservationTrace,
+    uiConfirmation,
+    resultConfirmation,
+    classified,
+    timingBreakdown,
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  };
+}
+
 /**
  * 运行第五阶段：post-auth-ready。
  *
- * 当前版本只先把骨架、顺序、字段和注释钉死：
+ * Shared boundary:
+ * - Own stage-5 orchestration only
+ * - Consume adapter hooks for ready / session / UI / result / classify
+ * - Record shared timing, observation trace, logging, normalization
+ *
+ * Shared does NOT:
+ * - Re-implement Dreamina site-specific session detection logic
+ * - Own unbounded retry policy or multi-layer confirm loops
+ * - Replace adapter result semantics with custom site heuristics
+ *
+ * 当前版本主流程：
  * 1. 等待第五阶段入口 ready
  * 2. 检查 session / storage / cookie 可用态
- * 3. 检查 UI 登录后信号
- * 4. 收口最终 success / failure / unknown
- * 5. 失败时做站点语义分类
- *
- * 注意：
- * - 这里先优先把阶段边界和输出结构写稳
- * - 真正站点细节交给 adapter
+ * 3. 在 shared 层执行唯一允许的一段有限 session observation loop
+ * 4. 检查 UI 登录后信号
+ * 5. 收口最终 success / failure / unknown
+ * 6. 失败时做站点语义分类
  */
 async function runPostAuthReadyStage(options = {}) {
   // 从统一 options 中解构第五阶段常用输入。
@@ -99,6 +132,14 @@ async function runPostAuthReadyStage(options = {}) {
   } = options;
 
   const stageTimer = createStageTimer();
+  const timingBreakdown = {
+    waitPostAuthReadyMs: 0,
+    inspectSessionMs: 0,
+    observeSessionMs: 0,
+    confirmUiMs: 0,
+    confirmResultMs: 0,
+    totalMs: 0,
+  };
 
   // 取日志函数；没有则保持 null。
   const { logInfo = null } = context;
@@ -138,7 +179,9 @@ async function runPostAuthReadyStage(options = {}) {
   logStageProgress('post-auth-ready', '等待 post-auth-ready 阶段入口', {
     context: buildStageLogContext(options),
   });
+  const postAuthReadyStartMs = stageTimer.elapsedMs();
   const postAuthReady = await waitForPostAuthReady(page, runtime, context);
+  timingBreakdown.waitPostAuthReadyMs = Math.max(0, stageTimer.elapsedMs() - postAuthReadyStartMs);
   if (postAuthReady?.ok) {
     syncStageStep(options, { stage: 'post-auth-ready', step: 'stage-success' });
     logStageSuccess('post-auth-ready', 'post-auth-ready 阶段入口就绪', {
@@ -175,13 +218,14 @@ async function runPostAuthReadyStage(options = {}) {
       detectionSource: String(postAuthReady?.source || ''),
       stateChanged: typeof postAuthReady?.stateChanged === 'boolean' ? postAuthReady.stateChanged : null,
       retryCount: 0,
-      detail: {
+      detail: buildPostAuthReadyStageDetail({
         postAuthReady,
         sessionInspection: null,
         uiConfirmation: null,
         resultConfirmation: null,
         classified,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -190,13 +234,17 @@ async function runPostAuthReadyStage(options = {}) {
   logStageProgress('post-auth-ready', '检查 session / storage / cookie 可用态', {
     context: buildStageLogContext(options),
   });
+  const inspectSessionStartMs = stageTimer.elapsedMs();
   const sessionInspection = inspectPostAuthSession
     ? await inspectPostAuthSession(page, runtime, { ...context, postAuthReady })
     : null;
+  timingBreakdown.inspectSessionMs = Math.max(0, stageTimer.elapsedMs() - inspectSessionStartMs);
 
   const sessionObservationTrace = [];
   let effectiveSessionInspection = sessionInspection;
   if (inspectPostAuthSession) {
+    // 这是 shared 层唯一允许的一段有限 session observation loop。
+    // 作用是等待 hard session 晚到，而不是在 shared 层重新实现站点级确认策略。
     const observationSteps = Array.isArray(runtime?.postAuthSessionObservationStepsMs) && runtime.postAuthSessionObservationStepsMs.length
       ? runtime.postAuthSessionObservationStepsMs
       : [500, 1500, 3000, 5000];
@@ -231,6 +279,7 @@ async function runPostAuthReadyStage(options = {}) {
         break;
       }
     }
+    timingBreakdown.observeSessionMs = Math.max(0, observationSteps.length ? accumulatedWaitMs : 0);
     if (promotedObservation) {
       effectiveSessionInspection = promotedObservation;
       if (typeof logInfo === 'function') {
@@ -244,15 +293,18 @@ async function runPostAuthReadyStage(options = {}) {
   logStageProgress('post-auth-ready', '检查 UI 登录后信号', {
     context: buildStageLogContext(options),
   });
+  const confirmUiStartMs = stageTimer.elapsedMs();
   const uiConfirmation = confirmPostAuthUi
     ? await confirmPostAuthUi(page, runtime, { ...context, postAuthReady, sessionInspection: effectiveSessionInspection })
     : null;
+  timingBreakdown.confirmUiMs = Math.max(0, stageTimer.elapsedMs() - confirmUiStartMs);
 
   // 第四步：收口最终 success / failure / unknown；如果 adapter 还没实现，则回退 unknown。
   syncStageStep(options, { stage: 'post-auth-ready', step: 'confirm-post-auth-result' });
   logStageProgress('post-auth-ready', '确认 post-auth-ready 最终结果', {
     context: buildStageLogContext(options),
   });
+  const confirmResultStartMs = stageTimer.elapsedMs();
   const resultConfirmation = confirmPostAuthResult
     ? await confirmPostAuthResult(page, runtime, { ...context, postAuthReady, sessionInspection: effectiveSessionInspection, uiConfirmation })
     : {
@@ -264,6 +316,8 @@ async function runPostAuthReadyStage(options = {}) {
         strength: '',
         settleStage: 'none',
       };
+  timingBreakdown.confirmResultMs = Math.max(0, stageTimer.elapsedMs() - confirmResultStartMs);
+  timingBreakdown.totalMs = stageTimer.elapsedMs();
 
   // 如果最终结果确认成功，则直接按成功结构收口。
   if (resultConfirmation?.ok) {
@@ -290,7 +344,7 @@ async function runPostAuthReadyStage(options = {}) {
       detectionSource: String(resultConfirmation?.source || ''),
       stateChanged: typeof resultConfirmation?.stateChanged === 'boolean' ? resultConfirmation.stateChanged : null,
       retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
-      detail: {
+      detail: buildPostAuthReadyStageDetail({
         postAuthReady,
         sessionInspection: effectiveSessionInspection,
         initialSessionInspection: sessionInspection,
@@ -298,7 +352,8 @@ async function runPostAuthReadyStage(options = {}) {
         uiConfirmation,
         resultConfirmation,
         classified: null,
-      },
+        timingBreakdown,
+      }),
     });
   }
 
@@ -331,7 +386,7 @@ async function runPostAuthReadyStage(options = {}) {
     detectionSource: String(resultConfirmation?.source || ''),
     stateChanged: typeof resultConfirmation?.stateChanged === 'boolean' ? resultConfirmation.stateChanged : null,
     retryCount: Number.isFinite(Number(resultConfirmation?.retryCount)) ? Number(resultConfirmation.retryCount) : 0,
-    detail: {
+    detail: buildPostAuthReadyStageDetail({
       postAuthReady,
       sessionInspection: effectiveSessionInspection,
       initialSessionInspection: sessionInspection,
@@ -339,7 +394,8 @@ async function runPostAuthReadyStage(options = {}) {
       uiConfirmation,
       resultConfirmation,
       classified,
-    },
+      timingBreakdown,
+    }),
   });
 }
 
