@@ -183,12 +183,34 @@ async function pruneKnownRegisteredFromLocalPool(knownExistsAccounts = new Set()
  * - 第一版先保证可跑，不在这里引入复杂健康池策略
  * - 后续可以独立抽出新架构 proxy allocator
  */
+function getProxySelectionTier(proxy = {}) {
+  const summary = proxy?.lastProxyPrecheckSummary || null;
+  const proxyGrade = String(summary?.proxyGrade || '').trim().toUpperCase();
+  const capabilityGrade = String(summary?.capabilityGrade || '').trim().toUpperCase();
+  const businessGrade = String(summary?.businessGrade || '').trim().toUpperCase();
+
+  if (proxyGrade === 'OK' && capabilityGrade === 'ENTRY_READY_CAPABLE') return 3;
+  if ((proxyGrade === 'OK' || proxyGrade === 'WEAK') && capabilityGrade === 'HOMEPAGE_USABLE') return 2;
+  if (proxyGrade === 'WEAK') return 1;
+  return 0;
+}
+
 function acquireNextProxy(batchContext) {
   const list = batchContext?.proxies?.list || [];
   if (!list.length) return null;
-  const cursor = batchContext.proxies.cursor % list.length;
-  const proxy = list[cursor] || null;
-  batchContext.proxies.cursor = (cursor + 1) % list.length;
+
+  const preferred = [];
+  const fallback = [];
+  for (const proxy of list) {
+    const tier = getProxySelectionTier(proxy);
+    if (tier >= 2) preferred.push(proxy);
+    else fallback.push(proxy);
+  }
+
+  const sourceList = preferred.length ? preferred : list;
+  const cursor = batchContext.proxies.cursor % sourceList.length;
+  const proxy = sourceList[cursor] || null;
+  batchContext.proxies.cursor = (cursor + 1) % sourceList.length;
   return proxy;
 }
 
@@ -518,6 +540,7 @@ function createBatchRunContext(options = {}) {
       total: Array.isArray(options.proxies) ? options.proxies.length : 0,
       list: Array.isArray(options.proxies) ? options.proxies : [],
       cursor: Math.max(0, Number(options.proxyStart || 0)),
+      selectionPolicy: 'prefer-business-capable-proxies',
     },
 
     knownExistsAccounts,
@@ -1089,6 +1112,7 @@ async function writeBatchSummaryFile(batchContext) {
     finalStageBuckets: batchContext.summary.finalStageBuckets,
     slowestStageBuckets: batchContext.summary.slowestStageBuckets,
     concurrencyPolicy: batchContext.concurrencyPolicy || null,
+    proxySelectionPolicy: String(batchContext?.proxies?.selectionPolicy || ''),
     concurrencyProfileSnapshot,
     entryConcurrencyStats,
     layoutProfile: {
@@ -1334,6 +1358,10 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
       proxyPolicy,
     });
 
+    if (proxy && result?.proxyPrecheckSummary && typeof result.proxyPrecheckSummary === 'object') {
+      proxy.lastProxyPrecheckSummary = result.proxyPrecheckSummary;
+    }
+
     await updateBatchSummary(batchContext, result, {
       workerId,
       account,
@@ -1421,6 +1449,9 @@ function buildBatchFinalSummaryLines(summary = {}) {
   const proxyPolicy = summary?.concurrencyPolicy?.proxyPolicy || null;
   if (proxyPolicy) {
     lines.push(`[Dreamina Batch] ProxyPolicy: matched=${proxyPolicy.matchedConcurrency} | staggerMs=${proxyPolicy.workerStartStaggerMs} | connectivityTimeoutMs=${proxyPolicy.connectivityTimeoutMs} | primaryTimeoutMs=${proxyPolicy.primaryTargetTimeoutMs} | secondaryTimeoutMs=${proxyPolicy.secondaryTargetTimeoutMs} | enableSecondaryTarget=${proxyPolicy.enableSecondaryTarget ? 'Y' : 'N'}`);
+  }
+  if (summary?.proxySelectionPolicy) {
+    lines.push(`[Dreamina Batch] ProxySelectionPolicy: ${summary.proxySelectionPolicy}`);
   }
   const proxyPrecheckOverview = summary?.proxyPrecheckOverview || null;
   if (proxyPrecheckOverview && proxyPrecheckOverview.totalSamples > 0) {
