@@ -39,7 +39,8 @@ const {
   syncWorkerSnapshot,
   buildWorkerOverviewPanel,
 } = require('../worker-status-tracker');
-const { runBatchOrchestration, createWindowLayoutPlanner, resolveVerificationBudget, resolveProxyPolicy } = require('../shared-batch-orchestration');
+const { runBatchOrchestration } = require('../shared-batch-orchestration');
+const { createWindowLayoutPlanner, resolveVerificationBudget, resolveProxyPolicy } = require('../shared-window-layout');
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
