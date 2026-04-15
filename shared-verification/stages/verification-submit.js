@@ -317,11 +317,13 @@ async function runVerificationSubmitStage(options = {}) {
       code: String(fetchCodeResult?.code || ''),
       provider: String(fetchCodeResult?.provider || ''),
       matchMode: String(fetchCodeResult?.matchMode || ''),
+      fetchTrace: fetchCodeResult?.fetchTrace || null,
     });
     attemptTrace.fetchCodeMs = fetchTimer.elapsedMs();
     attemptTrace.fetchState = String(fetchCodeResult?.state || '');
     attemptTrace.provider = String(fetchCodeResult?.provider || '');
     attemptTrace.matchMode = String(fetchCodeResult?.matchMode || '');
+    attemptTrace.fetchTrace = fetchCodeResult?.fetchTrace || null;
     if (fetchCodeResult?.ok) {
       syncStageStep(options, { stage: 'verification-submit', step: 'stage-success' });
     logStageSuccess('verification-submit', '验证码拉取成功', {
@@ -330,6 +332,8 @@ async function runVerificationSubmitStage(options = {}) {
           fetchCodeResult?.state ? `state=${fetchCodeResult.state}` : '',
           fetchCodeResult?.provider ? `provider=${fetchCodeResult.provider}` : '',
           fetchCodeResult?.matchMode ? `matchMode=${fetchCodeResult.matchMode}` : '',
+          fetchCodeResult?.fetchTrace?.hitAttempt ? `hitAttempt=${fetchCodeResult.fetchTrace.hitAttempt}` : '',
+          fetchCodeResult?.fetchTrace?.strategy ? `fetchStrategy=${fetchCodeResult.fetchTrace.strategy}` : '',
           fetchCodeResult?.code ? `code=${String(fetchCodeResult.code).trim()}` : '',
           `stepDurationMs=${formatDurationMs(fetchTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
@@ -390,6 +394,7 @@ async function runVerificationSubmitStage(options = {}) {
         detail: {
           provider: String(fetchCodeResult?.provider || ''),
           matchMode: String(fetchCodeResult?.matchMode || ''),
+          fetchTrace: fetchCodeResult?.fetchTrace || null,
           verificationReady,
           fetchCodeResult,
           classified,
@@ -448,6 +453,7 @@ async function runVerificationSubmitStage(options = {}) {
         detail: {
           provider: String(fetchCodeResult?.provider || ''),
           matchMode: String(fetchCodeResult?.matchMode || ''),
+          fetchTrace: fetchCodeResult?.fetchTrace || null,
           verificationReady,
           fetchCodeResult,
           codeInputResolution,
@@ -512,6 +518,7 @@ async function runVerificationSubmitStage(options = {}) {
         detail: {
           provider: String(fetchCodeResult?.provider || ''),
           matchMode: String(fetchCodeResult?.matchMode || ''),
+          fetchTrace: fetchCodeResult?.fetchTrace || null,
           stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
           verificationReady,
           fetchCodeResult,
@@ -571,6 +578,7 @@ async function runVerificationSubmitStage(options = {}) {
         detail: {
           provider: String(fetchCodeResult?.provider || ''),
           matchMode: String(fetchCodeResult?.matchMode || ''),
+          fetchTrace: fetchCodeResult?.fetchTrace || null,
           stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
           verificationReady,
           fetchCodeResult,
@@ -661,6 +669,7 @@ async function runVerificationSubmitStage(options = {}) {
       detail: {
         provider: String(fetchCodeResult?.provider || ''),
         matchMode: String(fetchCodeResult?.matchMode || ''),
+        fetchTrace: fetchCodeResult?.fetchTrace || null,
         stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
         verificationReady,
         fetchCodeResult,
@@ -695,6 +704,7 @@ async function runVerificationSubmitStage(options = {}) {
     detail: {
       provider: String(fetchCodeResult?.provider || ''),
       matchMode: String(fetchCodeResult?.matchMode || ''),
+      fetchTrace: fetchCodeResult?.fetchTrace || null,
       stateChanged: typeof fillResult?.stateChanged === 'boolean' ? fillResult.stateChanged : null,
       verificationReady,
       fetchCodeResult,

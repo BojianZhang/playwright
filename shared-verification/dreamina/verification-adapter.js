@@ -430,6 +430,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
         messageTs: result?.messageTs,
         // 保留 provider 的命中模式。
         matchMode: result?.matchMode,
+        fetchTrace: result?.fetchTrace || null,
         resendCountdown: verificationReady?.resendCountdown || null,
       };
     }
@@ -460,6 +461,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       messageTs: result?.messageTs,
       // 返回验证码命中模式。
       matchMode: result?.matchMode,
+      fetchTrace: result?.fetchTrace || null,
       resendCountdown: verificationReady?.resendCountdown || null,
     };
   } catch (error) {
@@ -479,6 +481,7 @@ async function fetchDreaminaVerificationCode(page, account, runtime = {}, contex
       provider,
       // 失败时尝试次数先记 0，避免制造不真实的次数语义。
       attempt: 0,
+      fetchTrace: error?.fetchTrace || null,
       resendCountdown: verificationReady?.resendCountdown || null,
     };
   }

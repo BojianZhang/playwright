@@ -332,72 +332,150 @@ function resolvePollJitterMs(config = {}) {
   return scanConfig.pollJitterMinMs + Math.floor(Math.random() * (scanConfig.pollJitterMaxMs - scanConfig.pollJitterMinMs + 1));
 }
 
+function buildFirstmailPollSchedule(config = {}, maxAttempts = 1) {
+  const baseIntervalMs = Math.max(0, Number(config.waitMailIntervalMs || 5000));
+  const configuredSchedule = Array.isArray(config.firstmailPollScheduleMs)
+    ? config.firstmailPollScheduleMs.map(value => Math.max(0, Number(value || 0))).filter(value => Number.isFinite(value))
+    : [];
+  const stagedSchedule = configuredSchedule.length > 0
+    ? configuredSchedule
+    : [0, 1200, 1800, 2500, baseIntervalMs];
+  const delays = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const scheduled = stagedSchedule[Math.min(attempt - 1, stagedSchedule.length - 1)];
+    delays.push(Math.max(0, Number.isFinite(scheduled) ? scheduled : baseIntervalMs));
+  }
+  return delays;
+}
+
+function sumDelaysBeforeAttempt(delays = [], attempt = 1) {
+  if (attempt <= 1) return 0;
+  return delays.slice(1, attempt).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+}
+
+function buildMessageKey(item = {}) {
+  return String(item?.id || item?.uid || `${item?.subject || ''}|${item?.date || ''}|${item?.from || ''}`).trim();
+}
+
+function mergeMessageSources(sources = []) {
+  const mergedMessages = [];
+  const seenMessageKeys = new Set();
+  for (const source of sources) {
+    for (const item of Array.isArray(source?.messages) ? source.messages : []) {
+      const key = buildMessageKey(item);
+      if (!key || seenMessageKeys.has(key)) continue;
+      seenMessageKeys.add(key);
+      mergedMessages.push(item);
+    }
+  }
+  mergedMessages.sort((left, right) => extractMessageTimestampMs(right) - extractMessageTimestampMs(left));
+  return mergedMessages;
+}
+
 async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = '', proxyLabel = '', triggeredAtMs, seenCodes: externalSeenCodes }) {
   const maxAttempts = Number(config.firstmailApiMaxPollAttempts || config.waitMailAttempts || 18);
-  const intervalMs = Number(config.waitMailIntervalMs || 5000);
-  const totalBudgetMs = Math.max(0, (maxAttempts - 1) * intervalMs);
-  const minAcceptMessageTs = Number(triggeredAtMs || 0);
-  const acceptedSkewMs = Number(config.firstmailAcceptOlderThanTriggerSkewMs || 15000);
   const scanConfig = getFirstmailScanConfig(config);
   const seenCodes = externalSeenCodes instanceof Set ? externalSeenCodes : new Set();
+  const pollScheduleMs = buildFirstmailPollSchedule(config, maxAttempts);
+  const totalBudgetMs = pollScheduleMs.slice(1).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+  const minAcceptMessageTs = Number(triggeredAtMs || 0);
+  const acceptedSkewMs = Number(config.firstmailAcceptOlderThanTriggerSkewMs || 15000);
+  const latestOnlyAttempts = Math.max(0, Number(config.firstmailLatestOnlyAttempts || 2));
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const remainingAttempts = Math.max(0, maxAttempts - attempt);
-    const elapsedMs = Math.max(0, (attempt - 1) * intervalMs);
+    const elapsedMs = sumDelaysBeforeAttempt(pollScheduleMs, attempt);
     const remainingMs = Math.max(0, totalBudgetMs - elapsedMs);
+    const currentDelayMs = Math.max(0, Number(pollScheduleMs[attempt - 1] || 0));
+    const useLatestOnly = attempt <= latestOnlyAttempts;
+
+    if (attempt > 1 && currentDelayMs > 0) {
+      const jitterMs = resolvePollJitterMs(config);
+      await new Promise((resolve) => setTimeout(resolve, currentDelayMs + jitterMs));
+    }
 
     if (typeof log === 'function') {
-      log(`Firstmail API 轮询进度 | 当前=${attempt}/${maxAttempts} | 剩余轮次=${remainingAttempts} | 已等待=${Math.round(elapsedMs / 1000)}秒 | 剩余预算=${Math.round(remainingMs / 1000)}秒 | 总预算=${Math.round(totalBudgetMs / 1000)}秒 | 账号=${accountLabel || account.email} | 代理=${proxyLabel || 'NO_PROXY'} | triggeredAtMs=${minAcceptMessageTs || 0} | scanLimit=${scanConfig.recentMessageScanLimit}`);
+      log(`Firstmail API 轮询进度 | 当前=${attempt}/${maxAttempts} | 模式=${useLatestOnly ? 'latest-only' : 'latest+messages+unread'} | 剩余轮次=${remainingAttempts} | 已等待=${Math.round(elapsedMs / 1000)}秒 | 剩余预算=${Math.round(remainingMs / 1000)}秒 | 总预算=${Math.round(totalBudgetMs / 1000)}秒 | 本轮延迟=${Math.round(currentDelayMs / 1000)}秒 | 账号=${accountLabel || account.email} | 代理=${proxyLabel || 'NO_PROXY'} | triggeredAtMs=${minAcceptMessageTs || 0} | scanLimit=${scanConfig.recentMessageScanLimit}`);
     }
 
+    const fetchStartedAt = Date.now();
+    const latestResult = await fetchLatestMessage({ account, config }).catch(error => ({ error }));
+    const latestLatencyMs = Date.now() - fetchStartedAt;
     const sources = [];
-    const [messageListResult, unreadResult, latestResult] = await Promise.all([
-      fetchMessagesList({ account, config }).catch(error => ({ error })),
-      fetchUnreadMessages({ account, config }).catch(error => ({ error })),
-      fetchLatestMessage({ account, config }).catch(error => ({ error })),
-    ]);
-    if (!messageListResult?.error) {
-      sources.push({ kind: 'messages', ...messageListResult });
-    }
-
-    if (!unreadResult?.error) {
-      sources.push({ kind: 'unread', ...unreadResult });
-    }
-
     if (!latestResult?.error) {
       sources.push({ kind: 'latest', ...latestResult });
+    }
+
+    let messageListResult = null;
+    let unreadResult = null;
+    let messageListLatencyMs = 0;
+    let unreadLatencyMs = 0;
+
+    if (!useLatestOnly) {
+      const parallelStartedAt = Date.now();
+      [messageListResult, unreadResult] = await Promise.all([
+        fetchMessagesList({ account, config }).catch(error => ({ error })),
+        fetchUnreadMessages({ account, config }).catch(error => ({ error })),
+      ]);
+      const parallelLatencyMs = Date.now() - parallelStartedAt;
+      messageListLatencyMs = parallelLatencyMs;
+      unreadLatencyMs = parallelLatencyMs;
+      if (!messageListResult?.error) {
+        sources.push({ kind: 'messages', ...messageListResult });
+      }
+      if (!unreadResult?.error) {
+        sources.push({ kind: 'unread', ...unreadResult });
+      }
     }
 
     const primarySource = sources[0] || { response: { status: 0 }, message: null, messages: [], noMessages: true, kind: 'none' };
     const response = primarySource.response;
     const message = primarySource.message;
-    const noMessages = sources.every(source => source.noMessages);
-    const mergedMessages = [];
-    const seenMessageKeys = new Set();
-    for (const source of sources) {
-      for (const item of Array.isArray(source.messages) ? source.messages : []) {
-        const key = String(item?.id || item?.uid || `${item?.subject || ''}|${item?.date || ''}|${item?.from || ''}`).trim();
-        if (!key || seenMessageKeys.has(key)) continue;
-        seenMessageKeys.add(key);
-        mergedMessages.push(item);
-      }
-    }
-    mergedMessages.sort((left, right) => extractMessageTimestampMs(right) - extractMessageTimestampMs(left));
+    const noMessages = sources.length === 0 || sources.every(source => source.noMessages);
+    const mergedMessages = mergeMessageSources(sources);
     const latestMessageTs = extractMessageTimestampMs(message);
+    const summary = summarizeMessage(message || {});
+    const latestCandidate = buildCandidateFromMessage(message, config);
+    const latestCandidateFreshEnough = !latestCandidate || (latestCandidate.messageTs || 0) >= (minAcceptMessageTs - acceptedSkewMs);
+
     if (typeof log === 'function') {
-      const summary = summarizeMessage(message || {});
-      log(`Firstmail API 返回摘要 | status=${response.status} | from=${summary.from || 'NA'} | subject=${summary.subject || 'NA'} | snippet=${summary.snippet || 'NA'} | noMessages=${noMessages ? 'true' : 'false'} | messageTs=${latestMessageTs || 0} | scanned=${Array.isArray(messages) ? messages.length : 0}`);
+      log(`Firstmail API 返回摘要 | mode=${useLatestOnly ? 'latest-only' : 'latest+messages+unread'} | status=${response.status} | from=${summary.from || 'NA'} | subject=${summary.subject || 'NA'} | snippet=${summary.snippet || 'NA'} | noMessages=${noMessages ? 'true' : 'false'} | messageTs=${latestMessageTs || 0} | scanned=${mergedMessages.length} | latestLatencyMs=${latestLatencyMs} | messagesLatencyMs=${messageListLatencyMs} | unreadLatencyMs=${unreadLatencyMs}`);
+    }
+
+    if (latestCandidate && latestCandidateFreshEnough && !seenCodes.has(latestCandidate.code) && isDreaminaMessage(message, config)) {
+      seenCodes.add(latestCandidate.code);
+      if (typeof log === 'function') {
+        log(`Firstmail API latest 直接命中验证码 | code=${latestCandidate.code} | mode=latest-only | 命中轮次=${attempt}/${maxAttempts} | 累计等待=${Math.round(elapsedMs / 1000)}秒 | messageTs=${latestCandidate.messageTs || 0}`);
+      }
+      return {
+        code: latestCandidate.code,
+        message,
+        attempt,
+        messageTs: latestCandidate.messageTs,
+        matchMode: useLatestOnly ? 'latest-only' : 'latest-primary',
+        candidateCodes: [latestCandidate.code],
+        fetchTrace: {
+          hitAttempt: attempt,
+          strategy: useLatestOnly ? 'latest-only' : 'latest-primary',
+          latestOnlyAttempts,
+          pollScheduleMs,
+          latestLatencyMs,
+          messagesLatencyMs: messageListLatencyMs,
+          unreadLatencyMs,
+          scannedMessageCount: mergedMessages.length,
+        },
+      };
     }
 
     if (noMessages) {
       if (typeof log === 'function') {
-        log(`Firstmail API latest 当前没有邮件，继续下一轮轮询 | 下一轮前等待=${attempt < maxAttempts ? Math.round(intervalMs / 1000) : 0}秒`);
+        log(`Firstmail API 当前轮无邮件 | mode=${useLatestOnly ? 'latest-only' : 'full-scan'} | 下一轮前等待=${attempt < maxAttempts ? Math.round(Number(pollScheduleMs[attempt] || 0) / 1000) : 0}秒`);
       }
     } else {
       const candidates = pickRecentCandidateMessages(mergedMessages, {
         config,
         seenCodes,
-      });
+      }).filter(candidate => (candidate.messageTs || 0) >= (minAcceptMessageTs - acceptedSkewMs));
 
       if (candidates.length > 0) {
         const candidate = candidates[0];
@@ -412,11 +490,21 @@ async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = 
           messageTs: candidate.messageTs,
           matchMode: candidate.matchMode || 'recent-list',
           candidateCodes: candidates.map(item => item.code),
+          fetchTrace: {
+            hitAttempt: attempt,
+            strategy: candidate.matchMode || 'recent-list',
+            latestOnlyAttempts,
+            pollScheduleMs,
+            latestLatencyMs,
+            messagesLatencyMs: messageListLatencyMs,
+            unreadLatencyMs,
+            scannedMessageCount: mergedMessages.length,
+          },
         };
       }
 
       if (typeof log === 'function' && seenCodes.size > 0) {
-        log(`Firstmail API 当前轮未找到未使用的新验证码候选 | seenCodes=${seenCodes.size} | 当前=${attempt}/${maxAttempts}`);
+        log(`Firstmail API 当前轮未找到未使用的新验证码候选 | seenCodes=${seenCodes.size} | 当前=${attempt}/${maxAttempts} | mode=${useLatestOnly ? 'latest-only' : 'full-scan'}`);
       }
 
       const latestIsDreamina = mergedMessages[0] && isDreaminaMessage(mergedMessages[0], config);
@@ -428,14 +516,16 @@ async function waitForDreaminaCodeViaApi({ account, config, log, accountLabel = 
         log(`Firstmail API latest 不是目标邮件，继续等待下一轮 | 当前=${attempt}/${maxAttempts}`);
       }
     }
-
-    if (attempt < maxAttempts) {
-      const jitterMs = resolvePollJitterMs(config);
-      await new Promise((resolve) => setTimeout(resolve, intervalMs + jitterMs));
-    }
   }
 
-  throw new Error(`FIRSTMAIL_API_CODE_TIMEOUT maxAttempts=${maxAttempts} totalBudgetSeconds=${Math.round(totalBudgetMs / 1000)}`);
+  const timeoutError = new Error(`FIRSTMAIL_API_CODE_TIMEOUT maxAttempts=${maxAttempts} totalBudgetSeconds=${Math.round(totalBudgetMs / 1000)}`);
+  timeoutError.fetchTrace = {
+    hitAttempt: 0,
+    strategy: 'timeout',
+    latestOnlyAttempts,
+    pollScheduleMs,
+  };
+  throw timeoutError;
 }
 
 module.exports = {
