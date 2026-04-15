@@ -1359,12 +1359,57 @@ function buildDreaminaRegisterContext(options = {}) {
 function buildProxyPrecheckSummary(proxyPrecheckResult) {
   const result = proxyPrecheckResult && typeof proxyPrecheckResult === 'object' ? proxyPrecheckResult : null;
   if (!result) return null;
+  const detail = result.detail && typeof result.detail === 'object' ? result.detail : null;
   return {
     success: Boolean(result.success),
     state: String(result.state || '').trim(),
     reason: String(result.reason || result.state || '').trim(),
     signalStrength: String(result.signalStrength || '').trim(),
     detectionSource: String(result.detectionSource || '').trim(),
+    proxyGrade: String(result.proxyGrade || '').trim(),
+    capabilityGrade: String(detail?.capabilityGrade || result.capabilityGrade || '').trim(),
+    businessGrade: String(detail?.businessGrade || result.businessGrade || '').trim(),
+    healthScore: Number(detail?.healthScore || result.healthScore || 0),
+    healthEvidence: detail?.healthEvidence && typeof detail.healthEvidence === 'object'
+      ? {
+          transportOk: Boolean(detail.healthEvidence.transportOk),
+          exitIpOk: Boolean(detail.healthEvidence.exitIpOk),
+          primaryOk: Boolean(detail.healthEvidence.primaryOk),
+          secondaryOk: Boolean(detail.healthEvidence.secondaryOk),
+          homepageShellOk: Boolean(detail.healthEvidence.homepageShellOk),
+          loginAffordanceOk: Boolean(detail.healthEvidence.loginAffordanceOk),
+        }
+      : null,
+    homepageShell: detail?.homepageShell
+      ? {
+          ok: Boolean(detail.homepageShell.ok),
+          state: String(detail.homepageShell.state || '').trim(),
+          value: String(detail.homepageShell.value || '').trim(),
+          evidence: detail.homepageShell.evidence && typeof detail.homepageShell.evidence === 'object'
+            ? {
+                title: String(detail.homepageShell.evidence.title || '').trim(),
+                titleHit: String(detail.homepageShell.evidence.titleHit || '').trim(),
+                shellTextHit: String(detail.homepageShell.evidence.shellTextHit || '').trim(),
+                errorTextHit: String(detail.homepageShell.evidence.errorTextHit || '').trim(),
+                bodyTextLength: Number(detail.homepageShell.evidence.bodyTextLength || 0),
+              }
+            : null,
+        }
+      : null,
+    loginAffordance: detail?.loginAffordance
+      ? {
+          ok: Boolean(detail.loginAffordance.ok),
+          state: String(detail.loginAffordance.state || '').trim(),
+          value: String(detail.loginAffordance.value || '').trim(),
+          evidence: detail.loginAffordance.evidence && typeof detail.loginAffordance.evidence === 'object'
+            ? {
+                textHit: String(detail.loginAffordance.evidence.textHit || '').trim(),
+                selectorHintHit: String(detail.loginAffordance.evidence.selectorHintHit || '').trim(),
+                affordanceCount: Number(detail.loginAffordance.evidence.affordanceCount || 0),
+              }
+            : null,
+        }
+      : null,
   };
 }
 

@@ -1055,6 +1055,19 @@ async function writeBatchSummaryFile(batchContext) {
     .map(item => buildBatchFingerprintSummary(item?.fingerprintSummary || null))
     .filter(item => item.userAgent || item.viewport || item.locale || item.timezoneId);
 
+  const proxyPrecheckSummaries = batchContext.accounts.success
+    .concat(batchContext.accounts.failed)
+    .concat(batchContext.accounts.exists)
+    .concat(batchContext.accounts.skipped)
+    .map(item => item?.proxyPrecheckSummary)
+    .filter(item => item && typeof item === 'object');
+
+  const proxyPrecheckGradeBuckets = proxyPrecheckSummaries.reduce((acc, item) => {
+    const key = `${String(item?.proxyGrade || 'NA')}/${String(item?.capabilityGrade || 'NA')}/${String(item?.businessGrade || 'NA')}`;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
   const summary = {
     runId: batchContext.runId,
     startedAt: new Date(batchContext.startedAt).toISOString(),
@@ -1098,6 +1111,11 @@ async function writeBatchSummaryFile(batchContext) {
     },
     fingerprintSummary: fingerprintSummaries[0] || null,
     fingerprintSamples: fingerprintSummaries.slice(0, 10),
+    proxyPrecheckOverview: {
+      totalSamples: proxyPrecheckSummaries.length,
+      gradeBuckets: proxyPrecheckGradeBuckets,
+      samples: proxyPrecheckSummaries.slice(0, 10),
+    },
     entrySlowSamples,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,
@@ -1403,6 +1421,14 @@ function buildBatchFinalSummaryLines(summary = {}) {
   const proxyPolicy = summary?.concurrencyPolicy?.proxyPolicy || null;
   if (proxyPolicy) {
     lines.push(`[Dreamina Batch] ProxyPolicy: matched=${proxyPolicy.matchedConcurrency} | staggerMs=${proxyPolicy.workerStartStaggerMs} | connectivityTimeoutMs=${proxyPolicy.connectivityTimeoutMs} | primaryTimeoutMs=${proxyPolicy.primaryTargetTimeoutMs} | secondaryTimeoutMs=${proxyPolicy.secondaryTargetTimeoutMs} | enableSecondaryTarget=${proxyPolicy.enableSecondaryTarget ? 'Y' : 'N'}`);
+  }
+  const proxyPrecheckOverview = summary?.proxyPrecheckOverview || null;
+  if (proxyPrecheckOverview && proxyPrecheckOverview.totalSamples > 0) {
+    const gradeBuckets = Object.entries(proxyPrecheckOverview.gradeBuckets || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, value]) => `${key}=${value}`)
+      .join(' | ');
+    lines.push(`[Dreamina Batch] ProxyPrecheckOverview: samples=${proxyPrecheckOverview.totalSamples}${gradeBuckets ? ` | ${gradeBuckets}` : ''}`);
   }
   const layoutPreset = summary?.layoutProfile?.preset || null;
   if (layoutPreset) {
