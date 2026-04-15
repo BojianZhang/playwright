@@ -207,8 +207,6 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
       page.getByText('Login').first(),
       page.getByText('Sign up').first(),
       page.getByText('Continue with email').first(),
-      page.getByText('Explore Create Assets').first(),
-      page.getByText('Start Creating With AI Agent').first(),
       page.getByRole('button', { name: /sign in|log in|login|sign up|continue with email/i }).first(),
       page.getByRole('link', { name: /sign in|log in|login|sign up/i }).first(),
       page.locator("input[type='email']").first(),
@@ -482,7 +480,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
     return (
       matchedKind.includes('strong-text')
       || matchedKind === 'ready-text'
-      || /Explore Create Assets|Start Creating With AI Agent|dreamina|capcut/i.test(combinedText)
+      || /Continue with email|Sign in|Log in|Login|Sign up|input|email|dreamina|capcut/i.test(combinedText)
     );
   }
 
@@ -866,7 +864,8 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           timelineMatchedKind.includes('strong-text')
           || timelineMatchedKind === 'ready-text'
           || /Explore Create Assets|Start Creating With AI Agent/i.test(fallbackTimelineText)
-        ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue || fallbackTimelineText);
+        ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue || fallbackTimelineText)
+          && !/Continue with email|Sign in|Log in|Login|Sign up/i.test(timelineMatchedValue || fallbackTimelineText);
 
         const loginAffordanceSnapshot = await detectLoginAffordanceSnapshot(page);
         const earlyHomeShellWithoutLoginEntry = isStrongHomeReadySignal
