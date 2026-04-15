@@ -1375,6 +1375,38 @@ async function confirmDreaminaLoginGate(page, runtime = {}, context = {}) {
     };
   }
 
+  const loginModalVisible = await page.locator('.lv-modal-wrapper').first().isVisible().catch(() => false);
+  if (loginModalVisible) {
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.adapter.confirmDreaminaLoginGate | 命中登录门 modal 外层可见信号');
+    }
+    return {
+      ok: true,
+      state: 'LOGIN_GATE_LAYER_READY',
+      source: 'modal',
+      value: 'LOGIN_MODAL_VISIBLE',
+      detail: {
+        loginSignal: {
+          ok: true,
+          source: 'modal',
+          value: 'LOGIN_MODAL_VISIBLE',
+          label: 'login-modal-visible',
+          clickable: false,
+          timelineSignals: {
+            loginModalVisible: true,
+          },
+        },
+        signalTimeline: {
+          loginModalVisible: {
+            firstSeenAt: new Date().toISOString(),
+            elapsedMs: Math.max(0, Date.now() - startAt),
+            round: 1,
+          },
+        },
+      },
+    };
+  }
+
   if (typeof logInfo === 'function') {
     logInfo('dreamina.adapter.confirmDreaminaLoginGate | 当前未确认进入登录门');
   }
