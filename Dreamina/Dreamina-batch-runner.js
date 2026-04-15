@@ -675,6 +675,19 @@ function buildEntrySlowSample(record = {}) {
   };
 }
 
+function buildBatchFingerprintSummary(input = null) {
+  const summary = input && typeof input === 'object' ? input : {};
+  return {
+    userAgent: String(summary?.userAgent || ''),
+    viewport: String(summary?.viewport || ''),
+    locale: String(summary?.locale || ''),
+    timezoneId: String(summary?.timezoneId || ''),
+    colorScheme: String(summary?.colorScheme || ''),
+    deviceScaleFactor: Number(summary?.deviceScaleFactor || 0),
+    randomEnabled: Boolean(summary?.randomEnabled),
+  };
+}
+
 function buildBatchAccountRecord(result = {}, extra = {}) {
   const stageResults = result?.stageResults && typeof result.stageResults === 'object'
     ? { ...result.stageResults }
@@ -715,6 +728,7 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     finalState: String(result?.finalState || ''),
     finalReason: String(result?.finalReason || ''),
     durationMs: Number(result?.meta?.durationMs || 0),
+    fingerprintSummary: buildBatchFingerprintSummary(result?.fingerprintSummary || result?.meta?.fingerprintSummary || null),
     resultFile: String(result?.meta?.resultFile || result?.meta?.filePath || ''),
     latestResultFile: String(result?.meta?.latestResultFile || result?.meta?.latestByAccount || ''),
     batchBucketPath: String(
@@ -1036,6 +1050,10 @@ async function writeBatchSummaryFile(batchContext) {
     layoutProfilePath: String(batchContext?.windowLayout?.profilePath || ''),
   };
 
+  const fingerprintSummaries = allAccountRecords
+    .map(item => buildBatchFingerprintSummary(item?.fingerprintSummary || null))
+    .filter(item => item.userAgent || item.viewport || item.locale || item.timezoneId);
+
   const summary = {
     runId: batchContext.runId,
     startedAt: new Date(batchContext.startedAt).toISOString(),
@@ -1077,6 +1095,8 @@ async function writeBatchSummaryFile(batchContext) {
           }
         : null,
     },
+    fingerprintSummary: fingerprintSummaries[0] || null,
+    fingerprintSamples: fingerprintSummaries.slice(0, 10),
     entrySlowSamples,
     successAccounts: batchContext.accounts.success,
     failedAccounts: batchContext.accounts.failed,

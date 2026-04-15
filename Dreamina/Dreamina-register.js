@@ -1666,6 +1666,7 @@ async function runDreaminaRegisterFlow(options = {}) {
         deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
         stageResults: registerContext.stageResults,
         proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.stageResults?.proxyPrecheck || registerContext.proxyPrecheckResult),
+        fingerprintSummary: buildFingerprintSummary(registerContext?.browserRuntime?.fingerprint?.summary || registerContext?.fingerprint?.summary || null),
         meta: registerContext.meta,
       });
     }
@@ -1697,6 +1698,7 @@ async function runDreaminaRegisterFlow(options = {}) {
     deliveryPayload: registerContext.stageResults?.accountDelivery?.detail?.deliveryPayload?.payload || null,
     stageResults: registerContext.stageResults,
     proxyPrecheckSummary: buildProxyPrecheckSummary(registerContext.proxyPrecheckResult),
+    fingerprintSummary: buildFingerprintSummary(registerContext?.browserRuntime?.fingerprint?.summary || registerContext?.fingerprint?.summary || null),
     meta: registerContext.meta,
   });
 }
@@ -1781,6 +1783,19 @@ function buildFailureSummaryText(result = {}) {
   return `FailureStage=${stage} | FailureReason=${reason}`;
 }
 
+function buildFingerprintSummary(input = null) {
+  const summary = input && typeof input === 'object' ? input : {};
+  return {
+    userAgent: String(summary?.userAgent || ''),
+    viewport: String(summary?.viewport || ''),
+    locale: String(summary?.locale || ''),
+    timezoneId: String(summary?.timezoneId || ''),
+    colorScheme: String(summary?.colorScheme || ''),
+    deviceScaleFactor: Number(summary?.deviceScaleFactor || 0),
+    randomEnabled: Boolean(summary?.randomEnabled),
+  };
+}
+
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -1827,6 +1842,7 @@ async function writeCliResultFile(result = {}, meta = {}) {
     stageSummary: buildStageSummaryText(result?.stageResults || {}),
     slowestStage: buildSlowestStageText(result),
     durationMs: Number(result?.meta?.durationMs || 0),
+    fingerprintSummary: buildFingerprintSummary(result?.fingerprintSummary || result?.meta?.fingerprintSummary || null),
     resultFile: filePath,
     latestResultFile: latestByAccount,
   };
@@ -2299,6 +2315,7 @@ async function runDreaminaRegisterCli(argv = []) {
         skippedProxyIds: proxySelection.skippedProxyIds,
         exhaustedHealthyCandidates: proxySelection.exhaustedHealthyCandidates,
         proxyDisposition: proxyHealthRecord,
+        fingerprintSummary: buildFingerprintSummary(cliRuntime?.fingerprint?.summary || null),
       };
     }
 
@@ -2317,8 +2334,10 @@ async function runDreaminaRegisterCli(argv = []) {
     console.log(`[Dreamina Register] Result file: ${resultFiles.filePath}`);
     console.log(`[Dreamina Register] Latest file: ${resultFiles.latestByAccount}`);
     console.log(`[Dreamina Register] Index file: ${resultFiles.indexFile}`);
+    result.fingerprintSummary = buildFingerprintSummary(cliRuntime?.fingerprint?.summary || result?.fingerprintSummary || result?.meta?.fingerprintSummary || null);
     result.meta = {
       ...(result.meta || {}),
+      fingerprintSummary: buildFingerprintSummary(cliRuntime?.fingerprint?.summary || result?.fingerprintSummary || result?.meta?.fingerprintSummary || null),
       resultFile: resultFiles.filePath,
       latestResultFile: resultFiles.latestByAccount,
       latestOverallResultFile: resultFiles.latestOverall,
