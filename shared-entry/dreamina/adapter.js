@@ -61,6 +61,15 @@ const DREAMINA_STRONG_READY_TEXTS = [
   'Login',
   'Sign up',
   'Create realistic talk',
+];
+
+/**
+ * Dreamina 首页 shell 级内容文案。
+ *
+ * 这些文本只能证明首页主体已经出现，不能单独证明登录入口 ready。
+ * 因此只保留为 observe/evidence，不再作为 waitForDreaminaReady 的直接成功条件。
+ */
+const DREAMINA_HOME_SHELL_TEXTS = [
   'Explore Create Assets',
   'Start Creating With AI Agent',
   'AI Image',
@@ -479,8 +488,7 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     'Sign in',
     'Continue with email',
     'Enter email',
-    'AI Image',
-    'Canvas',
+    ...DREAMINA_HOME_SHELL_TEXTS,
   ];
 
   let lastTargetWaitMs = 0;
@@ -547,6 +555,11 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
         logInfo(`dreamina.adapter.waitForDreaminaReady | 命中强文本 ready 信号: ${strongTextHit.value} | elapsed=${Date.now() - start}ms | stepWait=${waitMs}`);
       }
       return strongTextHit;
+    }
+
+    const homeShellTextHit = await findVisibleReadyText(page, DREAMINA_HOME_SHELL_TEXTS);
+    if (homeShellTextHit.ok) {
+      round.textHit = round.textHit || String(homeShellTextHit.value || '');
     }
 
     trace.rounds.push(round);
