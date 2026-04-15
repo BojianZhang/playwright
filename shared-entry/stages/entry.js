@@ -58,9 +58,23 @@ function extractConfirmTimingBreakdown(entryReadyResult = {}, confirmEntryReadyM
     ? detail.timingBreakdown
     : null;
   if (directTimingBreakdown) {
+    const directConfirmTrace = detail?.confirmTrace && typeof detail.confirmTrace === 'object' ? detail.confirmTrace : {};
     return {
       ...directTimingBreakdown,
       totalMs: Number(directTimingBreakdown?.totalMs || confirmEntryReadyMs || 0),
+      outerConfirmMs: Number(directConfirmTrace?.resolvedAtMs || 0),
+      gateConfirmMs: Number(detail?.postClickGateReadyMs || directTimingBreakdown?.confirmLoginGateMs || 0),
+      wrapperOverheadMs: 0,
+      waitWrapperMs: 0,
+      wrapperResidualMs: 0,
+      waitForEntryReadyResolvedPath: '',
+      waitForEntryReadyRecoveredSignals: false,
+      waitForEntryReadyPhaseTrace: null,
+      outerConfirmResolvedBy: String(directConfirmTrace?.resolvedBy || ''),
+      outerConfirmResolvedState: String(directConfirmTrace?.resolvedState || entryReadyResult?.state || ''),
+      outerConfirmResolvedReason: String(directConfirmTrace?.resolvedReason || ''),
+      gateResolvedState: String(directConfirmTrace?.resolvedState || entryReadyResult?.state || ''),
+      gateResolvedReason: String(directConfirmTrace?.resolvedReason || ''),
       source: String(directTimingBreakdown?.source || 'adapter-direct'),
     };
   }

@@ -1561,6 +1561,8 @@ async function runDreaminaBatch(argv = []) {
     proxyHealthPolicy,
   });
 
+  batchContext.summary.proxySelectionPolicy = 'fresh-batch-no-history';
+
   const resolvedLayoutPreset = layoutPlanner.resolve(1, batchContext.config.concurrency);
 
   batchContext.windowLayout = {
