@@ -855,9 +855,48 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           || /Explore Create Assets|Start Creating With AI Agent/i.test(fallbackTimelineText)
         ) && /Explore Create Assets|Start Creating With AI Agent/i.test(timelineMatchedValue || fallbackTimelineText);
 
+        const earlyHomeShellWithoutLoginEntry = isStrongHomeReadySignal
+          && !isEntryPageLikelyUsableForFinalGrace({ timelineResult, gateResult });
+
         if (isStrongHomeReadySignal) {
           phaseTrace.gateResolvedState = 'HOME_READY_TEXT_VISIBLE';
-          phaseTrace.gateResolvedReason = 'LOGIN_ENTRY_NOT_FOUND_BUT_HOME_READY';
+          phaseTrace.gateResolvedReason = earlyHomeShellWithoutLoginEntry
+            ? 'HOME_READY_WITHOUT_LOGIN_AFFORDANCE'
+            : 'LOGIN_ENTRY_NOT_FOUND_BUT_HOME_READY';
+        }
+
+        if (earlyHomeShellWithoutLoginEntry) {
+          const debugSnapshotStartedAt = Date.now();
+          const debugSnapshot = await captureEntryDebugSnapshot(page);
+          phaseTrace.debugSnapshotMs = Math.max(0, Date.now() - debugSnapshotStartedAt);
+          return {
+            ok: false,
+            state: 'LOGIN_ENTRY_FAILED',
+            source: 'LOGIN_ENTRY_FAILED',
+            value: 'LOGIN_ENTRY_NOT_FOUND',
+            strength: '',
+            detail: {
+              readyTrace: {
+                decision: 'home-ready-without-login-affordance',
+                confirmTrace: timelineResult?.detail?.confirmTrace || null,
+                gateState: gateResult?.state || '',
+                gateReason: gateResult?.reason || '',
+                gateResult,
+                timelineResult,
+                waitForEntryReadyPhaseTrace: {
+                  ...phaseTrace,
+                  resolvedPath: 'home-ready-without-login-affordance',
+                },
+              },
+              loginSignal: timelineResult?.detail?.loginSignal || gateResult?.detail?.loginSignal || null,
+              signalTimeline: timelineResult?.detail?.signalTimeline
+                || gateResult?.detail?.signalTimeline
+                || gateResult?.detail?.loginSignal?.detail?.signalTimeline
+                || null,
+              gateResult,
+              debugSnapshot,
+            },
+          };
         }
 
         const recoverSignalsStartedAt = Date.now();
