@@ -544,7 +544,7 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
   return {
     async openEntryPage(page, runtime = {}, context = {}) {
       const entryUrl = String(runtime?.dreaminaEntryUrl || runtime?.entryUrl || 'https://dreamina.capcut.com/ai-tool/home').trim();
-      const gotoTimeout = Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 120000);
+      const gotoTimeout = Number(runtime?.entryGotoTimeoutMs || runtime?.dreaminaNavigationTimeoutMs || 20000);
 
       const attemptGoto = async (targetUrl, sourceLabel) => {
         try {
@@ -643,6 +643,20 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           strategy: 'login-entry-checkbox-then-sign-in',
         },
       };
+
+      if (loginPagePrepareResult && loginPagePrepareResult.ok === false && loginPagePrepareResult.skipped !== true) {
+        return {
+          ok: false,
+          state: 'ENTRY_PAGE_OPEN_FAILED',
+          source: 'login-page-prepare',
+          value: String(loginPagePrepareResult.reason || 'LOGIN_PAGE_PREPARE_FAILED'),
+          strength: 'strong',
+          stateChanged: false,
+          detail: {
+            ...(loginEntryResult?.detail || {}),
+          },
+        };
+      }
 
       const loginEntrySignal = await assessLoginEntryAffordance();
       return {
