@@ -394,6 +394,74 @@ function resolveDreaminaLoginSignalStages(runtime = {}, profile = {}) {
 /**
  * 检测 Dreamina 登录入口信号。
  */
+async function detectDreaminaHomeLoginAffordance(page, entryRolePattern = 'sign in|log in|login|sign up') {
+  const matchedTexts = [];
+  const matchedSelectors = [];
+  const timelineSignals = {};
+
+  const directSelectors = [
+    '#SiderMenuLogin',
+    '[id*="SiderMenuLogin"]',
+    '[class*="sider"] [role="menuitem"]',
+    '[class*="sider"] button',
+    'aside [role="menuitem"]',
+    'aside button',
+    'nav [role="menuitem"]',
+    'nav button',
+  ];
+
+  for (const selector of directSelectors) {
+    const locator = page.locator(selector).first();
+    const visible = await isVisible(locator);
+    timelineSignals[`home:${selector}`] = visible;
+    if (!visible) continue;
+    const text = String(await locator.textContent().catch(() => '') || '').trim();
+    if (/sign in|log in|login|sign up/i.test(text)) {
+      matchedSelectors.push(selector);
+      matchedTexts.push(text);
+      return {
+        found: true,
+        clickable: true,
+        locator,
+        label: 'home-login-affordance',
+        source: 'selector',
+        value: text || selector,
+        matchedTexts,
+        matchedSelectors,
+        timelineSignals,
+      };
+    }
+  }
+
+  const roleCandidates = [
+    page.getByRole('menuitem', { name: new RegExp(entryRolePattern, 'i') }).first(),
+    page.getByRole('button', { name: new RegExp(entryRolePattern, 'i') }).first(),
+    page.locator('#SiderMenuLogin').first(),
+  ];
+
+  for (const locator of roleCandidates) {
+    const visible = await isVisible(locator);
+    const key = `home-role:${matchedSelectors.length}`;
+    timelineSignals[key] = visible;
+    if (!visible) continue;
+    const text = String(await locator.textContent().catch(() => '') || '').trim();
+    matchedTexts.push(text || 'home-login-affordance');
+    return {
+      found: true,
+      clickable: true,
+      locator,
+      label: 'home-login-affordance',
+      source: 'role',
+      value: text || 'home-login-affordance',
+      matchedTexts,
+      matchedSelectors,
+      timelineSignals,
+    };
+  }
+
+  return { found: false, clickable: false, label: '', source: '', value: '', matchedTexts, matchedSelectors, timelineSignals };
+}
+
 async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {}) {
   const profile = loadDreaminaEntryProfile();
   const loginSignals = profile?.loginSignals || {};
@@ -442,6 +510,22 @@ async function detectDreaminaLoginEntrySignals(page, runtime = {}, context = {})
       value: continueWithEmailText,
       matchedTexts,
       matchedSelectors,
+      timelineSignals,
+    };
+  }
+
+  const homeLoginAffordance = await detectDreaminaHomeLoginAffordance(page, entryRolePattern).catch(() => ({ found: false }));
+  Object.assign(timelineSignals, homeLoginAffordance?.timelineSignals || {});
+  if (homeLoginAffordance?.found) {
+    return {
+      found: true,
+      clickable: true,
+      locator: homeLoginAffordance.locator,
+      label: homeLoginAffordance.label || 'home-login-affordance',
+      source: homeLoginAffordance.source || 'selector',
+      value: homeLoginAffordance.value || 'home-login-affordance',
+      matchedTexts: [...matchedTexts, ...(homeLoginAffordance.matchedTexts || [])],
+      matchedSelectors: [...matchedSelectors, ...(homeLoginAffordance.matchedSelectors || [])],
       timelineSignals,
     };
   }
