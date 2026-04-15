@@ -3,6 +3,7 @@
 const { chromium } = require('playwright');
 const { buildContextFingerprintOptions } = require('./fingerprint');
 const { applyResourcePolicy } = require('./resource-policy');
+const { applyWindowLayoutToLaunchOptions } = require('./window-runtime');
 
 function buildLaunchOptions(options = {}) {
   const headed = Boolean(options?.headed);
@@ -15,12 +16,15 @@ function buildLaunchOptions(options = {}) {
     slowMo,
   };
 
-  if (headed && windowLayout?.enabled) {
-    launchOptions.args = [
-      ...(Array.isArray(launchOptions.args) ? launchOptions.args : []),
-      `--window-position=${Number(windowLayout.x || 0)},${Number(windowLayout.y || 0)}`,
-      `--window-size=${Number(windowLayout.width || 1440)},${Number(windowLayout.height || 900)}`,
-    ];
+  const launchOptionsWithWindowLayout = applyWindowLayoutToLaunchOptions(launchOptions, {
+    headed,
+    windowLayout,
+  });
+
+  launchOptions.headless = launchOptionsWithWindowLayout.headless;
+  launchOptions.slowMo = launchOptionsWithWindowLayout.slowMo;
+  if (Array.isArray(launchOptionsWithWindowLayout.args)) {
+    launchOptions.args = launchOptionsWithWindowLayout.args;
   }
 
   if (proxy?.server) {
