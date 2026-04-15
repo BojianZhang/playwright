@@ -631,6 +631,15 @@ async function readDreaminaBirthdayTriggerState(page, kind, profile) {
  * - 允许使用少量局部 click plans 做兼容性激活
  * - 不负责真正选择 option，不负责判定 stage 成功
  */
+function buildDreaminaRelativeClickPlans(locator = null, baseLabel = '') {
+  if (!locator) return [];
+  return [
+    { label: baseLabel, locator },
+    { label: `${baseLabel}-parent`, locator: locator.locator('xpath=..').first() },
+    { label: `${baseLabel}-grandparent`, locator: locator.locator('xpath=../..').first() },
+  ];
+}
+
 async function activateDreaminaBirthdayTrigger(page, kind, profile, context = {}) {
   const { logInfo = null } = context;
   const label = kind === 'day' ? 'Day' : 'Month';
@@ -640,9 +649,7 @@ async function activateDreaminaBirthdayTrigger(page, kind, profile, context = {}
 
   const clickPlans = [];
   if (await isVisible(baseLocator)) {
-    clickPlans.push({ label: 'text', locator: baseLocator });
-    clickPlans.push({ label: 'text-parent', locator: baseLocator.locator('xpath=..').first() });
-    clickPlans.push({ label: 'text-grandparent', locator: baseLocator.locator('xpath=../..').first() });
+    clickPlans.push(...buildDreaminaRelativeClickPlans(baseLocator, 'text'));
   }
   const fallbackHit = await findFirstVisibleBySelectors(page, kind === 'day' ? (profile?.birthday?.daySelectors || []) : (profile?.birthday?.monthSelectors || []));
   if (fallbackHit.ok && fallbackHit.locator) {
@@ -1018,9 +1025,7 @@ async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidat
       const clickPlans = [];
       for (const exactTextLocator of exactTextLocators) {
         if (!(await isVisible(exactTextLocator))) continue;
-        clickPlans.push({ label: 'exact-text', locator: exactTextLocator });
-        clickPlans.push({ label: 'exact-text-parent', locator: exactTextLocator.locator('xpath=..').first() });
-        clickPlans.push({ label: 'exact-text-grandparent', locator: exactTextLocator.locator('xpath=../..').first() });
+        clickPlans.push(...buildDreaminaRelativeClickPlans(exactTextLocator, 'exact-text'));
       }
       clickPlans.push({ label: 'content-text', locator: option.locator('.lv-select-option-content-text').first() });
       clickPlans.push({ label: 'content', locator: option.locator('.lv-select-option-content').first() });
