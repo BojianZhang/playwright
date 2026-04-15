@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
 const { loadLocalProxies, summarizeProxy } = require('../shared-proxy-precheck/local-proxy-loader');
 const {
   logStageStart,
@@ -14,7 +13,7 @@ const {
   formatDurationMs,
 } = require('../shared-stage-logger');
 const { updateWorkerStatus } = require('../worker-status-tracker');
-const { buildContextFingerprintOptions } = require('../shared-browser-runtime/fingerprint');
+const { createBrowserRuntime } = require('../shared-browser-runtime/create-browser-runtime');
 
 // ==============================
 // Dreamina 主链编排层：阶段公共 runner 引入
@@ -2107,49 +2106,14 @@ async function createDreaminaCliRuntime(options = {}) {
     ? options.blockedResourceTypes.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
     : ['image', 'media', 'font'];
 
-  const launchOptions = {
-    headless: !headed,
+  return await createBrowserRuntime({
+    runtime: options?.runtime || {},
+    proxy,
+    headed,
     slowMo,
-  };
-
-  if (headed && windowLayout?.enabled) {
-    launchOptions.args = [
-      ...(Array.isArray(launchOptions.args) ? launchOptions.args : []),
-      `--window-position=${Number(windowLayout.x || 0)},${Number(windowLayout.y || 0)}`,
-      `--window-size=${Number(windowLayout.width || 1440)},${Number(windowLayout.height || 900)}`,
-    ];
-  }
-
-  if (proxy?.server) {
-    launchOptions.proxy = {
-      server: proxy.server,
-      username: proxy.username,
-      password: proxy.password,
-    };
-  }
-
-  const browser = await chromium.launch(launchOptions);
-  const { fingerprint, contextOptions } = buildContextFingerprintOptions(runtime, { windowLayout });
-  const context = await browser.newContext(contextOptions);
-
-  await context.route('**/*', async route => {
-    const request = route.request();
-    const resourceType = String(request.resourceType() || '').trim().toLowerCase();
-    if (blockedResourceTypes.includes(resourceType)) {
-      await route.abort().catch(() => {});
-      return;
-    }
-    await route.continue().catch(() => {});
+    windowLayout,
+    blockedResourceTypes,
   });
-
-  const page = await context.newPage();
-
-  return {
-    browser,
-    context,
-    fingerprint,
-    page,
-  };
 }
 
 async function runDreaminaRegisterCli(argv = []) {
