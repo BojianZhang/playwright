@@ -1668,6 +1668,93 @@ function classifyDreaminaLoginGateFailure(input = {}) {
   };
 }
 
+async function runDreaminaEntryFlow(page, runtime = {}, context = {}) {
+  const startedAt = Date.now();
+  const readyStartedAt = Date.now();
+  const readyResult = await waitForDreaminaReady(page, runtime, context);
+  const waitHomeReadyMs = Math.max(0, Date.now() - readyStartedAt);
+
+  if (!readyResult?.ok) {
+    return {
+      ok: false,
+      state: readyResult?.state || 'ENTRY_READY_SIGNAL_MISSING',
+      source: readyResult?.source || 'dreamina-ready',
+      value: readyResult?.value || 'ENTRY_READY_SIGNAL_MISSING',
+      strength: readyResult?.strength || '',
+      detail: {
+        timingBreakdown: {
+          prepareEntrySurfaceMs: 0,
+          waitHomeReadyMs,
+          waitSignInEntryMs: 0,
+          clickSignInOnceMs: 0,
+          confirmLoginGateMs: 0,
+          totalMs: Math.max(0, Date.now() - startedAt),
+          source: 'runDreaminaEntryFlow',
+        },
+        signalTimeline: readyResult?.detail?.signalTimeline || null,
+      },
+    };
+  }
+
+  const gateStartedAt = Date.now();
+  const gateResult = await ensureDreaminaLoginGate(page, runtime, context);
+  const confirmLoginGateMs = Math.max(0, Date.now() - gateStartedAt);
+
+  if (!gateResult?.success) {
+    return {
+      ok: false,
+      state: gateResult?.state || 'LOGIN_ENTRY_FAILED',
+      source: gateResult?.reason || 'LOGIN_ENTRY_FAILED',
+      value: gateResult?.reason || gateResult?.state || 'LOGIN_ENTRY_FAILED',
+      strength: '',
+      detail: {
+        loginSignal: gateResult?.detail?.loginSignal || gateResult?.gateState || null,
+        signalTimeline: gateResult?.detail?.signalTimeline || null,
+        gateTrace: gateResult?.detail?.gateTrace || null,
+        timingBreakdown: {
+          prepareEntrySurfaceMs: 0,
+          waitHomeReadyMs,
+          waitSignInEntryMs: 0,
+          clickSignInOnceMs: Number(gateResult?.detail?.gateTrace?.openEntryMs || 0),
+          confirmLoginGateMs,
+          totalMs: Math.max(0, Date.now() - startedAt),
+          source: 'runDreaminaEntryFlow',
+        },
+      },
+    };
+  }
+
+  const resolvedAtMs = Math.max(0, Date.now() - startedAt);
+  return {
+    ok: true,
+    state: 'ENTRY_READY',
+    source: gateResult?.state === 'LOGIN_GATE_LAYER_READY' ? 'LOGIN_GATE_LAYER_READY' : (gateResult?.state || 'ENTRY_READY'),
+    value: gateResult?.reason || gateResult?.state || 'ENTRY_READY',
+    strength: 'strong',
+    detail: {
+      loginSignal: gateResult?.detail?.loginSignal || gateResult?.gateState || null,
+      signalTimeline: gateResult?.detail?.signalTimeline || null,
+      postClickGateReadyMs: Number(gateResult?.detail?.gateTrace?.postOpenConfirmMs || 0),
+      confirmTrace: {
+        resolvedBy: 'ensure-login-gate',
+        resolvedAtMs,
+        resolvedState: gateResult?.state || 'ENTRY_READY',
+        resolvedReason: gateResult?.reason || 'LOGIN_GATE_LAYER_READY',
+      },
+      timingBreakdown: {
+        prepareEntrySurfaceMs: 0,
+        waitHomeReadyMs,
+        waitSignInEntryMs: 0,
+        clickSignInOnceMs: Number(gateResult?.detail?.gateTrace?.openEntryMs || 0),
+        confirmLoginGateMs,
+        totalMs: resolvedAtMs,
+        source: 'runDreaminaEntryFlow',
+      },
+      gateTrace: gateResult?.detail?.gateTrace || null,
+    },
+  };
+}
+
 module.exports = {
   SAFE_OVERLAY_TEXT_PATTERNS,
   DREAMINA_STRONG_READY_TEXTS,
@@ -1704,4 +1791,5 @@ module.exports = {
   confirmDreaminaLoginGate,
   ensureDreaminaLoginGate,
   classifyDreaminaLoginGateFailure,
+  runDreaminaEntryFlow,
 };

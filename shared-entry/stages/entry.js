@@ -378,9 +378,9 @@ async function runEntryStage(options = {}) {
 
   const entryReadyResult = runDreaminaEntryFlow
     ? await runDreaminaEntryFlow(page, runtime, entryReadyContext)
-    : (confirmEntryReadyWithRecovery
-      ? await confirmEntryReadyWithRecovery(page, runtime, entryReadyContext)
-      : await waitForEntryReady(page, runtime, entryReadyContext));
+    : await (confirmEntryReadyWithRecovery
+      ? confirmEntryReadyWithRecovery(page, runtime, entryReadyContext)
+      : waitForEntryReady(page, runtime, entryReadyContext));
   timingBreakdown.confirmEntryReadyMs = Math.max(0, stageTimer.elapsedMs() - readyStartMs);
   timingBreakdown.confirmTimingBreakdown = extractConfirmTimingBreakdown(entryReadyResult, timingBreakdown.confirmEntryReadyMs);
   entryPhaseTrace.confirmFinishedAtMs = stageTimer.elapsedMs();

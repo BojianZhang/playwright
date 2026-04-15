@@ -550,7 +550,7 @@ function createBatchRunContext(options = {}) {
       total: Array.isArray(options.proxies) ? options.proxies.length : 0,
       list: Array.isArray(options.proxies) ? options.proxies : [],
       cursor: Math.max(0, Number(options.proxyStart || 0)),
-      selectionPolicy: 'prefer-healthier-business-capable-proxies',
+      selectionPolicy: String(options.proxySelectionPolicy || 'fresh-batch-no-history'),
       healthStore: options.proxyHealthStore || { updatedAt: '', records: {} },
       healthPolicy: options.proxyHealthPolicy || { blockedCountries: [], blockedProviders: [], countryStats: {}, providerStats: {} },
     },
@@ -1559,6 +1559,7 @@ async function runDreaminaBatch(argv = []) {
     proxies,
     proxyHealthStore,
     proxyHealthPolicy,
+    proxySelectionPolicy: 'fresh-batch-no-history',
   });
 
   batchContext.summary.proxySelectionPolicy = 'fresh-batch-no-history';
