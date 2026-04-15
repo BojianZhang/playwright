@@ -459,7 +459,11 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
 
   const filteredRuntimeSelectors = filterStrongReadySelectors(runtime.readySelectors || []);
   const strongSelectors = [...new Set([...(DREAMINA_STRONG_READY_SELECTORS || []), ...filteredRuntimeSelectors])];
-  const strongTexts = [...new Set([...(DREAMINA_STRONG_READY_TEXTS || []), ...((runtime.readyTextSignals || []).filter(Boolean))])];
+  const runtimeStrongTexts = ((runtime.readyTextSignals || []).filter(Boolean)).filter((text) => {
+    const normalized = String(text || '').trim().toLowerCase();
+    return !DREAMINA_HOME_SHELL_TEXTS.some((shellText) => String(shellText || '').trim().toLowerCase() === normalized);
+  });
+  const strongTexts = [...new Set([...(DREAMINA_STRONG_READY_TEXTS || []), ...runtimeStrongTexts])];
   const start = Date.now();
   const maxWaitMs = Number(runtime.firstLoadGraceWaitMs || 0);
   const earlyMidWaitMs = maxWaitMs > 0 ? Math.min(2000, maxWaitMs) : 0;
@@ -560,6 +564,10 @@ async function waitForDreaminaReady(page, runtime = {}, context = {}) {
     const homeShellTextHit = await findVisibleReadyText(page, DREAMINA_HOME_SHELL_TEXTS);
     if (homeShellTextHit.ok) {
       round.textHit = round.textHit || String(homeShellTextHit.value || '');
+      if (!trace.matchedKind) {
+        trace.matchedKind = 'home-shell-text';
+        trace.matchedValue = String(homeShellTextHit.value || '');
+      }
     }
 
     trace.rounds.push(round);

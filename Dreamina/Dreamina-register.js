@@ -921,7 +921,10 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           }
           if (typeof siteAdapter.confirmDreaminaLoginGate === 'function') {
             const recoveredGateState = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
-            if (recoveredGateState?.ok && recoveredGateState?.state === 'EMAIL_GATE_READY') {
+            if (recoveredGateState?.ok && (
+              recoveredGateState?.state === 'EMAIL_GATE_READY'
+              || recoveredGateState?.state === 'LOGIN_GATE_LAYER_READY'
+            )) {
               phaseTrace.gateResolvedState = String(recoveredGateState?.state || '');
               phaseTrace.gateResolvedReason = 'LOGIN_GATE_READY_AFTER_SIGNAL_RECOVERY';
               return {
@@ -955,7 +958,10 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
           if (typeof siteAdapter.openDreaminaLoginEntry === 'function' && typeof siteAdapter.confirmDreaminaLoginGate === 'function') {
             await siteAdapter.openDreaminaLoginEntry(page, runtime, context).catch(() => null);
             const postRecoveryOpenGateState = await siteAdapter.confirmDreaminaLoginGate(page, runtime, context).catch(() => null);
-            if (postRecoveryOpenGateState?.ok && postRecoveryOpenGateState?.state === 'EMAIL_GATE_READY') {
+            if (postRecoveryOpenGateState?.ok && (
+              postRecoveryOpenGateState?.state === 'EMAIL_GATE_READY'
+              || postRecoveryOpenGateState?.state === 'LOGIN_GATE_LAYER_READY'
+            )) {
               phaseTrace.gateResolvedState = String(postRecoveryOpenGateState?.state || '');
               phaseTrace.gateResolvedReason = 'LOGIN_GATE_READY_AFTER_RECOVERY_OPEN';
               return {
@@ -1031,7 +1037,10 @@ function buildDreaminaEntryStageAdapter(siteAdapter = {}, timelineAdapter = {}) 
             phaseTrace.finalGraceTriggered = true;
             phaseTrace.finalGraceMatched = Boolean(finalGraceResult?.ok);
             phaseTrace.finalGraceTrace = finalGraceResult?.trace || null;
-            if (finalGraceResult?.ok && finalGraceResult?.gateResult?.state === 'EMAIL_GATE_READY') {
+            if (finalGraceResult?.ok && (
+              finalGraceResult?.gateResult?.state === 'EMAIL_GATE_READY'
+              || finalGraceResult?.gateResult?.state === 'LOGIN_GATE_LAYER_READY'
+            )) {
               phaseTrace.gateResolvedState = String(finalGraceResult?.gateResult?.state || '');
               phaseTrace.gateResolvedReason = 'LOGIN_GATE_READY_AFTER_FINAL_GRACE';
               return {
