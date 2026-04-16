@@ -1,0 +1,251 @@
+{
+    "site":  "dreamina",
+    "stage":  "account-delivery",
+    "mode":  "minimal-delivery-with-session-seed",
+    "notes":  [
+                  "Current Dreamina account-delivery is still a minimal payload / bridge layer, but this first strengthened profile now seeds real session and workspace-oriented delivery signals learned from the legacy architecture.",
+                  "It currently focuses on structuring a deliverable object instead of asserting a fully mature external delivery contract.",
+                  "Long-term target is to add stronger delivery-ready, success, and failure signals, especially around session deliverables and post-register workspace confirmation.",
+                  "Compatibility note: existing deliveryReady/summarySignals/payloadRules fields are still kept for current adapter behavior; minimalDeliveryReady/minimalDeliveryContract/futureDeliveryContract express the more honest layered semantics."
+              ],
+    "deliveryReady":  {
+                          "selectors":  [
+                                            "a[href*='/ai-tool/home']",
+                                            "a[href*='/ai-tool/workspace']",
+                                            "a[href*='/workspace']",
+                                            "a[href*='/home']",
+                                            "button[aria-label*='Avatar']",
+                                            "[data-testid*='avatar']"
+                                        ],
+                          "workspaceSelectors":  [
+                                                   "a[href*='/ai-tool/home']",
+                                                   "a[href*='/ai-tool/workspace']",
+                                                   "a[href*='/workspace']",
+                                                   "a[href*='/home']"
+                                               ],
+                          "texts":  [
+                                        "Workspace",
+                                        "Home",
+                                        "Explore",
+                                        "Create",
+                                        "Assets",
+                                        "AI Agent",
+                                        "AI Image",
+                                        "AI Video",
+                                        "Avatar",
+                                        "Canvas"
+                                    ],
+                          "workspaceTexts":  [
+                                                "Explore",
+                                                "Create",
+                                                "Assets",
+                                                "AI Agent",
+                                                "AI Image",
+                                                "AI Video"
+                                            ],
+                          "urlIncludes":  [
+                                              "/app",
+                                              "/workspace",
+                                              "/home"
+                                          ]
+                      },
+    "summarySignals":  {
+                           "accountFields":  [
+                                                 "email"
+                                             ],
+                           "sessionKeys":  [
+                                               "sessionid"
+                                           ],
+                           "softSessionKeys":  [
+                                                   "msToken",
+                                                   "ttwid",
+                                                   "passport_csrf_token",
+                                                   "passport_csrf_token_default",
+                                                   "s_v_web_id"
+                                               ],
+                           "uiSignals":  [
+                                             "Workspace",
+                                             "Home",
+                                             "Explore",
+                                             "Create",
+                                             "Assets",
+                                             "AI Agent",
+                                             "AI Image",
+                                             "AI Video",
+                                             "Avatar",
+                                             "Canvas"
+                                         ]
+                       },
+    "payloadRules":  {
+                         "requiredFields":  [
+                                                "email"
+                                            ],
+                         "optionalFields":  [
+                                                "password"
+                                            ]
+                     },
+    "successSignals":  {
+                           "selectors":  [
+                                             "a[href*='/ai-tool/home']",
+                                             "a[href*='/ai-tool/workspace']",
+                                             "a[href*='/workspace']",
+                                             "a[href*='/home']",
+                                             "button[aria-label*='Avatar']",
+                                             "[data-testid*='avatar']"
+                                         ],
+                           "workspaceSelectors":  [
+                                                      "a[href*='/ai-tool/home']",
+                                                      "a[href*='/ai-tool/workspace']",
+                                                      "a[href*='/workspace']",
+                                                      "a[href*='/home']"
+                                                  ],
+                           "texts":  [
+                                         "Workspace",
+                                         "Home",
+                                         "Explore",
+                                         "Create",
+                                         "Assets",
+                                         "AI Agent",
+                                         "AI Image",
+                                         "AI Video",
+                                         "Canvas",
+                                         "Avatar"
+                                     ],
+                           "workspaceTexts":  [
+                                                   "Explore",
+                                                   "Create",
+                                                   "Assets",
+                                                   "AI Agent",
+                                                   "AI Image",
+                                                   "AI Video"
+                                               ],
+                           "textTiers":  {
+                                              "strong":  [
+                                                             "Workspace",
+                                                             "Home",
+                                                             "Explore",
+                                                             "Create",
+                                                             "Assets",
+                                                             "AI Agent",
+                                                             "AI Image",
+                                                             "AI Video"
+                                                         ],
+                                              "medium":  [
+                                                             "Canvas"
+                                                         ],
+                                              "risky":  [
+                                                            "Avatar"
+                                                        ]
+                                          }
+                       },
+    "failureSignals":  {
+                           "selectors":  [
+
+                                         ],
+                           "texts":  [
+
+                                     ]
+                       },
+    "minimalDeliveryReady":  {
+                                 "accountFields":  [
+                                                       "email"
+                                                   ],
+                                 "weakSupport":  {
+                                                     "urlIncludes":  [
+                                                                         "/app",
+                                                                         "/workspace",
+                                                                         "/home"
+                                                                     ]
+                                                 }
+                             },
+    "minimalDeliveryContract":  {
+                                    "requiredFields":  [
+                                                           "email"
+                                                       ],
+                                    "optionalFields":  [
+                                                           "password"
+                                                       ]
+                                },
+    "futureDeliveryContract":  {
+                                   "sessionKeys":  [
+                                                       "sessionid"
+                                                   ],
+                                   "softSessionKeys":  [
+                                                           "msToken",
+                                                           "ttwid",
+                                                           "passport_csrf_token",
+                                                           "passport_csrf_token_default",
+                                                           "s_v_web_id"
+                                                       ],
+                                   "uiSignals":  [
+                                                     "Workspace",
+                                                     "Home",
+                                                     "Explore",
+                                                     "Create",
+                                                     "Assets",
+                                                     "AI Agent",
+                                                     "AI Image",
+                                                     "AI Video",
+                                                     "Avatar",
+                                                     "Canvas"
+                                                 ],
+                                   "successSignals":  {
+                                                          "selectors":  [
+                                                                            "a[href*='/ai-tool/home']",
+                                                                            "a[href*='/ai-tool/workspace']",
+                                                                            "a[href*='/workspace']",
+                                                                            "a[href*='/home']",
+                                                                            "button[aria-label*='Avatar']",
+                                                                            "[data-testid*='avatar']"
+                                                                        ],
+                                                          "texts":  [
+                                                                        "Workspace",
+                                                                        "Home",
+                                                                        "Canvas",
+                                                                        "Avatar"
+                                                                    ],
+                                                          "textTiers":  {
+                                                                             "strong":  [
+                                                                                            "Workspace",
+                                                                                            "Home"
+                                                                                        ],
+                                                                             "medium":  [
+                                                                                            "Canvas"
+                                                                                        ],
+                                                                             "risky":  [
+                                                                                           "Avatar"
+                                                                                       ]
+                                                                         }
+                                                      },
+                                   "failureSignals":  {
+                                                          "selectors":  [
+
+                                                                        ],
+                                                          "texts":  [
+
+                                                                    ]
+                                                      }
+                               },
+    "legacyExperienceTranslation":  {
+                                         "sessionEvidence":  {
+                                                                 "primaryCookieKey":  "sessionid",
+                                                                 "cookieDomainHint":  [
+                                                                                          "dreamina.capcut.com",
+                                                                                          ".capcut.com",
+                                                                                          "*.capcut.com"
+                                                                                      ],
+                                                                 "notes":  [
+                                                                               "Legacy flow treated Dreamina/CapCut-domain sessionid as the main deliverable session signal.",
+                                                                               "Delivery should eventually move from payload-only success to payload plus session/storage deliverable success."
+                                                                           ]
+                                                             },
+                                         "postRegisterReady":  {
+                                                                   "carryIntoDeliveryReady":  true,
+                                                                   "carryIntoSuccessSignals":  true,
+                                                                   "notes":  [
+                                                                                 "Legacy flow explicitly waited for post-register home/workspace ready signals before treating the account as truly usable.",
+                                                                                 "This first seeded selector/text set should be refined with future successful-run evidence."
+                                                                             ]
+                                                               }
+                                     }
+}

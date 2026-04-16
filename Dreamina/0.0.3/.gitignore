@@ -1,0 +1,16 @@
+# ── 账号 / 认证数据（绝不提交）────────────────────────────────────────────────
+registered-accounts.json
+local-accounts.json
+local-proxies.txt
+proxy-health-store.json
+
+# ── 运行时产出数据（体积大，与代码无关）────────────────────────────────────────
+batch-results/
+session-records/
+
+# ── 调试 / 临时文件 ────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.new
+*.py

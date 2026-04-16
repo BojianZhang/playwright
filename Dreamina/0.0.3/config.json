@@ -1,0 +1,81 @@
+{
+  "_comment": "Dreamina/0.0.3 运行时统一配置文件。所有参数均可被 CLI 参数覆盖（CLI > config.json > 代码默认值）。字段说明见各节 _comment。",
+  "runMode": "run",
+
+  "firstmail": {
+    "_comment": "Firstmail API 鉴权与邮件扫描行为配置",
+    "apiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
+    "apiBaseUrl": "https://firstmail.ltd",
+    "apiTimeoutMs": 30000,
+    "recentMessageScanLimit": 8,
+    "pollJitterMinMs": 0,
+    "pollJitterMaxMs": 500,
+    "acceptOlderThanTriggerSkewMs": 15000,
+    "preferredSenderKeywords": ["Dreamina", "CapCut", "noreply"],
+    "subjectKeywords": ["verify", "verification", "code", "confirm"]
+  },
+
+  "browser": {
+    "_comment": "浏览器启动行为。headed/slowMo 可被 --headed / --slow-mo CLI 参数覆盖",
+    "headless": true,
+    "slowMo": 0,
+    "blockedResourceTypes": ["image", "media", "font"]
+  },
+
+  "proxy": {
+    "_comment": "代理管理策略",
+    "maxRetriesPerAccount": 2,
+    "evictOnHardFailure": true,
+    "connectivityTimeoutMs": 8000,
+    "primaryTargetTimeoutMs": 10000,
+    "secondaryTargetTimeoutMs": 8000,
+    "enableSecondaryTarget": true
+  },
+
+  "navigation": {
+    "_comment": "页面导航超时与等待参数。run 为生产模式，test 为调试模式（--mode test 时生效）",
+    "run": {
+      "entryGotoTimeoutMs": 120000,
+      "dreaminaNavigationTimeoutMs": 120000,
+      "firstLoadGraceWaitMs": 4000,
+      "postContinueWaitMs": 300,
+      "postOverlayWaitMs": 200,
+      "postSignEntryWaitMs": 400,
+      "postErrorRecoveryWaitMs": 800,
+      "humanPauseMinMs": 0,
+      "humanPauseMaxMs": 0
+    },
+    "test": {
+      "entryGotoTimeoutMs": 120000,
+      "dreaminaNavigationTimeoutMs": 120000,
+      "firstLoadGraceWaitMs": 12000,
+      "postContinueWaitMs": 3000,
+      "postOverlayWaitMs": 1500,
+      "postSignEntryWaitMs": 4000,
+      "postErrorRecoveryWaitMs": 4000,
+      "humanPauseMinMs": 800,
+      "humanPauseMaxMs": 1800
+    }
+  },
+
+  "verification": {
+    "_comment": "验证码阶段（S3）重试与等待参数。轮询次数/间隔可被 window-layout-profile.json 的 verificationBudgetByConcurrency 按并发量覆盖",
+    "retryMaxAttempts": 3,
+    "resendWaitMs": 1800,
+    "countdownWaitMs": 12000
+  },
+
+  "credential": {
+    "_comment": "凭据提交阶段（S2）行为参数",
+    "signupSwitchWaitMs": 1200,
+    "skipExistsPrecheckAfterEmail": true
+  },
+
+  "batch": {
+    "_comment": "批量运行行为参数。concurrency 可被 --concurrency CLI 参数覆盖",
+    "concurrency": 2,
+    "workerStatusIntervalMs": 10000,
+    "ignoreKnownExists": false,
+    "proxySelectionPolicy": "fresh-batch-no-history"
+  }
+}

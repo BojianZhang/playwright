@@ -1,0 +1,22 @@
+# bad-proxies.txt
+#
+# 文件定位：Dreamina/0.0.3/S0-proxy-precheck/data/bad-proxies.txt
+#
+# 用途说明：
+#   记录在批量运行中被判定为不可用的代理条目（硬封禁）。
+#   Dreamina-batch-runner.js 在每次批量启动时读取此文件，
+#   跳过已列入黑名单的代理，避免重复使用已知失效的代理资源。
+#
+# 字段格式（每行一条）：
+#   host:port:username:password
+#   例：gate.ipfoxy.io:58688:customer-xxx-cc-CA-sessid-yyy:Password123
+#
+# 写入时机：
+#   代理预检（S0-proxy-precheck）探测失败且失败类型为硬失败
+#   （如 DREAMINA_PROXY_CONNECTIVITY_FAILED）时自动追加。
+#
+# 清理策略：
+#   可按需手动清空或轮换代理账户后清除，
+#   框架本身不自动清理此文件（避免误删可用记录）。
+#
+gate.ipfoxy.io:58688:customer-XuCgvFdVQs-cc-CA-sessid-1775985246_10070:YBZrZzwysyHH7GU
