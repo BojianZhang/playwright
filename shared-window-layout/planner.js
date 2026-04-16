@@ -1,7 +1,25 @@
 'use strict';
 
+// ═══════════════════════════════════════════════════════════════════════
+// 框架层（FRAMEWORK LAYER）— shared-window-layout
+//
+// 文件定位：shared-window-layout/planner.js
+//
+// 边界说明（BOUNDARY）：
+// ✅ 负责 —— 核心调度逻辑计算窗口位置排布算法（Grid/Focus模式），并提供最佳实践 Preset 缩放比。
+// ❌ 不负责 —— 文件 IO 读取 Profile，配置解析等功能 (由 profile-loader 负责)。
+// ❌ 不负责 —— 和系统或 Playwright Launcher 的实际交互工作。
+// ═══════════════════════════════════════════════════════════════════════
+
 const { readLayoutProfile, resolveLayoutProfilePath } = require('./profile-loader');
 
+/**
+ * 为特定的并发场景挑选最匹配的 Preset 布局档位。
+ * 
+ * @param {object} [presets={}]
+ * @param {number} [concurrency=1]
+ * @returns {object|null}
+ */
 function pickPreset(presets = {}, concurrency = 1) {
   const target = Math.max(1, Number(concurrency) || 1);
   if (presets[String(target)]) return presets[String(target)];
@@ -22,6 +40,13 @@ function pickPreset(presets = {}, concurrency = 1) {
   return presets[String(winner)] || null;
 }
 
+/**
+ * 计算后备或回退 Preset 布局属性。
+ *
+ * @param {number} concurrency
+ * @param {object} [defaults={}]
+ * @returns {object} fallback preset
+ */
 function buildFallbackPreset(concurrency, defaults = {}) {
   const target = Math.max(1, Number(concurrency) || 1);
   const maxAutoColumns = Math.max(1, Number(defaults.maxAutoColumns || 5));
@@ -38,12 +63,29 @@ function buildFallbackPreset(concurrency, defaults = {}) {
   };
 }
 
+/**
+ * 提取并返回用于渲染分析的 Presets。
+ *
+ * @param {object} [options={}]
+ * @returns {object}
+ */
 function resolveLayoutPreset({ concurrency = 1, profile = null } = {}) {
   const defaults = profile?.defaults || {};
   const presets = profile?.presets || {};
   return pickPreset(presets, concurrency) || buildFallbackPreset(concurrency, defaults);
 }
 
+/**
+ * 根据外部环境计算当前特定 WorkerId 进程被分配渲染所需的 Layout 定位信息 (宽高, x/y偏移).
+ *
+ * 字段说明（输出）:
+ * - x: 起始距屏基点横坐
+ * - y: 起始距屏基点纵坐
+ * - width / height: UI窗口缩放前的基准大小
+ *
+ * @param {object} [options={}]
+ * @returns {object} layout instance with x,y coords
+ */
 function computeWorkerWindowLayout(options = {}) {
   const {
     workerId = 1,
@@ -109,6 +151,12 @@ function computeWorkerWindowLayout(options = {}) {
   };
 }
 
+/**
+ * 对外开放的 Layout 初始化暴露接口。
+ *
+ * @param {object} [options={}]
+ * @returns {object} { profilePath, profile, resolve: func }
+ */
 function createWindowLayoutPlanner(options = {}) {
   const profilePath = resolveLayoutProfilePath(options.profilePath);
   const profile = readLayoutProfile(profilePath) || {};

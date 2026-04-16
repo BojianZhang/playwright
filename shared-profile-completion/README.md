@@ -1,76 +1,28 @@
-# shared-profile-completion
+﻿# shared-profile-completion
 
-这个包负责：
-**阶段 4：profile completion submit**。
+框架层 | S4 资料完善阶段调度器
 
-也就是：
-- 在页面已经进入 birthday / profile-completion 上下文后
-- 等待资料补全面板 ready
-- 生成资料填写计划
-- 填写 birthday / 基础资料项
-- 点击 next / submit
-- 判断提交后的即时结果
-- 成功时只确认进入下一阶段 `post-auth-ready`
+## 职责
 
----
+| 负责 | 不负责 |
+|------|--------|
+| 资料完善阶段的入参校验、重试调度、耗时统计 | Dreamina 专属选择器与用户名/生日填写（→ Dreamina/0.0.3/S4-profile-completion）|
+| 将 adapter 返回值归一化为标准 StageResult | 生日逻辑计算（→ shared-utils/birthday.js）|
+| 统一的日志格式化输出 | 其他阶段 |
 
-# 边界
+## 目录结构
 
-## 阶段输入
-- `browser / context / page` 已创建
-- 当前页面已经进入 birthday / profile-completion 所在上下文
-- 上一阶段（verification submit）已经成功
-- 账号信息与站点 runtime 已由上层准备好
+```
+shared-profile-completion/
+├── README.md
+└── profile-completion-submit.js  ← 阶段调度主链（runProfileCompletionSubmitStage）
+```
 
-## 负责什么
-- profile-completion ready 判断
-- 资料填写计划生成
-- birthday / 基础资料项填写
-- next / submit 触发
-- 提交后成功/失败/下一阶段确认
-- 各站点在阶段 4 的适配与配置
-- 成功时输出 `nextStage=post-auth-ready`
+## Dreamina 运行内容
 
-## 不负责什么
-- 首页打开
-- 登录入口切换
-- credential submit
-- verification submit
-- post-auth-ready 最终确认
-- session / storage 持久化
-- browser/context 创建
-- runner 层代理调度、重试、结果落盘
-
----
-
-# 当前状态（Dreamina）
-
-- Dreamina profile-completion 当前默认主路径为 `fillDreaminaBirthdayContinuousFlow`
-- birthday 采用连续业务流：`Year -> Month -> Day -> Next`
-- 当前不再推荐以 Month/Day 的字段即时读取结果作为主成功判定
-- split fill 路径当前保留作 fallback / diagnostics
-- 当前 `continuous-flow` 承担 Dreamina birthday 阶段的 `Next` 点击责任
-
----
-
-# 结构
-
-- `stages/profile-completion-submit.js`
-  - 阶段 4 公共骨架
-- `dreamina/profile-completion-adapter.js`
-  - Dreamina 阶段 4 适配层
-- `dreamina/profiles/*`
-  - Dreamina 阶段 4 配置与文档
-- `dreamina/log/*`
-  - 阶段 4 日志模板与判读示例
-
----
-
-# 设计原则
-
-- 公共层只写阶段流程骨架
-- 站点差异放 adapter
-- 静态规则放 profile
-- 日志判读单独文档化
-- 第四阶段的成功定义不是“整个注册完成”，而是“资料补全完成并推进到 post-auth-ready”
-- Dreamina 当前以参考脚本的连续业务流优先，而不是字段级强判定优先
+Dreamina 专属的 adapter + profiles 已迁至：
+```
+Dreamina/0.0.3/S4-profile-completion/
+├── profile-completion-adapter.js
+└── profiles/
+```

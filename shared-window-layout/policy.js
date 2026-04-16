@@ -1,5 +1,24 @@
 'use strict';
 
+// ═══════════════════════════════════════════════════════════════════════
+// 框架层（FRAMEWORK LAYER）— shared-window-layout
+//
+// 文件定位：shared-window-layout/policy.js
+//
+// 边界说明（BOUNDARY）：
+// ✅ 负责 —— 按并发数量计算不同的重试策略与代理轮换等 Policy。
+// ❌ 不负责 —— 页面 UI 位置渲染计算等布局管理。
+// ❌ 不负责 —— 实际的 API 请求处理和代理调度机制。
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 按并发规模智能解析策略。如果找不到 exact key，将自动降级选用合适的范围策略或默认 fallback。
+ *
+ * @param {object} [table={}]
+ * @param {number} [concurrency=1]
+ * @param {object} [fallback={}]
+ * @returns {object}
+ */
 function resolvePolicyByConcurrency(table = {}, concurrency = 1, fallback = {}) {
   const target = Math.max(1, Number(concurrency) || 1);
   const defaultPolicy = table.default && typeof table.default === 'object' ? table.default : fallback;
@@ -25,6 +44,13 @@ function resolvePolicyByConcurrency(table = {}, concurrency = 1, fallback = {}) 
   };
 }
 
+/**
+ * 解析并生成 Firstmail / API 操作预算与延时策略。
+ *
+ * @param {object|null} [profile=null]
+ * @param {number} [concurrency=1]
+ * @returns {object}
+ */
 function resolveVerificationBudget(profile = null, concurrency = 1) {
   const table = profile?.verificationBudgetByConcurrency || {};
   const fallback = {
@@ -43,6 +69,13 @@ function resolveVerificationBudget(profile = null, concurrency = 1) {
   };
 }
 
+/**
+ * 解析并生成本地代理策略与探活阈值。
+ *
+ * @param {object|null} [profile=null]
+ * @param {number} [concurrency=1]
+ * @returns {object}
+ */
 function resolveProxyPolicy(profile = null, concurrency = 1) {
   const table = profile?.proxyPolicyByConcurrency || {};
   const fallback = {

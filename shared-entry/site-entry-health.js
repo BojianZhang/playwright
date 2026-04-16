@@ -1,29 +1,27 @@
 'use strict';
 
-/**
- * site-entry-health.js
- *
- * 这个文件的唯一边界：
- * 负责“某个站点入口页/首页是否已经成功加载到可操作状态”的公共编排。
- *
- * 它做的事情：
- * 1. 打开首页
- * 2. reload / retry
- * 3. 判断白屏
- * 4. 判断死页
- * 5. 判断 ready 信号
- * 6. 处理入口页级别的 overlay
- * 7. 在 page/context 损坏时决定是否应该重建 page
- *
- * 它不做的事情：
- * 1. 不负责 browser / context 的创建
- * 2. 不负责代理池选择与淘汰
- * 3. 不负责登录后业务流
- * 4. 不负责注册后续动作（邮箱、验证码、生日、session 等）
- */
+// ═══════════════════════════════════════════════════════════════════════
+// 框架层（FRAMEWORK LAYER）— shared-entry
+//
+// 文件定位：shared-entry/site-entry-health.js
+//
+// 边界说明（BOUNDARY）：
+// ✅ 负责 —— 通用站点入口页健康检查骨架（白屏检测 / 死页检测 / ready 信号确认）。
+// ✅ 负责 —— 入口页打开重试主循环（goto / reload / page recreate 决策）。
+// ✅ 负责 —— overlay 预处理、ready 信号等待、失败分类的 adapter 调用入口。
+// ✅ 负责 —— 将多次重试结果收口为统一的 SiteEntryResult 结构。
+// ❌ 不负责 —— browser / context / page 的创建（由 shared-browser-runtime 负责）。
+// ❌ 不负责 —— 代理池选择与淘汰（由 Dreamina-batch-runner / register 负责）。
+// ❌ 不负责 —— 登录后业务流（credential / verification / profile 等属于后续 stage）。
+// ❌ 不负责 —— 任何 Dreamina 专属逻辑（通过 adapter 注入，不硬编码）。
+//
+// 调用方：shared-entry/entry.js → runEntryStage()
+// 依赖 adapter：Dreamina/0.0.3/S1-entry/adapter.js（通过参数注入或 resolveSiteAdapter）
+// ═══════════════════════════════════════════════════════════════════════
 
 const path = require('path');
-const dreaminaAdapter = require('./dreamina/adapter');
+// Dreamina 默认 adapter（已迁至 Dreamina/0.0.3/S1-entry/adapter.js）
+const dreaminaAdapter = require('../Dreamina/0.0.3/S1-entry/adapter');
 
 /**
  * 统一读取运行模式。
