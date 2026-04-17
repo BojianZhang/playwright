@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /**
  * Dreamina-batch-runner.js
@@ -50,8 +50,17 @@ const {
   syncWorkerSnapshot,
   buildWorkerOverviewPanel,
 } = require('../../shared-utils/worker-status-tracker');
-const { runBatchOrchestration, createProxyLockSet } = require('../../shared-batch-orchestration');
-const { isProxyHardFailure, isBusinessFailure, classifyFailure } = require('./failure-classifier');
+const { runBatchOrchestration, createProxyLockSet, createMutex } = require('../../shared-batch-orchestration');
+const { isProxyHardFailure, isBusinessFailure, classifyFailure, createFailureClassifier } = require('./failure-classifier');
+const { diagnoseConfigFile } = require('../../shared-utils/config-doctor');  // Step2: config preflight
+const _fileUtils = require('../../shared-utils/file-utils');  // Step3: shared file utilities (ensureDir/sanitizeFileName/readJsonArrayFile etc.)
+
+// ─── GAP-1 修复：账号池文件写入互斥锁 ───────────────────────────────────────
+// 保护 local-accounts.json / registered-accounts.json / registered-accounts.json 并发覆写安全。
+// 源样本： v0.0.2/runner.js:L614-615 的 withFileLock mutex。
+// 所有对以上三个文件的 writeFile 覆写操作必须通过此锁序列化。
+const withPoolFileLock = createMutex();
+
 
 // ─── Config 加载 ───────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -59,6 +68,14 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 /**
  * 读取 config.json，合并 CLI 覆盖项。
  * 优先级：CLI 参数 > config.json > 代码默认值
+ *
+ * 返回节说明：
+ *   navigation.run / .test  → 按运行模式选取的页面超时/等待参数
+ *   firstmail               → Firstmail API 鉴权与行为参数
+ *   verification            → 验证码阶段参数（可被 window-layout-profile 并发档覆盖）
+ *   credential              → 凭据提交阶段参数
+ *   proxy / browser / batch → 同原有语义
+ *
  * @param {object} [cliOverrides={}]
  * @returns {object}
  */
@@ -72,10 +89,25 @@ function loadBatchConfig(cliOverrides = {}) {
     if (cliOverrides.slowMo != null) clean.browser.slowMo = Number(cliOverrides.slowMo);
     if (cliOverrides.concurrency != null) clean.batch.concurrency = Number(cliOverrides.concurrency);
     if (cliOverrides.ignoreKnownExists != null) clean.batch.ignoreKnownExists = Boolean(cliOverrides.ignoreKnownExists);
+
+    // 保证各节在返回值中始终存在，避免下游 ?. 链条过长
+    if (!clean.navigation) clean.navigation = {};
+    if (!clean.navigation.run) clean.navigation.run = {};
+    if (!clean.navigation.test) clean.navigation.test = {};
+    if (!clean.firstmail) clean.firstmail = {};
+    if (!clean.verification) clean.verification = {};
+    if (!clean.credential) clean.credential = {};
+    if (!clean.proxy) clean.proxy = {};
+    if (!clean.failureClassifier) clean.failureClassifier = {};
+    if (!clean.noProxyPolicy) clean.noProxyPolicy = {};
+
     return clean;
   } catch (e) {
     console.warn(`[Config] config.json 读取失败，使用内置默认值: ${e.message}`);
-    return {};
+    return {
+      browser: {}, batch: {}, proxy: {}, firstmail: {},
+      navigation: { run: {}, test: {} }, verification: {}, credential: {},
+    };
   }
 }
 
@@ -96,6 +128,7 @@ function loadProxies() {
 }
 const { createWindowLayoutPlanner, resolveVerificationBudget, resolveProxyPolicy } = require('../../shared-window-layout');
 
+// @shared-utils: _fileUtils.ensureDir — 待 Step3 调用点替换后清理
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -107,14 +140,23 @@ async function resetFile(filePath) {
   await fs.promises.writeFile(filePath, '', 'utf8');
 }
 
-const KNOWN_EXISTS_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-exists.json');
-const KNOWN_REGISTERED_FILE = path.join(__dirname, 'batch-results', 'latest', 'dreamina-known-registered.json');
-const LOCAL_ACCOUNTS_FILE = path.join(__dirname, 'local-accounts.json');
-const REGISTERED_ACCOUNTS_FILE = path.join(__dirname, 'registered-accounts.json');
+// known-exists 缓存：记录已注册或已存在账号邮箱列表，供批量启动时快速跳过
+// 语义属于账号状态管理（跨批次持久化），迁入 account-state/ 统一管理
+const KNOWN_EXISTS_FILE = path.join(__dirname, 'account-state', 'known-accounts.json');
+const KNOWN_REGISTERED_FILE = path.join(__dirname, 'account-state', 'known-accounts.json'); // 与 KNOWN_EXISTS_FILE 合并为同一文件
+// ── 账号状态文件（account-state/ 目录，长期跨批次持久化）────────────────────
+const ACCOUNT_STATE_DIR = path.join(__dirname, 'account-state');
+const LOCAL_ACCOUNTS_FILE = path.join(ACCOUNT_STATE_DIR, 'local-accounts.json');
+const REGISTERED_ACCOUNTS_FILE = path.join(ACCOUNT_STATE_DIR, 'registered-accounts.json');
+// 黑名单：硬失败，不再重试（SIGNUP_REJECTED / IP_BANNED / VERIFICATION_RATE_LIMITED 等）
+const BLACKLISTED_ACCOUNTS_FILE = path.join(ACCOUNT_STATE_DIR, 'blacklisted-accounts.json');
+// 软失败：偶发网络/代理/页面环境失败，可重新加入 local-accounts.json 重试
+const RETRY_ACCOUNTS_FILE = path.join(ACCOUNT_STATE_DIR, 'retry-accounts.json');
 const SESSION_RECORDS_DIR = path.join(__dirname, 'session-records');
 const SESSION_RECORDS_LATEST_TXT = path.join(SESSION_RECORDS_DIR, 'latest.txt');
 const SESSION_RECORDS_LATEST_JSONL = path.join(SESSION_RECORDS_DIR, 'latest.jsonl');
 
+// @shared-utils: _fileUtils.sanitizeFileName — 待 Step3 调用点替换后清理
 function sanitizeFileName(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -136,6 +178,7 @@ function parseBatchCliArgs(argv = []) {
     proxyStart: 0,
     headed: false,
     slowMo: 0,
+    ignoreDone: false,
     ignoreKnownExists: false,
   };
 
@@ -180,6 +223,10 @@ function parseBatchCliArgs(argv = []) {
       parsed.ignoreKnownExists = true;
       continue;
     }
+
+    if (token === '--ignore-done') {
+      parsed.ignoreDone = true;
+    }
   }
 
   parsed.concurrency = Math.max(1, Number.isFinite(parsed.concurrency) ? parsed.concurrency : 1);
@@ -201,6 +248,14 @@ function selectBatchAccounts(accounts = [], options = {}) {
   return list.slice(start, start + limit);
 }
 
+/**
+ * 启动前将已知已注册账号从本地账号池移除（防止重复注册）。
+ *
+ * 边界说明（待演进项 D2）：
+ *   本函数属于“账号状态管理”领域逻辑，不属于批量调度层。
+ *   计划当 account-pool-manager.js 建立后将该函数迁入其中。
+ * @todo 迁入 account-pool-manager.js
+ */
 async function pruneKnownRegisteredFromLocalPool(knownExistsAccounts = new Set()) {
   if (!(knownExistsAccounts instanceof Set) || !knownExistsAccounts.size) {
     return {
@@ -220,7 +275,7 @@ async function pruneKnownRegisteredFromLocalPool(knownExistsAccounts = new Set()
   });
 
   if (removedEmails.length > 0) {
-    await fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(remainingAccounts, null, 2)}\n`, 'utf8');
+    await withPoolFileLock(async () => fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(remainingAccounts, null, 2)}\n`, 'utf8'));
   }
 
   return {
@@ -249,18 +304,98 @@ function getProxySelectionTier(proxy = {}) {
   return 0;
 }
 
+/**
+ * EVO-8（v0.0.2 继承）：将代理 healthScore 映射为速度档枚举。
+ *
+ * 枚举值：FAST / NORMAL / SLOW / UNKNOWN
+ * 阈值（来自设计收敛决策，2026-04-17）：
+ *   FAST   → healthScore >= 75
+ *   NORMAL → healthScore >= 40 && < 75
+ *   SLOW   → healthScore < 40
+ *   UNKNOWN→ 无 healthRecord 或 healthScore 为 0 且从未预检
+ *
+ * @param {object} proxy       - 代理对象（含 lastProxyPrecheckSummary）
+ * @param {object} healthRecord - proxy-health-store 的记录（可为 null/undefined）
+ * @returns {"FAST"|"NORMAL"|"SLOW"|"UNKNOWN"}
+ */
+function getProxySpeedTier(proxy, healthRecord) {
+  const score = Number(healthRecord && healthRecord.healthScore || 0);
+  const hasPrecheckRecord = Boolean(
+    (proxy && proxy.lastProxyPrecheckSummary && proxy.lastProxyPrecheckSummary.proxyGrade) ||
+    (healthRecord && (healthRecord.recentSuccessCount || healthRecord.recentFailureCount || healthRecord.proxyGrade))
+  );
+  if (!hasPrecheckRecord) return 'UNKNOWN';
+  if (score >= 75) return 'FAST';
+  if (score >= 40) return 'NORMAL';
+  return 'SLOW';
+}
 function acquireNextProxy(batchContext) {
   const list = batchContext?.proxies?.list || [];
   if (!list.length) return null;
 
   const records = batchContext?.proxies?.healthStore?.records || {};
-  const activeList = list.filter(proxy => {
-    const proxyKey = proxy?.proxyKey || '';
-    const record = proxyKey ? records[proxyKey] : null;
-    return !isProxyHardBlocked(record || {});
-  });
-  if (!activeList.length) return null;
+  const lockSet = batchContext?.proxies?.lockSet || null;
 
+  // EVO-8: speedTierFilter 配置（默认全放行 FAST+NORMAL+SLOW+UNKNOWN）
+  const _allowedTiers = (batchContext && batchContext.rawConfig &&
+    batchContext.rawConfig.proxyHealthPool &&
+    Array.isArray(batchContext.rawConfig.proxyHealthPool.speedTierFilter) &&
+    batchContext.rawConfig.proxyHealthPool.speedTierFilter.length > 0
+    ? batchContext.rawConfig.proxyHealthPool.speedTierFilter
+    : ['FAST', 'NORMAL', 'SLOW', 'UNKNOWN'] // EVO-8 默认：全放行，防止初次运行代理被清空
+  ).map(function(t) { return String(t).toUpperCase(); });
+
+  // EVO-8: 基础过滤（硬封禁 + 独占锁 + speedTier）
+  function _buildActiveList(tiers) {
+    return list.filter(function(proxy) {
+      const proxyKey = proxy && proxy.proxyKey || '';
+      const record = proxyKey ? records[proxyKey] : null;
+      if (isProxyHardBlocked(record || {})) return false;
+      if (lockSet && lockSet.isLocked(proxyKey)) return false;  // 已被其他 Worker 独占
+      const speedTier = getProxySpeedTier(proxy, record);
+      return tiers.includes(speedTier);  // EVO-8: 速度档过滤
+    });
+  }
+
+  let activeList = _buildActiveList(_allowedTiers);
+
+  // EVO-5: DEGRADED_RUN weak pool fallback
+  // 当 ok pool 在当前 speedTierFilter 下耗尽时，若 fallbackToWeakPool=true 则放宽到全放行
+  if (!activeList.length) {
+    const _fallbackEnabled = Boolean(
+      batchContext && batchContext.rawConfig &&
+      batchContext.rawConfig.proxyHealthPool &&
+      batchContext.rawConfig.proxyHealthPool.fallbackToWeakPool
+    );
+    if (_fallbackEnabled && JSON.stringify(_allowedTiers) !== JSON.stringify(['FAST','NORMAL','SLOW','UNKNOWN'])) {
+      // 放宽过滤：只保留 blocked 和 lock 限制，忽略 speedTierFilter
+      activeList = _buildActiveList(['FAST', 'NORMAL', 'SLOW', 'UNKNOWN']);
+      if (activeList.length > 0) {
+        // EVO-5: 激活或保持 DEGRADED_RUN 模式
+        if (batchContext._runMode !== 'DEGRADED') {
+          batchContext._runMode = 'DEGRADED';
+          const _degradedMsg = '[Dreamina Batch] === DEGRADED_RUN ACTIVATED | reason=speed-filter-exhausted' +
+            ' | weakPoolSize=' + activeList.length + ' | allowedTiers=' + JSON.stringify(_allowedTiers) + ' ===';
+          console.warn(_degradedMsg);
+          // EVO-5: 写 run-log.txt（fire-and-forget）
+          if (batchContext.paths && batchContext.paths.runLogFile) {
+            fs.promises.appendFile(batchContext.paths.runLogFile,
+              _degradedMsg + ' ' + new Date().toISOString() + '\n', 'utf8'
+            ).catch(function() {});
+          }
+        }
+      }
+    }
+    if (!activeList.length) return null;  // ok pool + weak pool 均耗尽
+  } else {
+    // EVO-5: ok pool 有代理，若之前处于 DEGRADED 则退出
+    if (batchContext._runMode === 'DEGRADED') {
+      batchContext._runMode = 'NORMAL';
+      console.log('[Dreamina Batch] DEGRADED_RUN RECOVERED | ok pool restored, size=' + activeList.length);
+    }
+  }
+
+  // 选优先级（沿用 getProxySelectionTier 排序逻辑）
   const preferred = [];
   const fallback = [];
   for (const proxy of activeList) {
@@ -273,6 +408,10 @@ function acquireNextProxy(batchContext) {
   const cursor = batchContext.proxies.cursor % sourceList.length;
   const proxy = sourceList[cursor] || null;
   batchContext.proxies.cursor = (cursor + 1) % sourceList.length;
+  if (proxy && lockSet) {
+    const acquired = lockSet.tryAcquire(proxy.proxyKey || '');
+    if (!acquired) return null;  // 冗余防御：独占锁竞态
+  }
   return proxy;
 }
 
@@ -312,6 +451,14 @@ function readKnownExistsAccounts() {
   }
 }
 
+/**
+ * 将 knownExistsAccounts 集合持久化到磁盘（registered-accounts.json）。
+ *
+ * 边界说明（待演进项 D2）：
+ *   本函数属于“账号状态管理”领域逻辑，不属于批量调度层。
+ *   计划当 account-pool-manager.js 建立后将该函数迁入其中。
+ * @todo 迁入 account-pool-manager.js
+ */
 async function writeKnownExistsAccounts(batchContext) {
   const accounts = Array.from(batchContext.knownExistsAccounts || []).sort();
   const payload = {
@@ -323,8 +470,10 @@ async function writeKnownExistsAccounts(batchContext) {
     accounts,
   };
   const content = JSON.stringify(payload, null, 2);
-  await fs.promises.writeFile(KNOWN_EXISTS_FILE, content, 'utf8');
-  await fs.promises.writeFile(KNOWN_REGISTERED_FILE, content, 'utf8');
+  await withPoolFileLock(async () => {
+      await fs.promises.writeFile(KNOWN_EXISTS_FILE, content, 'utf8');
+      await fs.promises.writeFile(KNOWN_REGISTERED_FILE, content, 'utf8');
+  });
 }
 
 function buildKnownExistsSkipResult(account = {}, proxy = {}, reason = 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
@@ -347,6 +496,7 @@ function buildKnownExistsSkipResult(account = {}, proxy = {}, reason = 'KNOWN_EX
   };
 }
 
+// @shared-utils: _fileUtils.readJsonArrayFile — 待 Step3 调用点替换后清理
 function readJsonArrayFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return [];
@@ -382,6 +532,14 @@ async function appendUniqueFileLine(filePath, line) {
   return true;
 }
 
+/**
+ * 账号首次 session 记录写入履历档案（registered-accounts.json）。
+ *
+ * 边界说明（待演进项 D2）：
+ *   本函数属于“账号状态管理”领域逻辑，不属于批量调度层。
+ *   计划当 account-pool-manager.js 建立后将该函数迁入其中。
+ * @todo 迁入 account-pool-manager.js
+ */
 async function appendFirstSessionRecord(record = {}) {
   const sessionId = String(record?.sessionId || '').trim();
   const email = String(record?.email || '').trim();
@@ -418,6 +576,14 @@ async function appendFirstSessionRecord(record = {}) {
   };
 }
 
+/**
+ * 账号迁移逻辑：将已注册账号从本地池（local-accounts.json）迁出并写入履历档案（registered-accounts.json）。
+ *
+ * 边界说明（待演进项 D2）：
+ *   本函数属于“账号状态管理”领域逻辑，不属于批量调度层。
+ *   计划当 account-pool-manager.js 建立后将该函数迁入其中（低风险，当前仅注释标注）。
+ * @todo 迁入 account-pool-manager.js
+ */
 async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
   const normalizedEmail = String(account?.email || result?.account?.email || '').trim().toLowerCase();
   if (!normalizedEmail) return { removed: false, appended: false, reason: 'EMPTY_EMAIL' };
@@ -518,10 +684,10 @@ async function migrateAccountOutOfLocalPool(account = {}, result = {}) {
 
   const removed = nextLocalAccounts.length !== localAccounts.length;
   if (removed) {
-    await fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(nextLocalAccounts, null, 2)}\n`, 'utf8');
+    await withPoolFileLock(async () => fs.promises.writeFile(LOCAL_ACCOUNTS_FILE, `${JSON.stringify(nextLocalAccounts, null, 2)}\n`, 'utf8'));
   }
   if (appended || updated || firstSessionRecord.recorded) {
-    await fs.promises.writeFile(REGISTERED_ACCOUNTS_FILE, `${JSON.stringify(registeredAccounts, null, 2)}\n`, 'utf8');
+    await withPoolFileLock(async () => fs.promises.writeFile(REGISTERED_ACCOUNTS_FILE, `${JSON.stringify(registeredAccounts, null, 2)}\n`, 'utf8'));
   }
 
   return {
@@ -605,9 +771,11 @@ function createBatchRunContext(options = {}) {
       selectionPolicy: String(options.proxySelectionPolicy || 'fresh-batch-no-history'),
       healthStore: options.proxyHealthStore || { updatedAt: '', records: {} },
       healthPolicy: options.proxyHealthPolicy || { blockedCountries: [], blockedProviders: [], countryStats: {}, providerStats: {} },
+      lockSet: createProxyLockSet(),  // 代理独占锁：防止并发 Worker 同时持有同一条代理
     },
 
     knownExistsAccounts,
+    deferredAccounts: [],   // GAP-2: retry_then_defer 策略超限时的账号追踪列表
 
     summary: {
       successCount: 0,
@@ -619,6 +787,8 @@ function createBatchRunContext(options = {}) {
       retiredProxyKeys: [],
       retiredProxyReasonBuckets: {},
       failureReasonBuckets: {},
+      failureClassBuckets: {},    // GAP-3: proxy-hard/business/proxy-soft/unknown 分类桶（由 config-aware classifier 驱动）
+      failurePhaseBuckets: {},    // EXP-3: precheck/entry/credential/verification/general 阶段桶
       existsReasonBuckets: {},
       finalStageBuckets: {},
       slowestStageBuckets: {},
@@ -633,6 +803,20 @@ function createBatchRunContext(options = {}) {
       summaryFile: path.join(resultsDir, `${runId}.json`),
       latestSummaryFile: path.join(latestDir, 'dreamina-batch-latest.json'),
       indexFile: path.join(latestDir, 'dreamina-batch-index.json'),
+      deferredFile: path.join(latestDir, 'dreamina-batch-deferred.jsonl'),  // GAP-2: deferred accounts log
+      failureEventsFile: path.join(resultsDir, 'failure-events.jsonl'), // EXP-1: 结构化失败事件（v0.0.2 继承）
+      runLogFile: path.join(resultsDir, 'run-log.txt'), // EXP-2: 纯文本运行日志
+      // EXP-12（v0.0.2 继承）：按失败种类的独立结果文件，支持后续分组分析
+      globalDoneFile: path.join(__dirname, 'batch-results', 'accounts-done.txt'), // EVO-13: 跨批次断点续跑 done 文件（不含 runId）
+      accountsDoneFile: path.join(resultsDir, 'accounts-done.txt'), // EXP-13（v0.0.2继承）：已成功账号列表，支持断点续跑
+      perKindResultFiles: {
+        wrongCode: path.join(resultsDir, 'wrong-code.jsonl'),
+        signupRejected: path.join(resultsDir, 'signup-rejected.jsonl'),
+        verificationRateLimited: path.join(resultsDir, 'verification-rate-limited.jsonl'),
+        ipBanned: path.join(resultsDir, 'ip-banned.jsonl'),
+        proxyHardFailed: path.join(resultsDir, 'proxy-hard-failed.jsonl'),
+        successSessions: path.join(resultsDir, 'sessions-with-country.txt'), // EVO-23: countryCode-sessionId 格式，v0.0.2 继承
+      },
     },
   };
 }
@@ -678,6 +862,7 @@ function buildSlowestStageText(stageResults = {}) {
   return winner ? `${winner.label}=${winner.durationMs}ms${winner.state ? `(${winner.state})` : ''}` : '';
 }
 
+// @shared-utils: _fileUtils.buildNumericStats — 待 Step3 调用点替换后清理
 function buildNumericStats(values = []) {
   const list = (Array.isArray(values) ? values : []).map(item => Number(item)).filter(Number.isFinite);
   if (!list.length) {
@@ -812,6 +997,8 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
   return {
     account: result?.account?.email || extra?.account?.email || '',
     workerId: extra?.workerId || 0,
+    proxyExitIp: String(extra?.proxy?.exitIp || extra?.proxy?.resolvedExitIp || result?.meta?.exitIp || ''), // EXP-11: 代理出口IP（v0.0.2继承）
+    precheckLevel: String(result?.meta?.precheckLevel || extra?.precheckLevel || ''), // EXP-17: 预检等级（OK/WEAK/BAD），v0.0.2 继承
     proxyId: extra?.proxy?.id || summarizeProxy(extra?.proxy || {}).id || '',
     bucket: String(extra?.bucket || (result?.success ? 'success' : 'failed')),
     success: Boolean(result?.success),
@@ -837,6 +1024,7 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
   };
 }
 
+// @shared-utils: _fileUtils.incrementBucket — 待 Step3 调用点替换后清理
 function incrementBucket(target = {}, key = '') {
   const normalized = String(key || '').trim() || 'UNKNOWN';
   target[normalized] = Number(target[normalized] || 0) + 1;
@@ -846,6 +1034,14 @@ function incrementBucket(target = {}, key = '') {
  * 从单账号结果中抽批次级汇总字段。
  */
 
+/**
+ * 判断结果是否属于“账号已存在”类失败（用于 bucket 分类和账号迁移）。
+ *
+ * 与 failure-classifier.js 的关系：
+ *   - failure-classifier.isBusinessFailure() 覆盖更宽的业务失败枚举（含验证码、凭据等）。
+ *   - 本处仅关注“账号已存在”这一特定子集，驱动 existsCount 统计和账号迁移。
+ *   - 两者职责不同，不应合并。
+ */
 function isExistsBusinessFailure(result = {}) {
   const reason = String(result?.finalReason || result?.finalState || '').trim();
   return [
@@ -856,6 +1052,13 @@ function isExistsBusinessFailure(result = {}) {
   ].includes(reason);
 }
 
+/**
+ * 判断结果是否属于“终止型业务失败”（不应换代理重试）。
+ *
+ * 与 failure-classifier.js 的关系：
+ *   - failure-classifier.isBusinessFailure() 判断是否免于代理惩罚；本函数判断是否应终止重试循环。
+ *   - 如需新增“终止型”原因码，请同步评估 failure-classifier.BUSINESS_FAILURE_REASONS 是否需要同步。
+ */
 function isTerminalBusinessFailure(result = {}) {
   const reason = String(result?.finalReason || result?.finalState || '').trim();
   return [
@@ -873,6 +1076,15 @@ function isTerminalBusinessFailure(result = {}) {
   ].includes(reason);
 }
 
+/**
+ * 判断结果是否属于“可换代理重试”类失败（D6 关系说明）。
+ *
+ * 与 failure-classifier.js 的关系：
+ *   - failure-classifier.isProxyHardFailure() 判断代理是否应被热剥撤（粗粒度）。
+ *   - 本函数判断是否値得换一条代理再次尝试同一账号（重试策略决策）。
+ *   - 两者枚举集合部分重叠但语义不同，不应合并。
+ *   - 维护时如需新增可重试原因码，请同步检查 failure-classifier.PROXY_HARD_FAILURE_REASONS 是否需要同步。
+ */
 function isRetryableProxyOrEnvironmentFailure(result = {}) {
   const reason = String(result?.finalReason || result?.finalState || '').trim();
   if (!reason) return false;
@@ -903,6 +1115,77 @@ function shouldRetryAccountWithNextProxy(result = {}, attempt = 1, batchContext 
   return isRetryableProxyOrEnvironmentFailure(result);
 }
 
+/**
+ * 判断是否属于「黑名单硬失败」——账号不应再被重试。
+ * 对应 account-state/blacklisted-accounts.json 写入条件。
+ */
+function isBlacklistFailure(result = {}) {
+  const reason = String(result?.finalReason || result?.finalState || '').trim().toUpperCase();
+  return [
+    'SIGNUP_REJECTED',
+    'DREAMINA_SIGNUP_REJECTED',
+    'SIGNUP_REJECTED_IP_BANNED',
+    'DREAMINA_SIGNUP_REJECTED_IP_BANNED',
+    'VERIFICATION_CODE_RATE_LIMITED',
+    'DREAMINA_VERIFICATION_CODE_RATE_LIMITED',
+  ].some(function(k) { return reason === k || reason.startsWith(k); });
+}
+
+/**
+ * 判断是否属于「软失败可重试」——由偶发网络/代理/页面环境引起，可放回待跑队列。
+ * 对应 account-state/retry-accounts.json 写入条件。
+ */
+function isAccountRetryFailure(result = {}) {
+  if (isBlacklistFailure(result)) return false;
+  if (isTerminalBusinessFailure(result)) return false;
+  const reason = String(result?.finalReason || result?.finalState || '').trim().toUpperCase();
+  return [
+    'DREAMINA_PROXY_CONNECTIVITY_FAILED',
+    'PROXY_CONNECTIVITY_FAILED',
+    'DREAMINA_PROXY_PRECHECK_BAD',
+    'PROXY_PRECHECK_BAD',
+    'DREAMINA_BROWSER_SMOKE_BLANK_PAGE',
+    'DREAMINA_BROWSER_SMOKE_FAILED',
+    'DREAMINA_ENTRY_PAGE_OPEN_TIMEOUT',
+    'ENTRY_PAGE_OPEN_FAILED',
+    'DREAMINA_ENTRY_PAGE_OPEN_FAILED',
+    'DREAMINA_WHITE_SCREEN',
+    'DREAMINA_FIRST_LOAD_DEAD_PAGE',
+    'DREAMINA_READY_SIGNAL_MISSING',
+    'DREAMINA_HOME_SHELL_WITHOUT_LOGIN_ENTRY',
+    'DREAMINA_LOGIN_ENTRY_NOT_FOUND',
+    'LOGIN_ENTRY_FAILED',
+    'LOGIN_ENTRY_CLICK_NO_STATE_CHANGE',
+    'DREAMINA_CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
+    'CREDENTIAL_SUBMIT_RESULT_UNKNOWN',
+  ].includes(reason);
+}
+
+/**
+ * 追加账号到账号状态 JSON 数组文件（blacklisted / retry）。
+ * 自动去重，防止同一账号重复写入。
+ */
+async function appendToAccountStateFile(filePath, entry = {}) {
+  try {
+    ensureDir(ACCOUNT_STATE_DIR);
+    let arr = [];
+    if (fs.existsSync(filePath)) {
+      try { arr = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (_) { arr = []; }
+    }
+    if (!Array.isArray(arr)) arr = [];
+    const email = String(entry.email || '').trim().toLowerCase();
+    if (email && arr.some(function(a) { return String(a.email || '').trim().toLowerCase() === email; })) {
+      return; // 已存在，跳过
+    }
+    arr.push(entry);
+    await withPoolFileLock(async function() {
+      await fs.promises.writeFile(filePath, JSON.stringify(arr, null, 2) + '\n', 'utf8');
+    });
+  } catch (_err) {
+    // 静默，不影响主流程
+  }
+}
+
 async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   const finalReason = String(result?.finalReason || result?.finalState || 'UNKNOWN');
   const finalStage = String(result?.finalStage || 'UNKNOWN');
@@ -914,6 +1197,10 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
     batchContext.summary.successCount += 1;
     if (normalizedEmail) {
       batchContext.knownExistsAccounts.add(normalizedEmail);
+      // EVO-13: 断点续跑 — 写 globalDoneFile（success）
+      if (batchContext.paths && batchContext.paths.globalDoneFile) {
+        fs.promises.appendFile(batchContext.paths.globalDoneFile, normalizedEmail + '\n', 'utf8').catch(function() {});
+      }
     }
   } else if (result?.skipped && finalReason === 'KNOWN_EXISTS_ACCOUNT_SKIPPED') {
     batchContext.summary.skippedCount += 1;
@@ -923,10 +1210,30 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
     incrementBucket(batchContext.summary.existsReasonBuckets, finalReason);
     if (normalizedEmail) {
       batchContext.knownExistsAccounts.add(normalizedEmail);
+      // EVO-13: 断点续跑 — 写 globalDoneFile（exists）
+      if (batchContext.paths && batchContext.paths.globalDoneFile) {
+        fs.promises.appendFile(batchContext.paths.globalDoneFile, normalizedEmail + '\n', 'utf8').catch(function() {});
+      }
     }
   } else {
     batchContext.summary.failedCount += 1;
     incrementBucket(batchContext.summary.failureReasonBuckets, finalReason);
+    // GAP-3: config-aware 分类桶（proxy-hard / business / proxy-soft / unknown）
+    const _classLabel = (batchContext.classifier || { classifyFailure }).classifyFailure(finalReason);
+    incrementBucket(batchContext.summary.failureClassBuckets, _classLabel);
+    // EXP-3（v0.0.2 继承）：推断失败阶段，用于按阶段分析失败分布
+    const _failPhase = (() => {
+      const code = String(finalReason || '').split('|')[0].trim();
+      if (/PROXY_PRECHECK|PROXY_CONNECT|PROXY_DNS|PROXY_TLS|PROXY_TIMEOUT/.test(code)) return 'precheck';
+      if (/ENTRY|SITE_ENTRY|DREAMINA_ENTRY|WHITE_SCREEN|DEAD_PAGE/.test(code)) return 'entry';
+      if (/CREDENTIAL|S2_|LOGIN_ENTRY/.test(code)) return 'credential';
+      if (/VERIFICATION|FIRSTMAIL|WRONG_CODE|RATE_LIMITED/.test(code)) return 'verification';
+      if (/ACCOUNT_ALREADY|ACCOUNT_EXISTS/.test(code)) return 'exists';
+      if (/SIGNUP_REJECTED/.test(code)) return 'signup';
+      if (/SESSION|DELIVERY|S6_/.test(code)) return 'delivery';
+      return 'general';
+    })();
+    incrementBucket(batchContext.summary.failurePhaseBuckets, _failPhase);
   }
 
   incrementBucket(batchContext.summary.finalStageBuckets, finalStage);
@@ -935,6 +1242,13 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
     incrementBucket(batchContext.summary.slowestStageBuckets, stageLabel);
   }
 
+  // EVO-2（v0.0.2 继承）：写 run-log.txt，关键节点 [SUCCESS]/[FAIL]/[EXISTS]/[SKIP]
+  if (batchContext.paths && batchContext.paths.runLogFile) {
+    const _outcome2 = result && result.success ? 'SUCCESS' : (result && result.skipped ? 'SKIP' : (existsFailure ? 'EXISTS' : 'FAIL'));
+    const _email2 = String(result && result.account && result.account.email || extra && extra.account && extra.account.email || '');
+    const _logLine2 = `[${_outcome2}] ${new Date().toISOString()} | runId=${batchContext.runId} | account=${_email2} | reason=${finalReason} | stage=${finalStage}\n`;
+    fs.promises.appendFile(batchContext.paths.runLogFile, _logLine2, 'utf8').catch(function() {});
+  }
   const record = buildBatchAccountRecord(result, {
     ...extra,
     batchContext,
@@ -942,18 +1256,84 @@ async function updateBatchSummary(batchContext, result = {}, extra = {}) {
   });
   if (result?.success) {
     batchContext.accounts.success.push(record);
+    // EVO-23（v0.0.2 继承）：写 sessions-with-country.txt（格式：countryCode-sessionId）
+    if (result && result.success && batchContext.paths && batchContext.paths.perKindResultFiles && batchContext.paths.perKindResultFiles.successSessions) {
+      const _sessionId23 = String(result.deliveryPayload && result.deliveryPayload.sessionSummary && result.deliveryPayload.sessionSummary.sessionId || record && record.deliveryPayload && record.deliveryPayload.sessionSummary && record.deliveryPayload.sessionSummary.sessionId || '').trim();
+      const _cc23 = String(result.account && result.account.countryCode || result.account && result.account.proxyCountryCode || extra && extra.proxy && extra.proxy.countryCode || '').trim().toUpperCase();
+      if (_sessionId23) {
+        const _sessLine23 = (_cc23 ? _cc23 + '-' : '') + _sessionId23 + '\n';
+        fs.promises.appendFile(batchContext.paths.perKindResultFiles.successSessions, _sessLine23, 'utf8').catch(function() {});
+      }
+    }
   } else if (existsFailure) {
     batchContext.accounts.exists.push(record);
   } else if (result?.skipped) {
     batchContext.accounts.skipped.push(record);
   } else {
     batchContext.accounts.failed.push(record);
+    // ── 账号状态分流：写 blacklisted-accounts.json 或 retry-accounts.json ────
+    const _stateEntry = {
+      email: normalizedEmail,
+      password: String(result?.account?.password || extra?.account?.password || ''),
+      finalReason,
+      finalStage,
+      failedAt: new Date().toISOString(),
+    };
+    if (isBlacklistFailure(result)) {
+      appendToAccountStateFile(BLACKLISTED_ACCOUNTS_FILE, _stateEntry).catch(function() {});
+    } else if (isAccountRetryFailure(result)) {
+      appendToAccountStateFile(RETRY_ACCOUNTS_FILE, _stateEntry).catch(function() {});
+    }
   }
 
   const recordFiles = await writeBatchAccountRecordFile(batchContext, record);
+// EVO-1（v0.0.2 继承）：结构化失败事件追加到 failure-events.jsonl，供后分析
+  if (batchContext.paths && batchContext.paths.failureEventsFile) {
+  const _fev = {
+  time: new Date().toISOString(),
+  runId: batchContext.runId,
+  account: String(result && result.account && result.account.email || extra && extra.account && extra.account.email || ''),
+  proxy: String(extra && extra.proxy && (extra.proxy.raw || extra.proxy.server) || ''),
+  proxyExitIp: String(extra && extra.proxyExitIp || record.proxyExitIp || ''),
+  outcome: result && result.success ? 'success' : (result && result.skipped ? 'skipped' : (existsFailure ? 'exists' : 'failed')),
+  phase: String(result && result.finalStage || 'UNKNOWN'),
+  reason: finalReason,
+  failureKind: String((batchContext.classifier || { classifyFailure }).classifyFailure(finalReason) || ''),
+  };
+  fs.promises.appendFile(batchContext.paths.failureEventsFile, JSON.stringify(_fev) + '\n', 'utf8').catch(function() {});
+  }
   record.resultFile = String(recordFiles?.filePath || record.resultFile || '');
   record.latestResultFile = String(recordFiles?.latestByAccount || record.latestResultFile || '');
 
+
+  // EVO-7（v0.0.2 继承）：verificationRateLimited 写独立文件（供下次启动自动跳过）
+  // EVO-12（v0.0.2 继承）：按失败种类路由到独立文件（wrongCode / signupRejected / ipBanned / verification-rate-limited）
+  if (batchContext && batchContext.paths && batchContext.paths.perKindResultFiles && record) {
+    const _pkf = batchContext.paths.perKindResultFiles;
+    const _rc = String(result && result.finalReason || result && result.finalState || '').toUpperCase();
+    const _email = String(record.account || '');
+    const _line = JSON.stringify({ email: _email, reason: _rc, time: new Date().toISOString() }) + '\n';
+    // EVO-12: wrong verification code → 可人工处理后再跑
+    if (_pkf.wrongCode && /WRONG_CODE|WRONG_VERIFICATION/.test(_rc)) {
+      fs.promises.appendFile(_pkf.wrongCode, _line, 'utf8').catch(function() {});
+    }
+    // EVO-7 + EVO-12: 验证码限速 → 独立追踪，下次启动前可过滤
+    if (_pkf.verificationRateLimited && /RATE_LIMITED|VERIFICATION_CODE_RATE_LIMITED/.test(_rc)) {
+      fs.promises.appendFile(_pkf.verificationRateLimited, _line, 'utf8').catch(function() {});
+    }
+    // EVO-12: 注册被拒（SIGNUP_REJECTED）→ 说明邮箱/IP 被平台封禁
+    if (_pkf.signupRejected && /SIGNUP_REJECTED/.test(_rc)) {
+      fs.promises.appendFile(_pkf.signupRejected, _line, 'utf8').catch(function() {});
+    }
+    // EVO-12: IP 封禁（SIGNUP_REJECTED_IP_BANNED）→ 供代理剔除参考
+    if (_pkf.ipBanned && /IP_BANNED/.test(_rc)) {
+      fs.promises.appendFile(_pkf.ipBanned, _line, 'utf8').catch(function() {});
+    }
+    // EVO-12: 代理硬失败 → 供代理池清洗参考
+    if (_pkf.proxyHard && /proxy-hard/.test(String(record.failureKind || batchContext && batchContext.classifier && batchContext.classifier.classifyFailure && batchContext.classifier.classifyFailure(_rc) || ''))) {
+      fs.promises.appendFile(_pkf.proxyHard, _line, 'utf8').catch(function() {});
+    }
+  }
   if ((result?.success || existsFailure) && normalizedEmail) {
     const migration = await migrateAccountOutOfLocalPool(extra?.account || result?.account || {}, result);
     record.accountPoolMigration = migration;
@@ -973,10 +1353,21 @@ function buildBatchOverviewLines(batchContext) {
   const failureBuckets = Object.entries(batchContext.summary.failureReasonBuckets || {})
     .map(([key, value]) => `${key}=${value}`)
     .join(' | ');
+  // GAP-3: config-aware 分类汇总（proxy-hard/business/proxy-soft/unknown）
+  const failureClassBuckets = Object.entries(batchContext.summary.failureClassBuckets || {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' | ');
 
   const lines = [header];
   if (failureBuckets) {
     lines.push(`BATCH_FAILURE_BUCKETS | ${failureBuckets}`);
+  }
+  if (failureClassBuckets) {
+    lines.push(`BATCH_FAILURE_CLASS | ${failureClassBuckets}`);
+  }
+  // EVO-5: DEGRADED_RUN 模式显示
+  if (batchContext && batchContext._runMode === 'DEGRADED') {
+    lines.push('BATCH_MODE | DEGRADED_RUN | weakPool=active | speedFilterExhausted=true');
   }
   return [...lines, ...buildWorkerOverviewPanel()];
 }
@@ -1008,13 +1399,22 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
     slowMo = 0,
     verificationBudget = null,
     proxyPolicy = null,
+    batchConfig = {},
   } = options;
+
+  // 从 config.json 读取对应运行模式的 navigation 参数 (D4/C7 fix)
+  const runMode = String(batchConfig && batchConfig.runMode || 'run').trim().toLowerCase();
+  const navConfig = (runMode === 'test' ? (batchConfig && batchConfig.navigation && batchConfig.navigation.test) : (batchConfig && batchConfig.navigation && batchConfig.navigation.run)) || {};
+  const firstmailConfig = (batchConfig && batchConfig.firstmail) || {};
+  const verificationConfig = (batchConfig && batchConfig.verification) || {};
+  const credentialConfig = (batchConfig && batchConfig.credential) || {};
 
   const runtimeBundle = await createWorkerRuntime({
     proxy,
     headed,
     slowMo,
     windowLayout: options.windowLayout || null,
+    batchConfig,
   });
 
   try {
@@ -1039,24 +1439,34 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         attempt,
         proxyCountryCode: String(proxy?.countryCode || proxy?.proxyCountryCode || '').trim(),
         proxyCountryName: String(proxy?.countryName || proxy?.proxyCountryName || '').trim(),
-        dreaminaHomeUrl: 'https://dreamina.capcut.com/ai-tool/home',
+        dreaminaHomeUrl: String(batchConfig && batchConfig.site && batchConfig.site.homeUrl || 'https://dreamina.capcut.com/ai-tool/home'), // EVO-6: 读 config.site.homeUrl，旧硬编码为 fallback
         proxyConnectivityTimeoutMs: Number(proxyPolicy?.connectivityTimeoutMs || 8000),
         proxyPrimaryTargetTimeoutMs: Number(proxyPolicy?.primaryTargetTimeoutMs || 10000),
         proxySecondaryTargetTimeoutMs: Number(proxyPolicy?.secondaryTargetTimeoutMs || 8000),
         proxyEnableSecondaryTarget: Boolean(proxyPolicy?.enableSecondaryTarget ?? true),
-        entryGotoTimeoutMs: 120000,
-        dreaminaNavigationTimeoutMs: 120000,
-        firstLoadGraceWaitMs: 12000,
+        // navigation 参数：优先读 config.json，硬编码値作 fallback（D4/C7 修复）
+        entryGotoTimeoutMs: Number(navConfig.entryGotoTimeoutMs || 120000),
+        dreaminaNavigationTimeoutMs: Number(navConfig.dreaminaNavigationTimeoutMs || 120000),
+        firstLoadGraceWaitMs: Number(navConfig.firstLoadGraceWaitMs || 4000),
+        postContinueWaitMs: Number(navConfig.postContinueWaitMs || 0),
+        postOverlayWaitMs: Number(navConfig.postOverlayWaitMs || 0),
+        postSignEntryWaitMs: Number(navConfig.postSignEntryWaitMs || 0),
+        postErrorRecoveryWaitMs: Number(navConfig.postErrorRecoveryWaitMs || 0),
+        humanPauseMinMs: Number(navConfig.humanPauseMinMs || 0),
+        humanPauseMaxMs: Number(navConfig.humanPauseMaxMs || 0),
         dreaminaAuthMode: 'signup',
-        credentialSignupSwitchWaitMs: 1200,
-        verificationRetryMaxAttempts: Number(verificationBudget?.verificationRetryMaxAttempts || 3),
-        verificationResendWaitMs: Number(verificationBudget?.verificationResendWaitMs || 1800),
-        skipCredentialExistsPrecheckAfterEmail: true,
-        firstmailApiMaxPollAttempts: Number(verificationBudget?.firstmailApiMaxPollAttempts || 6),
-        waitMailIntervalMs: Number(verificationBudget?.waitMailIntervalMs || 2500),
-        firstmailRecentMessageScanLimit: 8,
-        firstmailPollJitterMinMs: 0,
-        firstmailPollJitterMaxMs: 0,
+        // 凭据参数：来自 config.json credential 节
+        credentialSignupSwitchWaitMs: Number(credentialConfig.signupSwitchWaitMs || 1200),
+        skipCredentialExistsPrecheckAfterEmail: Boolean(credentialConfig.skipExistsPrecheckAfterEmail !== undefined ? credentialConfig.skipExistsPrecheckAfterEmail : true),
+        // 验证码参数：verificationBudget（layout profile 按并发量决定）优先，其次读 config.json
+        verificationRetryMaxAttempts: Number((verificationBudget && verificationBudget.verificationRetryMaxAttempts) || (verificationConfig && verificationConfig.retryMaxAttempts) || 3),
+        verificationResendWaitMs: Number((verificationBudget && verificationBudget.verificationResendWaitMs) || (verificationConfig && verificationConfig.resendWaitMs) || 1800),
+        // Firstmail API 参数：来自 config.json firstmail 节
+        firstmailApiMaxPollAttempts: Number((verificationBudget && verificationBudget.firstmailApiMaxPollAttempts) || 6),
+        waitMailIntervalMs: Number((verificationBudget && verificationBudget.waitMailIntervalMs) || 2500),
+        firstmailRecentMessageScanLimit: Number((firstmailConfig && firstmailConfig.recentMessageScanLimit) || 8),
+        firstmailPollJitterMinMs: Number((firstmailConfig && firstmailConfig.pollJitterMinMs) || 0),
+        firstmailPollJitterMaxMs: Number((firstmailConfig && firstmailConfig.pollJitterMaxMs) || 0),
         readyTextSignals: [
           'Continue with email',
           'Sign in',
@@ -1448,22 +1858,68 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
       const proxy = acquireNextProxy(batchContext);
       lastProxy = proxy;
       if (!proxy) {
-        const noProxyResult = {
-          success: false,
-          skipped: true,
-          finalStage: 'batch-runner',
-          finalState: 'NO_PROXY_AVAILABLE',
-          finalReason: 'NO_PROXY_AVAILABLE',
-          meta: { durationMs: 0, attempt },
-        };
-        if (!lastResult) {
-          await updateBatchSummary(batchContext, noProxyResult, {
-            workerId,
-            account,
-            proxy: null,
-          });
-        }
-        return lastResult || noProxyResult;
+            // GAP-2: 可配置策略 —— 无代理可用时的账号处理逻辑
+            // 策略来源：config.json noProxyPolicy.strategy
+            // 可选值：skip_account | retry | retry_then_defer | stop_batch
+            const noProxyPolicy = batchContext?.rawConfig?.noProxyPolicy || {};
+            const noProxyStrategy = String(noProxyPolicy.strategy || 'skip_account').trim().toLowerCase();
+            const noProxyRetryWaitMs = Math.max(500, Number(noProxyPolicy.retryWaitMs || 2000));
+            const noProxyRetryMax = Math.max(1, Number(noProxyPolicy.retryMaxAttempts || 3));
+            
+            console.log(`[Dreamina Batch] 无可用代理 | account=${account?.email || ''} | worker=${workerId} | attempt=${attempt} | strategy=${noProxyStrategy}`);
+            
+            if (noProxyStrategy === 'stop_batch') {
+              throw new Error('NO_PROXY_AVAILABLE_STOP_BATCH');
+            }
+            
+            if (noProxyStrategy === 'retry' || noProxyStrategy === 'retry_then_defer') {
+              const retryAttempt = attempt - initialAttempt; // 当前无代理等待次数
+              if (retryAttempt < noProxyRetryMax) {
+                await new Promise(resolve => setTimeout(resolve, noProxyRetryWaitMs));
+                // 不消耗 attempt 计数，仅等待后重试代理分配
+                continue;
+              }
+              // 超过等待次数上限 → 仍无代理，退出循环
+              if (noProxyStrategy === 'retry_then_defer') {
+                // GAP-2: 最小可追踪实现 —— 记录 deferred account 并写入持久化 JSONL
+                const deferredRecord = {
+                  email: account?.email || '',
+                  deferredAt: new Date().toISOString(),
+                  reason: 'NO_PROXY_AVAILABLE_RETRY_EXHAUSTED',
+                  noProxyWaitMs: noProxyRetryWaitMs,
+                  noProxyRetryMax,
+                  workerId,
+                  attempt,
+                };
+                if (Array.isArray(batchContext.deferredAccounts)) {
+                  batchContext.deferredAccounts.push(deferredRecord);
+                }
+                // 异步写 deferred JSONL（fire-and-forget，不阻塞主流程）
+                const _deferredFilePath = batchContext?.paths?.deferredFile;
+                if (_deferredFilePath) {
+                  fs.promises.appendFile(_deferredFilePath, JSON.stringify(deferredRecord) + '\n', 'utf8').catch(() => {});
+                }
+                console.log(`[Dreamina Batch] 代理等待超时，账号已记录为 deferred | account=${account?.email || ''} | count=${(batchContext.deferredAccounts || []).length}`);
+              }
+            }
+            
+            // 默认 skip_account 或等待重试上限耗尽：返回 NO_PROXY_AVAILABLE
+            const noProxyResult = {
+              success: false,
+              skipped: true,
+              finalStage: 'batch-runner',
+              finalState: 'NO_PROXY_AVAILABLE',
+              finalReason: 'NO_PROXY_AVAILABLE',
+              meta: { durationMs: 0, attempt, noProxyStrategy },
+            };
+            if (!lastResult) {
+              await updateBatchSummary(batchContext, noProxyResult, {
+                workerId,
+                account,
+                proxy: null,
+              });
+            }
+            return lastResult || noProxyResult;
       }
 
       updateWorkerStatus(workerId, {
@@ -1497,9 +1953,16 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
         windowLayout,
         verificationBudget,
         proxyPolicy,
+        batchConfig: batchContext.rawConfig || {},
       });
       lastResult = result;
+      // 释放代理独占锁（无论成功还是失败，必须释放，防止永久死锁）
+      if (proxy && batchContext && batchContext.proxies && batchContext.proxies.lockSet) batchContext.proxies.lockSet.release(proxy.proxyKey || '');
 
+      // EVO-ExitIp: 把 proxyPrecheckSummary.resolvedIp 写回 proxy.exitIp，供 buildBatchAccountRecord 读取
+      if (proxy && result && result.proxyPrecheckSummary && result.proxyPrecheckSummary.resolvedIp) {
+        proxy.exitIp = String(result.proxyPrecheckSummary.resolvedIp);
+      }
       if (proxy && result?.proxyPrecheckSummary && typeof result.proxyPrecheckSummary === 'object') {
         proxy.lastProxyPrecheckSummary = result.proxyPrecheckSummary;
         const precheckUpdated = upsertProxyHealthFromPrecheck(batchContext?.proxies?.healthStore || {}, proxy, result.proxyPrecheckSummary);
@@ -1518,6 +1981,32 @@ async function processBatchTask({ workerId, task, payload, batchContext }) {
             batchContext.summary.retiredProxyKeys.push(blockedKey);
             batchContext.summary.retiredProxyCount = batchContext.summary.retiredProxyKeys.length;
             incrementBucket(batchContext.summary.retiredProxyReasonBuckets, blockedReason);
+          }
+        }
+      }
+
+      // EVO-4（v0.0.2 繼承）：代理软惩罚计数器
+      // 来源：config.proxyHealthPool.softPenaltyThreshold（默认2次）
+      // 逻辑：软失败累积达阈值后，从当前批次 proxies.list 中软降级（移到尾部），不硬剔除
+      if (proxy && result && !result.success && !isTerminalBusinessFailure(result)) {
+        const _softThreshold = Math.max(1, Number(
+          batchContext && batchContext.rawConfig && batchContext.rawConfig.proxyHealthPool && batchContext.rawConfig.proxyHealthPool.softPenaltyThreshold || 2
+        ));
+        const _pkey = String(proxy && proxy.proxyKey || '');
+        if (_pkey) {
+          batchContext._proxySoftFailCount = batchContext._proxySoftFailCount || {};
+          batchContext._proxySoftFailCount[_pkey] = (batchContext._proxySoftFailCount[_pkey] || 0) + 1;
+          const _softCount = batchContext._proxySoftFailCount[_pkey];
+          if (_softCount >= _softThreshold) {
+            // 软降级：把该代理移到 list 末尾（下次被其他 Worker 选到的概率降低）
+            const _listArr = batchContext.proxies && batchContext.proxies.list || [];
+            const _pIdx = _listArr.findIndex(function(p) { return String(p && p.proxyKey || '') === _pkey; });
+            if (_pIdx >= 0 && _pIdx < _listArr.length - 1) {
+              const _moved = _listArr.splice(_pIdx, 1)[0];
+              _listArr.push(_moved);
+              console.log('[Dreamina Batch] 软惩罚代理降级 | proxyKey=' + _pkey + ' softFails=' + _softCount + '/' + _softThreshold + ' → 移至 list 末尾');
+            }
+            batchContext._proxySoftFailCount[_pkey] = 0; // 重置计数，防止持续触发
           }
         }
       }
@@ -1680,7 +2169,7 @@ function buildBatchFinalSummaryLines(summary = {}) {
   }
   if (entrySlowSamples.length > 0) {
     const compact = entrySlowSamples
-      .map(item => `${item.account}:${item.durationMs}ms(open=${item.openEntryPageMs},health=${item.checkEntryHealthMs},confirm=${item.confirmEntryReadyMs},outerMs=${item.outerConfirmMs || 0},gateMs=${item.gateConfirmMs || 0},wrapMs=${item.confirmWrapperOverheadMs || 0},wait=${item.waitTimelineMs || 0}/${item.waitEnsureGateMs || 0}/${item.waitRecoverSignalsMs || 0}/${item.waitReensureGateMs || 0}/${item.waitDebugSnapshotMs || 0},waitPath=${item.waitResolvedPath || '-'},residual=${item.wrapperResidualMs || 0},recovery=${item.recoveryResolvedPath || '-'}:${item.recoveryInitialWaitMs || 0}/${item.recoveryRecoverMs || 0}/${item.recoveryRewaitMs || 0},match=${item.matchedKind || '-'}:${item.matchedValue || '-'},src=${item.source || '-'},cta=${item.ctaOpenedGateMs || 0}/${item.postClickGateReadyMs || 0},outer=${item.outerConfirmResolvedAtMs || 0}:${item.outerConfirmResolvedBy || '-'},gate=${item.gateResolvedAtMs || 0}:${item.gateResolvedState || '-'})`)
+      .map(item => `${item.account}:${item.durationMs}ms(open=${item.openEntryPageMs},health=${item.checkEntryHealthMs},confirm=${item.confirmEntryReadyMs},outerMs=${item.outerConfirmMs || 0},gateMs=${item.gateConfirmMs || 0},wrapMs=${item.confirmWrapperOverheadMs || 0},wait=${item.waitTimelineMs || 0}/${item.waitEnsureGateMs || 0}/${item.waitRecoverSignalsMs || 0}/${item.waitReensureGateMs || 0}/${item.waitDebugSnapshotMs || 0},waitPath=${item.waitResolvedPath || '-'},residual=${item.wrapperResidualMs || 0},recovery=${item.recoveryResolvedPath || '-'}:${item.recoveryInitialWaitMs || 0}/${item.recoveryRecoverMs || 0}/${item.recoveryRewaitMs || 0},match=${item.matchedKind || '-'}:${item.matchedValue || '-'},src=${item.source || '-'},cta=${item.ctaOpenedGateMs || 0}/${item.postClickGateReadyMs || 0},outer=${item.outerConfirmResolvedAtMs || 0}:${item.outerConfirmResolvedBy || '-'},gate=${item.gateResolvedAtMs || 0}:${item.gateResolvedState || '-'})`)  
       .join(' | ');
     lines.push(`[Dreamina Batch] EntrySlowSamples: ${compact}`);
   }
@@ -1689,11 +2178,23 @@ function buildBatchFinalSummaryLines(summary = {}) {
 
 async function runDreaminaBatch(argv = []) {
   const cli = parseBatchCliArgs(argv);
+
+  // Step2: 运行前配置诊断（config-doctor）——只打印，不中断业务
+  const _doctorResult = diagnoseConfigFile(CONFIG_PATH, { verbose: false });
+  if (!_doctorResult.ok) {
+    console.warn('[Dreamina Batch] ⚠ 配置诊断发现 ERROR，建议修复后再运行：');
+    for (const issue of _doctorResult.issues.filter(i => i.level === 'ERROR')) {
+      console.warn(`  ✖ [CONFIG-ERROR] ${issue.field}: ${issue.msg}`);
+    }
+  } else if (_doctorResult.issues.length > 0) {
+    console.log(`[Dreamina Batch] 配置诊断通过 | warnings=${_doctorResult.issues.length}`);
+  }
+
   const knownExistsAccounts = readKnownExistsAccounts();
   const pruneResult = cli.ignoreKnownExists
     ? { removedCount: 0, removedEmails: [], remainingAccounts: loadLocalAccounts() }
     : await pruneKnownRegisteredFromLocalPool(knownExistsAccounts);
-  const accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
+  let accounts = selectBatchAccounts(pruneResult.remainingAccounts, cli);
   const loadedProxyHealthStore = loadProxyHealthStore();
   const proxyHealthStore = resetProxyPrecheckState(loadedProxyHealthStore);
   const proxyHealthPolicy = {
@@ -1708,8 +2209,64 @@ async function runDreaminaBatch(argv = []) {
     proxyKey: String(proxy?.proxyKey || `${proxy?.host || 'proxy'}:${proxy?.port || ''}:${proxy?.username || proxy?.id || index}`),
   }));
 
+  // EVO-13: 断点续跑 — 读 globalDoneFile 过滤已完成账号
+    if (!cli.ignoreDone) {
+      const _gdf = require('path').join(__dirname, 'batch-results', 'accounts-done.txt');
+      try {
+        if (require('fs').existsSync(_gdf)) {
+          const _doneEmails = new Set(require('fs').readFileSync(_gdf, 'utf8').split('\n').map(l => l.trim().toLowerCase()).filter(Boolean));
+          if (_doneEmails.size > 0) {
+            const _beforeDone = accounts.length;
+            accounts = accounts.filter(function(a) { return !_doneEmails.has(String(a && a.email || '').trim().toLowerCase()); });
+            console.log('[Dreamina Batch] EVO-13 断点续跑过滤 | globalDoneFile=' + _gdf + ' | done=' + _doneEmails.size + ' | before=' + _beforeDone + ' | after=' + accounts.length);
+          }
+        }
+      } catch(_doneErr) {
+        console.warn('[Dreamina Batch] EVO-13 读 globalDoneFile 失败（静默）:', String(_doneErr && _doneErr.message || _doneErr));
+      }
+    }
+
+  // ── 域名黑洞过滤（batchFilter.skipEmailDomains）────────────────────────────
+  // 读 config.json 中 batchFilter.skipEmailDomains，匹配账号直接跳过，不开浏览器不消耗代理。
+  try {
+    const _batchCfg = require('path').join(__dirname, 'config.json');
+    const _batchConfigRaw = JSON.parse(require('fs').readFileSync(_batchCfg, 'utf8'));
+    const _skipDomains = Array.isArray(_batchConfigRaw && _batchConfigRaw.batchFilter && _batchConfigRaw.batchFilter.skipEmailDomains)
+      ? _batchConfigRaw.batchFilter.skipEmailDomains.map(function(d) { return String(d || '').trim().toLowerCase(); }).filter(Boolean)
+      : [];
+    if (_skipDomains.length > 0) {
+      const _beforeDomainFilter = accounts.length;
+      const _skippedByDomain = [];
+      accounts = accounts.filter(function(a) {
+        const _emailDomain = String(a && a.email || '').trim().toLowerCase().split('@')[1] || '';
+        if (_skipDomains.includes(_emailDomain)) {
+          _skippedByDomain.push(String(a.email));
+          return false;
+        }
+        return true;
+      });
+      if (_skippedByDomain.length > 0) {
+        console.log('[Dreamina Batch] 域名黑洞过滤 | skipDomains=' + _skipDomains.join(',') + ' | before=' + _beforeDomainFilter + ' | skipped=' + _skippedByDomain.length + ' | after=' + accounts.length);
+        console.log('[Dreamina Batch] 已跳过黑洞域名账号: ' + _skippedByDomain.join(', '));
+      }
+    }
+  } catch (_domainFilterErr) {
+    console.warn('[Dreamina Batch] 域名黑洞过滤读 config 失败（静默）:', String(_domainFilterErr && _domainFilterErr.message || _domainFilterErr));
+  }
+
+  // ── 账号加载诊断（最小化修复 2026-04-17）：数据/过滤/切片三段计数 ────────────
+  const _rawAccountCount = Array.isArray(pruneResult.remainingAccounts) ? pruneResult.remainingAccounts.length : 0;
+  const _validAccountCount = Array.isArray(pruneResult.remainingAccounts) ? pruneResult.remainingAccounts.filter(function(a) { return a && a.email && a.password; }).length : 0;
+  const _prunedCount = pruneResult.removedCount || 0;
+  console.log('[Dreamina Batch] 账号诊断 | 原始=' + _rawAccountCount + ' 有效(email+password)=' + _validAccountCount + ' 已剔除已注册=' + _prunedCount + ' start=' + cli.accountStart + ' limit=' + cli.accountLimit + ' 切片后可用=' + accounts.length);
   if (!accounts.length) {
-    throw new Error('Dreamina batch runner: no accounts available from Dreamina/local-accounts.json');
+    var _acctFilePath = require('path').join(__dirname, 'local-accounts.json');
+    console.error('[Dreamina Batch] ❌ 账号文件无可用账号，批量任务无法启动。');
+    console.error('  原始账号数=' + _rawAccountCount + ' | 含email+password有效=' + _validAccountCount + ' | 已剔除已注册=' + _prunedCount + ' | start=' + cli.accountStart + ' | limit=' + cli.accountLimit);
+    console.error('  A. local-accounts.json 为空 [] → 填入待注册账号（格式见 Dreamina-register.README.md）');
+    console.error('  B. 所有账号已注册 → 检查 registered-accounts.json，或加 --ignore-known-exists');
+    console.error('  C. --account-start ' + cli.accountStart + ' 超出有效账号范围（有效=' + _validAccountCount + '）→ 减小 --account-start');
+    throw new Error('Dreamina batch runner: no accounts available | raw=' + _rawAccountCount + ' valid=' + _validAccountCount + ' pruned=' + _prunedCount + ' start=' + cli.accountStart + ' limit=' + cli.accountLimit + ' | file=' + _acctFilePath);
   }
   if (!proxies.length) {
     throw new Error('Dreamina batch runner: no proxies available from local proxy source');
@@ -1717,6 +2274,8 @@ async function runDreaminaBatch(argv = []) {
 
   const layoutProfilePath = path.join(__dirname, '..', '..', 'shared-window-layout', 'window-layout-profile.json');
   const layoutPlanner = createWindowLayoutPlanner({ profilePath: layoutProfilePath });
+
+  const batchConfig = loadBatchConfig(cli);
 
   const batchContext = createBatchRunContext({
     ...cli,
@@ -1729,6 +2288,11 @@ async function runDreaminaBatch(argv = []) {
   });
 
   batchContext.summary.proxySelectionPolicy = 'fresh-batch-no-history';
+  batchContext.rawConfig = batchConfig;
+  // EXP-19（v0.0.2 继承）：workerStatusInterval 面板日志应同步写入 runLogFile，当前仅打 console
+  // TODO: 在 orchestration 调用后追加 setInterval 写 runLogFile，待确认 runBatchOrchestration 是否支持 onWorkerStatus 回调
+  // GAP-3: config-aware 失败分类器实例，消费 config.json failureClassifier 节（内置枚举为基线，可追加/覆盖）
+  batchContext.classifier = createFailureClassifier(batchConfig);
 
   const resolvedLayoutPreset = layoutPlanner.resolve(1, batchContext.config.concurrency);
 
@@ -1743,6 +2307,18 @@ async function runDreaminaBatch(argv = []) {
     verificationBudget: resolveVerificationBudget(layoutPlanner.profile || {}, batchContext.config.concurrency),
     proxyPolicy: resolveProxyPolicy(layoutPlanner.profile || {}, batchContext.config.concurrency),
   };
+
+  // EXP-9（v0.0.2 继承）：RUN START 标记，方便 grep 分段和持续时间计算
+  const _runLogFile = batchContext?.paths?.runLogFile;
+  const _tsStart = new Date().toISOString();
+  if (_runLogFile) {
+    fs.promises.appendFile(_runLogFile,
+      `=== RUN START ${_tsStart} | runId=${batchContext.runId} | concurrency=${batchContext.config.concurrency} | accounts=${batchContext.accounts.total} | proxies=${batchContext.proxies.total} ===\n`,
+      'utf8'
+    ).catch(() => {});
+  }
+  console.log(`[Dreamina Batch] RUN START | runId=${batchContext.runId} | accounts=${batchContext.accounts.total} | proxies=${batchContext.proxies.total} | concurrency=${batchContext.config.concurrency}`);
+  batchContext._runStartTs = Date.now(); // EVO-9: 记录启动时间戳用于计算总耗时
 
   await resetFile(SESSION_RECORDS_LATEST_TXT);
   await resetFile(SESSION_RECORDS_LATEST_JSONL);
@@ -1813,6 +2389,16 @@ async function runDreaminaBatch(argv = []) {
   console.log(`[Dreamina Batch] latestSummaryFile=${batchContext.paths.latestSummaryFile}`);
   console.log(`[Dreamina Batch] indexFile=${batchContext.paths.indexFile}`);
 
+    // EVO-9（v0.0.2 继承）：RUN END 标记，配合 RUN START 计算本次运行总耗时
+    if (batchContext && batchContext.paths && batchContext.paths.runLogFile) {
+      const _tsEnd9 = new Date().toISOString();
+      const _dur9 = batchContext._runStartTs ? Math.round((Date.now() - batchContext._runStartTs) / 1000) + 's' : 'N/A';
+      fs.promises.appendFile(batchContext.paths.runLogFile,
+        `=== RUN END ${_tsEnd9} | runId=${batchContext.runId} | elapsed=${_dur9} | success=${summary && summary.counts && summary.counts.success || 0} | failed=${summary && summary.counts && summary.counts.failed || 0} ===\n`,
+        'utf8'
+      ).catch(function() {});
+    }
+  
   return summary;
 }
 

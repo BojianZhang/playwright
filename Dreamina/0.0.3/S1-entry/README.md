@@ -97,3 +97,36 @@ shared-entry/site-entry-health.js
 
 S1-entry 是 Dreamina 注册流程的**首页入口阶段**：
 打开 Dreamina 首页 → overlay 清理 → 等待 Sign in 可见 → 点击进入登录 gate → 确认进入 credential-submit 状态。
+
+---
+
+## 六、架构边界说明（D1/D5 待演进项）
+
+### 为什么 `Dreamina-register.js` 中存在 `buildDreaminaEntryStageAdapter()`？
+
+`Dreamina-register.js` 中的 `buildDreaminaEntryStageAdapter()` 是一个**组合胶水层**，它将本目录的两个 adapter 合并成编排层所需的统一接口：
+
+```
+Dreamina-register.js
+  buildDreaminaEntryStageAdapter()
+      ├── require('./S1-entry/adapter')        → 提供 overlay 清理、ready 等待、失败分类
+      └── require('./S1-entry/entry-adapter')  → 提供完整入口时间线流程
+```
+
+**当前状态**：这个胶水层逻辑位于编排层（`Dreamina-register.js`），而不是 S1 目录内部。
+
+**演进方向（D1）**：理想状态下，胶水层应移入 S1 目录，由 S1 自己对外暴露统一的 adapter 对象，编排层只 `require('./S1-entry')` 而无需了解内部两个文件的拼装细节。
+
+**当前为何暂不迁移**：
+1. `buildDreaminaEntryStageAdapter()` 包含约 500 行的业务逻辑，迁移需要仔细评估与现有两个 adapter 文件的重叠程度。
+2. 修改需要同步更新 `Dreamina-register.js` 中的 require 路径，属于中风险改动。
+3. 计划在 D1 演进方案 Step2 执行时一并处理。
+
+### `adapter.js` vs `entry-adapter.js` 职责边界
+
+| | `adapter.js`（56KB） | `entry-adapter.js`（78KB） |
+|---|---|---|
+| 调用方 | `shared-entry/site-entry-health.js` 框架层 | `Dreamina-register.js` 直接调用 |
+| 职责 | overlay 清理、ready 等待、轻量健康检查 | 完整入口时间线（open→health→wait→click→confirm gate） |
+| 与框架关系 | 实现 shared-entry adapter 协议（注入式） | 独立时间线实现（直接调用） |
+| 文档 | 本 README | `entry-adapter.md` |

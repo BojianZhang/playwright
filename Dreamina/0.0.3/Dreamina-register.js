@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -1394,6 +1394,7 @@ function buildProxyPrecheckSummary(proxyPrecheckResult) {
     signalStrength: String(result.signalStrength || '').trim(),
     detectionSource: String(result.detectionSource || '').trim(),
     proxyGrade: String(result.proxyGrade || '').trim(),
+    resolvedIp: String(result.ip || result.detail && result.detail.exitIp && result.detail.exitIp.ip || '').trim(), // EVO-ExitIp: 代理出口 IP 字符串（由 checkProxyExitIp 解析）
     capabilityGrade: String(detail?.capabilityGrade || result.capabilityGrade || '').trim(),
     businessGrade: String(detail?.businessGrade || result.businessGrade || '').trim(),
     healthScore: Number(detail?.healthScore || result.healthScore || 0),
@@ -2148,7 +2149,7 @@ function resolveCliProxySelection(proxies = [], requestedProxyIndex = 0) {
 }
 
 function loadLocalAccounts() {
-  const accountFilePath = path.join(__dirname, 'local-accounts.json');
+  const accountFilePath = path.join(__dirname, 'account-state', 'local-accounts.json');
   if (!fs.existsSync(accountFilePath)) return [];
 
   const raw = fs.readFileSync(accountFilePath, 'utf8');
@@ -2303,6 +2304,15 @@ async function runDreaminaRegisterCli(argv = []) {
   const proxy = proxySelection.proxy;
   const account = selectCliAccount(accounts, accountIndex);
 
+  // 读 config.json （单跑 CLI 与 batch-runner 保持一致）
+  let _cliConfig = {};
+  try {
+    _cliConfig = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'config.json'), 'utf8'));
+  } catch (_) {}
+  const _credentialCfg = (_cliConfig && _cliConfig.credential) || {};
+  // skipExistsPrecheckAfterEmail 默认 true（不在填完邮筱后多距一步检查账号是否已存在）
+  const _skipExistsPrecheck = _credentialCfg.skipExistsPrecheckAfterEmail !== false;
+
   if (!proxy) {
     const noHealthyProxy = Boolean(proxySelection?.exhaustedHealthyCandidates);
     const emptyResult = {
@@ -2363,7 +2373,7 @@ async function runDreaminaRegisterCli(argv = []) {
       },
     };
     const resultFiles = await writeCliResultFile(emptyResult, {});
-    console.log('[Dreamina Register] 未找到可用账号，请检查 Dreamina/local-accounts.json');
+    console.log('[Dreamina Register] 未找到可用账号，请检查 Dreamina/0.0.3/account-state/local-accounts.json');
     console.log(`[Dreamina Register] Result file: ${resultFiles.filePath}`);
     console.log(`[Dreamina Register] Latest file: ${resultFiles.latestByAccount}`);
     console.log(`[Dreamina Register] Index file: ${resultFiles.indexFile}`);
@@ -2407,10 +2417,11 @@ async function runDreaminaRegisterCli(argv = []) {
         firstLoadGraceWaitMs: 12000,
         dreaminaAuthMode: 'signup',
         credentialSignupSwitchWaitMs: 1200,
-        verificationRetryMaxAttempts: 3,
-        verificationResendWaitMs: 1800,
-        firstmailApiMaxPollAttempts: 2,
-        waitMailIntervalMs: 2500,
+        skipCredentialExistsPrecheckAfterEmail: _skipExistsPrecheck, // 与 batch-runner 保持一致，默认跳过此预检
+        verificationRetryMaxAttempts: 2,   // initial轮 + 1次resend后重试
+        verificationResendWaitMs: 2000,    // 点击Resend后等页面响应
+        firstmailApiMaxPollAttempts: 12,   // 12次 × 3s = 36s预算/轮
+        waitMailIntervalMs: 3000,          // 轮询间隔3s
         firstmailRecentMessageScanLimit: 8,
         firstmailPollJitterMinMs: 0,
         firstmailPollJitterMaxMs: 0,

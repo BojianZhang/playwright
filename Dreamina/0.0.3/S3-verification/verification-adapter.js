@@ -1,4 +1,4 @@
-﻿// ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
 // 运行内容层（RUNTIME CONTENT LAYER）— S3 Dreamina
 //
 // 文件定位：Dreamina/0.0.3/S3-verification/verification-adapter.js
@@ -1063,9 +1063,32 @@ async function tryDreaminaFallbackFill(page, locator, code, logInfo) {
  * 边界：
  * - 只负责一次 resend 入口动作
  * - 不负责 resend 后的下一轮 verification orchestration
+ * - 若按钮仍处于倒计时状态，先等倒计时结束再点击（最长等 resendCountdownMaxWaitMs）
  */
 async function triggerDreaminaVerificationCodeResend(page, runtime = {}, context = {}) {
   const { logInfo = null } = context;
+
+  // 倒计时最长等待时间（默认 65s，覆盖 Dreamina 60s 倒计时）
+  const countdownMaxWaitMs = Number(runtime?.resendCountdownMaxWaitMs || 65000);
+  // 轮询倒计时间隔
+  const countdownPollIntervalMs = 2000;
+
+  // 先检查是否还在倒计时
+  const countdown = await readDreaminaVerificationResendCountdown(page);
+  if (countdown.ok && countdown.seconds > 0) {
+    const waitMs = Math.min(countdown.seconds * 1000 + 500, countdownMaxWaitMs);
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.verification.resendCode | waiting-countdown | seconds=${countdown.seconds} | waitMs=${waitMs}`);
+    }
+    // 等待 + 轮询直到倒计时消失或超时
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(countdownPollIntervalMs).catch(() => {});
+      const cur = await readDreaminaVerificationResendCountdown(page);
+      if (!cur.ok || !cur.seconds) break; // 倒计时结束
+    }
+  }
+
   const resendCandidates = [
     page.getByText('Resend code', { exact: false }).first(),
     page.getByRole('button', { name: /resend code/i }).first(),

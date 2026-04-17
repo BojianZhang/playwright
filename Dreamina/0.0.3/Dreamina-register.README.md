@@ -105,3 +105,42 @@ S5  post-auth-ready       等待登录后首屏 ready 信号
   ↓
 S6  account-delivery      将注册成功账号写入 registered-accounts.json
 ```
+
+---
+
+## local-accounts.json 格式说明
+
+`local-accounts.json` 是批量注册的**账号输入文件**，必须是有效的 JSON 数组，每个元素包含 `email` 和 `password` 字段：
+
+```json
+[
+  { "email": "user1@example.com", "password": "Password123!" },
+  { "email": "user2@example.com", "password": "Password456!" }
+]
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `email` | string | ✅ | 待注册邮箱（需为 Firstmail 住户邮箱） |
+| `password` | string | ✅ | 注册密码 |
+
+---
+
+## 常见启动错误排查
+
+### Error: no accounts available
+
+```
+[Dreamina Batch] 账号诊断 | 原始=0 有效(email+password)=0 已剔除已注册=0 start=0 limit=5 切片后可用=0
+[Dreamina Batch] ❌ 账号文件无可用账号，批量任务无法启动。
+```
+
+| 根因 | 诊断特征 | 解决方案 |
+|------|---------|----------|
+| **A. 文件为空数组 []** | 原始=0 | 向 local-accounts.json 填入账号（格式见上） |
+| **B. 账号已全部注册过** | 原始>0 但 已剔除=原始 | 加 --ignore-known-exists 或补充新账号 |
+| **C. --account-start 超范围** | 有效>0 但 切片后=0 | 减小 --account-start（应 < 有效账号数） |
+
+---

@@ -27,3 +27,18 @@ dreamina-*.png
 # Sensitive inputs
 accounts.txt
 proxies.txt
+
+# Dreamina account state (contains credentials — never commit)
+Dreamina/0.0.3/account-state/local-accounts.json
+Dreamina/0.0.3/account-state/registered-accounts.json
+Dreamina/0.0.3/account-state/blacklisted-accounts.json
+Dreamina/0.0.3/account-state/retry-accounts.json
+
+# Dreamina runtime outputs (batch results, session logs, proxy health)
+Dreamina/0.0.3/batch-results/
+Dreamina/0.0.3/session-records/
+Dreamina/0.0.3/results/
+Dreamina/0.0.3/proxy-health.json
+
+# Dreamina batch-results global done file (runtime state)
+Dreamina/0.0.3/batch-results/accounts-done.txt

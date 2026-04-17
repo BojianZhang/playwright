@@ -358,7 +358,7 @@ async function runVerificationSubmitStage(options = {}) {
     // 如果验证码拿不到，第三阶段也无法继续。
     if (!fetchCodeResult?.ok) {
       syncStageStep(options, { stage: 'verification-submit', step: 'stage-fail' });
-    logStageFail('verification-submit', '验证码拉取失败', {
+      logStageFail('verification-submit', '验证码拉取失败', {
         context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
         extra: [
           fetchCodeResult?.state ? `state=${fetchCodeResult.state}` : '',
@@ -367,8 +367,13 @@ async function runVerificationSubmitStage(options = {}) {
           `stepDurationMs=${formatDurationMs(fetchTimer.elapsedMs())}`,
         ].filter(Boolean).join(' | '),
       });
+
+      const verificationAllowResend = runtime?.verificationAllowResend !== false;
+      const hasMoreAttempts = attemptIndex < verificationRetryMaxAttempts;
+
+      // 场景 A：拿到了重复验证码 → resend 后重拉
       const duplicateSkipped = String(fetchCodeResult?.value || '').startsWith('DUPLICATE_CODE_SKIPPED:');
-      if (duplicateSkipped && attemptIndex < verificationRetryMaxAttempts) {
+      if (duplicateSkipped && verificationAllowResend && hasMoreAttempts) {
         logStageRetry('verification-submit', '命中重复验证码，准备 resend 后重试', {
           context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
           extra: `round=${attemptIndex}/${verificationRetryMaxAttempts}`,
@@ -382,13 +387,11 @@ async function runVerificationSubmitStage(options = {}) {
               attemptIndex,
             })
           : null;
-
         retrySummary.push({
           attemptIndex,
           resendState: resendResult?.state || (triggerCodeResend ? 'VERIFICATION_CODE_RESEND_NOT_AVAILABLE' : 'VERIFICATION_CODE_RESEND_UNSUPPORTED'),
           action: 'resend-and-refetch',
         });
-
         if (resendResult?.ok) {
           logStageRetry('verification-submit', 'resend 成功，进入下一轮验证码拉取', {
             context: buildStageLogContext(options, { retry: attemptIndex }),
@@ -398,9 +401,45 @@ async function runVerificationSubmitStage(options = {}) {
         }
       }
 
-      // 先尝试按站点语义分类失败原因。
+      // 场景 B：验证码超时/未到达 → 等倒计时结束后主动 resend，再拉新码
+      // 覆盖核心场景：邮件迟到，页面倒计时结束后点击 "Resend code" 重新发验证码再等。
+      const fetchTimedOut = !duplicateSkipped && (
+        String(fetchCodeResult?.state || '').includes('FETCH_FAILED') ||
+        String(fetchCodeResult?.state || '').includes('NOT_AVAILABLE') ||
+        String(fetchCodeResult?.value || '').includes('TIMEOUT')
+      );
+      if (fetchTimedOut && verificationAllowResend && hasMoreAttempts && triggerCodeResend) {
+        logStageRetry('verification-submit', '验证码超时未到，等倒计时结束后 resend', {
+          context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
+          extra: `round=${attemptIndex}/${verificationRetryMaxAttempts} | fetchState=${fetchCodeResult?.state || ''} | fetchValue=${String(fetchCodeResult?.value || '').substring(0, 60)}`,
+        });
+        const resendResult = await triggerCodeResend(page, runtime, {
+          ...context,
+          verificationReady,
+          fetchCodeResult,
+          usedCodes,
+          attemptIndex,
+        });
+        retrySummary.push({
+          attemptIndex,
+          resendState: resendResult?.state || 'VERIFICATION_CODE_RESEND_NOT_AVAILABLE',
+          action: 'timeout-resend-and-refetch',
+        });
+        if (resendResult?.ok) {
+          logStageRetry('verification-submit', 'timeout resend 触发成功，进入下一轮验证码拉取', {
+            context: buildStageLogContext(options, { retry: attemptIndex }),
+            extra: resendResult?.state ? `state=${resendResult.state}` : '',
+          });
+          continue;
+        }
+        logStageRetry('verification-submit', 'timeout resend 未成功（按钮不可用），不继续重试', {
+          context: buildStageLogContext(options, { retry: attemptIndex - 1 }),
+          extra: resendResult?.state || '',
+        });
+      }
+
+      // 以上 resend 路径都不适用或 resend 失败 → 直接返回失败
       const classified = classifyFailure ? classifyFailure({ reason: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE' }) : null;
-      // 返回统一失败结果。
       return normalizeVerificationStageResult({
         success: false,
         state: fetchCodeResult?.state || 'VERIFICATION_CODE_NOT_AVAILABLE',

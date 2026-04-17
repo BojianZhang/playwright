@@ -23,6 +23,13 @@
 //   - 失败原因明确指向代理网络层（连通性 / TLS / 目标不可达）
 //   - 与账号无关，换账号也不会成功
 //   - 继续使用该代理只会浪费 Worker 时间
+//
+// 【架构演进备注 GAP-3】
+//   v0.0.2 中 hardProxyFailureReasons 定义在 config.json（可热修改，无需重启）。
+//   当前版本改为硬编码，发现新 reason code 时需改代码并重新部署。
+//   演进方向：将此 Set 的初始化包装为 createFailureClassifier(config) 工厂函数，
+//   支持从 config.json 扩展枚举，同时保留此处的硬编码值作为内置基线。
+//   在实际运行中频繁出现新 reason 时，优先考虑此演进。
 // ─────────────────────────────────────────────────────────────────────────────
 const PROXY_HARD_FAILURE_REASONS = new Set([
   // S0 proxy-precheck 探活失败
@@ -51,6 +58,11 @@ const PROXY_HARD_FAILURE_REASONS = new Set([
 //   - 失败原因指向账号本身（已存在、验证码错误、注册被拒）
 //   - 换一条代理也不会成功
 //   - 代理本身是健康的，不应扣分或剔除
+//
+// 【架构演进备注 GAP-3】
+//   v0.0.2 中 businessFailureReasons 同样在 config.json 可配置。
+//   若新增账号判断逻辑需要临时绕过代理惩罚，当前只能改代码。
+//   演进方向同上（createFailureClassifier 工厂）。
 // ─────────────────────────────────────────────────────────────────────────────
 const BUSINESS_FAILURE_REASONS = new Set([
   // 账号已存在
@@ -132,11 +144,130 @@ function classifyFailure(reason) {
   return 'proxy-soft';
 }
 
+/**
+ * 【EVO-10 / EVO-15】从老架构（v0.0.2）提炼的 reason 标准化工具函数。
+ *
+ * 支持 "CODE|detail info" 格式的 finalReason：
+ *   - code：用于枚举匹配（PROXY_HARD、BUSINESS 等分类判断）
+ *   - detail：携带 debug 附件（截图名、错误原文等），不破坏主 code 匹配
+ *
+ * v0.0.2 原路径：runner.js:normalizeFailureReason() L397-L402
+ *
+ * @param {string} reason
+ * @returns {{ code: string, detail: string }}
+ */
+function normalizeFailureReason(reason) {
+  const raw = String(reason || '');
+  const pipeIdx = raw.indexOf('|');
+  if (pipeIdx < 0) return { code: raw.trim().toUpperCase(), detail: '' };
+  return {
+    code: raw.slice(0, pipeIdx).trim().toUpperCase(),
+    detail: raw.slice(pipeIdx + 1).trim(),
+  };
+}
+/**
+ * 【EXP-3 迁移】从老架构（v0.0.2）提炼的失败阶段推断函数。
+ *
+ * 根据 finalReason code 推断失败发生在哪个阶段，用于按阶段分析失败分布。
+ * v0.0.2 原路径：runner.js:inferFailurePhase()
+ *
+ * 使用说明：
+ *   - 入参为 finalReason 字符串（支持 code|detail 格式，自动取 code 部分）
+ *   - 返回阶段标签字符串：precheck / entry / credential / verification / exists / signup / delivery / general
+ *   - 不感知 config，为纯函数，可在任意层调用
+ *
+ * @param {string} reason - finalReason 字符串
+ * @returns {string} 阶段标签
+ */
+function inferFailurePhase(reason = '') {
+  const code = String(reason || '').split('|')[0].trim().toUpperCase();
+  if (!code) return 'general';
+  // 代理预检阶段
+  if (/^(PROXY_PRECHECK|PROXY_CONNECT|DREAMINA_PROXY_CONNECTIVITY|PROXY_DNS|PROXY_TLS|PROXY_TIMEOUT|DREAMINA_PROXY_PRECHECK)/i.test(code)) return 'precheck';
+  // 页面入口阶段
+  if (/^(DREAMINA_ENTRY|DREAMINA_WHITE_SCREEN|DREAMINA_FIRST_LOAD|DREAMINA_OPEN|ENTRY_PAGE|DREAMINA_READY|DREAMINA_HOME|DREAMINA_BROWSER|LOGIN_ENTRY)/i.test(code)) return 'entry';
+  // 凭据提交阶段
+  if (/^(CREDENTIAL|S2_|DREAMINA_CREDENTIAL|SIGNUP_FORM)/i.test(code)) return 'credential';
+  // 验证码阶段
+  if (/^(VERIFICATION|FIRSTMAIL|WRONG_VERIFICATION|WRONG_CODE|DREAMINA_VERIFICATION|RATE_LIMITED|CODE_RATE)/i.test(code)) return 'verification';
+  // 已存在
+  if (/ACCOUNT_ALREADY_EXISTS|ACCOUNT_EXISTS/i.test(code)) return 'exists';
+  // 注册被拒
+  if (/SIGNUP_REJECTED/i.test(code)) return 'signup';
+  // 账号交付/session阶段
+  if (/^(S6_|SESSION|DELIVERY|ACCOUNT_DELIVERY|POST_REGISTER|POST_AUTH)/i.test(code)) return 'delivery';
+  return 'general';
+}
+
+/**
+ * 【GAP-3 修复】配置驱动的失败分类器工厂。
+ *
+ * 设计原则：
+ *   - 内置枚举（PROXY_HARD_FAILURE_REASONS / BUSINESS_FAILURE_REASONS）作为不可删除的基线。
+ *   - config.json 通过 failureClassifier 节追加或覆盖，无需修改代码。
+ *   - reasonOverrides 优先级最高，用于处理"某个 reason 在内置枚举中分类不准确"的临时修正。
+ *
+ * config.json failureClassifier 节示例：
+ * ```json
+ * "failureClassifier": {
+ *   "_comment": "失败原因分类扩展（追加到内置枚举，不替换）",
+ *   "proxyHardReasons": ["MY_CUSTOM_PROXY_FAIL"],
+ *   "businessReasons": ["MY_CUSTOM_BUSINESS_FAIL"],
+ *   "reasonOverrides": {
+ *     "SOME_AMBIGUOUS_REASON": "business"
+ *   }
+ * }
+ * ```
+ *
+ * @param {object} [config={}] - 来自 loadBatchConfig() 的 config 对象
+ * @returns {{ isProxyHardFailure, isBusinessFailure, isProxySoftFailure, classifyFailure }}
+ */
+function createFailureClassifier(config = {}) {
+  const ext = config?.failureClassifier || {};
+
+  // 合并内置基线 + config 追加
+  const hardSet = new Set([
+    ...PROXY_HARD_FAILURE_REASONS,
+    ...((Array.isArray(ext.proxyHardReasons) ? ext.proxyHardReasons : []).map(r => String(r).trim().toUpperCase())),
+  ]);
+  const bizSet = new Set([
+    ...BUSINESS_FAILURE_REASONS,
+    ...((Array.isArray(ext.businessReasons) ? ext.businessReasons : []).map(r => String(r).trim().toUpperCase())),
+  ]);
+
+  // reasonOverrides: { 'REASON_CODE': 'proxy-hard' | 'business' | 'proxy-soft' }
+  const overrides = {};
+  if (ext.reasonOverrides && typeof ext.reasonOverrides === 'object') {
+    for (const [k, v] of Object.entries(ext.reasonOverrides)) {
+      overrides[String(k).trim().toUpperCase()] = String(v || '').trim().toLowerCase();
+    }
+  }
+
+  function resolve(reason) {
+    const upper = String(reason || '').trim().toUpperCase();
+    if (!upper) return 'unknown';
+    if (overrides[upper]) return overrides[upper];
+    if (hardSet.has(upper)) return 'proxy-hard';
+    if (bizSet.has(upper)) return 'business';
+    return 'proxy-soft';
+  }
+
+  return {
+    isProxyHardFailure: (reason) => resolve(reason) === 'proxy-hard',
+    isBusinessFailure: (reason) => resolve(reason) === 'business',
+    isProxySoftFailure: (reason) => resolve(reason) === 'proxy-soft',
+    classifyFailure: (reason) => resolve(reason) || 'unknown',
+  };
+}
+
 module.exports = {
   isProxyHardFailure,
   isBusinessFailure,
   isProxySoftFailure,
   classifyFailure,
+  normalizeFailureReason, // EVO-10: v0.0.2 继承，reason code|detail 拆分工具
+  inferFailurePhase, // EXP-3: v0.0.2 继承，失败阶段推断（precheck/entry/credential/verification/...）
   PROXY_HARD_FAILURE_REASONS,
   BUSINESS_FAILURE_REASONS,
+  createFailureClassifier,
 };

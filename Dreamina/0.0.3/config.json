@@ -1,7 +1,6 @@
 {
   "_comment": "Dreamina/0.0.3 运行时统一配置文件。所有参数均可被 CLI 参数覆盖（CLI > config.json > 代码默认值）。字段说明见各节 _comment。",
   "runMode": "run",
-
   "firstmail": {
     "_comment": "Firstmail API 鉴权与邮件扫描行为配置",
     "apiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
@@ -11,17 +10,28 @@
     "pollJitterMinMs": 0,
     "pollJitterMaxMs": 500,
     "acceptOlderThanTriggerSkewMs": 15000,
-    "preferredSenderKeywords": ["Dreamina", "CapCut", "noreply"],
-    "subjectKeywords": ["verify", "verification", "code", "confirm"]
+    "preferredSenderKeywords": [
+      "Dreamina",
+      "CapCut",
+      "noreply"
+    ],
+    "subjectKeywords": [
+      "verify",
+      "verification",
+      "code",
+      "confirm"
+    ]
   },
-
   "browser": {
     "_comment": "浏览器启动行为。headed/slowMo 可被 --headed / --slow-mo CLI 参数覆盖",
     "headless": true,
     "slowMo": 0,
-    "blockedResourceTypes": ["image", "media", "font"]
+    "blockedResourceTypes": [
+      "image",
+      "media",
+      "font"
+    ]
   },
-
   "proxy": {
     "_comment": "代理管理策略",
     "maxRetriesPerAccount": 2,
@@ -31,7 +41,6 @@
     "secondaryTargetTimeoutMs": 8000,
     "enableSecondaryTarget": true
   },
-
   "navigation": {
     "_comment": "页面导航超时与等待参数。run 为生产模式，test 为调试模式（--mode test 时生效）",
     "run": {
@@ -57,25 +66,100 @@
       "humanPauseMaxMs": 1800
     }
   },
-
   "verification": {
-    "_comment": "验证码阶段（S3）重试与等待参数。轮询次数/间隔可被 window-layout-profile.json 的 verificationBudgetByConcurrency 按并发量覆盖",
-    "retryMaxAttempts": 3,
-    "resendWaitMs": 1800,
+    "_comment": "验证码阶段（S3）重试与等待参数。maxRounds=总轮次上限（initial+resend合计），防止无限轮询耗资源。",
+    "retryMaxAttempts": 2,
+    "maxRounds": 2,
+    "resendWaitMs": 2000,
+    "resendCountdownMaxWaitMs": 65000,
     "countdownWaitMs": 12000
   },
-
   "credential": {
     "_comment": "凭据提交阶段（S2）行为参数",
     "signupSwitchWaitMs": 1200,
     "skipExistsPrecheckAfterEmail": true
   },
-
   "batch": {
     "_comment": "批量运行行为参数。concurrency 可被 --concurrency CLI 参数覆盖",
     "concurrency": 2,
     "workerStatusIntervalMs": 10000,
     "ignoreKnownExists": false,
     "proxySelectionPolicy": "fresh-batch-no-history"
+  },
+  "noProxyPolicy": {
+    "_comment": "无代理可用时的账号处理策略（GAP-2 修复）。strategy 可选值：skip_account（直接跳过） | retry（等待后重试，超过 retryMaxAttempts 再跳过） | retry_then_defer（等待重试，最终放入延迟队列待后续处理） | stop_batch（整批停止）。默认 skip_account 为最保守策略。",
+    "strategy": "skip_account",
+    "retryWaitMs": 2000,
+    "retryMaxAttempts": 3
+  },
+  "failureClassifier": {
+    "_comment": "失败原因分类扩展（GAP-3 修复）。追加到内置枚举，不替换内置值。proxyHardReasons 追加代理硬失败原因码，businessReasons 追加业务失败原因码，reasonOverrides 精确覆盖单个原因码的分类。",
+    "proxyHardReasons": [],
+    "businessReasons": [],
+    "reasonOverrides": {}
+  },
+  "proxyHealthPool": {
+    "_comment": "【EXP-4/5 继承 v0.0.2 + EVO-4/5/8 已接入】代理健康降级策略。\n  softPenaltyThreshold: 同一代理连续软失败 N 次后进入降级评估（EVO-4 已接入）。\n  fallbackToWeakPool: ok pool 耗尽时是否自动切换到 weak pool（EVO-5 DEGRADED_RUN 已接入）。\n  speedTierFilter: 允许调度的速度档枚举（EVO-8 已接入）。\n    枚举值：FAST(healthScore>=75) / NORMAL([40,75)) / SLOW(<40) / UNKNOWN(未预检)\n    默认全放行 [\"FAST\",\"NORMAL\",\"SLOW\",\"UNKNOWN\"]，防止初次运行代理被清空。\n    生产建议：ok pool 充足后可收紧为 [\"FAST\",\"NORMAL\"]。",
+    "softPenaltyThreshold": 2,
+    "evictOnSoftPenalty": true,
+    "fallbackToWeakPool": true,
+    "speedTierFilter": [
+      "FAST",
+      "NORMAL",
+      "SLOW",
+      "UNKNOWN"
+    ]
+  },
+  "site": {
+    "_comment": "【EXP-6 继承 v0.0.2】目标站点配置。homeUrl 当前在 Dreamina-batch-runner.js 中硬编码，应读自此处（中风险演进项 EVO-6）。v0.0.2 证据：config.json:dreaminaHomeUrl，dreamina-health.js:resolveDreaminaHomeUrl()。",
+    "homeUrl": "https://dreamina.capcut.com/ai-tool/home",
+    "precheckUrl": "https://dreamina.capcut.com/ai-tool/home",
+    "primaryConnectivityCheckUrl": "https://www.google.com/",
+    "secondaryConnectivityCheckUrl": "https://api.ipify.org/?format=json"
+  },
+  "resultRouting": {
+    "_comment": "【EXP-7/12 继承 v0.0.2】按失败种类路由到独立结果文件。v0.0.2 证据：runner.js L601-L609 （alreadyExistsFile / wrongCodeFile / signupRejectedFile / verificationRateLimitedFile）。\n  当前状态：batchContext.paths.perKindResultFiles 路径已定义，但结果写入尚未接入（中风险演进项 EVO-12）。\n  verificationRateLimited 账号在 v0.0.2 中会在下次启动时自动跳过，对应 EXP-13 断点续跑策略。",
+    "enabled": true,
+    "writeWrongCodeFile": true,
+    "writeSignupRejectedFile": true,
+    "writeVerificationRateLimitedFile": true,
+    "writeIpBannedFile": true
+  },
+  "log": {
+    "_comment": "【EXP-2/9 继承 v0.0.2】批量运行日志控制。v0.0.2 证据：runner.js:appendLine(runLogFile, ...) / RUN START / === RUN END ===。\n  writeRunLog: 是否写 run-log.txt（追加型文本日志，支持 grep 分段）。\n  writeFailureEvents: 是否写 failure-events.jsonl（结构化失败事件，支持后分析）。\n  workerStatusIntervalMs: 工作线程状态快照写入间隔（ms），0 表示禁用。",
+    "writeRunLog": true,
+    "writeFailureEvents": true,
+    "workerStatusIntervalMs": 10000
+  },
+  "resumePolicy": {
+    "_comment": "【EVO-13 断点续跑策略】globalDoneFile 跨批次 done 文件（不含 runId）；doneScope=success+exists；ignoreDone 同 --ignore-done CLI 参数。",
+    "enabled": true,
+    "globalDoneFile": "batch-results/accounts-done.txt",
+    "doneScope": "success+exists",
+    "ignoreDone": false
+  },
+  "output": {
+    "_comment": "输出目录配置（第一版占位，待后续统一 output 路径）。baseDir/latestDir 相对 runner 目录。",
+    "baseDir": "batch-results",
+    "latestDir": "batch-results/latest",
+    "createDateSubdir": false
+  },
+  "storageSafety": {
+    "_comment": "【GAP-1 文件写互斥】账号池文件并发写保护。enablePoolFileLock=true 时通过 withPoolFileLock 互斥序列化写操作。",
+    "enablePoolFileLock": true,
+    "writeRetryTimes": 2,
+    "writeRetryDelayMs": 100
+  },
+  "batchFilter": {
+    "_comment": "批量任务账号预过滤。skipEmailDomains：邮件黑洞域名列表，匹配的账号在启动前直接标记 skipped，不开浏览器不消耗代理。",
+    "skipEmailDomains": [
+      "snhlsoble.com"
+    ]
+  },
+  "runtime": {
+    "_comment": "运行时行为调优（第一版占位）。workerAcquireTimeoutMs=Worker 等待代理最大时间；stageFallbackTimeoutMs=单阶段最长执行时间。",
+    "workerAcquireTimeoutMs": 30000,
+    "stageFallbackTimeoutMs": 60000,
+    "gcIntervalMs": 0
   }
 }
