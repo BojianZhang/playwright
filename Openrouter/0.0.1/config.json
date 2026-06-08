@@ -1,0 +1,71 @@
+{
+  "runMode": "run",
+  "mailbox": {
+    "provider": "firstmail",
+    "apiKey": "",
+    "apiBaseUrl": "https://firstmail.ltd",
+    "apiTimeoutMs": 30000,
+    "passwordChangeMode": "skip"
+  },
+  "browser": {
+    "headless": true,
+    "slowMo": 0,
+    "channel": "chrome",
+    "blockedResourceTypes": ["image", "media", "font"],
+    "window": {
+      "workspaceWidth": "auto",
+      "workspaceHeight": "auto",
+      "taskbarReservedPx": 48,
+      "gap": 16,
+      "outerMargin": 16
+    }
+  },
+  "captcha": {
+    "enabled": true,
+    "provider": "capsolver",
+    "apiKey": "",
+    "solveTimeoutMs": 120000,
+    "note": "apiKey 建议放在 config.local.json 或环境变量 OPENROUTER_CAPTCHA_KEY，避免提交进 Git"
+  },
+  "proxy": {
+    "maxRetriesPerAccount": 2,
+    "connectivityTimeoutMs": 8000,
+    "primaryTargetTimeoutMs": 10000,
+    "secondaryTargetTimeoutMs": 8000,
+    "enableSecondaryTarget": true
+  },
+  "site": {
+    "homeUrl": "https://openrouter.ai",
+    "signinUrl": "https://openrouter.ai/sign-in",
+    "keysUrl": "https://openrouter.ai/settings/keys",
+    "billingUrl": "https://openrouter.ai/settings/credits",
+    "primaryConnectivityCheckUrl": "https://openrouter.ai",
+    "secondaryConnectivityCheckUrl": "https://api.ipify.org?format=json"
+  },
+  "navigation": {
+    "entryGotoTimeoutMs": 60000,
+    "firstLoadGraceWaitMs": 1500,
+    "humanPauseMinMs": 400,
+    "humanPauseMaxMs": 1200
+  },
+  "billing": {
+    "allowCharges": false,
+    "topUpAmount": 10,
+    "billingConcurrencyCap": 1
+  },
+  "export": {
+    "template": "{{email}} | {{apiKey}} | credits:{{topUpAmount}} | {{exitIp}}",
+    "writeSuccessFile": true
+  },
+  "batch": {
+    "concurrency": 1,
+    "maxAttempts": 3,
+    "maxGlobalConcurrency": "auto",
+    "perBrowserMemGb": 0.5,
+    "workerStartStaggerMs": 1500,
+    "workerStatusIntervalMs": 5000
+  },
+  "output": {
+    "baseDir": "batch-results"
+  }
+}

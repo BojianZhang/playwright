@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenRouter 自动化控制台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>OpenRouter 自动化控制台</h1>
+    <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 聚合</a>
+  </header>
+
+  <main>
+    <section class="panel form-panel">
+      <h2>任务配置</h2>
+      <form id="jobForm">
+        <label>账号凭证 <small>每行一个，格式 <code>email:password</code></small>
+          <textarea name="accountsRaw" rows="5" placeholder="user1@mail.com:pass1&#10;user2@mail.com:pass2"></textarea>
+        </label>
+
+        <label>代理 <small>每行一个，格式 <code>host:port:user:pass</code>（可留空）</small>
+          <textarea name="proxiesRaw" rows="3" placeholder="1.2.3.4:8080:user:pass"></textarea>
+        </label>
+
+        <fieldset>
+          <legend>运行参数</legend>
+          <div class="row">
+            <label class="inline"><input type="checkbox" name="headed" /> 有头模式</label>
+            <label>并发 <small>实际受服务器全局上限约束</small> <input type="number" name="concurrency" value="1" min="1" max="100" /></label>
+            <label>数量 <input type="number" name="count" value="0" min="0" placeholder="0=全部" /></label>
+            <label>超时(ms) <input type="number" name="timeoutMs" value="0" min="0" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>任务参数</legend>
+          <div class="row">
+            <label>API Key 名称 <small>留空=随机</small> <input type="text" name="apiKeyName" placeholder="留空则随机生成" /></label>
+            <label>API Key 有效期
+              <select name="apiKeyExpiration">
+                <option value="No expiration">永不过期</option>
+                <option value="1 hour">1 小时</option>
+                <option value="1 day">1 天</option>
+                <option value="7 days">7 天</option>
+                <option value="30 days">30 天</option>
+                <option value="90 days">90 天</option>
+                <option value="180 days">180 天</option>
+                <option value="1 year">1 年</option>
+              </select>
+            </label>
+            <label>充值金额 <input type="number" name="topUpAmount" value="10" min="0" step="1" /></label>
+          </div>
+          <div class="row">
+            <label>卡号 <input type="text" name="cardNumber" autocomplete="off" placeholder="不落盘，仅本次内存" /></label>
+            <label>有效期月 <input type="text" name="expMonth" maxlength="2" placeholder="MM" /></label>
+            <label>有效期年 <input type="text" name="expYear" maxlength="4" placeholder="YYYY" /></label>
+            <label>CVC <input type="text" name="cvc" maxlength="4" autocomplete="off" /></label>
+            <label>持卡人 <input type="text" name="cardName" /></label>
+          </div>
+        </fieldset>
+
+        <label>成功回显模板 <small>可用 <code>{{email}} {{password}} {{apiKey}} {{topUpAmount}} {{proxy}} {{exitIp}}</code></small>
+          <textarea name="successTemplate" rows="2">{{email}} | {{apiKey}} | credits:{{topUpAmount}} | {{exitIp}}</textarea>
+        </label>
+
+        <div class="actions">
+          <button type="submit" id="startBtn">开始执行</button>
+          <span id="formMsg" class="muted"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel result-panel">
+      <div class="stat-bar">
+        <div class="stat"><span class="stat-num" id="statTotal">0</span><span class="stat-label">总数</span></div>
+        <div class="stat ok"><span class="stat-num" id="statSuccess">0</span><span class="stat-label">成功</span></div>
+        <div class="stat bad"><span class="stat-num" id="statFailed">0</span><span class="stat-label">失败</span></div>
+        <div class="stat"><span class="stat-num" id="statBrowsers">0/0</span><span class="stat-label">浏览器(在用/上限)</span></div>
+        <div class="stat"><span class="stat-num" id="statQueued">0</span><span class="stat-label">排队中</span></div>
+      </div>
+
+      <h2>工作线程实时状态</h2>
+      <div id="workerGrid" class="worker-grid muted">尚未开始</div>
+
+      <h2>成功账号（实时回显）
+        <button type="button" id="downloadBtn" class="link-btn" disabled>⬇ 下载结果</button>
+      </h2>
+      <pre id="successLog" class="log ok-log" aria-live="polite"></pre>
+
+      <h2>失败统计</h2>
+      <div id="failureStats" class="failure-stats muted">暂无</div>
+
+      <h2>运行日志</h2>
+      <pre id="runLog" class="log run-log"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

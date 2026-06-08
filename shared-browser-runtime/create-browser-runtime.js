@@ -161,6 +161,16 @@ function buildLaunchOptions(options = {}) {
     };
   }
 
+  // 可选：使用本机已安装的浏览器通道（如 'chrome' / 'msedge'）而非内置 Chromium。
+  // 某些站点的反爬（如 Cloudflare Turnstile）对内置 Chromium 更敏感，真实 Chrome 通过率更高。
+  if (options?.channel) {
+    launchOptions.channel = options.channel;
+  }
+  // 可选：追加 Chromium 启动参数（如 --disable-blink-features=AutomationControlled）。
+  if (Array.isArray(options?.extraArgs) && options.extraArgs.length) {
+    launchOptions.args = [...(launchOptions.args || []), ...options.extraArgs];
+  }
+
   return launchOptions;
 }
 

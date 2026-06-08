@@ -43,3 +43,9 @@ Dreamina/0.0.3/proxy-health.json
 
 # Dreamina batch-results global done file (runtime state)
 Dreamina/0.0.3/batch-results/accounts-done.txt
+
+# Openrouter runtime / secrets / outputs
+Openrouter/0.0.1/config.local.json
+Openrouter/0.0.1/batch-results/
+Openrouter/0.0.1/account-state/local-accounts.json
+Openrouter/0.0.1/_scratch-*.js

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>成功账号 · OpenRouter 控制台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>成功账号查看 / 聚合</h1>
+    <span class="badge" id="nodeBadge">node: …</span>
+    <a class="link-btn" href="/" style="margin-left:auto;text-decoration:none;">← 返回控制台</a>
+  </header>
+
+  <main style="grid-template-columns: 360px 1fr;">
+    <section class="panel">
+      <h2>数据源</h2>
+      <label class="inline" style="margin-bottom:10px;"><input type="checkbox" id="includeLocal" checked /> 包含本节点</label>
+      <label>其它节点地址 <small>每行一个,如 <code>http://10.0.0.11:4317</code></small>
+        <textarea id="hosts" rows="5" placeholder="http://10.0.0.11:4317&#10;http://10.0.0.12:4317"></textarea>
+      </label>
+      <label>去重方式
+        <select id="dedupe">
+          <option value="email">按邮箱去重</option>
+          <option value="email+apiKey">按邮箱+Key去重</option>
+          <option value="none">不去重</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button id="loadBtn" type="button">拉取 / 聚合</button>
+        <span id="msg" class="muted"></span>
+      </div>
+      <div id="sources" class="muted" style="margin-top:12px;font-size:12px;"></div>
+    </section>
+
+    <section class="panel">
+      <div class="stat-bar">
+        <div class="stat"><span class="stat-num" id="statCount">0</span><span class="stat-label">账号数</span></div>
+        <div class="stat"><span class="stat-num" id="statNodes">0</span><span class="stat-label">来源节点</span></div>
+        <div class="stat" style="flex:2;">
+          <input type="text" id="search" placeholder="搜索 邮箱 / Key / 节点…" style="margin:0;" />
+        </div>
+      </div>
+      <div class="actions" style="margin-bottom:10px;">
+        <button id="copyBtn" type="button" class="link-btn">复制(email:apiKey)</button>
+        <button id="dlTxtBtn" type="button" class="link-btn">下载 .txt</button>
+        <button id="dlJsonBtn" type="button" class="link-btn">下载 .json</button>
+      </div>
+      <div style="overflow:auto;max-height:70vh;">
+        <table id="tbl" class="rtbl">
+          <thead><tr><th>#</th><th>节点</th><th>邮箱</th><th>API Key</th><th>出口IP</th><th>额度</th><th>时间</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/results.js"></script>
+</body>
+</html>
