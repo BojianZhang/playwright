@@ -361,10 +361,16 @@ async function handleApiAggregate(req, res) {
 // ── 服务器 ──────────────────────────────────────────────────────────────
 const HOST = process.env.OPENROUTER_WEB_HOST || '0.0.0.0';
 
+// 仅"数据/动作"接口需要鉴权;静态页面(无敏感数据,只是 UI 外壳)放行,
+// 这样开了 token 也能先打开页面、再由前端弹窗输入 token。
+function isProtectedRoute(pathname) {
+  return pathname === '/jobs' || pathname === '/events' || pathname === '/download' || pathname.startsWith('/api/');
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (!checkAuth(req, res, url)) return;
   const { pathname } = url;
+  if (isProtectedRoute(pathname) && !checkAuth(req, res, url)) return;
 
   if (req.method === 'POST' && pathname === '/jobs') return void handleStartJob(req, res);
   if (req.method === 'GET' && pathname === '/events') return void handleEvents(req, res, url.searchParams);
