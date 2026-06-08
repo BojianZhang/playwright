@@ -363,11 +363,45 @@ const HOST = process.env.OPENROUTER_WEB_HOST || '0.0.0.0';
 
 // 仅"数据/动作"接口需要鉴权;静态页面(无敏感数据,只是 UI 外壳)放行,
 // 这样开了 token 也能先打开页面、再由前端弹窗输入 token。
+// 全锁定模式:开启后连静态页面也要 token(陌生人有域名也打不开)。
+// 用 ?token= 访问一次即可(auth.js 会带入并记住)。开关:security.gateStatic / OPENROUTER_GATE_STATIC=1
+function loadGateStatic() {
+  if (process.env.OPENROUTER_GATE_STATIC) return process.env.OPENROUTER_GATE_STATIC === '1' || process.env.OPENROUTER_GATE_STATIC === 'true';
+  for (const f of ['config.local.json', 'config.json']) {
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && typeof c.security.gateStatic === 'boolean') return c.security.gateStatic; } catch (_e) { /* none */ }
+  }
+  return false;
+}
+const GATE_STATIC = loadGateStatic();
 function isProtectedRoute(pathname) {
+  if (GATE_STATIC) return true; // 全锁定:所有路由都要鉴权
   return pathname === '/jobs' || pathname === '/events' || pathname === '/download' || pathname.startsWith('/api/');
 }
 
+// ── IP 白名单(可选,代码级兜底)──────────────────────────────────────────
+// 设 OPENROUTER_ALLOW_IPS=1.2.3.4,10.0.0.0/24 后,只有名单内 IP(及本机)能访问,其余 403。
+// 注意:若前置了 Nginx 等反代,remoteAddress 是反代的 IP,需在反代层做白名单。
+const ALLOW_IPS = (process.env.OPENROUTER_ALLOW_IPS || '').split(',').map((s) => s.trim()).filter(Boolean);
+function ipToLong(ip) { return ip.split('.').reduce((a, o) => (((a << 8) + (parseInt(o, 10) & 255)) >>> 0), 0) >>> 0; }
+function ipAllowed(remote) {
+  if (!ALLOW_IPS.length) return true;
+  const ip = String(remote || '').replace(/^::ffff:/, '');
+  if (ip === '127.0.0.1' || ip === '::1') return true; // 本机始终放行
+  for (const rule of ALLOW_IPS) {
+    if (rule === ip) return true;
+    if (rule.includes('/') && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+      const [base, bitsStr] = rule.split('/'); const bits = Number(bitsStr);
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(base) && bits >= 0 && bits <= 32) {
+        const mask = bits === 0 ? 0 : (~((1 << (32 - bits)) - 1)) >>> 0;
+        if ((ipToLong(ip) & mask) === (ipToLong(base) & mask)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 const server = http.createServer((req, res) => {
+  if (!ipAllowed(req.socket && req.socket.remoteAddress)) { res.writeHead(403); res.end('Forbidden'); return; }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { pathname } = url;
   if (isProtectedRoute(pathname) && !checkAuth(req, res, url)) return;
@@ -389,6 +423,10 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`[Openrouter Web] 控制台已启动: http://${HOST}:${PORT}  (本机: http://localhost:${PORT})`);
+  if (ALLOW_IPS.length) {
+    // eslint-disable-next-line no-console
+    console.log(`🔒 IP 白名单已启用(+本机): ${ALLOW_IPS.join(', ')}`);
+  }
   if (AUTH_TOKEN) {
     // eslint-disable-next-line no-console
     console.log('🔒 访问令牌已启用:所有请求需带 token。');
