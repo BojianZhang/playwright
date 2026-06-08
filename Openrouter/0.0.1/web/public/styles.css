@@ -39,11 +39,15 @@ header h1 { font-size: 17px; margin: 0; }
 
 main {
   display: grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: 440px minmax(0, 1fr);  /* minmax(0,..) 防止宽表格把列撑爆 */
   gap: 16px;
   padding: 16px 22px;
   align-items: start;
+  max-width: 1700px;          /* 超宽屏不再把内容拉成稀疏长条 */
+  margin: 0 auto;
 }
+/* 表单列做成 sticky，长结果滚动时配置面板常驻 */
+.form-panel { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
 
 .panel {
   background: var(--panel);
@@ -159,11 +163,13 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 .link-btn:disabled { opacity: .4; cursor: not-allowed; }
 
-.rtbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.rtbl th, .rtbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+/* width:auto → 列按内容收紧，不再被拉成 100% 产生大空隙；横向溢出由外层容器滚动 */
+.rtbl { width: auto; border-collapse: collapse; font-size: 12.5px; }
+.rtbl th, .rtbl td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .rtbl th { color: var(--muted); position: sticky; top: 0; background: var(--panel); }
 .rtbl td.mono { font-family: ui-monospace, Menlo, Consolas, monospace; color: #9be9a8; }
 .rtbl tr:hover td { background: var(--panel-2); }
+.rtbl td, .rtbl th { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 
 .failure-stats { margin-bottom: 14px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -180,3 +186,83 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 880px) {
   main { grid-template-columns: 1fr; }
 }
+
+/* ── 卡池统计表 ──────────────────────────────────────────────── */
+.card-pool { margin-bottom: 14px; overflow-x: auto; }
+.card-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.card-table th, .card-table td { text-align: left; padding: 5px 7px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.card-table th { color: var(--muted); }
+.card-table td.err { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: var(--bad); }
+.card-table tr.ok td:first-child { color: #9be9a8; }
+.card-table tr.bad td { background: rgba(248, 81, 73, .06); }
+.card-table tr.mute td { color: var(--muted); }
+.card-table button.mini {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 5px; padding: 1px 7px; font-size: 11px; cursor: pointer;
+}
+.card-table button.mini:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── 卡表管理控件 + 充值台账 ──────────────────────────────────── */
+.card-table input.maxedit {
+  width: 52px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 2px 4px; font-size: 12px; text-align: center;
+}
+.card-table input.maxedit:focus { border-color: var(--accent); outline: none; }
+.card-table td.acts { white-space: nowrap; }
+.card-table td.acts button.mini { margin-right: 4px; }
+.card-table button.mini.danger { color: var(--bad); border-color: rgba(248,81,73,.35); }
+.card-table button.mini.danger:hover { background: rgba(248,81,73,.12); border-color: var(--bad); }
+.bill-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.bill-summary .chip { white-space: nowrap; }
+.bill-summary .link-btn { margin-left: auto; }
+
+/* ── 布局优化：成功/失败双栏、提示、失败日志 ───────────────────── */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1100px) { .two-col { grid-template-columns: 1fr; } }
+.bad-log { color: #ffb3ae; }
+.bad-log:empty::before, .ok-log:empty::before { content: '等待中…'; color: var(--muted); }
+small.hint { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; line-height: 1.5; }
+small.hint b { color: var(--text); }
+label.inline.big { font-size: 14px; }
+label.inline.big strong { color: var(--ok); }
+fieldset .row + .row { margin-top: 2px; }
+.card-table tr.bad td { background: rgba(248,81,73,.06); }
+
+/* ═══ 新布局：顶部横向配置 + 下方全宽结果 + 标签页 ═══ */
+body { font-size: 15px; }
+main.dash { display: block; max-width: 1820px; }
+.panel { padding: 18px 20px; }
+.panel h2 { font-size: 15px; margin: 0 0 12px; }
+
+/* 顶部配置：4 组横向铺开，窄屏自动换行 */
+.config { margin-bottom: 18px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 22px; }
+.cfg-col { min-width: 0; }
+.cfg-col h3 { margin: 0 0 12px; font-size: 13.5px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 7px; font-weight: 600; }
+.cfg-col label { margin-bottom: 14px; }
+.config-actions { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 16px; }
+.config-actions #startBtn { padding: 11px 34px; font-size: 15px; font-weight: 600; }
+
+/* 结果：全宽 */
+.results .stat-bar { gap: 14px; }
+.results .stat { padding: 14px 10px; }
+.stat-num { font-size: 26px; }
+.stat-label { font-size: 12px; }
+.two-col { gap: 18px; margin-bottom: 8px; }
+.ok-log, .bad-log { min-height: 90px; max-height: 300px; }
+
+/* 标签页：把卡池/台账/失败明细/日志收成一个区，不再一堆空 section 堆着 */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; flex-wrap: wrap; }
+.tab { background: transparent; color: var(--muted); border: 1px solid transparent; border-bottom: none;
+  border-radius: 8px 8px 0 0; padding: 9px 18px; font-size: 13.5px; cursor: pointer; margin: 0; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--panel-2); border-color: var(--border); font-weight: 600; }
+.tab .badge-n { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 6px; border-radius: 9px;
+  background: var(--bad); color: #fff; font-size: 11px; line-height: 16px; text-align: center; }
+.pane-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+
+/* results 页：数据源横向一条 */
+.src-bar { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.src-bar > label.inline { margin: 0; align-self: center; }
+.src-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.src-actions button { padding: 9px 20px; }

@@ -108,4 +108,28 @@ async function waitForClerkVerifyLink(opts = {}) {
   return { link: null, attempts };
 }
 
-module.exports = { getLatestMessage, extractClerkVerifyLink, waitForClerkVerifyLink, extractVerifyCode, waitForVerifyCode };
+/**
+ * 修改邮箱密码（Firstmail API）。
+ * POST /api/v1/email/password/change/  body: { email, current_password, new_password }
+ * @param {object} opts { apiKey, email, currentPassword, newPassword, baseUrl?, timeoutMs? }
+ * @returns {Promise<{ ok:boolean, status:number, json:object }>}
+ */
+async function changePassword(opts = {}) {
+  const { apiKey, email, currentPassword, newPassword, baseUrl = DEFAULT_BASE, timeoutMs = 30000 } = opts;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${baseUrl}/api/v1/email/password/change/`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, current_password: currentPassword, new_password: newPassword }),
+      signal: ctrl.signal,
+    });
+    const json = await resp.json().catch(() => ({}));
+    return { ok: resp.ok, status: resp.status, json };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { getLatestMessage, extractClerkVerifyLink, waitForClerkVerifyLink, extractVerifyCode, waitForVerifyCode, changePassword };

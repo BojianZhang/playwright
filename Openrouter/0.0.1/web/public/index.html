@@ -9,78 +9,122 @@
 <body>
   <header>
     <h1>OpenRouter 自动化控制台</h1>
-    <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 聚合</a>
+    <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 卡池 / 聚合</a>
   </header>
 
-  <main>
-    <section class="panel form-panel">
-      <h2>任务配置</h2>
+  <main class="dash">
+    <!-- ── 顶部配置（横向分组）────────────────────────────────── -->
+    <section class="panel config">
       <form id="jobForm">
-        <label>账号凭证 <small>每行一个，格式 <code>email:password</code></small>
-          <textarea name="accountsRaw" rows="5" placeholder="user1@mail.com:pass1&#10;user2@mail.com:pass2"></textarea>
-        </label>
-
-        <label>代理 <small>每行一个，格式 <code>host:port:user:pass</code>（可留空）</small>
-          <textarea name="proxiesRaw" rows="3" placeholder="1.2.3.4:8080:user:pass"></textarea>
-        </label>
-
-        <fieldset>
-          <legend>运行参数</legend>
-          <div class="row">
-            <label class="inline"><input type="checkbox" name="headed" /> 有头模式</label>
-            <label>并发 <small>实际受服务器全局上限约束</small> <input type="number" name="concurrency" value="1" min="1" max="100" /></label>
-            <label>数量 <input type="number" name="count" value="0" min="0" placeholder="0=全部" /></label>
-            <label>超时(ms) <input type="number" name="timeoutMs" value="0" min="0" /></label>
+        <div class="config-grid">
+          <div class="cfg-col">
+            <h3>① 账号 &amp; 密码</h3>
+            <label>账号凭证 <small><code>email:原邮箱密码</code></small>
+              <textarea name="accountsRaw" rows="5" placeholder="user1@firstmail.com:原密码1&#10;user2@firstmail.com:原密码2"></textarea>
+            </label>
+            <label>统一密码 <small>留空=用原密码且不改密</small>
+              <input type="text" name="unifiedPassword" autocomplete="off" placeholder="如 MyNewPass#2026" />
+              <small class="hint">设置后：注册就用它；<b>全部流程跑完</b>后再把邮箱密码从原密码改成它。</small>
+            </label>
+            <label>代理 <small><code>host:port:user:pass</code>，可留空</small>
+              <textarea name="proxiesRaw" rows="2" placeholder="1.2.3.4:8080:user:pass"></textarea>
+            </label>
           </div>
-        </fieldset>
 
-        <fieldset>
-          <legend>任务参数</legend>
-          <div class="row">
-            <label>任务模式 <small>不确定就选自动</small>
+          <div class="cfg-col">
+            <h3>② 运行 &amp; 模式</h3>
+            <label class="inline big"><input type="checkbox" name="headed" /> 有头模式（显示浏览器）</label>
+            <div class="row">
+              <label>并发数 <small>受全局上限约束</small> <input type="number" name="concurrency" value="1" min="1" max="100" /></label>
+              <label>处理数量 <small>0=全部</small> <input type="number" name="count" value="0" min="0" /></label>
+            </div>
+            <label>任务模式 <small>已存在账号会自动转登录继续</small>
               <select name="mode">
-                <option value="auto">自动(新账号注册 / 已注册则自动登录)</option>
-                <option value="login">仅登录(确定都是已注册账号)</option>
+                <option value="auto">自动（注册 / 已注册则登录）</option>
+                <option value="login">仅登录（都是已注册账号）</option>
               </select>
             </label>
+            <div class="row">
+              <label>API Key 名称 <small>留空=随机</small> <input type="text" name="apiKeyName" placeholder="随机" /></label>
+              <label>Key 有效期
+                <select name="apiKeyExpiration">
+                  <option value="No expiration">永不过期</option>
+                  <option value="1 hour">1 小时</option>
+                  <option value="1 day">1 天</option>
+                  <option value="7 days">7 天</option>
+                  <option value="30 days">30 天</option>
+                  <option value="90 days">90 天</option>
+                  <option value="180 days">180 天</option>
+                  <option value="1 year">1 年</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <div class="row">
-            <label>API Key 名称 <small>留空=随机</small> <input type="text" name="apiKeyName" placeholder="留空则随机生成" /></label>
-            <label>API Key 有效期
-              <select name="apiKeyExpiration">
-                <option value="No expiration">永不过期</option>
-                <option value="1 hour">1 小时</option>
-                <option value="1 day">1 天</option>
-                <option value="7 days">7 天</option>
-                <option value="30 days">30 天</option>
-                <option value="90 days">90 天</option>
-                <option value="180 days">180 天</option>
-                <option value="1 year">1 年</option>
+
+          <div class="cfg-col">
+            <h3>③ 账单 / 卡池（S5）</h3>
+            <label>账单 / 卡 / 充值动作 <small>逐级递进，只有「真实充值」才扣钱</small>
+              <select name="billingAction" id="billingAction">
+                <option value="none">不操作（只注册 + 取 Key）</option>
+                <option value="address">仅绑定账单地址</option>
+                <option value="card">绑定地址 + 加卡（不扣费）</option>
+                <option value="charge">绑定地址 + 加卡 + 真实充值（扣钱）</option>
               </select>
             </label>
-            <label>充值金额 <input type="number" name="topUpAmount" value="10" min="0" step="1" /></label>
+            <div class="row" id="chargeOpts">
+              <label>充值金额 <small>最低 5</small> <input type="number" name="topUpAmount" value="5" min="5" step="1" /></label>
+              <label>最多试卡数 <small>被拒换卡</small> <input type="number" name="maxCardTries" value="3" min="1" max="10" /></label>
+            </div>
+            <label>账单地址来源
+              <select name="addressMode" id="addressMode">
+                <option value="random">随机生成（免税州，推荐）</option>
+                <option value="pool">手动地址池</option>
+              </select>
+            </label>
+            <label id="statesWrap">免税州 <small>逗号分隔</small>
+              <input type="text" name="addressStates" value="Oregon, Delaware, Montana, New Hampshire" />
+            </label>
+            <div id="addressPoolWrap" style="display:none;">
+              <label>账单地址池 <small><code>姓名|地址1|城市|州|邮编</code></small>
+                <textarea name="billingAddressesRaw" rows="2" placeholder="Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209"></textarea>
+              </label>
+              <label>地址分配
+                <select name="billingAddressStrategy"><option value="random">随机</option><option value="round-robin">轮询</option></select>
+              </label>
+            </div>
+            <label>卡池导入 <small>每行一卡，自动解析</small>
+              <textarea name="cardsRaw" rows="2" placeholder="4361 2080 0908 8695  02/29  093&#10;4737023115115911|05/30|130"></textarea>
+            </label>
+            <div class="row">
+              <label>每张卡最大次数 <input type="number" name="cardMaxUses" value="10" min="1" max="100" /></label>
+            </div>
+            <div class="actions">
+              <button type="button" id="importCardsBtn" class="link-btn">⬆ 导入到卡池</button>
+              <button type="button" id="refreshCardsBtn" class="link-btn">↻ 刷新</button>
+              <span id="cardMsg" class="muted"></span>
+            </div>
           </div>
-          <div class="row">
-            <label>卡号 <input type="text" name="cardNumber" autocomplete="off" placeholder="不落盘，仅本次内存" /></label>
-            <label>有效期月 <input type="text" name="expMonth" maxlength="2" placeholder="MM" /></label>
-            <label>有效期年 <input type="text" name="expYear" maxlength="4" placeholder="YYYY" /></label>
-            <label>CVC <input type="text" name="cvc" maxlength="4" autocomplete="off" /></label>
-            <label>持卡人 <input type="text" name="cardName" /></label>
+
+          <div class="cfg-col">
+            <h3>④ 回显模板</h3>
+            <label>成功回显 <small>{{email}} {{password}} {{originalPassword}} {{apiKey}} {{billingStatus}} {{charged}} {{cardLast4}} {{passwordChanged}} {{exitIp}}</small>
+              <textarea name="successTemplate" rows="4">{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} card:{{cardLast4}} | ip:{{exitIp}}</textarea>
+            </label>
+            <label>失败回显 <small>{{email}} {{password}} {{reason}} {{stage}} {{failClass}} {{attempts}} {{detail}}</small>
+              <textarea name="failureTemplate" rows="3">{{email}}:{{password}} | ✗{{stage}} | {{reason}} | 试{{attempts}}次</textarea>
+            </label>
           </div>
-        </fieldset>
+        </div>
 
-        <label>成功回显模板 <small>可用 <code>{{email}} {{password}} {{apiKey}} {{topUpAmount}} {{proxy}} {{exitIp}}</code></small>
-          <textarea name="successTemplate" rows="2">{{email}} | {{apiKey}} | credits:{{topUpAmount}} | {{exitIp}}</textarea>
-        </label>
-
-        <div class="actions">
-          <button type="submit" id="startBtn">开始执行</button>
+        <div class="config-actions">
+          <button type="submit" id="startBtn">▶ 开始执行</button>
           <span id="formMsg" class="muted"></span>
         </div>
       </form>
     </section>
 
-    <section class="panel result-panel">
+    <!-- ── 结果（全宽）──────────────────────────────────────── -->
+    <section class="panel results">
       <div class="stat-bar">
         <div class="stat"><span class="stat-num" id="statTotal">0</span><span class="stat-label">总数</span></div>
         <div class="stat ok"><span class="stat-num" id="statSuccess">0</span><span class="stat-label">成功</span></div>
@@ -90,18 +134,55 @@
       </div>
 
       <h2>工作线程实时状态</h2>
-      <div id="workerGrid" class="worker-grid muted">尚未开始</div>
+      <div id="workerGrid" class="worker-grid muted">尚未开始 —— 在上方填好配置后点「开始执行」</div>
 
-      <h2>成功账号（实时回显）
-        <button type="button" id="downloadBtn" class="link-btn" disabled>⬇ 下载结果</button>
-      </h2>
-      <pre id="successLog" class="log ok-log" aria-live="polite"></pre>
+      <div class="two-col">
+        <div class="col">
+          <h2>✓ 成功账号
+            <button type="button" id="downloadBtn" class="link-btn" disabled>⬇ 下载</button>
+          </h2>
+          <pre id="successLog" class="log ok-log" aria-live="polite"></pre>
+        </div>
+        <div class="col">
+          <h2>✗ 失败账号
+            <button type="button" id="downloadFailedBtn" class="link-btn" disabled>⬇ 下载</button>
+            <button type="button" id="requeueFailedBtn" class="link-btn" disabled>↺ 重跑(登录)</button>
+          </h2>
+          <pre id="failLog" class="log bad-log" aria-live="polite"></pre>
+        </div>
+      </div>
 
-      <h2>失败统计</h2>
-      <div id="failureStats" class="failure-stats muted">暂无</div>
-
-      <h2>运行日志</h2>
-      <pre id="runLog" class="log run-log"></pre>
+      <!-- 次级信息收进标签页，避免一堆空 section 堆着 -->
+      <div class="tabs" id="tabs">
+        <button type="button" class="tab active" data-tab="cards">卡池统计</button>
+        <button type="button" class="tab" data-tab="ledger">充值台账</button>
+        <button type="button" class="tab" data-tab="faildetail">失败明细</button>
+        <button type="button" class="tab" data-tab="log">运行日志</button>
+      </div>
+      <div class="tab-panes">
+        <div class="tab-pane" data-pane="cards">
+          <div class="pane-actions">
+            <button type="button" id="refreshCards2Btn" class="link-btn">↻ 刷新</button>
+            <button type="button" id="clearCardsBtn" class="link-btn">🗑 清空卡池</button>
+            <span class="muted">可改「可用次数」/ 重置 / 删除</span>
+          </div>
+          <div id="cardPool" class="card-pool muted">尚无卡片，去上方「卡池导入」</div>
+        </div>
+        <div class="tab-pane" data-pane="ledger" hidden>
+          <div class="pane-actions">
+            <button type="button" id="refreshBillBtn" class="link-btn">↻ 刷新</button>
+            <span class="muted">按邮箱记账，不做糊涂账</span>
+          </div>
+          <div id="billingLedger" class="card-pool muted">暂无充值记录</div>
+        </div>
+        <div class="tab-pane" data-pane="faildetail" hidden>
+          <div id="failureStats" class="failure-stats muted">暂无</div>
+          <div id="failTable" class="card-pool muted">暂无失败</div>
+        </div>
+        <div class="tab-pane" data-pane="log" hidden>
+          <pre id="runLog" class="log run-log"></pre>
+        </div>
+      </div>
     </section>
   </main>
 

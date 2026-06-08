@@ -14,7 +14,18 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const { solveAndInject } = require('./openrouter-turnstile');
-const { waitForClerkVerifyLink, waitForVerifyCode } = require('./firstmail-client');
+const { waitForClerkVerifyLink, waitForVerifyCode, changePassword } = require('./firstmail-client');
+
+// OpenRouter 账号密码 = 统一密码(若设置) 否则用输入里的原密码。
+// 注意：邮箱(Firstmail) API 读取始终用 account.password(原邮箱密码)；
+//       仅 OpenRouter 表单填这个 openrouterPassword。
+function openrouterPassword(runtime, account) {
+  return (runtime && runtime.taskParams && String(runtime.taskParams.unifiedPassword || '').trim())
+    || account.password;
+}
+const cardPool = require('./billing/card-pool');
+const billingLedger = require('./billing/billing-ledger');
+const { generateAddress } = require('./billing/address-gen');
 
 const ok = (state, detail) => ({ success: true, state, reason: '', detail: detail || {} });
 const fail = (state, reason, detail) => ({ success: false, state, reason: reason || state, detail: detail || {} });
@@ -79,7 +90,7 @@ async function register(ctx) {
     await page.fill('#firstName-field', firstName).catch(() => {});
     await page.fill('#lastName-field', lastName).catch(() => {});
     await page.fill('#emailAddress-field', account.email);
-    await page.fill('#password-field', account.password);
+    await page.fill('#password-field', openrouterPassword(runtime, account));
     await page.check('#legalAccepted-field').catch(() => {});
     await page.waitForTimeout(500);
 
@@ -162,7 +173,7 @@ async function signInExisting(page, account, runtime, context) {
     await page.fill('#identifier-field', account.email).catch(() => {});
     await page.click('button:has-text("Continue")').catch(() => {});
     await page.waitForTimeout(2000);
-    await page.fill('#password-field', account.password).catch(() => {});
+    await page.fill('#password-field', openrouterPassword(runtime, account)).catch(() => {});
     await page.click('button:has-text("Continue")').catch(() => {});
     await page.waitForTimeout(2500);
 
@@ -382,12 +393,410 @@ async function selectExpiration(page, expiration, log) {
 }
 
 // ── S5/S6 占位（按用户要求先做到 S4）────────────────────────────────────────
+// ── S5: 充值（账单地址 + 卡池加卡 + 购买额度）─────────────────────────────────
+// 流程对标用户截图：/settings/credits → Add Credits → [Add Billing Address] →
+// [Add Payment Method(银行卡)] → [Purchase Credits]。成功标志：弹出
+// “Your payment is processing / Credits will be added” 页面(JS alert 或 toast)。
+//
+// 失败语义(默认 soft)：账号+Key 已是有价产物，充值失败不回退整账号——仍返回 ok，
+// 只在 detail.billingStatus 标 success/declined/no-card/no-address/skipped。
 async function billing(ctx) {
-  // TODO(S5): 账单+卡+充值（用户确认"先做到抽 API Key 为止"，暂不实现，需 --allow-charges + 卡信息）。
-  return ok('BILLING_SKIPPED', { skipped: true });
+  const { page, account, runtime, context } = ctx;
+  const cfg = runtime.config || {};
+  const tp = runtime.taskParams || {};
+  const log = (m) => context.log && context.log(`[billing] ${m}`);
+
+  // 累进式动作：none < address < card < charge。每级包含前一级。
+  //   none    : 不碰账单/卡/扣费(只注册+取Key)
+  //   address : 仅绑定账单地址
+  //   card    : 绑定地址 + 加卡(不扣费)
+  //   charge  : 绑定地址 + 加卡 + 真实充值
+  const action = resolveBillingAction(tp);
+  if (action === 'none') return ok('BILLING_SKIPPED', { billingStatus: 'skipped', charged: 0 });
+
+  const doCard = action === 'card' || action === 'charge';
+  const doPurchase = action === 'charge';
+  const amount = Math.max(0, Number(tp.topUpAmount) || 0);
+  if (doPurchase && amount < 5) {
+    log(`充值金额 $${amount} < 最低 $5，跳过`);
+    return softBilling(cfg, 'skipped');
+  }
+
+  // 充值台账：每个账号终态记一条，避免糊涂账(哪个邮箱/哪张卡/多少钱/成败)。
+  const recordBilling = async (result, charged, cardLast4, error) => {
+    try {
+      await billingLedger.record({ email: account.email, result, charged: charged || 0, cardLast4: cardLast4 || '', jobId: context.jobId || '', error });
+      context.onBilling && context.onBilling(billingLedger.summary(), { email: account.email, result, charged: charged || 0, cardLast4: cardLast4 || '' });
+    } catch (_e) { /* ignore */ }
+  };
+
+  // 账单地址：默认随机生成(免税州)，每个账号一条；'pool' 模式才用手动地址池。
+  let address;
+  if ((tp.addressMode || 'random') === 'pool') {
+    const addresses = Array.isArray(tp.billingAddresses) ? tp.billingAddresses : [];
+    address = pickAddress(addresses, tp.billingAddressStrategy || 'random', context.workerId || 0);
+    if (!address) {
+      log('地址池为空(手动模式) → 跳过，账号(含Key)仍交付');
+      await recordBilling('no-address', 0, '');
+      return softBilling(cfg, 'no-address');
+    }
+  } else {
+    address = generateAddress({ states: tp.addressStates });
+    log(`随机账单地址: ${address.name} / ${address.line1}, ${address.city}, ${address.state} ${address.zip}`);
+  }
+
+  const steps = { doAddress: true, doCard, doPurchase };
+
+  // 仅绑定地址(不加卡)：无需取卡，直接走地址流程。
+  if (!doCard) {
+    let outcome;
+    try { outcome = await runBillingFlow(page, null, address, 0, cfg, log, steps); }
+    catch (e) { outcome = { result: 'error', error: String(e.message || e).slice(0, 200) }; }
+    const status = outcome.result === 'address-bound' ? 'address-bound' : outcome.result;
+    await recordBilling(status, 0, '', outcome.error);
+    if (status === 'address-bound') { log('✓ 账单地址已绑定'); return ok('BILLING_OK', { billingStatus: 'address-bound', charged: 0, cardLast4: '' }); }
+    return softBilling(cfg, status);
+  }
+
+  // 需要加卡(card / charge)：从卡池取卡，被拒自动换下一张。
+  const maxCardTries = Math.max(1, Number(tp.maxCardTries) || cfg.billing?.maxCardTries || 3);
+  const pushCard = (last4, result, error) => {
+    try { context.onCard && context.onCard(cardPool.snapshot(), { last4, result, error: error || '' }); } catch (_e) { /* ignore */ }
+  };
+
+  let lastResult = 'no-card';
+  for (let tryN = 1; tryN <= maxCardTries; tryN += 1) {
+    const card = await cardPool.acquire();
+    if (!card) { log('卡池已无可用卡'); lastResult = 'no-card'; break; }
+    log(`第 ${tryN}/${maxCardTries} 张卡 ••${card.last4} ${doPurchase ? `充值 $${amount}` : '加卡(不扣费)'}…`);
+
+    let outcome;
+    try {
+      outcome = await runBillingFlow(page, card, address, amount, cfg, log, steps);
+    } catch (e) {
+      outcome = { result: 'error', error: String(e.message || e).slice(0, 200) };
+    }
+    // 卡池计数：success=扣费成功(计一次用量)；card-bound=仅加卡(不计用量)；declined=踢卡。
+    const repResult = outcome.result === 'card-bound' ? 'bound' : outcome.result;
+    await cardPool.report(card.id, { result: repResult, error: outcome.error });
+    pushCard(card.last4, outcome.result, outcome.error);
+    lastResult = outcome.result;
+
+    if (outcome.result === 'success') {
+      log(`✓ 充值成功 ••${card.last4} $${amount}`);
+      await recordBilling('success', amount, card.last4);
+      return ok('BILLING_OK', { billingStatus: 'success', charged: amount, cardLast4: card.last4 });
+    }
+    if (outcome.result === 'card-bound') {
+      log(`✓ 已加卡(未扣费) ••${card.last4}`);
+      await recordBilling('card-bound', 0, card.last4);
+      return ok('BILLING_OK', { billingStatus: 'card-bound', charged: 0, cardLast4: card.last4 });
+    }
+    log(`✗ 卡 ••${card.last4} 结果=${outcome.result} ${outcome.error || ''} → 换下一张`);
+  }
+  await recordBilling(lastResult === 'no-card' ? 'no-card' : 'declined', 0, '', '');
+  return softBilling(cfg, lastResult);
 }
+
+// 解析账单动作：优先 taskParams.billingAction；兼容老的 allowCharges 布尔。
+function resolveBillingAction(tp) {
+  const a = String(tp.billingAction || '').toLowerCase();
+  if (['none', 'address', 'card', 'charge'].includes(a)) return a;
+  return tp.allowCharges ? 'charge' : 'none';
+}
+
+// soft/hard 失败收口：默认 soft(账号仍交付)；config.billing.failureMode='hard' 则判失败。
+function softBilling(cfg, status) {
+  if ((cfg.billing?.failureMode || 'soft') === 'hard') {
+    return fail('BILLING_FAILED', `BILLING_${String(status).toUpperCase()}`, { billingStatus: status, charged: 0 });
+  }
+  return ok('BILLING_SOFT_FAIL', { billingStatus: status, charged: 0 });
+}
+
+// 从地址池按策略挑一条账单地址。
+function pickAddress(addresses, strategy, idx) {
+  if (!addresses.length) return null;
+  if (strategy === 'round-robin') return addresses[idx % addresses.length];
+  return addresses[Math.floor(Math.random() * addresses.length)];
+}
+
+// 按 steps 跑账单流程(地址→加卡→购买)，按需在任一级停下。
+// 返回 { result:'success'|'card-bound'|'address-bound'|'declined'|'error', error?, dialog? }。
+async function runBillingFlow(page, card, address, amount, cfg, log, steps) {
+  const { doCard, doPurchase } = steps;
+  const billingUrl = cfg.site?.billingUrl || 'https://openrouter.ai/settings/credits';
+  const dialogs = [];
+  const onDialog = (d) => { dialogs.push(String(d.message() || '')); d.accept().catch(() => {}); };
+  page.on('dialog', onDialog);
+  try {
+    await page.goto(billingUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(2500);
+    await dismissOnboarding(page);
+
+    const onSignin = await page.evaluate(() => /sign-in|sign-up/.test(location.pathname)).catch(() => false);
+    if (onSignin) return { result: 'error', error: 'NOT_LOGGED_IN' };
+
+    await clickFirst(page, ['button:has-text("Add Credits")', 'button:has-text("Buy Credits")', 'button:has-text("Add a Payment Method")'], 8000).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    let addrSaved = false;
+    let cardSaved = false;
+    for (let step = 0; step < 12; step += 1) {
+      const early = await detectOutcome(page, dialogs);
+      if (early) return early; // 付款成功 或 被拒(任一级都可能在加卡时被拒)
+
+      const state = await detectModalState(page);
+      log(`step ${step} modal=${state} (card=${doCard} purchase=${doPurchase})`);
+
+      if (state === 'address') {
+        await fillBillingAddress(page, address, log);
+        await clickFirst(page, ['button:has-text("Update Address")', 'button:has-text("Save")', 'button:has-text("Continue")'], 6000).catch(() => {});
+        addrSaved = true;
+        await page.waitForTimeout(2000);
+      } else if (state === 'payment') {
+        if (!doCard) return { result: 'address-bound' }; // 仅绑地址：到付款方式弹窗说明地址已存
+        await addPaymentMethod(page, card, address, log);
+        await page.waitForTimeout(1200);
+        const declErr = await readBillingError(page);
+        await clickFirst(page, ['button:has-text("Save payment method")', 'button:has-text("Save")'], 8000).catch(() => {});
+        await page.waitForTimeout(3000);
+        const afterErr = await readBillingError(page);
+        if (afterErr) return { result: 'declined', error: afterErr };
+        if (declErr) return { result: 'declined', error: declErr };
+        cardSaved = true;
+      } else if (state === 'purchase') {
+        if (!doCard) return { result: 'address-bound' };
+        if (!doPurchase) return { result: 'card-bound' }; // 到购买弹窗 = 卡已存上
+        await setPurchaseAmount(page, amount, log);
+        await page.waitForTimeout(600);
+        await clickFirst(page, ['button:has-text("Purchase")'], 8000).catch(() => {});
+        await page.waitForTimeout(2500);
+        const out = await waitForPurchaseOutcome(page, dialogs, 25000);
+        if (out) return out;
+      } else {
+        // 未识别弹窗：可能已关。按已完成的步骤兜底判定。
+        if (cardSaved && !doPurchase) return { result: 'card-bound' };
+        if (addrSaved && !doCard) return { result: 'address-bound' };
+        await clickFirst(page, ['button:has-text("Add Credits")', 'button:has-text("Add a Payment Method")'], 4000).catch(() => {});
+        await page.waitForTimeout(1500);
+      }
+    }
+    if (cardSaved && !doPurchase) return { result: 'card-bound' };
+    if (addrSaved && !doCard) return { result: 'address-bound' };
+    return { result: 'error', error: 'BILLING_FLOW_TIMEOUT' };
+  } finally {
+    page.off('dialog', onDialog);
+  }
+}
+
+// 判断当前显示的是哪个弹窗：address / payment / purchase / none。
+async function detectModalState(page) {
+  return page.evaluate(() => {
+    const t = (document.body.innerText || '');
+    const has = (re) => re.test(t);
+    const hasBtn = (label) => Array.from(document.querySelectorAll('button')).some(b => new RegExp(label, 'i').test(b.innerText || ''));
+    if (has(/Purchase Credits/i) || (has(/Total due/i) && hasBtn('Purchase'))) return 'purchase';
+    if (has(/Billing Address/i) || hasBtn('Update Address')) return 'address';
+    if (has(/Payment Method/i) || hasBtn('Save payment method')) return 'payment';
+    return 'none';
+  }).catch(() => 'none');
+}
+
+// 读取被拒/错误提示文本(toast 或内联)。
+async function readBillingError(page) {
+  return page.evaluate(() => {
+    const t = (document.body.innerText || '');
+    const m = t.match(/(your card was declined|card was declined|银行卡被拒绝[^\n]*|payment issue|declined[^\n]*|Error 5\d\d[^\n]*)/i);
+    return m ? m[0].slice(0, 160) : '';
+  }).catch(() => '');
+}
+
+// 综合判定结果(被拒/成功)；dialogs 为已捕获的 JS alert 文案数组。
+async function detectOutcome(page, dialogs) {
+  const dlg = (dialogs || []).join(' ');
+  if (/payment is processing|credits will be added|check back shortly/i.test(dlg)) return { result: 'success', dialog: dlg.slice(0, 160) };
+  const err = await readBillingError(page);
+  if (err) return { result: 'declined', error: err };
+  const txt = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+  if (/payment is processing|credits will be added|check back shortly/i.test(txt)) return { result: 'success' };
+  return null;
+}
+
+// Purchase 后等待结果：轮询 dialog/成功文案/被拒文案。
+async function waitForPurchaseOutcome(page, dialogs, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 20000);
+  while (Date.now() < deadline) {
+    const out = await detectOutcome(page, dialogs);
+    if (out) return out;
+    await page.waitForTimeout(1000);
+  }
+  return null;
+}
+
+// 填账单地址(兼容 OpenRouter 原生表单 + Stripe AddressElement iframe)。
+async function fillBillingAddress(page, address, log) {
+  const a = address || {};
+  await fillAcross(page, ['input[name="name"]', 'input[autocomplete="name"]', 'input[placeholder*="Full name" i]', 'input[placeholder*="全名"]'], a.name || '', log);
+  await selectCountry(page, a.country || 'United States', log);
+  await fillAcross(page, ['input[name="addressLine1"]', 'input[name="line1"]', 'input[autocomplete="address-line1"]', 'input[placeholder*="Address line 1" i]', 'input[placeholder*="地址第 1 行"]', 'input[placeholder*="地址第1行"]'], a.line1 || '', log);
+  if (a.line2) await fillAcross(page, ['input[name="addressLine2"]', 'input[name="line2"]', 'input[autocomplete="address-line2"]'], a.line2, log);
+  await fillAcross(page, ['input[name="locality"]', 'input[name="city"]', 'input[autocomplete="address-level2"]', 'input[placeholder*="City" i]', 'input[placeholder*="城市"]'], a.city || '', log);
+  await fillStateField(page, a.state || '', log);
+  await fillAcross(page, ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[placeholder*="ZIP" i]', 'input[placeholder*="邮政编码"]'], a.zip || '', log);
+}
+
+// 加银行卡(Stripe Elements iframe + 原生兜底)。
+async function addPaymentMethod(page, card, address, log) {
+  // 选「银行卡 / Card」tab(若有)。
+  await clickFirst(page, ['button:has-text("银行卡")', 'button:has-text("Card")', '[role="tab"]:has-text("Card")'], 2500).catch(() => {});
+  await page.waitForTimeout(400);
+  const exp = `${card.expMonth}${card.expYear}`; // Stripe 自动格式化 MM/YY
+  await fillAcross(page, ['input[name="number"]', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]', 'input[id*="numberInput" i]', 'input[placeholder*="1234" i]', 'input[placeholder*="卡号"]'], card.number, log);
+  await fillAcross(page, ['input[name="expiry"]', 'input[name="exp-date"]', 'input[autocomplete="cc-exp"]', 'input[id*="expiryInput" i]', 'input[placeholder*="MM" i]'], exp, log);
+  await fillAcross(page, ['input[name="cvc"]', 'input[autocomplete="cc-csc"]', 'input[id*="cvcInput" i]', 'input[placeholder*="CVC" i]', 'input[placeholder*="安全码"]'], card.cvc, log);
+  // 卡片邮编(优先卡自带，否则用地址邮编)。
+  const zip = card.zip || (address && address.zip) || '';
+  if (zip) await fillAcross(page, ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[id*="postalCodeInput" i]', 'input[placeholder*="邮政编码"]'], zip, log);
+  await selectCountry(page, 'United States', log);
+  // 确保「使用 Link 保存我的信息」不勾。
+  await uncheckLink(page, log);
+}
+
+// 取消勾选 Stripe Link / 保存信息 复选框。
+async function uncheckLink(page, log) {
+  try {
+    const frames = [page.mainFrame(), ...page.frames()];
+    for (const f of frames) {
+      const boxes = f.locator('input[type="checkbox"]');
+      const n = await boxes.count().catch(() => 0);
+      for (let i = 0; i < n; i += 1) {
+        const cb = boxes.nth(i);
+        const checked = await cb.isChecked().catch(() => false);
+        if (checked) { await cb.uncheck({ timeout: 1500 }).catch(() => cb.click({ timeout: 1500 }).catch(() => {})); log && log('取消勾选 Link/保存信息'); }
+      }
+    }
+  } catch (_e) { /* ignore */ }
+}
+
+// 设置购买额度。
+async function setPurchaseAmount(page, amount, log) {
+  const sels = ['input[type="number"]', 'input[name="amount"]', 'input[placeholder*="25000"]', 'input[inputmode="decimal"]', 'input[inputmode="numeric"]'];
+  const ok = await fillAcross(page, sels, String(amount), log);
+  if (!ok) log && log('未找到 Amount 输入框');
+}
+
+// 国家选择(select 或 combobox)。多为已默认 United States，尽力设置。
+async function selectCountry(page, country, log) {
+  try {
+    const frames = [page.mainFrame(), ...page.frames()];
+    for (const f of frames) {
+      const sel = f.locator('select[name="country"], select[autocomplete="country"], select[name*="country" i]').first();
+      if (await sel.count().catch(() => 0)) {
+        await sel.selectOption({ label: country }).catch(async () => {
+          await sel.selectOption('US').catch(() => {});
+        });
+        return;
+      }
+    }
+  } catch (_e) { /* ignore */ }
+}
+
+// 州字段：select(全名 Oregon) / combobox / input 兜底。
+async function fillStateField(page, state, log) {
+  if (!state) return;
+  try {
+    const frames = [page.mainFrame(), ...page.frames()];
+    for (const f of frames) {
+      const sel = f.locator('select[name="administrativeArea"], select[name="state"], select[autocomplete="address-level1"], select[name*="state" i]').first();
+      if (await sel.count().catch(() => 0)) {
+        await sel.selectOption({ label: state }).catch(() => sel.selectOption(state).catch(() => {}));
+        return;
+      }
+    }
+  } catch (_e) { /* ignore */ }
+  await fillAcross(page, ['input[name="administrativeArea"]', 'input[name="state"]', 'input[autocomplete="address-level1"]', 'input[placeholder*="State" i]', 'input[placeholder*="州"]'], state, log);
+}
+
+// 跨主框架 + 所有子 iframe 寻找首个可见输入框并填值(Stripe 输入需 focus+type)。
+async function fillAcross(page, selectors, value, log) {
+  if (value == null || value === '') return false;
+  const frames = [page.mainFrame(), ...page.frames()];
+  for (const sel of selectors) {
+    for (const f of frames) {
+      try {
+        const loc = f.locator(sel).first();
+        if (!(await loc.count().catch(() => 0))) continue;
+        if (!(await loc.isVisible().catch(() => false))) continue;
+        await loc.click({ timeout: 1500 }).catch(() => {});
+        await loc.fill('').catch(() => {});
+        const typed = await loc.fill(String(value)).then(() => true).catch(() => false);
+        if (!typed) { await loc.type(String(value), { delay: 25 }).catch(() => {}); }
+        return true;
+      } catch (_e) { /* try next */ }
+    }
+  }
+  return false;
+}
+
+// 点击第一个匹配到的按钮(任意 selector 命中即点)。
+async function clickFirst(page, selectors, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 5000);
+  while (Date.now() < deadline) {
+    for (const sel of selectors) {
+      const loc = page.locator(sel).first();
+      if (await loc.count().catch(() => 0) && await loc.isVisible().catch(() => false)) {
+        const clicked = await loc.click({ timeout: 2000 }).then(() => true).catch(() => false);
+        if (clicked) return true;
+      }
+    }
+    await page.waitForTimeout(400);
+  }
+  throw new Error(`clickFirst 超时: ${selectors[0]}`);
+}
+// ── S6: 导出 / 最终状态 ──────────────────────────────────────────────────
+// 到达最终状态：若设置了「统一密码」，把邮箱密码从原密码改成统一新密码(Firstmail API)。
+// 仅在「付款成功」或「本就不充值(skipped)」时改密；付款失败时保留原密码以便重试。
 async function exportStage(ctx) {
-  return ok('EXPORT_OK', {});
+  const { account, runtime, context } = ctx;
+  const cfg = runtime.config || {};
+  const mb = cfg.mailbox || {};
+  const tp = runtime.taskParams || {};
+  const log = (m) => context.log && context.log(`[export] ${m}`);
+  const unified = String(tp.unifiedPassword || '').trim();
+
+  if (!unified || unified === account.password) {
+    return ok('EXPORT_OK', { passwordChanged: false });
+  }
+
+  const billingStatus = context.stageResults?.billing?.detail?.billingStatus || 'skipped';
+  // 流程按预期跑完(充值成功/仅加卡/仅绑地址/本次不操作)才改密；被拒/失败保留原密码以便重试。
+  const shouldChange = ['success', 'skipped', 'card-bound', 'address-bound'].includes(billingStatus);
+  if (!shouldChange) {
+    log(`付款未成功(${billingStatus})，跳过邮箱改密，保留原密码`);
+    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeNote: `skip(${billingStatus})` });
+  }
+  if (!mb.apiKey) {
+    log('未配置 Firstmail apiKey，无法改密');
+    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: 'NO_MAILBOX_APIKEY' });
+  }
+
+  try {
+    const r = await changePassword({
+      apiKey: mb.apiKey, email: account.email,
+      currentPassword: account.password, newPassword: unified,
+      baseUrl: mb.apiBaseUrl, timeoutMs: mb.apiTimeoutMs || 30000,
+    });
+    if (r.ok) {
+      log(`✓ 邮箱密码已改为统一新密码 (${account.email})`);
+      return ok('EXPORT_OK', { passwordChanged: true, newPassword: unified });
+    }
+    const detail = (typeof r.json === 'object') ? JSON.stringify(r.json).slice(0, 140) : '';
+    log(`✗ 邮箱改密失败 status=${r.status} ${detail}`);
+    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: `HTTP ${r.status} ${detail}` });
+  } catch (e) {
+    log(`✗ 邮箱改密异常 ${e.message}`);
+    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: String(e.message || e) });
+  }
 }
 
 module.exports = {

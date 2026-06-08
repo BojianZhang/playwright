@@ -52,12 +52,24 @@ function buildDeliveryPayload({ account = {}, proxy = {}, runtime = {}, stageRes
   const exitIp = runtime?.ipCheck?.browserRuntimeIp
     || stageResults.proxyPrecheck?.detail?.exitIp
     || '';
+  const billingDetail = stageResults.billing?.detail || {};
+  // 密码模型：原来密码=输入的邮箱密码；现在密码(password)=统一密码(若设置,即 OpenRouter 登录密码)。
+  const unified = String(runtime?.taskParams?.unifiedPassword || '').trim();
+  const passwordChanged = !!stageResults.export?.detail?.passwordChanged;
+  const originalPassword = account.password || '';
+  const currentPassword = unified || originalPassword; // OpenRouter 登录用
   return {
     email: account.email || '',
-    password: account.password || '',
+    password: currentPassword,
+    originalPassword,
+    mailboxPassword: passwordChanged ? (unified || originalPassword) : originalPassword,
+    passwordChanged,
     apiKey,
     apiKeyName: runtime?.taskParams?.apiKeyName || '',
     topUpAmount: runtime?.taskParams?.topUpAmount || 0,
+    billingStatus: billingDetail.billingStatus || 'skipped',
+    charged: billingDetail.charged || 0,
+    cardLast4: billingDetail.cardLast4 || '',
     proxy: proxy?.host ? `${proxy.host}:${proxy.port}` : (proxy?.raw || ''),
     exitIp,
     createdAt: new Date().toISOString(),

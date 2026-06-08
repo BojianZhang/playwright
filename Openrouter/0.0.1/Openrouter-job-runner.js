@@ -133,6 +133,7 @@ async function runJob(opts = {}) {
     runParams = {},
     taskParams = {},
     successTemplate = '',
+    failureTemplate = '',
     publish = () => {},
   } = opts;
 
@@ -150,6 +151,12 @@ async function runJob(opts = {}) {
     if (!successFile) return;
     try { fs.appendFileSync(successFile, `${rendered}\n`); } catch (_e) { /* ignore */ }
     try { fs.appendFileSync(path.join(resultsDir, `${jobId}-success.jsonl`), `${JSON.stringify(raw)}\n`); } catch (_e) { /* ignore */ }
+  };
+  // 失败账号也落盘（email:password:reason 等），方便复盘/重跑。
+  const recordFailed = (rendered, raw) => {
+    if (!resultsDir) return;
+    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.txt`), `${rendered}\n`); } catch (_e) { /* ignore */ }
+    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.jsonl`), `${JSON.stringify(raw)}\n`); } catch (_e) { /* ignore */ }
   };
 
   publish(jobId, 'log', `job ${jobId} 启动：账号 ${accounts.length} 个，并发 ${concurrency}`);
@@ -183,7 +190,7 @@ async function runJob(opts = {}) {
     concurrency,
     runTask: ({ workerId, payload }) => processTask({
       workerId, concurrency, account: payload.account, proxy: payload.proxy,
-      runParams, taskParams, successTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess,
+      runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess, recordFailed,
     }),
     onWorkerUpdate: (workerState, snapshot) => {
       publish(jobId, 'worker-update', {
@@ -225,7 +232,7 @@ async function runJob(opts = {}) {
  */
 const NON_RETRYABLE_REASONS = new Set(['ACCOUNT_ALREADY_EXISTS', 'ACCOUNT_NOT_ALLOWED', 'ACCOUNT_LOCKED']);
 async function processTask(ctx) {
-  const { workerId, concurrency = 1, account, proxy, runParams, taskParams, successTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {} } = ctx;
+  const { workerId, concurrency = 1, account, proxy, runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {}, recordFailed = () => {} } = ctx;
   const maxAttempts = Math.max(1, Number(process.env.OPENROUTER_MAX_ATTEMPTS) || Number(CONFIG?.batch?.maxAttempts) || 3);
 
   // 有头需要显示器：Linux 上若无 DISPLAY(没装/没起 Xvfb)则自动降级无头，避免启动崩溃。
@@ -259,10 +266,24 @@ async function processTask(ctx) {
     publish(jobId, 'worker-update', { worker: { workerId, status: 'running', stage: `retry-${attempt + 1}`, account: account.email } });
     await new Promise(r => setTimeout(r, 1500 + (workerId % 5) * 300));
   }
-  // 最终失败：计入统计 + 回显
+  // 最终失败：计入统计 + 回显（含可读的失败回显行 email:password:reason）
   const failClass = classify(last.reason);
   recordFailure(failureStats, last.reason, failClass);
-  publish(jobId, 'account-failed', { email: account.email, reason: last.reason, failClass, stage: last.stage, attempts: made });
+  const failRaw = {
+    email: account.email || '',
+    password: account.password || '',
+    originalPassword: account.password || '',
+    reason: last.reason || 'UNKNOWN',
+    stage: last.stage || '',
+    failClass,
+    attempts: made,
+    detail: (last.detail ? String(last.detail).slice(0, 300) : ''),
+    proxy: proxy && proxy.raw ? proxy.raw : (proxy && proxy.host ? `${proxy.host}:${proxy.port}` : ''),
+    createdAt: new Date().toISOString(),
+  };
+  const failRendered = exportTemplates.render(failureTemplate || '{{email}}:{{password}}:{{reason}}', failRaw);
+  recordFailed(failRendered, failRaw);
+  publish(jobId, 'account-failed', { ...failRaw, rendered: failRendered });
   publish(jobId, 'failure-stats', failureStats);
   return { success: false, reason: last.reason };
 }
@@ -367,10 +388,16 @@ async function runAttempt(actx) {
       runtime,
       context: {
         cfRequestUrls,
+        workerId,
+        jobId,
         log: (m) => publish(jobId, 'log', `W${workerId} ${m}`),
         onStageStart: (stage) => publish(jobId, 'worker-update', {
           worker: { workerId, status: 'running', stage, account: account.email },
         }),
+        // 卡池实时统计推送(billing 阶段调用)。
+        onCard: (pool, last) => publish(jobId, 'card-stats', { pool, last }),
+        // 充值台账实时推送(billing 阶段每账号终态)。
+        onBilling: (summary, last) => publish(jobId, 'billing-stats', { summary, last }),
       },
     });
 

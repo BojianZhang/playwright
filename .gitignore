@@ -48,4 +48,7 @@ Dreamina/0.0.3/batch-results/accounts-done.txt
 Openrouter/0.0.1/config.local.json
 Openrouter/0.0.1/batch-results/
 Openrouter/0.0.1/account-state/local-accounts.json
+Openrouter/0.0.1/account-state/registered-accounts.json
+Openrouter/0.0.1/account-state/card-pool.json
+Openrouter/0.0.1/account-state/billing-ledger.json
 Openrouter/0.0.1/_scratch-*.js

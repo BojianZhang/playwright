@@ -20,6 +20,8 @@ const os = require('os');
 
 const jobRunner = require('../Openrouter-job-runner');
 const eventBus = require('./event-bus');
+const cardPool = require('../billing/card-pool');
+const billingLedger = require('../billing/billing-ledger');
 
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -99,6 +101,34 @@ function parseProxies(raw) {
     .filter(p => p.host && p.port);
 }
 
+/**
+ * 账单地址池：每行 "姓名|地址行1|城市|州|邮编[|地址行2]"（分隔符 | 或制表或逗号）。
+ * 国家默认美国(United States)。
+ * @param {string} raw
+ * @returns {Array<{name,line1,city,state,zip,line2,country}>}
+ */
+function parseAddressLines(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => {
+      const parts = line.split(/\s*[|\t]\s*|\s*,\s*/).map(s => s.trim());
+      const [name, line1, city, state, zip, line2] = parts;
+      return {
+        name: name || '',
+        line1: line1 || '',
+        city: city || '',
+        state: state || '',
+        zip: zip || '',
+        line2: line2 || '',
+        country: 'United States',
+      };
+    })
+    .filter(a => a.line1 && a.zip);
+}
+
 // ── 请求体读取 ──────────────────────────────────────────────────────────
 
 function readJsonBody(req, limitBytes = 5 * 1024 * 1024) {
@@ -172,22 +202,32 @@ async function handleStartJob(req, res) {
     headed: !!payload.headed,
     concurrency: Math.max(1, Number(payload.concurrency) || 1),
     count: Number(payload.count) || accounts.length,
-    timeoutMs: Number(payload.timeoutMs) || 0,
   };
   const slicedAccounts = accounts.slice(0, runParams.count);
+
+  // 卡池：若本次提交带了卡文本，先合并导入(已存在的保留历史计数)。
+  if (payload.cardsRaw && String(payload.cardsRaw).trim()) {
+    const parsed = cardPool.parseCardLines(payload.cardsRaw, Number(payload.cardMaxUses) || 10);
+    await cardPool.upsertMany(parsed).catch(() => {});
+  }
 
   const taskParams = {
     mode: payload.mode === 'login' ? 'login' : 'register',
     apiKeyName: payload.apiKeyName || '',
     apiKeyExpiration: payload.apiKeyExpiration || 'No expiration',
+    // 统一密码：OpenRouter 注册用此密码；最终状态把邮箱密码改成它。留空=用输入里的原密码、不改密。
+    unifiedPassword: String(payload.unifiedPassword || '').trim(),
     topUpAmount: Number(payload.topUpAmount) || 0,
-    card: {
-      cardNumber: payload.cardNumber || '',
-      expMonth: payload.expMonth || '',
-      expYear: payload.expYear || '',
-      cvc: payload.cvc || '',
-      name: payload.cardName || '',
-    },
+    // S5 账单/卡/充值动作：none|address|card|charge（兼容老的 allowCharges）。
+    billingAction: ['none', 'address', 'card', 'charge'].includes(payload.billingAction)
+      ? payload.billingAction
+      : (payload.allowCharges ? 'charge' : 'none'),
+    maxCardTries: Math.max(1, Number(payload.maxCardTries) || 3),
+    // 账单地址：默认随机生成(免税州)；pool=用手动地址池。
+    addressMode: payload.addressMode === 'pool' ? 'pool' : 'random',
+    addressStates: String(payload.addressStates || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
+    billingAddresses: parseAddressLines(payload.billingAddressesRaw),
+    billingAddressStrategy: payload.billingAddressStrategy === 'round-robin' ? 'round-robin' : 'random',
   };
 
   // jobId 含节点标识 → 文件名 <jobId>-success.txt 跨机器不会重复。
@@ -202,6 +242,7 @@ async function handleStartJob(req, res) {
       runParams,
       taskParams,
       successTemplate: payload.successTemplate || '',
+      failureTemplate: payload.failureTemplate || '',
       publish: eventBus.publish,
     }))
     .catch((err) => {
@@ -273,17 +314,18 @@ function checkAuth(req, res, url) {
   return false;
 }
 
-// 下载某个 job 的成功结果文件（batch-results/<jobId>-success.txt）。
+// 下载某个 job 的结果文件（type=success|failed）。
 function handleDownload(req, res, query) {
   const jobId = query.get('jobId') || '';
+  const type = query.get('type') === 'failed' ? 'failed' : 'success';
   if (!/^job-[\w-]+$/.test(jobId)) { sendJson(res, 400, { error: 'BAD_JOB_ID' }); return; }
-  const file = path.join(__dirname, '..', 'batch-results', `${jobId}-success.txt`);
+  const file = path.join(__dirname, '..', 'batch-results', `${jobId}-${type}.txt`);
   if (!file.startsWith(path.join(__dirname, '..', 'batch-results'))) { res.writeHead(403); res.end('Forbidden'); return; }
   fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); res.end('结果文件不存在(可能尚无成功账号)'); return; }
+    if (err) { res.writeHead(404); res.end('结果文件不存在'); return; }
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${jobId}-success.txt"`,
+      'Content-Disposition': `attachment; filename="${jobId}-${type}.txt"`,
     });
     res.end(data);
   });
@@ -419,6 +461,42 @@ async function handleApiAggregate(req, res) {
   sendJson(res, 200, { total: all.length, count: merged.length, sources, accounts: merged });
 }
 
+// ── 卡池管理(受保护, /api/cards*) ─────────────────────────────────────────
+function handleCardsList(res) {
+  sendJson(res, 200, { cards: cardPool.snapshot(), available: cardPool.availableCount() });
+}
+async function handleCardsImport(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const parsed = cardPool.parseCardLines(body.cardsRaw || '', Number(body.maxUses) || 10);
+  const errors = parsed.filter((c) => c._parseError).map((c) => ({ raw: c.raw, error: c._parseError }));
+  const result = await cardPool.upsertMany(parsed);
+  sendJson(res, 200, { ...result, parseErrors: errors, cards: cardPool.snapshot(), available: cardPool.availableCount() });
+}
+async function handleCardAction(req, res, action) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const id = String(body.id || '');
+  // clear 不需要 id
+  if (action === 'clear') { await cardPool.clear(); sendJson(res, 200, { ok: true, cards: cardPool.snapshot(), available: cardPool.availableCount() }); return; }
+  if (!id) { sendJson(res, 400, { error: 'MISSING_ID' }); return; }
+  if (action === 'disable') await cardPool.disable(id);
+  else if (action === 'enable') await cardPool.enable(id);
+  else if (action === 'remove') await cardPool.remove(id);
+  else if (action === 'reset') await cardPool.resetCounters(id);
+  else if (action === 'update') await cardPool.setMaxUses(id, Number(body.maxUses) || 1);
+  sendJson(res, 200, { ok: true, cards: cardPool.snapshot(), available: cardPool.availableCount() });
+}
+
+// 充值台账(按邮箱记账)。
+function handleBillingSummary(res) {
+  sendJson(res, 200, billingLedger.summary());
+}
+async function handleBillingClear(res) {
+  await billingLedger.clear();
+  sendJson(res, 200, { ok: true, ...billingLedger.summary() });
+}
+
 // ── 服务器 ──────────────────────────────────────────────────────────────
 const HOST = process.env.OPENROUTER_WEB_HOST || '0.0.0.0';
 
@@ -503,6 +581,16 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/register') return void handleRegister(req, res);
   if (req.method === 'POST' && pathname === '/api/push') return void handlePush(req, res);
   if (req.method === 'POST' && pathname === '/api/aggregate') return void handleApiAggregate(req, res);
+  if (req.method === 'GET' && pathname === '/api/cards') return void handleCardsList(res);
+  if (req.method === 'POST' && pathname === '/api/cards/import') return void handleCardsImport(req, res);
+  if (req.method === 'POST' && pathname === '/api/cards/disable') return void handleCardAction(req, res, 'disable');
+  if (req.method === 'POST' && pathname === '/api/cards/enable') return void handleCardAction(req, res, 'enable');
+  if (req.method === 'POST' && pathname === '/api/cards/remove') return void handleCardAction(req, res, 'remove');
+  if (req.method === 'POST' && pathname === '/api/cards/reset') return void handleCardAction(req, res, 'reset');
+  if (req.method === 'POST' && pathname === '/api/cards/update') return void handleCardAction(req, res, 'update');
+  if (req.method === 'POST' && pathname === '/api/cards/clear') return void handleCardAction(req, res, 'clear');
+  if (req.method === 'GET' && pathname === '/api/billing') return void handleBillingSummary(res);
+  if (req.method === 'POST' && pathname === '/api/billing/clear') return void handleBillingClear(res);
   if (req.method === 'GET') return void serveStatic(req, res, pathname);
 
   res.writeHead(405); res.end('Method Not Allowed');

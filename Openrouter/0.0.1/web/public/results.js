@@ -42,13 +42,53 @@ function render() {
   const tb = $('tbl').querySelector('tbody');
   tb.innerHTML = rows.map((r, i) => `<tr>
     <td>${i + 1}</td>
-    <td>${esc(r.nodeId)}</td>
     <td>${esc(r.email)}</td>
+    <td class="mono">${esc(r.password)}</td>
+    <td class="mono">${esc(r.originalPassword)}</td>
     <td class="mono">${esc(r.apiKey)}</td>
+    <td>${esc(r.billingStatus || '')}</td>
+    <td>${esc(r.charged != null ? r.charged : r.topUpAmount)}</td>
+    <td>${r.cardLast4 ? '••' + esc(r.cardLast4) : ''}</td>
+    <td>${r.passwordChanged ? '✓' : ''}</td>
     <td>${esc(r.exitIp)}</td>
-    <td>${esc(r.topUpAmount)}</td>
+    <td>${esc(r.nodeId)}</td>
     <td>${esc((r.createdAt || '').replace('T', ' ').slice(0, 19))}</td>
   </tr>`).join('');
+}
+
+// ── 卡池 / 充值台账（本节点）──────────────────────────────────────────────
+const CARD_STATUS = { active: '可用', exhausted: '用尽', declined: '被拒', disabled: '已禁用' };
+function shortTime(s) { if (!s) return '—'; try { return new Date(s).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (_e) { return s; } }
+async function loadCards() {
+  try {
+    const r = await authFetch('/api/cards', {}, true); if (!r || !r.ok) return;
+    const d = await r.json(); const cards = d.cards || [];
+    $('cardSummary').textContent = `共 ${cards.length} 张 · 可用 ${d.available || 0}`;
+    const box = $('cardPool');
+    if (!cards.length) { box.classList.add('muted'); box.innerHTML = '暂无卡片'; return; }
+    box.classList.remove('muted');
+    const rows = cards.map((c) => `<tr class="${c.status === 'active' ? 'ok' : (c.status === 'declined' ? 'bad' : 'mute')}">
+      <td>${esc(c.masked)}</td><td>${esc(c.exp)}</td><td>${CARD_STATUS[c.status] || c.status}</td>
+      <td>${c.usedCount}/${c.maxUses}</td><td><b>${c.remaining}</b></td><td>${c.successCount}</td><td>${c.declineCount}</td>
+      <td>${shortTime(c.lastUsedAt)}</td><td class="err" title="${esc(c.lastError)}">${c.lastError ? esc(c.lastError.slice(0, 24)) : '—'}</td>
+    </tr>`).join('');
+    box.innerHTML = `<table class="card-table"><thead><tr><th>卡号</th><th>有效期</th><th>状态</th><th>已用/上限</th><th>剩余</th><th>成功</th><th>被拒</th><th>最近用</th><th>最近错误</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (_e) { /* ignore */ }
+}
+async function loadBilling() {
+  try {
+    const r = await authFetch('/api/billing', {}, true); if (!r || !r.ok) return;
+    const s = await r.json(); const box = $('billingLedger');
+    const byCard = Object.entries(s.byCard || {}).map(([k, v]) => `••${k}: ${v.count}次/$${v.charged}`).join('　');
+    const head = `<div class="bill-summary"><span class="chip cls">总充值 $${s.totalCharged || 0}</span><span class="chip cls">成功 ${s.success || 0}</span><span class="chip">被拒 ${s.declined || 0}</span><span class="muted">${esc(byCard)}</span></div>`;
+    const entries = s.entries || [];
+    if (!entries.length) { box.classList.remove('muted'); box.innerHTML = head + '<div class="muted">暂无充值记录</div>'; return; }
+    box.classList.remove('muted');
+    const rows = entries.map((e) => `<tr class="${e.result === 'success' ? 'ok' : (e.result === 'declined' ? 'bad' : 'mute')}">
+      <td>${shortTime(e.at)}</td><td>${esc(e.email)}</td><td>${e.cardLast4 ? '••' + esc(e.cardLast4) : '—'}</td>
+      <td>${e.charged ? '$' + e.charged : '—'}</td><td>${esc(e.result)}</td><td class="err">${esc(e.error || '')}</td></tr>`).join('');
+    box.innerHTML = head + `<table class="card-table"><thead><tr><th>时间</th><th>邮箱</th><th>卡</th><th>金额</th><th>结果</th><th>错误</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (_e) { /* ignore */ }
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])); }
@@ -94,7 +134,7 @@ async function loadData(silent) {
 function setupAutoRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if ($('autoRefresh').checked) {
-    refreshTimer = setInterval(() => loadData(true), 5000);
+    refreshTimer = setInterval(() => { loadData(true); loadCards(); loadBilling(); }, 5000);
   }
 }
 
@@ -110,14 +150,22 @@ $('autoRefresh').addEventListener('change', setupAutoRefresh);
 $('search').addEventListener('input', render);
 $('copyBtn').addEventListener('click', () => {
   const txt = ALL.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n');
-  navigator.clipboard.writeText(txt).then(() => { $('msg').textContent = '已复制到剪贴板'; });
+  navigator.clipboard.writeText(txt).then(() => { $('msg').textContent = '已复制(email:apiKey)'; });
+});
+const copyPwBtn = $('copyPwBtn');
+if (copyPwBtn) copyPwBtn.addEventListener('click', () => {
+  const txt = ALL.map((r) => `${r.email || ''}:${r.password || ''}`).join('\n');
+  navigator.clipboard.writeText(txt).then(() => { $('msg').textContent = '已复制(email:密码)'; });
 });
 $('dlTxtBtn').addEventListener('click', () => download('accounts.txt', ALL.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'), 'text/plain'));
 $('dlJsonBtn').addEventListener('click', () => download('accounts.json', JSON.stringify(ALL, null, 2), 'application/json'));
+const rcBtn = $('refreshCardsBtn'); if (rcBtn) rcBtn.addEventListener('click', loadCards);
+const rbBtn = $('refreshBillBtn'); if (rbBtn) rbBtn.addEventListener('click', loadBilling);
 
 (async () => {
   loadNode();
   await initHosts();        // 先填好主机列表(localStorage / cluster 配置)
   await loadData(false);    // 再聚合加载
+  loadCards(); loadBilling();
   setupAutoRefresh();       // 启动自动刷新(默认每 5s)
 })();
