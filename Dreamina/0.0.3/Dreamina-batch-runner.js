@@ -998,6 +998,16 @@ function buildBatchAccountRecord(result = {}, extra = {}) {
     account: result?.account?.email || extra?.account?.email || '',
     workerId: extra?.workerId || 0,
     proxyExitIp: String(extra?.proxy?.exitIp || extra?.proxy?.resolvedExitIp || result?.meta?.exitIp || ''), // EXP-11: 代理出口IP（v0.0.2继承）
+    // 双 IP 显示字段：
+    // proxyCheckExitIp — Node 层代理预检出口 IP（来自 checkProxyExitIp，已写入 proxy.exitIp）
+    // browserRuntimeIp — Playwright 浏览器实际使用 IP（来自 getBrowserRuntimeIp，走 chromium proxy 通道）
+    // ipMatched        — 两者是否一致（null 表示任意一方未能获取）
+    proxyCheckExitIp: String(result?.ipCheck?.proxyCheckExitIp || extra?.proxy?.exitIp || ''),
+    browserRuntimeIp: String(result?.ipCheck?.browserRuntimeIp || ''),
+    ipMatched: result?.ipCheck?.ipMatched !== undefined ? result.ipCheck.ipMatched : null,
+    ipMismatchWarning: result?.ipCheck?.ipMatched === false
+      ? '代理预检 IP 与浏览器实际 IP 不一致，请检查 launchOptions.proxy 是否正确注入'
+      : null,
     precheckLevel: String(result?.meta?.precheckLevel || extra?.precheckLevel || ''), // EXP-17: 预检等级（OK/WEAK/BAD），v0.0.2 继承
     proxyId: extra?.proxy?.id || summarizeProxy(extra?.proxy || {}).id || '',
     bucket: String(extra?.bucket || (result?.success ? 'success' : 'failed')),
@@ -1505,6 +1515,38 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
       logInfo: null,
     });
 
+    // ── 双 IP 对比日志 ──────────────────────────────────────────────────────────────
+    // proxyCheckExitIp：来自代理预检阶段（Node 层），已写入 result.proxyPrecheckSummary.resolvedIp。
+    // browserRuntimeIp：来自 createBrowserRuntime 新增的 getBrowserRuntimeIp()，走浏览器 proxy 通道。
+    // 两者均不包含用户名/密码，只输出 IP 地址。
+    const _ipCheckBundle = runtimeBundle.ipCheck && typeof runtimeBundle.ipCheck === 'object' ? runtimeBundle.ipCheck : null;
+    const _precheckIp = String(result?.proxyPrecheckSummary?.resolvedIp || '').trim();
+    const _browserIp  = String(_ipCheckBundle?.browserRuntimeIp || '').trim();
+    const _ipMatched  = _precheckIp && _browserIp ? _precheckIp === _browserIp : null;
+    const _ipSrcLabel = String(_ipCheckBundle?.browserRuntimeIpSourceLabel || _ipCheckBundle?.browserRuntimeIpSource || 'unknown').trim();
+    console.log(`[proxy-ip] precheck exit IP   : ${_precheckIp || 'N/A'}`);
+    console.log(`[proxy-ip] browser runtime IP : ${_browserIp  || 'N/A'}  (source: ${_ipSrcLabel})`);
+    if (_ipMatched === true) {
+      console.log('[proxy-ip] matched            : true  ✅');
+    } else if (_ipMatched === false) {
+      console.log('[proxy-ip] matched            : false  ⚠ 代理预检 IP 与浏览器实际 IP 不一致，请检查 launchOptions.proxy 是否正确注入');
+    } else {
+      console.log(`[proxy-ip] matched            : null  (一方或两方 IP 未能获取 | precheckErr=${_ipCheckBundle?.ipCheckError || 'N/A'})`);
+    }
+    // 把 ipCheck 写回 result（result 是 normalizeDreaminaRegisterResult 的返回对象，可扩展字段）。
+    if (result && typeof result === 'object' && _ipCheckBundle) {
+      result.ipCheck = {
+        proxyCheckExitIp: _precheckIp || null,
+        browserRuntimeIp: _browserIp  || null,
+        ipMatched: _ipMatched,
+        proxyCheckIpSource: 'proxy-precheck-adapter/checkProxyExitIp',
+        browserRuntimeIpSource: _ipCheckBundle.browserRuntimeIpSource || null,
+        browserRuntimeIpSourceLabel: _ipCheckBundle.browserRuntimeIpSourceLabel || null,
+        ipCheckError: _ipCheckBundle.ipCheckError || null,
+        checkedAt: _ipCheckBundle.checkedAt || null,
+      };
+    }
+    // ────────────────────────────────────────────────────────────────────────────────
     return result;
   } finally {
     await runtimeBundle.context.close().catch(() => {});

@@ -9,6 +9,7 @@
 // ✅ 负责 —— 组合 fingerprint / resource-policy / window-runtime，
 //            创建 Playwright browser + context + page 的完整 runtime 实例。
 // ✅ 负责 —— 将 proxy / windowLayout / slowMo 等启动参数归一化为 Playwright launchOptions。
+// ✅ 负责 —— 浏览器启动后，通过临时 page 访问公网 IP 查询接口，返回 browserRuntimeIp。
 // ❌ 不负责 —— 指纹策略本身（由 fingerprint.js 持有）。
 // ❌ 不负责 —— 资源拦截规则（由 resource-policy.js 持有）。
 // ❌ 不负责 —— 窗口位置/尺寸计算（由 shared-window-layout 持有）。
@@ -21,6 +22,95 @@ const { chromium } = require('playwright');
 const { buildContextFingerprintOptions } = require('./fingerprint');
 const { applyResourcePolicy } = require('./resource-policy');
 const { applyWindowLayoutToLaunchOptions } = require('./window-runtime');
+
+// IP 查询接口列表（按优先级排序，逐一 fallback）。
+// 注意：username/password 不拼入 URL，认证由 Playwright launchOptions.proxy 处理。
+const IP_CHECK_ENDPOINTS = [
+  { url: 'https://api.ipify.org?format=json', label: 'api.ipify.org' },
+  { url: 'https://httpbin.org/ip', label: 'httpbin.org' },
+  { url: 'https://ifconfig.me/all.json', label: 'ifconfig.me' },
+];
+
+/**
+ * 从 IP 查询接口的响应体中提取 IP 字符串。
+ *
+ * 兼容格式：
+ * - { "ip": "1.2.3.4" }      （ipify / ifconfig.me）
+ * - { "origin": "1.2.3.4" }  （httpbin）
+ * - 纯文本 "1.2.3.4"
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function extractIpFromText(text) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  // JSON: "ip" 字段
+  const ipMatch = s.match(/"ip"\s*:\s*"([^"]+)"/);
+  if (ipMatch) return ipMatch[1].trim();
+  // JSON: "origin" 字段（httpbin 格式）
+  const originMatch = s.match(/"origin"\s*:\s*"([^"]+)"/);
+  if (originMatch) return originMatch[1].split(',')[0].trim(); // 可能含 ", proxy_ip"
+  // 纯文本 IPv4
+  const plainMatch = s.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  return plainMatch ? plainMatch[0].trim() : '';
+}
+
+/**
+ * 通过 Playwright page 访问公网 IP 查询接口，获取浏览器实际出口 IP。
+ *
+ * 边界说明：
+ * ✅ 负责 —— 用 Playwright page.goto + page.content() 发起浏览器级请求（走 chromium.launch proxy）。
+ * ✅ 负责 —— 新开临时 page，检测完立即关闭，不污染业务 page。
+ * ✅ 负责 —— 顺序尝试 IP_CHECK_ENDPOINTS，第一个成功立即返回。
+ * ❌ 不负责 —— 失败时中断主流程（只记录错误，返回 ip: null）。
+ *
+ * @param {import('playwright').BrowserContext} context - 已创建的 BrowserContext
+ * @param {object}  [options={}]
+ * @param {number}  [options.timeoutMs=8000]  - 单接口超时（毫秒）
+ * @returns {Promise<{ ip: string|null, source: string|null, error: string|null, checkedAt: string }>}
+ */
+async function getBrowserRuntimeIp(context, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options?.timeoutMs)) ? Number(options.timeoutMs) : 8000;
+  const checkedAt = new Date().toISOString();
+
+  let tempPage = null;
+  try {
+    tempPage = await context.newPage();
+    // 静默忽略资源加载错误（部分接口可能有 redirect 或 non-2xx）
+    for (const endpoint of IP_CHECK_ENDPOINTS) {
+      try {
+        const response = await tempPage.goto(endpoint.url, {
+          waitUntil: 'domcontentloaded',
+          timeout: timeoutMs,
+        });
+        // 只接受 2xx
+        if (!response || response.status() < 200 || response.status() > 299) continue;
+        const body = await tempPage.content().catch(() => '');
+        const ip = extractIpFromText(body);
+        if (ip) {
+          return {
+            ip,
+            source: endpoint.url,
+            label: endpoint.label,
+            error: null,
+            checkedAt,
+          };
+        }
+      } catch (_endpointError) {
+        // 单接口失败，继续下一个
+      }
+    }
+    // 所有接口都失败
+    return { ip: null, source: null, label: null, error: 'ALL_IP_CHECK_ENDPOINTS_FAILED', checkedAt };
+  } catch (error) {
+    return { ip: null, source: null, label: null, error: String(error?.message || 'BROWSER_IP_CHECK_ERROR'), checkedAt };
+  } finally {
+    if (tempPage && !tempPage.isClosed()) {
+      await tempPage.close().catch(() => {});
+    }
+  }
+}
 
 /**
  * 将运行配置归一化为 Playwright chromium.launch() 所需的 launchOptions 对象。
@@ -86,15 +176,16 @@ function buildLaunchOptions(options = {}) {
  * - blockedResourceTypes {string[]} — 要拦截的资源类型（默认 image/media/font）
  *
  * 返回字段说明：
- * - browser        {Browser}  — Playwright Browser 实例
- * - context        {Context}  — Playwright BrowserContext 实例
- * - page           {Page}     — Playwright Page 实例（context 内第一个页面）
- * - fingerprint    {object}   — 本次使用的指纹配置摘要（userAgent / viewport / locale 等）
- * - launchOptions  {object}   — 实际传给 chromium.launch() 的参数
- * - contextOptions {object}   — 实际传给 browser.newContext() 的参数
+ * - browser             {Browser}  — Playwright Browser 实例
+ * - context             {Context}  — Playwright BrowserContext 实例
+ * - page                {Page}     — Playwright Page 实例（context 内第一个页面）
+ * - fingerprint         {object}   — 本次使用的指纹配置摘要（userAgent / viewport / locale 等）
+ * - launchOptions       {object}   — 实际传给 chromium.launch() 的参数
+ * - contextOptions      {object}   — 实际传给 browser.newContext() 的参数
+ * - ipCheck             {object}   — 浏览器实际 IP 检测结果 { browserRuntimeIp, browserRuntimeIpSource, ipCheckError, checkedAt }
  *
  * @param {object} [options={}]
- * @returns {Promise<{ browser, context, page, fingerprint, launchOptions, contextOptions }>}
+ * @returns {Promise<{ browser, context, page, fingerprint, launchOptions, contextOptions, ipCheck }>}
  */
 async function createBrowserRuntime(options = {}) {
   const runtime = options?.runtime && typeof options.runtime === 'object' ? options.runtime : {};
@@ -112,6 +203,28 @@ async function createBrowserRuntime(options = {}) {
 
   const page = await context.newPage();
 
+  // 浏览器实际 IP 检测：新开临时 page，访问 IP 查询接口，检测完立即关闭。
+  // 这里的请求走的是 chromium.launch(launchOptions) 注入的 proxy，
+  // 因此检测到的 IP 就是浏览器真实出口 IP。
+  // 失败时不中断主流程，只在 ipCheck 字段记录 error。
+  const _ipCheckResult = await getBrowserRuntimeIp(context, {
+    timeoutMs: Number(options?.browserIpCheckTimeoutMs) || 8000,
+  }).catch((error) => ({
+    ip: null,
+    source: null,
+    label: null,
+    error: String(error?.message || 'BROWSER_IP_CHECK_UNCAUGHT_ERROR'),
+    checkedAt: new Date().toISOString(),
+  }));
+
+  const ipCheck = {
+    browserRuntimeIp: _ipCheckResult.ip || null,
+    browserRuntimeIpSource: _ipCheckResult.source || null,
+    browserRuntimeIpSourceLabel: _ipCheckResult.label || null,
+    ipCheckError: _ipCheckResult.error || null,
+    checkedAt: _ipCheckResult.checkedAt,
+  };
+
   return {
     browser,
     context,
@@ -119,10 +232,12 @@ async function createBrowserRuntime(options = {}) {
     fingerprint,
     launchOptions,
     contextOptions,
+    ipCheck,
   };
 }
 
 module.exports = {
   buildLaunchOptions,
   createBrowserRuntime,
+  getBrowserRuntimeIp,
 };

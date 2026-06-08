@@ -1,34 +1,35 @@
 {
-    "name":  "playwright",
-    "version":  "1.0.2",
-    "description":  "Dreamina / Firstmail batch runner based on Playwright",
-    "main":  "runner.js",
-    "scripts":  {
-                    "start":  "node Dreamina/Dreamina-batch-runner.js",
-                    "run":  "node Dreamina/Dreamina-batch-runner.js",
-                    "batch":  "node Dreamina/Dreamina-batch-runner.js",
-                    "precheck":  "node Dreamina/0.0.3/S0-proxy-precheck/local-proxy-loader.js",
-                    "profile:check":  "node dreamina-register-profile-loader.js",
-                    "layout:check":  "node window-layout-profile-loader.js",
-                    "reset":  "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1",
-                    "reset:all":  "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1 -IncludeReports",
-                    "state:check":  "node Dreamina/0.0.3/account-state/state-doctor.js",
-                    "result:check": "node Dreamina/0.0.3/account-state/result-doctor.js",
-                    "smoke":  "node Dreamina/0.0.3/smoke-register.js --skip-preflight",
-                    "doctor":  "node Dreamina/0.0.3/account-state/state-doctor.js && node Dreamina/0.0.3/account-state/result-doctor.js",
-                    "recycle":  "node Dreamina/0.0.3/account-state/recycle-retry.js",
-                    "test":  "playwright test",
-                    "test:headed":  "playwright test --headed",
-                    "report":  "playwright show-report"
-                },
-    "keywords":  [
-
-                 ],
-    "author":  "",
-    "license":  "ISC",
-    "type":  "commonjs",
-    "devDependencies":  {
-                            "@playwright/test":  "^1.59.1",
-                            "@types/node":  "^25.5.2"
-                        }
+    "name": "playwright",
+    "version": "1.0.2",
+    "description": "Dreamina / Firstmail batch runner based on Playwright",
+    "main": "runner.js",
+    "scripts": {
+        "start": "node Dreamina/Dreamina-batch-runner.js",
+        "run": "node Dreamina/Dreamina-batch-runner.js",
+        "batch": "node Dreamina/Dreamina-batch-runner.js",
+        "precheck": "node Dreamina/0.0.3/S0-proxy-precheck/local-proxy-loader.js",
+        "profile:check": "node dreamina-register-profile-loader.js",
+        "layout:check": "node window-layout-profile-loader.js",
+        "reset": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1",
+        "reset:all": "powershell -ExecutionPolicy Bypass -File .\\reset-results.ps1 -IncludeReports",
+        "state:check": "node Dreamina/0.0.3/account-state/state-doctor.js",
+        "result:check": "node Dreamina/0.0.3/account-state/result-doctor.js",
+        "smoke": "node Dreamina/0.0.3/smoke-register.js --skip-preflight",
+        "doctor": "node Dreamina/0.0.3/account-state/state-doctor.js && node Dreamina/0.0.3/account-state/result-doctor.js",
+        "recycle": "node Dreamina/0.0.3/account-state/recycle-retry.js",
+        "test": "playwright test",
+        "test:headed": "playwright test --headed",
+        "report": "playwright show-report"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "devDependencies": {
+        "@playwright/test": "^1.59.1",
+        "@types/node": "^25.5.2"
+    },
+    "dependencies": {
+        "playwright": "^1.59.1"
+    }
 }

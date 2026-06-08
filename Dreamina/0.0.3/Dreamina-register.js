@@ -1680,6 +1680,10 @@ function normalizeDreaminaRegisterResult(input = {}) {
   const stageResults = input.stageResults && typeof input.stageResults === 'object' ? input.stageResults : {};
   // 代理预检摘要；只做轻引用，不吞并完整 detail。
   const proxyPrecheckSummary = input.proxyPrecheckSummary && typeof input.proxyPrecheckSummary === 'object' ? input.proxyPrecheckSummary : null;
+  // 指纹摘要。
+  const fingerprintSummary = input.fingerprintSummary && typeof input.fingerprintSummary === 'object' ? input.fingerprintSummary : null;
+  // 双 IP 检测结果：Node 层预检 IP + 浏览器实际 IP。
+  const ipCheck = input.ipCheck && typeof input.ipCheck === 'object' ? input.ipCheck : null;
   // 元信息。
   const meta = input.meta && typeof input.meta === 'object' ? input.meta : null;
 
@@ -1696,6 +1700,8 @@ function normalizeDreaminaRegisterResult(input = {}) {
     deliveryPayload,
     stageResults,
     proxyPrecheckSummary,
+    fingerprintSummary,
+    ipCheck,
     meta,
   };
 }
@@ -2293,6 +2299,7 @@ async function createDreaminaCliRuntime(options = {}) {
     slowMo,
     windowLayout,
     blockedResourceTypes,
+    browserIpCheckTimeoutMs: Number(options?.browserIpCheckTimeoutMs) || 8000,
   });
 }
 

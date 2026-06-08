@@ -131,6 +131,11 @@ function parseProxyLine(line, index = 0) {
       id: `local-proxy-${index + 1}`,
       provider: 'local-proxies.txt',
       protocol: 'http',
+      // server 字段供 Playwright chromium.launch({ proxy: { server } }) 使用。
+      // 格式：protocol://host:port（不含用户名密码，认证由 username/password 字段独立传入）。
+      // 修复：v0.0.2 runner.js:L243 等效逻辑，补齐 shared-browser-runtime/create-browser-runtime.js:L66
+      //       的 if(proxy?.server) 守卫条件所需字段，否则 launchOptions.proxy 不会被设置。
+      server: `http://${host}:${port}`,
       host,
       port,
       username,

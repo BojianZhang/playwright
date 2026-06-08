@@ -12,6 +12,7 @@ node_modules/
 /results/
 /screenshots/
 /storage/
+/output/
 
 # Runtime local data
 user.json
