@@ -153,6 +153,7 @@ els.form.addEventListener('submit', async (e) => {
     concurrency: fd.get('concurrency'),
     count: fd.get('count'),
     timeoutMs: fd.get('timeoutMs'),
+    mode: fd.get('mode') || 'register',
     apiKeyName: fd.get('apiKeyName') || '',
     apiKeyExpiration: fd.get('apiKeyExpiration') || 'No expiration',
     topUpAmount: fd.get('topUpAmount'),

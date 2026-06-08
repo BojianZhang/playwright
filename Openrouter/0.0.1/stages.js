@@ -56,10 +56,20 @@ async function emailPasswordChange(ctx) {
   return ok('MAILBOX_PASSWORD_SKIPPED', { skipped: true, note: 'change mode not implemented' });
 }
 
-// ── S2: 注册 OpenRouter（填表 → 过 Turnstile → 提交）─────────────────────────
+// ── S2: 注册 OpenRouter（填表 → 过 Turnstile → 提交);登录模式则直接登录已有账号 ──────
 async function register(ctx) {
   const { page, account, runtime, context } = ctx;
   const cfg = runtime.config || {};
+
+  // 登录模式:跳过注册,直接登录已有账号(登录成功 → S3 跳过 → 直接 S4 取 Key)。
+  if ((runtime.taskParams?.mode) === 'login') {
+    context.log && context.log('[register] 登录模式:直接登录已有账号');
+    const si = await signInExisting(page, account, runtime, context);
+    if (si.ok) return ok('SIGNIN_OK', { loggedIn: true });
+    if (si.reason === 'ACCOUNT_NOT_ALLOWED' || si.reason === 'ACCOUNT_LOCKED') return fail(si.reason, si.reason);
+    return fail('SIGNIN_FAILED', `SIGNIN_FAILED:${si.reason}`);
+  }
+
   const signUpUrl = (cfg.site?.homeUrl || 'https://openrouter.ai') + '/sign-up';
   const { firstName, lastName } = deriveName(account.email);
 
@@ -105,28 +115,35 @@ async function register(ctx) {
       await page.click('button:has-text("Continue")').catch(() => {});
     }
 
-    // 有 callback,注入后若成功会跳验证页；等 ~25s。
+    // 有 callback,注入后若成功会跳验证页；等 ~40s(并发下新账号到验证页可能较慢)。
     let explicitExists = false;
-    for (let t = 0; t < 10; t += 1) {
+    for (let t = 0; t < 16; t += 1) {
       await page.waitForTimeout(2500);
       const url = page.url();
       if (/verify-email/.test(url)) return ok('REGISTER_SUBMIT_OK', { verifyUrl: url });
       if (!/sign-up/.test(url)) return ok('REGISTER_SUBMIT_OK', { url });
-      // 检测"邮箱已注册"错误（含 Clerk 字段错误元素 + 文案）
-      const exists = await page.evaluate(() => {
-        const t = document.body.innerText;
-        if (/already exists|already registered|is taken|taken\.|that email address is taken/i.test(t)) return true;
+      const sig = await page.evaluate(() => {
+        const t = document.body.innerText || '';
         const errs = Array.from(document.querySelectorAll('.cl-formFieldErrorText, [role="alert"]')).map(e => e.innerText).join(' ');
-        return /taken|exists|registered/i.test(errs);
-      }).catch(() => false);
-      if (exists) { explicitExists = true; break; }
+        const all = t + ' ' + errs;
+        if (/account is locked|too many (failed )?(attempts|requests)|try again in \d+ ?(minute|hour|second)/i.test(all)) return 'locked';
+        if (/not allowed to access|is ?n'?t allowed|not permitted to access|access (is )?(denied|restricted)/i.test(all)) return 'notAllowed';
+        if (/already exists|already registered|is taken|taken\.|that email address is taken|exists|registered/i.test(all)) return 'exists';
+        return '';
+      }).catch(() => '');
+      if (sig === 'locked') { context.log && context.log('[register] 注册页:账号被锁'); return fail('ACCOUNT_LOCKED', 'ACCOUNT_LOCKED'); }
+      if (sig === 'notAllowed') { context.log && context.log('[register] 注册页:账号被平台限制'); return fail('ACCOUNT_NOT_ALLOWED', 'ACCOUNT_NOT_ALLOWED'); }
+      if (sig === 'exists') { explicitExists = true; break; }
     }
 
     // Turnstile 已过却没进验证页 → 极可能邮箱已注册(错误文案各异) → 登录兜底。
     context.log && context.log(`[register] 未进验证页(exists=${explicitExists}),尝试登录兜底…`);
     const si = await signInExisting(page, account, runtime, context);
     if (si.ok) return ok('SIGNIN_OK', { loggedIn: true });
-    // 登录也没成 → 统一按可重试处理(整账号换浏览器再试;真不存在则下次重新注册)。
+    context.log && context.log(`[register] 登录兜底失败: ${si.reason}`);
+    // 账号被锁/被平台限制 → 不重试(再试只会更糟/更久)。
+    if (si.reason === 'ACCOUNT_NOT_ALLOWED' || si.reason === 'ACCOUNT_LOCKED') return fail(si.reason, si.reason);
+    // 其它 → 可重试(整账号换浏览器再试)。
     return fail('REGISTER_NO_VERIFY_PAGE', 'REGISTER_SUBMIT_RESULT_UNKNOWN', { url: page.url(), signinReason: si.reason });
   } catch (e) {
     return fail('REGISTER_THREW', String(e.message || e));
@@ -147,31 +164,46 @@ async function signInExisting(page, account, runtime, context) {
     await page.waitForTimeout(2000);
     await page.fill('#password-field', account.password).catch(() => {});
     await page.click('button:has-text("Continue")').catch(() => {});
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2500);
 
-    // 快速判定"账号不存在/密码错"：避免给真·未注册账号白等 36s 验证码。
+    // 快速判定"账号不存在/密码错"：避免给真·未注册账号白等验证码。
     const noAccount = await page.evaluate(() => {
       const t = (document.body.innerText || '').toLowerCase();
       return /couldn't find|couldn’t find|no account|not found|isn't right|incorrect|enter a correct/i.test(t);
     }).catch(() => false);
-    if (noAccount) return { ok: false, reason: 'SIGNIN_NO_ACCOUNT' };
+    if (noAccount) { log('账号不存在/密码错,放弃登录'); return { ok: false, reason: 'SIGNIN_NO_ACCOUNT' }; }
 
-    // 登录页可能也有 Turnstile
-    const needTs = await page.evaluate(() => !!window.__cfParams || !!document.querySelector('input[name="cf-turnstile-response"]')).catch(() => false);
-    if (needTs) {
-      const r = await solveAndInject(page, {
-        provider: cfg.captcha?.provider, apiKey: cfg.captcha?.apiKey, pageUrl: signinUrl,
-        cfRequestUrls: context.cfRequestUrls || [], timeoutMs: cfg.captcha?.solveTimeoutMs || 180000,
-        log: (m) => log(`[turnstile] ${m}`),
-      });
-      if (r.ok) { await page.waitForTimeout(1200); await page.click('button:has-text("Continue")').catch(() => {}); }
+    // 轮询:登录页可能弹 Turnstile;捕获到回调就求解注入,直到进入二次校验页或已登录(~40s)。
+    for (let i = 0; i < 20; i += 1) {
+      const u = page.url();
+      // 账号被锁(登录太频繁触发)或被平台限制 → 不可重试(再试只会更糟)。
+      const block = await page.evaluate(() => {
+        const t = document.body.innerText || '';
+        if (/account is locked|too many (failed )?(attempts|requests)|try again in \d+ ?(minute|hour|second)/i.test(t)) return 'locked';
+        if (/not allowed to access|is ?n'?t allowed|not permitted to access|access (is )?(denied|restricted)/i.test(t)) return 'notAllowed';
+        return '';
+      }).catch(() => '');
+      if (block === 'locked') { log('账号被锁(登录过于频繁),不重试'); return { ok: false, reason: 'ACCOUNT_LOCKED' }; }
+      if (block === 'notAllowed') { log('账号被平台限制(not allowed),永久失败'); return { ok: false, reason: 'ACCOUNT_NOT_ALLOWED' }; }
+      if (!/sign-in|sign-up/.test(u)) break;        // 已离开登录页(可能直接登录成功)
+      if (/factor-two|verify/.test(u)) break;        // 到邮箱验证码步骤
+      const hooked = await page.evaluate(() => !!(window.__cfParams && window.__cfParams.sitekey && typeof window.tsCallback === 'function')).catch(() => false);
+      if (hooked) {
+        log('登录页 Turnstile,求解中…');
+        const r = await solveAndInject(page, {
+          provider: cfg.captcha?.provider, apiKey: cfg.captcha?.apiKey, pageUrl: signinUrl,
+          cfRequestUrls: context.cfRequestUrls || [], timeoutMs: cfg.captcha?.solveTimeoutMs || 120000, log: (m) => log(`[turnstile] ${m}`),
+        });
+        if (r.ok) { await page.waitForTimeout(1200); await page.click('button:has-text("Continue")').catch(() => {}); }
+      }
+      await page.waitForTimeout(1500);
     }
 
-    // 二次校验：邮箱验证码（非登录链接）
-    await page.waitForTimeout(2000);
+    // 二次校验:邮箱验证码
     if (/factor-two|verify/.test(page.url())) {
-      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: account.password, baseUrl: mb.apiBaseUrl, attempts: 12, intervalMs: 3000, log: (m) => log(`[mail] ${m}`) });
-      if (!code) return { ok: false, reason: 'SIGNIN_CODE_NOT_FOUND' };
+      log('需要邮箱验证码,读取中…');
+      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: account.password, baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, log: (m) => log(`[mail] ${m}`) });
+      if (!code) { log('未取到验证码'); return { ok: false, reason: 'SIGNIN_CODE_NOT_FOUND' }; }
       const otp = page.locator('input[inputmode="numeric"], input[name="code"], input[id*="code"], input[autocomplete="one-time-code"]').first();
       await otp.click({ timeout: 5000 }).catch(() => {});
       await page.keyboard.type(code, { delay: 120 }).catch(() => {});
@@ -185,7 +217,15 @@ async function signInExisting(page, account, runtime, context) {
     await page.goto(keysUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(2500);
     const authed = await page.evaluate(() => !(/sign-in|sign-up/.test(location.pathname) || document.querySelector('#password-field, #identifier-field'))).catch(() => false);
-    return authed ? { ok: true } : { ok: false, reason: 'SIGNIN_NOT_CONFIRMED' };
+    if (authed) return { ok: true };
+    // 未登录成功:最后再查一次"被锁/被限制",否则按可重试的未确认处理。
+    const fin = await page.evaluate(() => {
+      const t = document.body.innerText || '';
+      if (/account is locked|too many (failed )?(attempts|requests)|try again in \d+ ?(minute|hour|second)/i.test(t)) return 'ACCOUNT_LOCKED';
+      if (/not allowed to access|is ?n'?t allowed|not permitted to access|access (is )?(denied|restricted)/i.test(t)) return 'ACCOUNT_NOT_ALLOWED';
+      return '';
+    }).catch(() => '');
+    return { ok: false, reason: fin || 'SIGNIN_NOT_CONFIRMED' };
   } catch (e) {
     return { ok: false, reason: `SIGNIN_THREW:${String(e.message || e).slice(0, 80)}` };
   }

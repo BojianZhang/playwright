@@ -223,7 +223,7 @@ async function runJob(opts = {}) {
  * 单账号任务（含失败自动重试）：循环尝试直到成功 / 永久失败 / 次数用尽。
  * 重试用全新浏览器；只有最终结果才计入成功/失败统计与回显。
  */
-const NON_RETRYABLE_REASONS = new Set(['ACCOUNT_ALREADY_EXISTS']);
+const NON_RETRYABLE_REASONS = new Set(['ACCOUNT_ALREADY_EXISTS', 'ACCOUNT_NOT_ALLOWED', 'ACCOUNT_LOCKED']);
 async function processTask(ctx) {
   const { workerId, concurrency = 1, account, proxy, runParams, taskParams, successTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {} } = ctx;
   const maxAttempts = Math.max(1, Number(process.env.OPENROUTER_MAX_ATTEMPTS) || Number(CONFIG?.batch?.maxAttempts) || 3);
@@ -244,7 +244,9 @@ async function processTask(ctx) {
 
   const attemptCtx = { workerId, concurrency, account, proxy, headed, slowMo, taskParams, jobId, publish, live, emitStats };
   let last = { success: false, reason: 'UNKNOWN' };
+  let made = 0; // 实际尝试次数
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    made = attempt;
     last = await runAttempt({ ...attemptCtx, attempt });
     if (last.success) {
       const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, last.payload || {});
@@ -260,7 +262,7 @@ async function processTask(ctx) {
   // 最终失败：计入统计 + 回显
   const failClass = classify(last.reason);
   recordFailure(failureStats, last.reason, failClass);
-  publish(jobId, 'account-failed', { email: account.email, reason: last.reason, failClass, stage: last.stage, attempts: maxAttempts });
+  publish(jobId, 'account-failed', { email: account.email, reason: last.reason, failClass, stage: last.stage, attempts: made });
   publish(jobId, 'failure-stats', failureStats);
   return { success: false, reason: last.reason };
 }
@@ -389,7 +391,7 @@ async function runAttempt(actx) {
 function classify(reason) {
   const r = String(reason || '');
   if (/PROXY|BROWSER|TIMEOUT|CONNECT/i.test(r)) return 'proxy-soft';
-  if (/REJECT|EXISTS|RATE_LIMIT|INVALID/i.test(r)) return 'business';
+  if (/REJECT|EXISTS|RATE_LIMIT|INVALID|NOT_ALLOWED|LOCKED/i.test(r)) return 'business';
   return 'unknown';
 }
 

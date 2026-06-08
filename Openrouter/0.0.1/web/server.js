@@ -177,6 +177,7 @@ async function handleStartJob(req, res) {
   const slicedAccounts = accounts.slice(0, runParams.count);
 
   const taskParams = {
+    mode: payload.mode === 'login' ? 'login' : 'register',
     apiKeyName: payload.apiKeyName || '',
     apiKeyExpiration: payload.apiKeyExpiration || 'No expiration',
     topUpAmount: Number(payload.topUpAmount) || 0,

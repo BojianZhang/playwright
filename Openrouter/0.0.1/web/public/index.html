@@ -37,6 +37,14 @@
         <fieldset>
           <legend>任务参数</legend>
           <div class="row">
+            <label>任务模式 <small>不确定就选自动</small>
+              <select name="mode">
+                <option value="auto">自动(新账号注册 / 已注册则自动登录)</option>
+                <option value="login">仅登录(确定都是已注册账号)</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
             <label>API Key 名称 <small>留空=随机</small> <input type="text" name="apiKeyName" placeholder="留空则随机生成" /></label>
             <label>API Key 有效期
               <select name="apiKeyExpiration">
