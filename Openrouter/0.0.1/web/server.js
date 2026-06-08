@@ -480,10 +480,15 @@ function hostAllowed(req) {
 }
 
 const server = http.createServer((req, res) => {
-  if (!hostAllowed(req)) { res.writeHead(403); res.end('Forbidden (host not allowed)'); return; }
-  if (!ipAllowed(req)) { res.writeHead(403); res.end('Forbidden (ip not allowed)'); return; }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { pathname } = url;
+  // 子机注册/推送:来自任意 IP/域名(异地子机),只靠 token 鉴权,不受 IP/域名白名单限制。
+  // 其余(页面/查看/聚合/下载)才受 allowHosts + allowIps 限制(如"只让公司出口IP看")。
+  const ipHostExempt = (pathname === '/api/register' || pathname === '/api/push');
+  if (!ipHostExempt) {
+    if (!hostAllowed(req)) { res.writeHead(403); res.end('Forbidden (host not allowed)'); return; }
+    if (!ipAllowed(req)) { res.writeHead(403); res.end('Forbidden (ip not allowed)'); return; }
+  }
   if (isProtectedRoute(pathname) && !checkAuth(req, res, url)) return;
 
   if (req.method === 'POST' && pathname === '/jobs') return void handleStartJob(req, res);
