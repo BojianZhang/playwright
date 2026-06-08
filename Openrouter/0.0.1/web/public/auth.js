@@ -20,12 +20,13 @@
     return u + (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(window.OR_TOKEN);
   };
 
-  // 带令牌的 fetch;若 401 则提示输入 token 后重试。
-  window.authFetch = async function (u, opts) {
+  // 带令牌的 fetch;若 401 且 silent!==true 才弹窗提示输入 token 后重试。
+  // silent=true 用于后台自动刷新,避免反复弹框。
+  window.authFetch = async function (u, opts, silent) {
     opts = opts || {};
     opts.headers = Object.assign({}, opts.headers, window.OR_TOKEN ? { 'X-Auth-Token': window.OR_TOKEN } : {});
     let r = await fetch(u, opts);
-    if (r.status === 401) {
+    if (r.status === 401 && silent !== true) {
       const t = prompt('需要访问令牌(token):');
       if (t) {
         window.OR_TOKEN = t.trim();

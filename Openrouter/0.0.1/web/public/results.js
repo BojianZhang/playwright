@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 let ALL = []; // 当前聚合到的账号
 
 async function loadNode() {
-  try { const n = await (await authFetch('/api/node')).json(); $('nodeBadge').textContent = `node: ${n.nodeId}`; } catch (_e) { /* ignore */ }
+  try { const r = await authFetch('/api/node', {}, true); if (r.ok) { const n = await r.json(); $('nodeBadge').textContent = `node: ${n.nodeId}`; } } catch (_e) { /* ignore */ }
 }
 
 // 主机列表来源:localStorage(用户上次填的) > 服务端 cluster 配置。两者都会被聚合(服务端再并配置一次)。
@@ -13,8 +13,8 @@ async function initHosts() {
   if (saved != null && saved.trim()) { $('hosts').value = saved; }
   else {
     try {
-      const c = await (await authFetch('/api/cluster')).json();
-      if (Array.isArray(c.hosts) && c.hosts.length) $('hosts').value = c.hosts.join('\n');
+      const r = await authFetch('/api/cluster', {}, true);
+      if (r.ok) { const c = await r.json(); if (Array.isArray(c.hosts) && c.hosts.length) $('hosts').value = c.hosts.join('\n'); }
     } catch (_e) { /* ignore */ }
   }
   // 记住设置
@@ -70,9 +70,13 @@ async function loadData(silent) {
     const resp = await authFetch('/api/aggregate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hosts, includeLocal, dedupe }),
-    });
+    }, silent);
+    if (!resp.ok) {
+      if (resp.status === 401) { $('msg').textContent = silent ? '需要令牌:点「拉取/聚合」输入' : '令牌无效或未输入,请点「拉取/聚合」重输'; }
+      else { $('msg').textContent = `错误 HTTP ${resp.status}`; }
+      return;
+    }
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || '失败');
     ALL = data.accounts || [];
     const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
     $('msg').textContent = `合计 ${data.total} · 去重后 ${data.count} · 更新于 ${ts}`;

@@ -24,6 +24,7 @@ const eventBus = require('./event-bus');
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const RESULTS_DIR = path.join(__dirname, '..', 'batch-results');
+const PUSHED_DIR = path.join(RESULTS_DIR, '_pushed'); // 子机推送过来的结果(每个节点一个文件)
 // 节点标识：分布式多机部署时用于区分来源、保证文件名/jobId 跨机不重复。
 const NODE_ID = (process.env.OPENROUTER_NODE_ID || os.hostname() || 'node').replace(/[^\w-]/g, '-').slice(0, 40);
 
@@ -35,6 +36,20 @@ function loadClusterHosts() {
   try { const l = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.local.json'), 'utf8')); if (Array.isArray(l.cluster?.hosts)) hosts = l.cluster.hosts; } catch (_e) { /* none */ }
   if (process.env.OPENROUTER_CLUSTER_HOSTS) hosts = process.env.OPENROUTER_CLUSTER_HOSTS.split(',').map((s) => s.trim()).filter(Boolean);
   return hosts;
+}
+function readCluster(key) {
+  for (const f of ['config.local.json', 'config.json']) {
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.cluster && c.cluster[key] !== undefined) return c.cluster[key]; } catch (_e) { /* none */ }
+  }
+  return undefined;
+}
+
+// ── 动态节点注册表(子机心跳上报 → 主机自动聚合,无需手填机器清单)──────────
+const PEERS = new Map(); // nodeId -> { nodeId, url, lastSeen }
+const PEER_TTL_MS = 90000; // 超过 90s 没心跳视为离线
+function getActivePeers() {
+  const now = Date.now();
+  return [...PEERS.values()].filter((p) => now - p.lastSeen < PEER_TTL_MS && p.nodeId !== NODE_ID);
 }
 
 const STATIC_TYPES = {
@@ -248,8 +263,12 @@ function checkAuth(req, res, url) {
     const m = (req.headers.authorization || '').match(/^Basic\s+(.+)$/i);
     if (m) { const [u, p] = Buffer.from(m[1], 'base64').toString('utf8').split(':'); if (u === AUTH_USER && p === AUTH_PASS) return true; }
   }
-  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Openrouter Console"', 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('Unauthorized: 需要访问令牌(token)或登录');
+  // 只有在"纯 Basic Auth(没配 token)"时才发 WWW-Authenticate,触发浏览器登录框;
+  // 用 token 时不发,避免浏览器弹自带登录框干扰(改由前端 token 弹窗处理)。
+  const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
+  if (AUTH_USER && !AUTH_TOKEN) headers['WWW-Authenticate'] = 'Basic realm="Openrouter Console"';
+  res.writeHead(401, headers);
+  res.end('Unauthorized: 需要访问令牌(token)');
   return false;
 }
 
@@ -315,13 +334,52 @@ function handleApiResultsJob(res, query) {
   sendJson(res, 200, { nodeId: NODE_ID, jobId, count: accounts.length, accounts });
 }
 
+// POST /api/register —— 子机心跳上报;主机记录其地址(默认用请求来源 IP + 上报端口)。
+async function handleRegister(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const nodeId = String(body.nodeId || '').slice(0, 60);
+  if (!nodeId) { sendJson(res, 400, { error: 'MISSING_NODE_ID' }); return; }
+  let url = String(body.url || '').trim();
+  if (!url) { url = `http://${clientIp(req)}:${Number(body.port) || PORT}`; }
+  PEERS.set(nodeId, { nodeId, url, lastSeen: Date.now() });
+  sendJson(res, 200, { ok: true, registered: { nodeId, url } });
+}
+
+// POST /api/push —— 子机把自己的成功账号推给中心机(出站,穿 NAT;适合 NAT 后的子机)。
+async function handlePush(req, res) {
+  let body;
+  try { body = await readJsonBody(req, 64 * 1024 * 1024); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const nodeId = String(body.nodeId || '').replace(/[^\w-]/g, '-').slice(0, 60);
+  if (!nodeId) { sendJson(res, 400, { error: 'MISSING_NODE_ID' }); return; }
+  const accounts = Array.isArray(body.accounts) ? body.accounts : [];
+  try {
+    fs.mkdirSync(PUSHED_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PUSHED_DIR, `${nodeId}.json`), JSON.stringify({ nodeId, updatedAt: Date.now(), accounts }));
+  } catch (_e) { /* ignore */ }
+  // 同时标记为在线节点(即使没有可回连的 url)
+  const prev = PEERS.get(nodeId) || {};
+  PEERS.set(nodeId, { nodeId, url: prev.url || '', lastSeen: Date.now() });
+  sendJson(res, 200, { ok: true, stored: accounts.length });
+}
+function readPushed() {
+  const out = [];
+  try {
+    for (const f of fs.readdirSync(PUSHED_DIR).filter((x) => x.endsWith('.json'))) {
+      try { const o = JSON.parse(fs.readFileSync(path.join(PUSHED_DIR, f), 'utf8')); out.push({ nodeId: o.nodeId, count: (o.accounts || []).length, accounts: o.accounts || [] }); } catch (_e) { /* skip */ }
+    }
+  } catch (_e) { /* none */ }
+  return out;
+}
+
 // POST /api/aggregate —— 服务端聚合:本节点 + 指定远程节点,合并去重(绕开浏览器跨域)。
 async function handleApiAggregate(req, res) {
   let body;
   try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
   // 请求里的 hosts 与服务端配置的 cluster.hosts 合并去重 → 中心机配好后无需手填。
   const bodyHosts = Array.isArray(body.hosts) ? body.hosts : [];
-  const hosts = [...new Set([...bodyHosts, ...loadClusterHosts()].map((h) => String(h).trim()).filter(Boolean))];
+  // 合并:请求传入 + 配置 cluster.hosts + 动态注册的在线子机
+  const hosts = [...new Set([...bodyHosts, ...loadClusterHosts(), ...getActivePeers().map((p) => p.url)].map((h) => String(h).trim()).filter(Boolean))];
   const includeLocal = body.includeLocal !== false;
   const dedupeMode = body.dedupe || 'email';
   const all = [];
@@ -346,6 +404,8 @@ async function handleApiAggregate(req, res) {
       sources.push({ source: h, count: 0, ok: false, error: String(e.message || e) });
     }
   }
+  // 子机推送过来的数据(NAT 后子机)——去重会自动处理与 pull 的重叠。
+  for (const p of readPushed()) { p.accounts.forEach((a) => all.push(a)); sources.push({ source: `push(${p.nodeId})`, count: p.count, ok: true }); }
   let merged = all;
   if (dedupeMode !== 'none') {
     const seen = new Map();
@@ -378,14 +438,27 @@ function isProtectedRoute(pathname) {
   return pathname === '/jobs' || pathname === '/events' || pathname === '/download' || pathname.startsWith('/api/');
 }
 
-// ── IP 白名单(可选,代码级兜底)──────────────────────────────────────────
-// 设 OPENROUTER_ALLOW_IPS=1.2.3.4,10.0.0.0/24 后,只有名单内 IP(及本机)能访问,其余 403。
-// 注意:若前置了 Nginx 等反代,remoteAddress 是反代的 IP,需在反代层做白名单。
-const ALLOW_IPS = (process.env.OPENROUTER_ALLOW_IPS || '').split(',').map((s) => s.trim()).filter(Boolean);
+// ── IP / 域名白名单(可选,代码级兜底)────────────────────────────────────
+// 配置来源:环境变量 > config.local.json/config.json 的 security.{allowIps,allowHosts,trustForwardedFor}。
+function readSec(key) {
+  for (const f of ['config.local.json', 'config.json']) {
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && c.security[key] !== undefined) return c.security[key]; } catch (_e) { /* none */ }
+  }
+  return undefined;
+}
+function toList(v) { if (Array.isArray(v)) return v.map((s) => String(s).trim()).filter(Boolean); if (typeof v === 'string') return v.split(',').map((s) => s.trim()).filter(Boolean); return []; }
+const ALLOW_IPS = process.env.OPENROUTER_ALLOW_IPS ? toList(process.env.OPENROUTER_ALLOW_IPS) : toList(readSec('allowIps'));
+const ALLOW_HOSTS = (process.env.OPENROUTER_ALLOW_HOSTS ? toList(process.env.OPENROUTER_ALLOW_HOSTS) : toList(readSec('allowHosts'))).map((h) => h.toLowerCase());
+const TRUST_PROXY = process.env.OPENROUTER_TRUST_PROXY === '1' || readSec('trustForwardedFor') === true;
+
 function ipToLong(ip) { return ip.split('.').reduce((a, o) => (((a << 8) + (parseInt(o, 10) & 255)) >>> 0), 0) >>> 0; }
-function ipAllowed(remote) {
+function clientIp(req) {
+  if (TRUST_PROXY && req.headers['x-forwarded-for']) return String(req.headers['x-forwarded-for']).split(',')[0].trim().replace(/^::ffff:/, '');
+  return String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+}
+function ipAllowed(req) {
   if (!ALLOW_IPS.length) return true;
-  const ip = String(remote || '').replace(/^::ffff:/, '');
+  const ip = clientIp(req);
   if (ip === '127.0.0.1' || ip === '::1') return true; // 本机始终放行
   for (const rule of ALLOW_IPS) {
     if (rule === ip) return true;
@@ -399,9 +472,16 @@ function ipAllowed(remote) {
   }
   return false;
 }
+function hostAllowed(req) {
+  if (!ALLOW_HOSTS.length) return true;
+  const host = String(req.headers.host || '').split(':')[0].toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1') return true; // 本机始终放行
+  return ALLOW_HOSTS.some((rule) => (rule.startsWith('*.') ? (host === rule.slice(2) || host.endsWith(rule.slice(1))) : host === rule));
+}
 
 const server = http.createServer((req, res) => {
-  if (!ipAllowed(req.socket && req.socket.remoteAddress)) { res.writeHead(403); res.end('Forbidden'); return; }
+  if (!hostAllowed(req)) { res.writeHead(403); res.end('Forbidden (host not allowed)'); return; }
+  if (!ipAllowed(req)) { res.writeHead(403); res.end('Forbidden (ip not allowed)'); return; }
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { pathname } = url;
   if (isProtectedRoute(pathname) && !checkAuth(req, res, url)) return;
@@ -410,10 +490,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && pathname === '/events') return void handleEvents(req, res, url.searchParams);
   if (req.method === 'GET' && pathname === '/download') return void handleDownload(req, res, url.searchParams);
   if (req.method === 'GET' && pathname === '/api/node') return void sendJson(res, 200, { nodeId: NODE_ID, hostname: os.hostname() });
-  if (req.method === 'GET' && pathname === '/api/cluster') return void sendJson(res, 200, { nodeId: NODE_ID, hosts: loadClusterHosts() });
+  if (req.method === 'GET' && pathname === '/api/cluster') return void sendJson(res, 200, { nodeId: NODE_ID, hosts: loadClusterHosts(), peers: getActivePeers().map((p) => ({ nodeId: p.nodeId, url: p.url, ageSec: Math.round((Date.now() - p.lastSeen) / 1000) })) });
   if (req.method === 'GET' && pathname === '/api/results') return void handleApiResults(res);
   if (req.method === 'GET' && pathname === '/api/results/all') return void handleApiResultsAll(res, url.searchParams);
   if (req.method === 'GET' && pathname === '/api/results/job') return void handleApiResultsJob(res, url.searchParams);
+  if (req.method === 'POST' && pathname === '/api/register') return void handleRegister(req, res);
+  if (req.method === 'POST' && pathname === '/api/push') return void handlePush(req, res);
   if (req.method === 'POST' && pathname === '/api/aggregate') return void handleApiAggregate(req, res);
   if (req.method === 'GET') return void serveStatic(req, res, pathname);
 
@@ -423,9 +505,34 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`[Openrouter Web] 控制台已启动: http://${HOST}:${PORT}  (本机: http://localhost:${PORT})`);
-  if (ALLOW_IPS.length) {
+  if (ALLOW_IPS.length) console.log(`🔒 IP 白名单(+本机): ${ALLOW_IPS.join(', ')}${TRUST_PROXY ? ' [信任 X-Forwarded-For]' : ''}`);
+  if (ALLOW_HOSTS.length) console.log(`🔒 域名白名单(+localhost): ${ALLOW_HOSTS.join(', ')}`);
+
+  // 子机自动注册:配了中心机地址就启动时 + 每 30s 心跳上报,中心机自动聚合本机。
+  const CENTRAL_URL = process.env.OPENROUTER_CENTRAL_URL || readCluster('centralUrl') || '';
+  const SELF_URL = process.env.OPENROUTER_SELF_URL || readCluster('selfUrl') || '';
+  if (CENTRAL_URL) {
+    const base = CENTRAL_URL.replace(/\/+$/, '');
+    const authHdr = Object.assign({ 'Content-Type': 'application/json' }, AUTH_TOKEN ? { 'X-Auth-Token': AUTH_TOKEN } : {});
+    const register = async () => {
+      try {
+        await fetch(base + '/api/register', { method: 'POST', headers: authHdr, body: JSON.stringify({ nodeId: NODE_ID, port: PORT, url: SELF_URL || undefined }), signal: AbortSignal.timeout(10000) });
+      } catch (_e) { /* 中心机暂不可达,下次重试 */ }
+    };
+    // 推送本机成功账号给中心机(出站,穿 NAT;中心机够不着子机时也能拿到数据)。
+    const pushResults = async () => {
+      try {
+        const records = [];
+        for (const f of listResultJsonl()) { const jobId = f.replace('-success.jsonl', ''); for (const r of readJobRecords(jobId)) records.push({ nodeId: NODE_ID, jobId, ...r }); }
+        if (!records.length) return;
+        await fetch(base + '/api/push', { method: 'POST', headers: authHdr, body: JSON.stringify({ nodeId: NODE_ID, accounts: records }), signal: AbortSignal.timeout(20000) });
+      } catch (_e) { /* 忽略,下次重试 */ }
+    };
+    const beat = () => { register(); pushResults(); };
+    beat();
+    setInterval(beat, 30000);
     // eslint-disable-next-line no-console
-    console.log(`🔒 IP 白名单已启用(+本机): ${ALLOW_IPS.join(', ')}`);
+    console.log(`📡 自动注册并推送结果到中心机: ${CENTRAL_URL}(每 30s)`);
   }
   if (AUTH_TOKEN) {
     // eslint-disable-next-line no-console
