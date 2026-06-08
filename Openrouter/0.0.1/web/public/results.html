@@ -29,8 +29,9 @@
       </label>
       <div class="actions">
         <button id="loadBtn" type="button">拉取 / 聚合</button>
-        <span id="msg" class="muted"></span>
+        <label class="inline"><input type="checkbox" id="autoRefresh" checked /> 自动刷新(5s)</label>
       </div>
+      <div id="msg" class="muted" style="margin-top:6px;font-size:12px;"></div>
       <div id="sources" class="muted" style="margin-top:12px;font-size:12px;"></div>
     </section>
 
@@ -56,6 +57,7 @@
     </section>
   </main>
 
+  <script src="/auth.js"></script>
   <script src="/results.js"></script>
 </body>
 </html>

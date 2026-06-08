@@ -22,7 +22,7 @@ const els = {
 
 if (els.downloadBtn) {
   els.downloadBtn.addEventListener('click', () => {
-    if (currentJobId) window.open(`/download?jobId=${encodeURIComponent(currentJobId)}`, '_blank');
+    if (currentJobId) window.open(withToken(`/download?jobId=${encodeURIComponent(currentJobId)}`), '_blank');
   });
 }
 
@@ -79,7 +79,7 @@ function ts() {
 
 function openStream(jobId) {
   if (evtSource) evtSource.close();
-  evtSource = new EventSource(`/events?jobId=${encodeURIComponent(jobId)}`);
+  evtSource = new EventSource(withToken(`/events?jobId=${encodeURIComponent(jobId)}`));
 
   evtSource.addEventListener('connected', () => appendLine(els.runLog, `[${ts()}] SSE 已连接 (${jobId})`));
 
@@ -167,7 +167,7 @@ els.form.addEventListener('submit', async (e) => {
   els.startBtn.disabled = true;
   els.formMsg.textContent = '提交中…';
   try {
-    const resp = await fetch('/jobs', {
+    const resp = await authFetch('/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

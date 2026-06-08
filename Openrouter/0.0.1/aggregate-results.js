@@ -38,15 +38,22 @@ function loadConfig() {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { console.error(`读取 config 失败: ${e.message}`); return {}; }
 }
 
-function authHeaderFor(urlStr) {
-  try {
-    const u = new URL(urlStr);
-    if (u.username) return 'Basic ' + Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password || '')}`).toString('base64');
-  } catch (_e) { /* ignore */ }
-  if (process.env.OPENROUTER_WEB_USER) {
-    return 'Basic ' + Buffer.from(`${process.env.OPENROUTER_WEB_USER}:${process.env.OPENROUTER_WEB_PASS || ''}`).toString('base64');
+// 访问令牌:环境变量 OPENROUTER_AUTH_TOKEN > config.local.json/config.json security.token
+function loadToken() {
+  if (process.env.OPENROUTER_AUTH_TOKEN) return process.env.OPENROUTER_AUTH_TOKEN;
+  for (const f of ['config.local.json', 'config.json']) {
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, f), 'utf8')); if (c.security && c.security.token) return c.security.token; } catch (_e) { /* none */ }
   }
-  return null;
+  return '';
+}
+const TOKEN = loadToken();
+
+function headersFor(urlStr) {
+  const h = {};
+  if (TOKEN) h['X-Auth-Token'] = TOKEN;
+  try { const u = new URL(urlStr); if (u.username) h.Authorization = 'Basic ' + Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password || '')}`).toString('base64'); } catch (_e) { /* ignore */ }
+  if (!h.Authorization && process.env.OPENROUTER_WEB_USER) h.Authorization = 'Basic ' + Buffer.from(`${process.env.OPENROUTER_WEB_USER}:${process.env.OPENROUTER_WEB_PASS || ''}`).toString('base64');
+  return h;
 }
 
 // 读本机成功目录
@@ -68,10 +75,7 @@ function fromLocal() {
 // 拉取远程节点
 async function fromUrl(base) {
   const u = base.replace(/\/+$/, '') + '/api/results/all';
-  const headers = {};
-  const auth = authHeaderFor(base);
-  if (auth) headers.Authorization = auth;
-  const resp = await fetch(u, { headers });
+  const resp = await fetch(u, { headers: headersFor(base) });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const json = await resp.json();
   return json.accounts || [];

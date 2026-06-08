@@ -67,5 +67,13 @@
   },
   "output": {
     "baseDir": "batch-results"
+  },
+  "cluster": {
+    "_note": "中心机在此填所有跑任务机器的地址,results 页会自动聚合全集群实时数据。也可用环境变量 OPENROUTER_CLUSTER_HOSTS(逗号分隔)。",
+    "hosts": []
+  },
+  "security": {
+    "_note": "访问令牌:设置后所有页面/接口/节点聚合都需带 token,没 token 一律 401。建议放 config.local.json 或环境变量 OPENROUTER_AUTH_TOKEN。全集群用同一个 token。",
+    "token": ""
   }
 }

@@ -27,6 +27,16 @@ const RESULTS_DIR = path.join(__dirname, '..', 'batch-results');
 // 节点标识：分布式多机部署时用于区分来源、保证文件名/jobId 跨机不重复。
 const NODE_ID = (process.env.OPENROUTER_NODE_ID || os.hostname() || 'node').replace(/[^\w-]/g, '-').slice(0, 40);
 
+// 集群配置：中心机在 config.json 配 cluster.hosts = ["http://机器1:4317", ...],
+// 聚合接口会自动带上,这样 results 页无需每次手填即可汇总全集群。
+function loadClusterHosts() {
+  let hosts = [];
+  try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')); if (Array.isArray(c.cluster?.hosts)) hosts = c.cluster.hosts; } catch (_e) { /* none */ }
+  try { const l = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.local.json'), 'utf8')); if (Array.isArray(l.cluster?.hosts)) hosts = l.cluster.hosts; } catch (_e) { /* none */ }
+  if (process.env.OPENROUTER_CLUSTER_HOSTS) hosts = process.env.OPENROUTER_CLUSTER_HOSTS.split(',').map((s) => s.trim()).filter(Boolean);
+  return hosts;
+}
+
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -211,19 +221,35 @@ function handleEvents(req, res, query) {
   });
 }
 
-// ── 可选 Basic Auth（设置环境变量 OPENROUTER_WEB_USER/PASS 即启用）──────────
+// ── 鉴权：访问令牌(推荐,分布式友好) + 可选 Basic Auth ──────────────────────
+// 令牌来源:环境变量 OPENROUTER_AUTH_TOKEN > config.local.json/config.json 的 security.token。
+function loadAuthToken() {
+  if (process.env.OPENROUTER_AUTH_TOKEN) return process.env.OPENROUTER_AUTH_TOKEN;
+  for (const f of ['config.local.json', 'config.json']) {
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security?.token) return c.security.token; } catch (_e) { /* none */ }
+  }
+  return '';
+}
+const AUTH_TOKEN = loadAuthToken();
 const AUTH_USER = process.env.OPENROUTER_WEB_USER || '';
 const AUTH_PASS = process.env.OPENROUTER_WEB_PASS || '';
-function checkAuth(req, res) {
-  if (!AUTH_USER) return true; // 未配置则不鉴权
-  const hdr = req.headers.authorization || '';
-  const m = hdr.match(/^Basic\s+(.+)$/i);
-  if (m) {
-    const [u, p] = Buffer.from(m[1], 'base64').toString('utf8').split(':');
-    if (u === AUTH_USER && p === AUTH_PASS) return true;
+
+// 取请求里的 token：X-Auth-Token 头 / Authorization: Bearer / ?token=
+function reqToken(req, url) {
+  return req.headers['x-auth-token']
+    || (req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    || (url && url.searchParams.get('token'))
+    || '';
+}
+function checkAuth(req, res, url) {
+  if (!AUTH_TOKEN && !AUTH_USER) return true; // 都没配 = 不鉴权(仅建议内网/本机)
+  if (AUTH_TOKEN && reqToken(req, url) === AUTH_TOKEN) return true;
+  if (AUTH_USER) {
+    const m = (req.headers.authorization || '').match(/^Basic\s+(.+)$/i);
+    if (m) { const [u, p] = Buffer.from(m[1], 'base64').toString('utf8').split(':'); if (u === AUTH_USER && p === AUTH_PASS) return true; }
   }
-  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Openrouter Console"' });
-  res.end('Authentication required');
+  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Openrouter Console"', 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Unauthorized: 需要访问令牌(token)或登录');
   return false;
 }
 
@@ -293,7 +319,9 @@ function handleApiResultsJob(res, query) {
 async function handleApiAggregate(req, res) {
   let body;
   try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
-  const hosts = Array.isArray(body.hosts) ? body.hosts : [];
+  // 请求里的 hosts 与服务端配置的 cluster.hosts 合并去重 → 中心机配好后无需手填。
+  const bodyHosts = Array.isArray(body.hosts) ? body.hosts : [];
+  const hosts = [...new Set([...bodyHosts, ...loadClusterHosts()].map((h) => String(h).trim()).filter(Boolean))];
   const includeLocal = body.includeLocal !== false;
   const dedupeMode = body.dedupe || 'email';
   const all = [];
@@ -306,7 +334,9 @@ async function handleApiAggregate(req, res) {
   for (const h of hosts) {
     try {
       const u = String(h).replace(/\/+$/, '') + '/api/results/all';
-      const resp = await fetch(u, { signal: AbortSignal.timeout(15000) });
+      // 节点间聚合带上令牌(假设全集群同一 token);也支持 URL 内嵌 user:pass。
+      const headers = AUTH_TOKEN ? { 'X-Auth-Token': AUTH_TOKEN } : {};
+      const resp = await fetch(u, { headers, signal: AbortSignal.timeout(15000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const j = await resp.json();
       const arr = j.accounts || [];
@@ -332,14 +362,15 @@ async function handleApiAggregate(req, res) {
 const HOST = process.env.OPENROUTER_WEB_HOST || '0.0.0.0';
 
 const server = http.createServer((req, res) => {
-  if (!checkAuth(req, res)) return;
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (!checkAuth(req, res, url)) return;
   const { pathname } = url;
 
   if (req.method === 'POST' && pathname === '/jobs') return void handleStartJob(req, res);
   if (req.method === 'GET' && pathname === '/events') return void handleEvents(req, res, url.searchParams);
   if (req.method === 'GET' && pathname === '/download') return void handleDownload(req, res, url.searchParams);
   if (req.method === 'GET' && pathname === '/api/node') return void sendJson(res, 200, { nodeId: NODE_ID, hostname: os.hostname() });
+  if (req.method === 'GET' && pathname === '/api/cluster') return void sendJson(res, 200, { nodeId: NODE_ID, hosts: loadClusterHosts() });
   if (req.method === 'GET' && pathname === '/api/results') return void handleApiResults(res);
   if (req.method === 'GET' && pathname === '/api/results/all') return void handleApiResultsAll(res, url.searchParams);
   if (req.method === 'GET' && pathname === '/api/results/job') return void handleApiResultsJob(res, url.searchParams);
@@ -352,9 +383,13 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`[Openrouter Web] 控制台已启动: http://${HOST}:${PORT}  (本机: http://localhost:${PORT})`);
-  if (HOST === '0.0.0.0' && !AUTH_USER) {
+  if (AUTH_TOKEN) {
     // eslint-disable-next-line no-console
-    console.log('⚠ 安全提醒: 已监听所有网卡且无鉴权。公网部署请设置 OPENROUTER_WEB_USER/PASS 或绑定 localhost(OPENROUTER_WEB_HOST=127.0.0.1)+SSH 隧道。');
+    console.log('🔒 访问令牌已启用:所有请求需带 token。');
+  } else if (HOST === '0.0.0.0' && !AUTH_USER) {
+    // eslint-disable-next-line no-console
+    console.log('⚠ 安全提醒: 监听所有网卡且无鉴权!任何能访问本端口的人都能拉取你的成功账号/API Key。');
+    console.log('   请任选其一加固: 设 OPENROUTER_AUTH_TOKEN=一个随机串(推荐) / 绑定内网+防火墙 / OPENROUTER_WEB_HOST=127.0.0.1 + SSH 隧道。');
   }
 });
 
