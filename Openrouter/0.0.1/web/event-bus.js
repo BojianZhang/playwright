@@ -26,6 +26,14 @@ emitter.setMaxListeners(0);
  */
 function publish(jobId, type, data) {
   if (!jobId) return;
+  // 诊断镜像：把关键事件打到服务端 stdout（→ _server.log），便于排查 worker 卡在哪一步。
+  try {
+    if (type === 'log') console.log(`[${jobId}] ${data}`);
+    else if (type === 'account-failed') console.log(`[${jobId}] ✗FAIL ${data && data.email} | ${data && data.reason} | ${data && (data.detail || '').toString().slice(0, 120)}`);
+    else if (type === 'account-success') console.log(`[${jobId}] ✓OK ${data && (data.email || (data.raw && data.raw.email) || '')}`);
+    else if (type === 'worker-update' && data && data.worker) console.log(`[${jobId}] W${data.worker.workerId} → ${data.worker.stage || data.worker.status || ''}`);
+    else if (type === 'job-done') console.log(`[${jobId}] DONE ${JSON.stringify(data)}`);
+  } catch (_e) { /* ignore */ }
   emitter.emit(jobId, { type, data, ts: Date.now() });
 }
 

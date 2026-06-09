@@ -86,22 +86,27 @@ function messageDateMs(json) {
  */
 async function waitForVerifyCode(opts = {}) {
   const { attempts = 12, intervalMs = 3000, log = () => {}, sinceTs = 0, staleCode = '', skewMs = 60000 } = opts;
+  let lastCode = null; // 读到过的最近一个码（兜底用）
   for (let i = 0; i < attempts; i += 1) {
     try {
       const { json } = await getLatestMessage(opts);
       const code = extractVerifyCode(json);
       if (code) {
+        lastCode = code;
         const ts = messageDateMs(json);
-        const tooOld = sinceTs && Number.isFinite(ts) && ts < sinceTs - skewMs; // 发件早于本次登录 → 旧码
+        const tooOld = sinceTs && Number.isFinite(ts) && ts < sinceTs - skewMs; // 发件早于本次登录 → 可能旧码
         const dup = staleCode && code === staleCode;                            // 与上次用过的码相同 → 旧码
         if (!tooOld && !dup) { log(`Firstmail 第 ${i + 1} 次轮询：找到新验证码 ${code}`); return { code, attempts: i + 1 }; }
-        log(`Firstmail 第 ${i + 1} 次轮询：${code} 是旧验证码(${dup ? '与上次相同' : '发件早于本次登录'})，继续等新邮件`);
+        log(`Firstmail 第 ${i + 1} 次轮询：${code} 疑似旧码(${dup ? '与上次相同' : '发件早于本次登录'})，继续等新邮件`);
       } else {
         log(`Firstmail 第 ${i + 1} 次轮询：暂无验证码`);
       }
     } catch (e) { log(`Firstmail 轮询出错：${e.message}`); }
     if (i < attempts - 1) await new Promise(r => setTimeout(r, intervalMs));
   }
+  // 兜底：等到最后都没"确认更新"的码，但确实读到过码 → 仍返回最近一个，
+  // 避免因邮件服务器时区/时钟偏差把有效码误判成旧码而导致整账号登录失败。
+  if (lastCode) { log(`Firstmail 未确认到更新的码，回退使用最近读到的验证码 ${lastCode}`); return { code: lastCode, attempts, fallback: true }; }
   return { code: null, attempts };
 }
 
