@@ -859,15 +859,24 @@ if (policyModal) {
       inp.value = ''; // 允许重复选同一文件
     });
   });
-  // 拖拽文件到文本框 → 同样解析载入
+  // 拖拽文件到文本框 → 同样解析载入；手动编辑/清空时清掉上传解析提示（避免遗留旧计数）
+  const dataCount = (v) => String(v).split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length;
   document.querySelectorAll('textarea[data-drop]').forEach((ta) => {
     const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+    const msgEl = document.querySelector(`.up-msg[data-msg="${ta.getAttribute('name')}"]`);
     ta.addEventListener('dragover', (e) => { stop(e); ta.classList.add('dragging'); });
     ta.addEventListener('dragleave', (e) => { stop(e); ta.classList.remove('dragging'); });
     ta.addEventListener('drop', async (e) => {
       stop(e); ta.classList.remove('dragging');
       const files = e.dataTransfer && e.dataTransfer.files;
       if (files && files.length) await loadInto(files, ta.dataset.drop, ta.getAttribute('name'));
+    });
+    // 仅响应用户真实输入(isTrusted)；上传时程序触发的 input(isTrusted=false) 不处理。
+    ta.addEventListener('input', (e) => {
+      if (!e.isTrusted || !msgEl) return;
+      msgEl.classList.remove('warn');
+      const n = dataCount(ta.value);
+      msgEl.textContent = n ? `当前 ${n} 条` : '';   // 清空则提示也清掉，不留旧计数
     });
   });
 })();
