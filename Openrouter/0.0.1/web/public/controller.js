@@ -153,33 +153,41 @@
   const fieldText = (kind) => { const ta = $(`.field[data-format="${kind}"] textarea`); return ta ? ta.value : ''; };
 
   /* ===================================================
-     阶段 chips → billingAction / doApiKey / doPasswordChange
-     改密门控：取Key + 充值 + 统一密码 三者齐全才可勾
+     阶段 chips —— 统一按执行流程跑（所见即所跑）
+     账单链：绑地址 ⊂ 加卡 ⊂ 充值（勾后者自动点亮前者，取消前者自动熄后者）
+     改密：点一下自动点亮其依赖的整条路径（取Key+充值，连带加卡+绑地址）；缺统一密码则提示
+     取Key：独立
      =================================================== */
   const stageEl = (k) => $(`.stage[data-stage="${k}"]`);
   const stageOn = (k) => { const e = stageEl(k); return !!(e && e.classList.contains('on')); };
   const setStage = (k, on) => { const e = stageEl(k); if (e) e.classList.toggle('on', !!on); };
   const upwd = $('#unifiedPwd');
+  const BILL_CHAIN = ['addr', 'card', 'charge']; // 由浅到深，亮的集合永远是它的前缀
 
   function pwdGateOk() { return stageOn('key') && stageOn('charge') && !!(upwd && upwd.value.trim()); }
   function syncStages() {
     const pwd = stageEl('pwd');
     if (pwd) {
-      const ok = pwdGateOk();
-      pwd.classList.toggle('locked-off', !ok);
-      pwd.style.opacity = ok ? '' : '.5';
-      pwd.title = ok ? '把邮箱密码改成「统一密码」' : '改密需先：勾「取 Key」+「充值」且填「统一密码」';
-      if (!ok) pwd.classList.remove('on');
+      const canClick = !!(upwd && upwd.value.trim());
+      pwd.style.opacity = canClick ? '' : '.5';
+      pwd.title = canClick ? '改密（点一下会自动点亮 取Key+充值 等前置）' : '改密需先填上方「统一密码」';
+      if (pwd.classList.contains('on') && !pwdGateOk()) pwd.classList.remove('on'); // 前置被取消 → 改密自动熄
     }
   }
-  // chip 点击切换（pwd 受门控）
-  $$('.stage[data-stage]').forEach((s) => {
-    s.addEventListener('click', () => {
-      if (s.dataset.stage === 'pwd' && !pwdGateOk()) { flashHint('改密需先勾「取 Key」+「充值」并填「统一密码」'); return; }
-      s.classList.toggle('on');
-      syncStages();
-    });
-  });
+  function clickChip(stage) {
+    if (stage === 'key') { setStage('key', !stageOn('key')); }
+    else if (stage === 'pwd') {
+      if (stageOn('pwd')) { setStage('pwd', false); }
+      else if (!(upwd && upwd.value.trim())) { flashHint('改密需先填「统一密码」'); }
+      else { setStage('key', true); BILL_CHAIN.forEach((s) => setStage(s, true)); setStage('pwd', true); } // 点亮整条改密路径
+    } else { // 账单链：前缀语义
+      const idx = BILL_CHAIN.indexOf(stage); const turnOn = !stageOn(stage);
+      if (turnOn) for (let i = 0; i <= idx; i++) setStage(BILL_CHAIN[i], true);   // 点亮它 + 所有更浅的
+      else for (let i = idx; i < BILL_CHAIN.length; i++) setStage(BILL_CHAIN[i], false); // 熄灭它 + 所有更深的
+    }
+    syncStages();
+  }
+  $$('.stage[data-stage]').forEach((s) => s.addEventListener('click', () => clickChip(s.dataset.stage)));
   if (upwd) upwd.addEventListener('input', syncStages);
   function deriveBillingAction() { return stageOn('charge') ? 'charge' : stageOn('card') ? 'card' : stageOn('addr') ? 'address' : 'none'; }
 
