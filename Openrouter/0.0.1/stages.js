@@ -453,6 +453,13 @@ async function billing(ctx) {
     } catch (_e) { /* ignore */ }
   };
 
+  // 浏览器/页面已关（崩溃或被手动关闭）→ 别再取卡空跑（会白白消耗卡用量），直接清晰收口。
+  if (page.isClosed()) {
+    log('页面/浏览器已关闭，跳过账单（不消耗卡）');
+    await recordBilling('no-card', 0, '', 'PAGE_CLOSED');
+    return softBilling(cfg, 'page-closed');
+  }
+
   // 账单地址：默认随机生成(免税州)，每个账号一条；'pool' 模式才用手动地址池。
   let address;
   if ((tp.addressMode || 'random') === 'pool') {
@@ -489,8 +496,9 @@ async function billing(ctx) {
 
   let lastResult = 'no-card';
   for (let tryN = 1; tryN <= maxCardTries; tryN += 1) {
+    if (page.isClosed()) { log('页面/浏览器已关闭，停止试卡（不消耗卡）'); lastResult = 'page-closed'; break; }
     const card = await cardPool.acquire();
-    if (!card) { log('卡池已无可用卡'); lastResult = 'no-card'; break; }
+    if (!card) { log('卡池暂无可用卡（可能被其它并发任务占用或已用尽）'); lastResult = 'no-card'; break; }
     log(`第 ${tryN}/${maxCardTries} 张卡 ••${card.last4} ${doPurchase ? `充值 $${amount}` : '加卡(不扣费)'}…`);
 
     let outcome;
@@ -514,6 +522,11 @@ async function billing(ctx) {
       log(`✓ 已加卡(未扣费) ••${card.last4}`);
       await recordBilling('card-bound', 0, card.last4);
       return ok('BILLING_OK', { billingStatus: 'card-bound', charged: 0, cardLast4: card.last4 });
+    }
+    // 浏览器/页面崩溃或被关：再试也是白费、还会继续消耗卡，直接停。
+    if (outcome.result === 'error' && /closed|crash|Target page/i.test(outcome.error || '')) {
+      log(`✗ 页面/浏览器已关闭（${outcome.error || ''}）→ 停止试卡`);
+      lastResult = 'page-closed'; break;
     }
     log(`✗ 卡 ••${card.last4} 结果=${outcome.result} ${outcome.error || ''} → 换下一张`);
   }
@@ -564,12 +577,15 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps) {
 
     let addrSaved = false;
     let cardSaved = false;
+    let noneStreak = 0; // 连续找不到任何账单弹窗的次数：连续多次说明卡在了别的页（如个人资料页），及早收口
     for (let step = 0; step < 12; step += 1) {
+      if (page.isClosed()) return { result: 'error', error: 'PAGE_CLOSED' };
       const early = await detectOutcome(page, dialogs);
       if (early) return early; // 付款成功 或 被拒(任一级都可能在加卡时被拒)
 
       const state = await detectModalState(page);
       log(`step ${step} modal=${state} (card=${doCard} purchase=${doPurchase})`);
+      if (state !== 'none') noneStreak = 0;
 
       if (state === 'address') {
         await fillBillingAddress(page, address, log);
@@ -600,7 +616,13 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps) {
         // 未识别弹窗：可能已关。按已完成的步骤兜底判定。
         if (cardSaved && !doPurchase) return { result: 'card-bound' };
         if (addrSaved && !doCard) return { result: 'address-bound' };
-        await clickFirst(page, ['button:has-text("Add Credits")', 'button:has-text("Add a Payment Method")'], 4000).catch(() => {});
+        noneStreak += 1;
+        // 连续 4 次都没看到任何账单弹窗（多半卡在别的页，如个人资料/未登录）→ 及早收口，别空转 60s。
+        if (noneStreak >= 4) {
+          const where = await page.evaluate(() => location.pathname + (document.querySelector('h1,h2,[role="heading"]')?.innerText ? ' · ' + document.querySelector('h1,h2,[role="heading"]').innerText.slice(0, 40) : '')).catch(() => '');
+          return { result: 'error', error: `BILLING_NO_MODAL（未出现账单弹窗，停在: ${where || '未知'}）` };
+        }
+        await clickFirst(page, ['button:has-text("Add Credits")', 'button:has-text("Add a Payment Method")', 'button:has-text("Buy Credits")', 'a:has-text("Credits")'], 4000).catch(() => {});
         await page.waitForTimeout(1500);
       }
     }
