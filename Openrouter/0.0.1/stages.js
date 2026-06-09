@@ -385,9 +385,13 @@ async function dismissOnboarding(page) {
         if (closeBtn) { closeBtn.click(); }
       }
     }).catch(() => {});
-    // 3) 通用:任意可见 dialog 的关闭按钮 + Esc
+    // 3) 通用:关掉残留的引导浮层，但**绝不**关账单相关弹窗(地址/付款/购买)——那是我们要填的。
     await page.evaluate(() => {
-      document.querySelectorAll('[role="dialog"] button[aria-label="Close"], [role="dialog"] button[aria-label="close"]').forEach(b => b.click());
+      const BILLING = /Billing Address|Payment Method|Add Credits|Buy Credits|Purchase Credits|Address line|card number|Total due/i;
+      document.querySelectorAll('[role="dialog"]').forEach((dlg) => {
+        if (BILLING.test(dlg.innerText || '')) return; // 跳过账单弹窗，别误关
+        dlg.querySelectorAll('button[aria-label="Close"], button[aria-label="close"]').forEach((b) => b.click());
+      });
     }).catch(() => {});
   } catch (e) { /* ignore */ }
 }
@@ -589,7 +593,13 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps) {
 
       if (state === 'address') {
         await fillBillingAddress(page, address, log);
-        await clickFirst(page, ['button:has-text("Update Address")', 'button:has-text("Save")', 'button:has-text("Continue")'], 6000).catch(() => {});
+        // 提交按钮：未填全时是禁用的「Complete address details to continue」，填全后才可点。
+        // 在弹窗内点主按钮（含 Continue/Save/Update/Add address 等文案；"Continue" 子串可命中该按钮）。
+        const clicked = await clickFirst(page, [
+          'button:has-text("Update Address")', 'button:has-text("Save address")', 'button:has-text("Add address")',
+          'button:has-text("Save")', 'button:has-text("Continue")', 'button:has-text("Confirm")',
+        ], 8000).then(() => true).catch(() => false);
+        if (!clicked) log('账单地址提交按钮未可点（可能字段未填全/按钮仍禁用）');
         addrSaved = true;
         await page.waitForTimeout(2000);
       } else if (state === 'payment') {
@@ -681,13 +691,23 @@ async function waitForPurchaseOutcome(page, dialogs, timeoutMs) {
 // 填账单地址(兼容 OpenRouter 原生表单 + Stripe AddressElement iframe)。
 async function fillBillingAddress(page, address, log) {
   const a = address || {};
+  const CITY = ['input[name="locality"]', 'input[name="city"]', 'input[autocomplete="address-level2"]', 'input[placeholder*="City" i]', 'input[placeholder*="城市"]'];
+  const ZIP = ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[placeholder*="ZIP" i]', 'input[placeholder*="邮政编码"]'];
   await fillAcross(page, ['input[name="name"]', 'input[autocomplete="name"]', 'input[placeholder*="Full name" i]', 'input[placeholder*="全名"]'], a.name || '', log);
   await selectCountry(page, a.country || 'United States', log);
+  await page.waitForTimeout(400);
   await fillAcross(page, ['input[name="addressLine1"]', 'input[name="line1"]', 'input[autocomplete="address-line1"]', 'input[placeholder*="Address line 1" i]', 'input[placeholder*="地址第 1 行"]', 'input[placeholder*="地址第1行"]'], a.line1 || '', log);
   if (a.line2) await fillAcross(page, ['input[name="addressLine2"]', 'input[name="line2"]', 'input[autocomplete="address-line2"]'], a.line2, log);
-  await fillAcross(page, ['input[name="locality"]', 'input[name="city"]', 'input[autocomplete="address-level2"]', 'input[placeholder*="City" i]', 'input[placeholder*="城市"]'], a.city || '', log);
+  // City/State/Zip 多为填完 line1 后才渲染出来 → 等一下再填，并补一轮兜底。
+  await page.waitForTimeout(700);
+  await fillAcross(page, CITY, a.city || '', log);
   await fillStateField(page, a.state || '', log);
-  await fillAcross(page, ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[placeholder*="ZIP" i]', 'input[placeholder*="邮政编码"]'], a.zip || '', log);
+  await fillAcross(page, ZIP, a.zip || '', log);
+  // 二次兜底：若上面因渲染时序没填上，再补一次（fillAcross 命中即填，未命中无副作用）。
+  await page.waitForTimeout(300);
+  await fillAcross(page, CITY, a.city || '', log);
+  await fillStateField(page, a.state || '', log);
+  await fillAcross(page, ZIP, a.zip || '', log);
 }
 
 // 加银行卡(Stripe Elements iframe + 原生兜底)。
