@@ -704,28 +704,44 @@ if (policyModal) {
 }
 
 // ── 文件上传 / 实时解析（账号·代理·卡池·地址池）──────────────────────────
-// 上传 .txt/.csv 或把文件拖到框里：读文本→按字段做轻量规范化→填入对应文本框。
-// 规范化只对「账号」「代理」做（把逗号/制表/空格分隔补成冒号）；卡池/地址池后端解析本就宽容，原样填入。
+// 上传 .txt/.csv 或把文件拖到框里：逐行按「该字段的格式」抽取，只保留匹配的行，
+// 不符的行（订单抬头、JWT、混进来的别的类型…）一律忽略并计数。这样无论文件里夹带
+// 多少杂质，每个框拿到的都是它该有的数据。
 (function () {
-  const dataLines = (arr) => arr.filter((l) => l && !l.startsWith('#'));
-  function normLine(line, kind) {
-    const t = line.replace(/\s+$/, '').replace(/^\s+/, '');
-    if (!t || t.startsWith('#')) return t;
-    if (kind === 'accounts') {
-      // email:pass 已是冒号则保留；否则把第一段分隔符（逗号/分号/制表/空格）补成冒号。
-      if (t.includes(':')) return t;
-      const m = t.match(/^(\S+?)[\s,;\t]+(.+)$/);
-      return m ? `${m[1]}:${m[2].trim()}` : t;
-    }
-    if (kind === 'proxies') {
-      // host:port:user:pass。已含冒号：把混进来的逗号/制表也并成冒号；否则整体按分隔符切再拼冒号。
-      return t.includes(':') ? t.replace(/[,\t]+/g, ':') : t.replace(/[\s,;\t]+/g, ':');
-    }
-    return t; // cards / address：后端解析宽容（支持 | 制表 逗号 空格），原样填入
-  }
-  function normalizeText(text, kind) {
-    return String(text).replace(/^﻿/, '').split(/\r?\n/).map((l) => normLine(l, kind)).filter((l, i, a) => l !== '' || i < a.length - 1);
-  }
+  const KIND_LABEL = { accounts: '邮箱:密码', proxies: 'host:port:user:pass', cards: '银行卡(卡号 有效期 CVV)', address: '姓名|地址|城市|州|邮编' };
+  const unq = (s) => s.replace(/^["']|["']$/g, '').trim();
+  // 每个抽取器：返回规范化后的字符串(保留)，或 null(丢弃)。
+  const EXTRACT = {
+    // 锚定邮箱；其后第一个分隔符起、到下个空白/竖线/逗号前为密码（冒号可出现在密码里）。
+    accounts(line) {
+      const em = line.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
+      if (!em) return null;
+      const email = em[0];
+      const after = line.slice(em.index + email.length);
+      const pm = after.match(/[\s:|,;\t]+(\S[^\s|,;\t]*)/);
+      const pass = pm ? unq(pm[1]) : '';
+      return `${email}:${pass}`;
+    },
+    // host:port[:user:pass]，或 user:pass@host:port；先剥掉本工具导出的 " | key=val" 元数据。
+    proxies(line) {
+      const t = unq(line.split(/\s+\|\s+/)[0]);
+      let m = t.match(/^([^\s:@]+):([^\s:@]+)@([A-Za-z0-9.\-]+):(\d{1,5})$/);
+      if (m) return `${m[3]}:${m[4]}:${m[1]}:${m[2]}`;
+      m = t.match(/^([A-Za-z0-9.\-]+):(\d{1,5})(?::(.+))?$/);
+      if (m) return m[3] != null ? `${m[1]}:${m[2]}:${m[3]}` : `${m[1]}:${m[2]}`;
+      return null;
+    },
+    // 必须含 13–19 位卡号（去掉卡号内空格/连字符后判定）；可排除代理IP(≤12位)与普通文本。
+    cards(line) {
+      const compact = line.replace(/[ \-]/g, '');
+      return /(?:^|\D)\d{13,19}(?:\D|$)/.test(compact) ? line.trim() : null;
+    },
+    // 至少 4 段（姓名|地址|城市|州[|邮编]）；统一成竖线分隔。单段(如 JWT)直接丢。
+    address(line) {
+      const parts = line.split(/\s*[|\t]\s*|\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+      return parts.length >= 4 ? parts.join('|') : null;
+    },
+  };
   async function readFiles(fileList) {
     const parts = [];
     for (const f of Array.from(fileList)) {
@@ -737,19 +753,29 @@ if (policyModal) {
   async function loadInto(fileList, kind, targetName) {
     if (!fileList || !fileList.length) return;
     const msgEl = document.querySelector(`.up-msg[data-msg="${targetName}"]`);
-    if (msgEl) msgEl.textContent = '解析中…';
-    const raw = await readFiles(fileList);
-    const lines = normalizeText(raw, kind);
-    const cleaned = dataLines(lines).join('\n');
+    if (msgEl) { msgEl.textContent = '解析中…'; msgEl.classList.remove('warn'); }
+    const raw = (await readFiles(fileList)).replace(/^﻿/, '');
+    const ex = EXTRACT[kind] || ((l) => l || null);
+    const kept = []; let ignored = 0;
+    raw.split(/\r?\n/).forEach((line) => {
+      const s = line.trim();
+      if (!s || s.startsWith('#')) return;        // 空行/注释：静默跳过
+      const out = ex(s);
+      if (out) kept.push(out); else ignored += 1;  // 不符该字段格式：忽略并计数
+    });
     const ta = els.form.elements[targetName];
     if (!ta) return;
     const prev = ta.value.replace(/\s+$/, '');
-    const added = dataLines(cleaned.split('\n')).length;
-    ta.value = prev ? `${prev}\n${cleaned}` : cleaned;
+    if (kept.length) ta.value = prev ? `${prev}\n${kept.join('\n')}` : kept.join('\n');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     ta.dispatchEvent(new Event('change', { bubbles: true }));
-    const total = dataLines(ta.value.split('\n')).length;
-    if (msgEl) msgEl.textContent = `✓ 已载入 ${added} 条（共 ${total} 条·文件 ${fileList.length}）`;
+    if (!msgEl) return;
+    if (!kept.length) {
+      msgEl.classList.add('warn');
+      msgEl.textContent = `✗ 没找到符合「${KIND_LABEL[kind]}」格式的数据（忽略 ${ignored} 行）——文件传错了？`;
+    } else {
+      msgEl.textContent = `✓ 解析出 ${kept.length} 条${ignored ? ` · 忽略 ${ignored} 行(不符格式)` : ''}`;
+    }
   }
   // 上传按钮 → 触发隐藏 file input
   document.querySelectorAll('.up-btn').forEach((btn) => {
