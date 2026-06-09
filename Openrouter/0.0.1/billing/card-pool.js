@@ -226,9 +226,10 @@ function report(id, outcome) {
       c.declineCount += 1;
       c.status = 'declined'; // 被拒 → 直接踢出可用池
     } else {
-      // error：算一次使用但不强制踢出（页面/网络问题，下次还能试）
-      c.usedCount += 1;
-      if (c.usedCount >= c.maxUses) c.status = 'exhausted';
+      // error / 超时(BILLING_FLOW_TIMEOUT) / 页面关闭 / 没出现账单弹窗：
+      // 卡并未真正提交给 Stripe 判定（流程没走到付款，或页面中途断了），
+      // 不算一次用量、保持 active，下次还能用这张卡再试。
+      // （只更新 lastResult/lastError——已在上面设置——计数与状态不变）
     }
     scheduleFlush();
     return sanitize(c);
