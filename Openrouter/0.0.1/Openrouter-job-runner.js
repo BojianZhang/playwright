@@ -20,6 +20,9 @@ const fs = require('fs');
 const { runBatchOrchestration } = require('../../shared-batch-orchestration');
 const { createBrowserRuntime } = require('../../shared-browser-runtime/create-browser-runtime');
 const { runOpenrouterRegisterFlow } = require('./Openrouter-register');
+const accountStore = require('./account-state/account-store');
+const failurePolicy = require('./failure-policy');
+const errorLog = require('./error-log');
 const exportTemplates = require('./export-templates');
 const { installTurnstileIntercept } = require('./openrouter-turnstile');
 const { computeWorkerWindowLayout } = require('../../shared-window-layout');
@@ -169,6 +172,7 @@ async function runJob(opts = {}) {
     id: `acct-${i + 1}`,
     account,
     proxy: proxies.length ? proxies[i % proxies.length] : null,
+    proxies, // 全代理池：错误策略 retry-new-proxy 用来轮换
   }));
 
   // 周期推送运行时统计：全局浏览器在用/上限/排队 + 本 job 运行中/排队/完成。
@@ -189,7 +193,7 @@ async function runJob(opts = {}) {
     tasks,
     concurrency,
     runTask: ({ workerId, payload }) => processTask({
-      workerId, concurrency, account: payload.account, proxy: payload.proxy,
+      workerId, concurrency, account: payload.account, proxy: payload.proxy, proxies: payload.proxies,
       runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess, recordFailed,
     }),
     onWorkerUpdate: (workerState, snapshot) => {
@@ -228,12 +232,79 @@ async function runJob(opts = {}) {
 
 /**
  * 单账号任务（含失败自动重试）：循环尝试直到成功 / 永久失败 / 次数用尽。
- * 重试用全新浏览器；只有最终结果才计入成功/失败统计与回显。
+ * 重试动作由 failure-policy 按错误路由（换代理 / 重登 / 拉黑 / 重试 / 放弃）。
  */
-const NON_RETRYABLE_REASONS = new Set(['ACCOUNT_ALREADY_EXISTS', 'ACCOUNT_NOT_ALLOWED', 'ACCOUNT_LOCKED']);
+// 用已存状态拼交付 payload（预启动短路用，字段对齐 buildDeliveryPayload）。
+function buildPayloadFromState(ps, tp) {
+  return {
+    email: ps.email || '',
+    password: ps.loginPassword || ps.originalPassword || '',
+    originalPassword: ps.originalPassword || '',
+    mailboxPassword: ps.mailboxPassword || ps.originalPassword || '',
+    passwordChanged: !!ps.passwordChanged,
+    apiKey: ps.apiKey || '',
+    apiKeyName: ps.apiKeyName || '',
+    topUpAmount: Number(tp.topUpAmount) || 0,
+    billingStatus: ps.billingStatus || 'skipped',
+    charged: ps.charged || 0,
+    cardLast4: ps.cardLast4 || '',
+    proxy: '',
+    exitIp: ps.exitIp || '',
+    createdAt: ps.updatedAt || new Date().toISOString(),
+    resumedFromCache: true,
+  };
+}
+
+// 账号是否已对所选动作完全完成（可短路、无需开浏览器）。尊重阶段开关。
+function isFullyDone(ps, tp) {
+  if (!ps || !ps.registered) return false;
+  if (tp.doApiKey !== false && !ps.apiKey) return false; // 需要取Key但没有 → 不短路
+  if (!accountStore.billingSatisfied(ps.billingStatus, tp.billingAction || 'none')) return false;
+  const unified = String(tp.unifiedPassword || '').trim();
+  if (unified && ps.loginPassword && unified !== String(ps.loginPassword)) return false; // 密码不一致 → 不短路
+  const wantPw = tp.doPasswordChange === true || (tp.doPasswordChange === undefined && !!unified);
+  if (wantPw && !ps.passwordChanged) return false; // 要改密但还没改 → 不算完成
+  return true;
+}
+
+// 换代理：从池里选下一个(next-index，按 raw 匹配)；≤1 个则原样返回。
+function proxyKeyOf(p) { return p && (p.raw || (p.host ? `${p.host}:${p.port}` : '')); }
+function proxyPicker(proxies, current) {
+  if (!Array.isArray(proxies) || proxies.length <= 1) return current;
+  const cur = proxyKeyOf(current);
+  let idx = proxies.findIndex((p) => proxyKeyOf(p) === cur);
+  if (idx < 0) idx = 0;
+  return proxies[(idx + 1) % proxies.length];
+}
+
 async function processTask(ctx) {
-  const { workerId, concurrency = 1, account, proxy, runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {}, recordFailed = () => {} } = ctx;
+  const { workerId, concurrency = 1, account, proxy, proxies = [], runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {}, recordFailed = () => {} } = ctx;
   const maxAttempts = Math.max(1, Number(process.env.OPENROUTER_MAX_ATTEMPTS) || Number(CONFIG?.batch?.maxAttempts) || 3);
+
+  // 预启动短路：断点续跑下，账号已对所选动作完全完成 → 直接用已存状态交付，不开浏览器。
+  if (taskParams.resume !== false) {
+    const ps = accountStore.get(account.email);
+    if (isFullyDone(ps, taskParams)) {
+      const payload = buildPayloadFromState(ps, taskParams);
+      const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, payload);
+      recordSuccess(rendered, payload);
+      publish(jobId, 'account-success', { rendered, raw: payload, attempts: 0 });
+      publish(jobId, 'log', `W${workerId} ${account.email} 已完成(状态缓存)，跳过浏览器秒过`);
+      return { success: true };
+    }
+    // 已拉黑(永久失败)的账号 → 直接判失败，不开浏览器。
+    if (ps && ps.blacklisted) {
+      const reason = ps.blacklistReason || 'BLACKLISTED';
+      const failRaw = { email: account.email || '', password: account.password || '', originalPassword: account.password || '', reason, stage: 'blacklist', failClass: 'business', attempts: 0, detail: '账号已拉黑(永久失败)，如需重试请在「账号状态」重置', proxy: '', createdAt: new Date().toISOString() };
+      const rendered = exportTemplates.render(failureTemplate || '{{email}}:{{password}}:{{reason}}', failRaw);
+      recordFailed(rendered, failRaw);
+      recordFailure(failureStats, reason, 'business');
+      publish(jobId, 'account-failed', { ...failRaw, rendered });
+      errorLog.record({ email: account.email, stage: 'blacklist', reason, action: 'blacklist', attempt: 0, jobId }).catch(() => {});
+      publish(jobId, 'log', `W${workerId} ${account.email} 已拉黑(${reason})，跳过`);
+      return { success: false, reason };
+    }
+  }
 
   // 有头需要显示器：Linux 上若无 DISPLAY(没装/没起 Xvfb)则自动降级无头，避免启动崩溃。
   let headed = !!runParams.headed;
@@ -249,43 +320,61 @@ async function processTask(ctx) {
     if (staggerMs > 0) await new Promise(r => setTimeout(r, staggerMs));
   }
 
-  const attemptCtx = { workerId, concurrency, account, proxy, headed, slowMo, taskParams, jobId, publish, live, emitStats };
+  const attemptCtx = { workerId, concurrency, account, headed, slowMo, taskParams, jobId, publish, live, emitStats };
   let last = { success: false, reason: 'UNKNOWN' };
   let made = 0; // 实际尝试次数
+  let curProxy = proxy;     // 可换：retry-new-proxy 时轮换
+  let overrideMode = null;  // relogin 时下次强制登录模式
+  const budget = {};        // 每动作的内层重试预算
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     made = attempt;
-    last = await runAttempt({ ...attemptCtx, attempt });
+    last = await runAttempt({ ...attemptCtx, proxy: curProxy, overrideMode, attempt });
     if (last.success) {
       const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, last.payload || {});
       recordSuccess(rendered, last.payload || {});
       publish(jobId, 'account-success', { rendered, raw: last.payload, attempts: attempt });
       return { success: true };
     }
-    if (NON_RETRYABLE_REASONS.has(last.reason) || attempt >= maxAttempts) break;
-    publish(jobId, 'log', `W${workerId} ${account.email} 第 ${attempt}/${maxAttempts} 次失败(${last.reason}),换浏览器重试…`);
+    // 错误 → 恢复动作：用稳定错误码(rcode)分类/路由/记录，而非原始报错文本。
+    const rcode = last.code || last.reason || 'UNKNOWN';
+    const { action, maxRetries } = failurePolicy.classify(rcode);
+    errorLog.record({ email: account.email, stage: last.stage, reason: rcode, action, attempt, jobId }).catch(() => {});
+    if (action === 'blacklist') {
+      try { await accountStore.update(account.email, { blacklisted: true, blacklistReason: rcode }); } catch (_e) { /* 不致命 */ }
+      publish(jobId, 'log', `W${workerId} ${account.email} 判定拉黑(${rcode})，不再重试`);
+      break;
+    }
+    budget[action] = (budget[action] || 0) + 1;
+    if (action === 'abort' || budget[action] > maxRetries || attempt >= maxAttempts) break;
+    let how = '重试';
+    if (action === 'retry-new-proxy') { const np = proxyPicker(proxies, curProxy); how = (proxyKeyOf(np) !== proxyKeyOf(curProxy)) ? `换代理(${proxyKeyOf(np) || '无'})` : '重试(无备用代理)'; curProxy = np; }
+    else if (action === 'relogin') { overrideMode = 'login'; how = '重新登录'; }
+    publish(jobId, 'log', `W${workerId} ${account.email} 第 ${attempt}/${maxAttempts} 次失败(${rcode}) → ${how}…`);
     publish(jobId, 'worker-update', { worker: { workerId, status: 'running', stage: `retry-${attempt + 1}`, account: account.email } });
     await new Promise(r => setTimeout(r, 1500 + (workerId % 5) * 300));
   }
-  // 最终失败：计入统计 + 回显（含可读的失败回显行 email:password:reason）
-  const failClass = classify(last.reason);
-  recordFailure(failureStats, last.reason, failClass);
+  // 最终失败：reason 用稳定错误码(分组/策略/回显键)，原始报错文本进 detail。
+  const code = last.code || last.reason || 'UNKNOWN';
+  const rawMsg = (last.reason && last.reason !== code) ? last.reason : last.detail;
+  const failClass = classify(code);
+  recordFailure(failureStats, code, failClass);
   const failRaw = {
     email: account.email || '',
     password: account.password || '',
     originalPassword: account.password || '',
-    reason: last.reason || 'UNKNOWN',
+    reason: code,
     stage: last.stage || '',
     failClass,
     attempts: made,
-    detail: (last.detail ? String(last.detail).slice(0, 300) : ''),
-    proxy: proxy && proxy.raw ? proxy.raw : (proxy && proxy.host ? `${proxy.host}:${proxy.port}` : ''),
+    detail: (rawMsg ? String(rawMsg).slice(0, 300) : ''),
+    proxy: proxyKeyOf(curProxy) || '',
     createdAt: new Date().toISOString(),
   };
   const failRendered = exportTemplates.render(failureTemplate || '{{email}}:{{password}}:{{reason}}', failRaw);
   recordFailed(failRendered, failRaw);
   publish(jobId, 'account-failed', { ...failRaw, rendered: failRendered });
   publish(jobId, 'failure-stats', failureStats);
-  return { success: false, reason: last.reason };
+  return { success: false, reason: code };
 }
 
 /**
@@ -293,7 +382,7 @@ async function processTask(ctx) {
  * 不直接做最终回显/统计，只返回 { success, reason, stage, payload }，由 processTask 汇总。
  */
 async function runAttempt(actx) {
-  const { workerId, concurrency = 1, account, proxy, headed, slowMo, taskParams, jobId, publish, live = {}, emitStats = () => {} } = actx;
+  const { workerId, concurrency = 1, account, proxy, headed, slowMo, taskParams, jobId, publish, live = {}, emitStats = () => {}, overrideMode = null } = actx;
 
   // 窗口平铺布局：按 workerId/并发数计算位置，避免有头模式下窗口全叠在一起。
   // 工作区尺寸优先级：config 显式数字 > 自动探测当前屏幕 > profile 默认。
@@ -378,7 +467,18 @@ async function runAttempt(actx) {
     runtimeBundle.page.on('request', (req) => { if (req.url().includes('challenges.cloudflare.com')) cfRequestUrls.push(req.url()); });
   } catch (e) { /* 非致命 */ }
 
-  const runtime = { headed, taskParams, ipCheck: runtimeBundle.ipCheck, config: CONFIG };
+  // 断点续跑：加载该账号已存进度。registered → 强制登录(不重注册)；密码以已存为准并对不一致告警。
+  const resume = taskParams.resume !== false;
+  const priorState = resume ? accountStore.get(account.email) : null;
+  if (priorState && String(taskParams.unifiedPassword || '').trim() && priorState.loginPassword
+      && String(taskParams.unifiedPassword).trim() !== String(priorState.loginPassword)) {
+    publish(jobId, 'log', `W${workerId} ⚠ ${account.email} 本次统一密码与已存登录密码不一致，续跑沿用已存密码（如需轮换请先在「账号状态」重置该账号）`);
+  }
+  // 登录模式来源：错误策略 relogin 的本次 override > 已注册账号续跑强制登录 > 原 mode。
+  const effectiveTaskParams = (overrideMode || (priorState && priorState.registered))
+    ? { ...taskParams, mode: overrideMode || 'login' }
+    : taskParams;
+  const runtime = { headed, taskParams: effectiveTaskParams, priorState, resume, ipCheck: runtimeBundle.ipCheck, config: CONFIG };
 
   try {
     const result = await runOpenrouterRegisterFlow({
@@ -398,15 +498,18 @@ async function runAttempt(actx) {
         onCard: (pool, last) => publish(jobId, 'card-stats', { pool, last }),
         // 充值台账实时推送(billing 阶段每账号终态)。
         onBilling: (summary, last) => publish(jobId, 'billing-stats', { summary, last }),
+        // 账号进度落盘(支撑断点续跑；成功/失败都写部分进度)。
+        saveState: (snap) => { try { accountStore.update(snap.email, snap); } catch (_e) { /* 不致命 */ } },
       },
     });
 
     if (result.success) {
       return { success: true, payload: result.detail?.deliveryPayload || {} };
     }
-    return { success: false, reason: result.reason, stage: result.stage };
+    // code = 稳定错误码(阶段的 state)，用于分类/分组/策略；reason 可能是原始报错文本，留作 detail。
+    return { success: false, code: result.state || result.reason, reason: result.reason, stage: result.stage };
   } catch (error) {
-    return { success: false, reason: 'REGISTER_FLOW_THREW', detail: String(error && error.stack || error) };
+    return { success: false, code: 'REGISTER_FLOW_THREW', reason: 'REGISTER_FLOW_THREW', stage: '', detail: String(error && error.stack || error) };
   } finally {
     if (runtimeBundle?.context) await runtimeBundle.context.close().catch(() => {});
     if (runtimeBundle?.browser) await runtimeBundle.browser.close().catch(() => {});
@@ -428,4 +531,4 @@ function recordFailure(failureStats, reason, failClass) {
   failureStats.byReason[reason] = (failureStats.byReason[reason] || 0) + 1;
 }
 
-module.exports = { runJob };
+module.exports = { runJob, isFullyDone, buildPayloadFromState, proxyPicker };

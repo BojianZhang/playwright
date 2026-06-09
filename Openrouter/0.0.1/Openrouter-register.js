@@ -77,6 +77,53 @@ function buildDeliveryPayload({ account = {}, proxy = {}, runtime = {}, stageRes
 }
 
 /**
+ * 从阶段结果提取「账号进度快照」，写入状态库支撑断点续跑。
+ * 只写正向事实（已注册/已取Key/账单状态/已改密），不会用空值覆盖既有进度。
+ *
+ * @param {object} params { account, runtime, stageResults, failStage, failReason }
+ * @returns {object} 仅含已达成字段的增量快照
+ */
+function buildStateSnapshot({ account = {}, runtime = {}, stageResults = {}, failStage = '', failReason = '' }) {
+  const tp = runtime.taskParams || {};
+  const unified = String(tp.unifiedPassword || '').trim();
+  const original = account.password || '';
+  const snap = { email: account.email || '', originalPassword: original };
+
+  // 注册/登录成功 → 记录已注册 + 当前 OpenRouter 登录密码（统一密码优先）。
+  if (stageResults.register && stageResults.register.success === true) {
+    snap.registered = true;
+    snap.loginPassword = unified || original;
+  }
+  // 取到 Key → 记录（重跑复用，绝不重复建）。
+  const keyDetail = stageResults.apiKey && stageResults.apiKey.detail;
+  if (keyDetail && keyDetail.apiKey) {
+    snap.apiKey = keyDetail.apiKey;
+    snap.apiKeyName = keyDetail.apiKeyName || '';
+    snap.expiration = keyDetail.expiration || '';
+  }
+  // 账单真实状态（含 declined，供续跑判定换卡重跑）。
+  const billDetail = stageResults.billing && stageResults.billing.detail;
+  if (billDetail && billDetail.billingStatus) {
+    snap.billingStatus = billDetail.billingStatus;
+    snap.charged = billDetail.charged || 0;
+    snap.cardLast4 = billDetail.cardLast4 || '';
+  }
+  // 改密结果 + 据此推断邮箱当前密码（改过=统一密码，否则=原密码）。
+  const pwChanged = stageResults.export && stageResults.export.detail
+    ? stageResults.export.detail.passwordChanged : undefined;
+  if (pwChanged != null) snap.passwordChanged = !!pwChanged;
+  snap.mailboxPassword = pwChanged ? (unified || original) : original;
+
+  const exitIp = (runtime.ipCheck && runtime.ipCheck.browserRuntimeIp)
+    || (stageResults.proxyPrecheck && stageResults.proxyPrecheck.detail && stageResults.proxyPrecheck.detail.exitIp);
+  if (exitIp) snap.exitIp = exitIp;
+
+  if (failStage) snap.lastStage = failStage;
+  if (failReason) snap.lastReason = failReason;
+  return snap;
+}
+
+/**
  * 运行一次完整注册流程（单账号）。
  *
  * @param {object} options
@@ -106,7 +153,7 @@ async function runOpenrouterRegisterFlow(options = {}) {
     onStageStart(stage);
 
     if (typeof run !== 'function') {
-      return finalize({ success: false, stage, state: 'STAGE_RUNNER_MISSING', reason: 'STAGE_RUNNER_MISSING', stageResults, account, proxy, runtime });
+      return finalize({ success: false, stage, state: 'STAGE_RUNNER_MISSING', reason: 'STAGE_RUNNER_MISSING', stageResults, account, proxy, runtime, context });
     }
 
     const stageContext = { ...context, proxy, runtime, stageResults };
@@ -125,19 +172,29 @@ async function runOpenrouterRegisterFlow(options = {}) {
         stage,
         state: result?.state || `${stage}_FAILED`,
         reason: result?.reason || result?.state || `${stage}_FAILED`,
-        stageResults, account, proxy, runtime,
+        stageResults, account, proxy, runtime, context,
       });
     }
   }
 
   // 全部阶段成功。
-  return finalize({ success: true, stage: 'export', state: 'REGISTER_FLOW_COMPLETE', reason: '', stageResults, account, proxy, runtime });
+  return finalize({ success: true, stage: 'export', state: 'REGISTER_FLOW_COMPLETE', reason: '', stageResults, account, proxy, runtime, context });
 }
 
 /**
  * 归一化最终结果，附带 deliveryPayload。
  */
-function finalize({ success, stage, state, reason, stageResults, account, proxy, runtime }) {
+function finalize({ success, stage, state, reason, stageResults, account, proxy, runtime, context }) {
+  // 持久化账号进度（成功和失败都写，失败时记录已完成的部分阶段以便续跑）。
+  try {
+    if (context && typeof context.saveState === 'function') {
+      context.saveState(buildStateSnapshot({
+        account, runtime, stageResults,
+        failStage: success ? '' : stage,
+        failReason: success ? '' : (reason || state),
+      }));
+    }
+  } catch (_e) { /* 落状态失败不致命 */ }
   return {
     success,
     stage,
@@ -155,5 +212,6 @@ module.exports = {
   runOpenrouterRegisterFlow,
   buildOpenrouterStageRegistry,
   buildDeliveryPayload,
+  buildStateSnapshot,
   STAGE_DEFS,
 };

@@ -51,4 +51,7 @@ Openrouter/0.0.1/account-state/local-accounts.json
 Openrouter/0.0.1/account-state/registered-accounts.json
 Openrouter/0.0.1/account-state/card-pool.json
 Openrouter/0.0.1/account-state/billing-ledger.json
+Openrouter/0.0.1/account-state/accounts.json
+Openrouter/0.0.1/account-state/error-log.json
+Openrouter/0.0.1/account-state/failure-policy.json
 Openrouter/0.0.1/_scratch-*.js

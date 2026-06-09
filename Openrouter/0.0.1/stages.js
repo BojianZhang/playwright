@@ -20,11 +20,18 @@ const { waitForClerkVerifyLink, waitForVerifyCode, changePassword } = require('.
 // 注意：邮箱(Firstmail) API 读取始终用 account.password(原邮箱密码)；
 //       仅 OpenRouter 表单填这个 openrouterPassword。
 function openrouterPassword(runtime, account) {
-  return (runtime && runtime.taskParams && String(runtime.taskParams.unifiedPassword || '').trim())
+  // 续跑优先用已存登录密码(账号当初就用它建/登)；否则统一密码 > 原密码。
+  return (runtime && runtime.priorState && runtime.priorState.loginPassword)
+    || (runtime && runtime.taskParams && String(runtime.taskParams.unifiedPassword || '').trim())
     || account.password;
+}
+// 邮箱(Firstmail)读信密码：续跑若已改过密，用已存 mailboxPassword；否则原密码。
+function mailboxPassword(runtime, account) {
+  return (runtime && runtime.priorState && runtime.priorState.mailboxPassword) || account.password;
 }
 const cardPool = require('./billing/card-pool');
 const billingLedger = require('./billing/billing-ledger');
+const accountStore = require('./account-state/account-store');
 const { generateAddress } = require('./billing/address-gen');
 
 const ok = (state, detail) => ({ success: true, state, reason: '', detail: detail || {} });
@@ -213,7 +220,7 @@ async function signInExisting(page, account, runtime, context) {
     // 二次校验:邮箱验证码
     if (/factor-two|verify/.test(page.url())) {
       log('需要邮箱验证码,读取中…');
-      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: account.password, baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, log: (m) => log(`[mail] ${m}`) });
+      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account), baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, log: (m) => log(`[mail] ${m}`) });
       if (!code) { log('未取到验证码'); return { ok: false, reason: 'SIGNIN_CODE_NOT_FOUND' }; }
       const otp = page.locator('input[inputmode="numeric"], input[name="code"], input[id*="code"], input[autocomplete="one-time-code"]').first();
       await otp.click({ timeout: 5000 }).catch(() => {});
@@ -253,7 +260,7 @@ async function magicLinkLogin(ctx) {
   }
   try {
     const { link } = await waitForClerkVerifyLink({
-      apiKey: mb.apiKey, email: account.email, password: account.password,
+      apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account),
       baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000,
       log: (m) => ctx.context.log && ctx.context.log(`[mail] ${m}`),
     });
@@ -278,6 +285,16 @@ async function magicLinkLogin(ctx) {
 // ── S4: 创建并提取 API Key（best-effort，需实测细化选择器）────────────────────
 async function apiKey(ctx) {
   const { page, runtime } = ctx;
+  // 阶段开关：未勾「取Key」→ 跳过（显式 off 优先于续跑复用）。
+  if (runtime.taskParams && runtime.taskParams.doApiKey === false) {
+    return ok('API_KEY_SKIPPED', { apiKey: '' });
+  }
+  // 断点续跑：已有 Key → 复用，跳过新建（绝不重复建 Key）。
+  const ps = runtime.priorState;
+  if (runtime.resume !== false && ps && ps.apiKey) {
+    ctx.context.log && ctx.context.log('[apikey] 续跑：复用已存 Key，跳过新建');
+    return ok('API_KEY_REUSED', { apiKey: ps.apiKey, apiKeyName: ps.apiKeyName || '', expiration: ps.expiration || '' });
+  }
   const cfg = runtime.config || {};
   const keysUrl = cfg.site?.keysUrl || 'https://openrouter.ai/settings/keys';
   // 名称随机：表单未填则每个 key 生成不同的随机名。
@@ -412,6 +429,12 @@ async function billing(ctx) {
   //   card    : 绑定地址 + 加卡(不扣费)
   //   charge  : 绑定地址 + 加卡 + 真实充值
   const action = resolveBillingAction(tp);
+  // 断点续跑：账单已达所选等级 → 跳过（关键：charge×success 不复扣费）。
+  const ps = runtime.priorState;
+  if (runtime.resume !== false && ps && ps.billingStatus && accountStore.billingSatisfied(ps.billingStatus, action)) {
+    log(`续跑：账单已达「${action}」(${ps.billingStatus})，跳过`);
+    return ok('BILLING_RESUMED', { billingStatus: ps.billingStatus, charged: ps.charged || 0, cardLast4: ps.cardLast4 || '' });
+  }
   if (action === 'none') return ok('BILLING_SKIPPED', { billingStatus: 'skipped', charged: 0 });
 
   const doCard = action === 'card' || action === 'charge';
@@ -758,6 +781,15 @@ async function clickFirst(page, selectors, timeoutMs) {
 // 仅在「付款成功」或「本就不充值(skipped)」时改密；付款失败时保留原密码以便重试。
 async function exportStage(ctx) {
   const { account, runtime, context } = ctx;
+  // 阶段开关：未勾「改密」→ 跳过。
+  if (runtime.taskParams && runtime.taskParams.doPasswordChange === false) {
+    return ok('EXPORT_OK', { passwordChanged: false });
+  }
+  // 断点续跑：已改过密 → 跳过。
+  const ps = runtime.priorState;
+  if (runtime.resume !== false && ps && ps.passwordChanged) {
+    return ok('EXPORT_OK', { passwordChanged: true });
+  }
   const cfg = runtime.config || {};
   const mb = cfg.mailbox || {};
   const tp = runtime.taskParams || {};
@@ -768,12 +800,13 @@ async function exportStage(ctx) {
     return ok('EXPORT_OK', { passwordChanged: false });
   }
 
-  const billingStatus = context.stageResults?.billing?.detail?.billingStatus || 'skipped';
-  // 流程按预期跑完(充值成功/仅加卡/仅绑地址/本次不操作)才改密；被拒/失败保留原密码以便重试。
-  const shouldChange = ['success', 'skipped', 'card-bound', 'address-bound'].includes(billingStatus);
-  if (!shouldChange) {
-    log(`付款未成功(${billingStatus})，跳过邮箱改密，保留原密码`);
-    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeNote: `skip(${billingStatus})` });
+  // 用户规则：改密前置 = 已取到 Key 且充值成功（这才算流程正常跑完）。
+  // 两者可来自本次阶段结果或断点续跑的已存状态。
+  const apiKeyOk = !!((context.stageResults?.apiKey?.detail?.apiKey) || (ps && ps.apiKey));
+  const billingStatus = context.stageResults?.billing?.detail?.billingStatus || (ps && ps.billingStatus) || 'skipped';
+  if (!apiKeyOk || billingStatus !== 'success') {
+    log(`改密前置未满足(取Key=${apiKeyOk ? '是' : '否'}, 充值=${billingStatus})，跳过改密、保留原密码`);
+    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeNote: `need-key+charge(key=${apiKeyOk},billing=${billingStatus})` });
   }
   if (!mb.apiKey) {
     log('未配置 Firstmail apiKey，无法改密');
