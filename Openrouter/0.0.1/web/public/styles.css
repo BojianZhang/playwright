@@ -236,6 +236,7 @@ small.hint b { color: var(--text); }
 .up-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .up-msg { color: var(--ok); font-weight: 400; font-size: 12px; }
 .up-msg.warn { color: #ffb3ae; }
+.build-tag { margin-left: 10px; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; opacity: .8; }
 .fail-jump { font-size: 12.5px; margin: 0 0 6px; }
 .fail-jump a { color: var(--accent); cursor: pointer; }
 textarea.dragging { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent) inset; background: color-mix(in srgb, var(--accent) 8%, var(--panel-2, #11151c)); }
