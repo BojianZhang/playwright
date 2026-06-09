@@ -226,6 +226,18 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .bad-log:empty::before, .ok-log:empty::before { content: '等待中…'; color: var(--muted); }
 small.hint { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; line-height: 1.5; }
 small.hint b { color: var(--text); }
+
+/* 文件上传 / 实时解析控件 */
+.up-ctl { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; flex-wrap: wrap; }
+.up-btn {
+  background: transparent; border: 1px dashed var(--accent); color: var(--accent);
+  border-radius: 6px; padding: 1px 9px; font-size: 12px; cursor: pointer; margin: 0;
+}
+.up-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.up-msg { color: var(--ok); font-weight: 400; font-size: 12px; }
+.fail-jump { font-size: 12.5px; margin: 0 0 6px; }
+.fail-jump a { color: var(--accent); cursor: pointer; }
+textarea.dragging { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent) inset; background: color-mix(in srgb, var(--accent) 8%, var(--panel-2, #11151c)); }
 /* 回显模板的“可用变量”：换行的 code 小标签需要点行距才不挤 */
 small.hint.vars { line-height: 2; }
 small.hint.vars code { font-size: 11.5px; }

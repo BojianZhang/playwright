@@ -340,6 +340,16 @@ function switchTab(name) {
   if (!tabs) return;
   tabs.addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (b) switchTab(b.dataset.tab); });
 })();
+// 「失败明细」跳转链接：切到该标签并滚到可见处。
+(function () {
+  const lnk = $('failJumpLink');
+  if (lnk) lnk.addEventListener('click', (e) => {
+    e.preventDefault();
+    switchTab('faildetail');
+    const p = document.querySelector('.tab-pane[data-pane="faildetail"]');
+    if (p) p.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+})();
 // 失败标签红点：显示失败数。
 function updateFailBadge() {
   const tab = document.querySelector('.tab[data-tab="faildetail"]');
@@ -395,6 +405,7 @@ function resetView(total) {
   failedAccounts.length = 0;
   failType = '__all__';
   if (els.failLog) els.failLog.textContent = '';
+  const jump = $('failJump'); if (jump) jump.hidden = true;
   renderFailDetail();
   if (els.downloadFailedBtn) els.downloadFailedBtn.disabled = true;
   if (els.requeueFailedBtn) els.requeueFailedBtn.disabled = true;
@@ -456,6 +467,7 @@ function openStream(jobId) {
     failedAccounts.push(d);
     renderFailDetail();
     updateFailBadge();
+    const jump = $('failJump'); if (jump) jump.hidden = false; // 出现失败即提示去「失败明细」看分组
     if (els.downloadFailedBtn) els.downloadFailedBtn.disabled = false;
     if (els.requeueFailedBtn) els.requeueFailedBtn.disabled = false;
   });
@@ -690,6 +702,80 @@ if (policyModal) {
     if (r.ok) { const d = await r.json(); render(d.policy || []); }
   });
 }
+
+// ── 文件上传 / 实时解析（账号·代理·卡池·地址池）──────────────────────────
+// 上传 .txt/.csv 或把文件拖到框里：读文本→按字段做轻量规范化→填入对应文本框。
+// 规范化只对「账号」「代理」做（把逗号/制表/空格分隔补成冒号）；卡池/地址池后端解析本就宽容，原样填入。
+(function () {
+  const dataLines = (arr) => arr.filter((l) => l && !l.startsWith('#'));
+  function normLine(line, kind) {
+    const t = line.replace(/\s+$/, '').replace(/^\s+/, '');
+    if (!t || t.startsWith('#')) return t;
+    if (kind === 'accounts') {
+      // email:pass 已是冒号则保留；否则把第一段分隔符（逗号/分号/制表/空格）补成冒号。
+      if (t.includes(':')) return t;
+      const m = t.match(/^(\S+?)[\s,;\t]+(.+)$/);
+      return m ? `${m[1]}:${m[2].trim()}` : t;
+    }
+    if (kind === 'proxies') {
+      // host:port:user:pass。已含冒号：把混进来的逗号/制表也并成冒号；否则整体按分隔符切再拼冒号。
+      return t.includes(':') ? t.replace(/[,\t]+/g, ':') : t.replace(/[\s,;\t]+/g, ':');
+    }
+    return t; // cards / address：后端解析宽容（支持 | 制表 逗号 空格），原样填入
+  }
+  function normalizeText(text, kind) {
+    return String(text).replace(/^﻿/, '').split(/\r?\n/).map((l) => normLine(l, kind)).filter((l, i, a) => l !== '' || i < a.length - 1);
+  }
+  async function readFiles(fileList) {
+    const parts = [];
+    for (const f of Array.from(fileList)) {
+      try { parts.push(f.text ? await f.text() : await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(f); })); }
+      catch (_e) { /* 跳过读不了的文件 */ }
+    }
+    return parts.join('\n');
+  }
+  async function loadInto(fileList, kind, targetName) {
+    if (!fileList || !fileList.length) return;
+    const msgEl = document.querySelector(`.up-msg[data-msg="${targetName}"]`);
+    if (msgEl) msgEl.textContent = '解析中…';
+    const raw = await readFiles(fileList);
+    const lines = normalizeText(raw, kind);
+    const cleaned = dataLines(lines).join('\n');
+    const ta = els.form.elements[targetName];
+    if (!ta) return;
+    const prev = ta.value.replace(/\s+$/, '');
+    const added = dataLines(cleaned.split('\n')).length;
+    ta.value = prev ? `${prev}\n${cleaned}` : cleaned;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.dispatchEvent(new Event('change', { bubbles: true }));
+    const total = dataLines(ta.value.split('\n')).length;
+    if (msgEl) msgEl.textContent = `✓ 已载入 ${added} 条（共 ${total} 条·文件 ${fileList.length}）`;
+  }
+  // 上传按钮 → 触发隐藏 file input
+  document.querySelectorAll('.up-btn').forEach((btn) => {
+    const inp = document.querySelector(`.up-input[data-for="${btn.dataset.up}"]`);
+    if (inp) btn.addEventListener('click', () => inp.click());
+  });
+  // file input 选择后载入
+  document.querySelectorAll('.up-input').forEach((inp) => {
+    inp.addEventListener('change', async () => {
+      const btn = document.querySelector(`.up-btn[data-up="${inp.dataset.for}"]`);
+      await loadInto(inp.files, btn ? btn.dataset.kind : 'accounts', inp.dataset.for);
+      inp.value = ''; // 允许重复选同一文件
+    });
+  });
+  // 拖拽文件到文本框 → 同样解析载入
+  document.querySelectorAll('textarea[data-drop]').forEach((ta) => {
+    const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+    ta.addEventListener('dragover', (e) => { stop(e); ta.classList.add('dragging'); });
+    ta.addEventListener('dragleave', (e) => { stop(e); ta.classList.remove('dragging'); });
+    ta.addEventListener('drop', async (e) => {
+      stop(e); ta.classList.remove('dragging');
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) await loadInto(files, ta.dataset.drop, ta.getAttribute('name'));
+    });
+  });
+})();
 
 // 启动：拉一次错误策略表（失败分类的恢复策略展示用）。
 loadPolicyMap();
