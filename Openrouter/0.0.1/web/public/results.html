@@ -1,126 +1,136 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>成功账号 · OpenRouter 控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260609f" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>成功账号查看 / 聚合</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=20260609g">
 </head>
 <body>
-  <header>
-    <div class="bar">
-      <h1>成功账号查看 / 聚合</h1>
-      <span class="badge" id="nodeBadge">node: …</span>
-      <a class="link-btn" href="/" style="margin-left:auto;text-decoration:none;">← 返回控制台</a>
+
+<!-- ============ TOP BAR ============ -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+    </span>
+    <span class="brand-title">成功账号查看 <span class="dim">/ 聚合</span></span>
+  </div>
+  <span class="node-badge" id="nodeBadge"><span class="dot"></span>node&nbsp;…</span>
+  <div class="topbar-spacer"></div>
+  <a class="link-btn" href="index.html">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7 7-7-7 7-7"/></svg>
+    返回控制台
+  </a>
+</header>
+
+<main class="page" data-screen-label="结果聚合页">
+
+  <!-- ============ MASTHEAD ============ -->
+  <section class="card masthead">
+
+    <!-- strip 1: identity + aggregate action -->
+    <div class="mh-strip">
+      <div class="mh-cluster">
+        <span class="mh-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="14" width="8" height="8" rx="1"/><rect x="14" y="14" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/><path d="M12 10v4M6 14v-2h12v2"/></svg></span>
+        <span class="mh-title">集群聚合</span>
+        <span class="mh-meta"><b id="nodeCount">1</b> 节点 · <b id="accTotal2">0</b> 账号</span>
+      </div>
+      <div class="mh-spacer"></div>
+      <span class="mh-updated">更新于 <b id="updatedAt">—</b></span>
+      <label class="check">
+        <input type="checkbox" id="autoRefresh" checked>
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        自动刷新 <span class="sub">5s</span>
+      </label>
+      <button class="btn btn-primary btn-sm" id="loadBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        立即聚合
+      </button>
     </div>
-  </header>
 
-  <main class="dash">
-    <!-- 子节点横幅：仅当本机是子节点(配了 centralUrl)时显示，不展示聚合 -->
-    <section class="panel" id="subBanner" hidden>
-      <div class="sub-banner">
-        <span class="dot"></span>
-        <div>
-          <b>本机为子节点</b>（<span id="subNode">…</span>）
-          <div class="muted" style="font-size:12px;margin-top:3px;">成功账号已自动推送至中心机 <code id="subCentral">…</code>，请到中心机汇总查看全集群。下表仅本机数据。</div>
-        </div>
+    <!-- strip 2: dedup + scope + totals + nodes -->
+    <div class="mh-strip">
+      <div class="mh-field-inline">
+        <span class="mh-label">去重方式</span>
+        <select class="mh-select" id="dedupe">
+          <option value="email+apiKey">每个 邮箱+Key 一行（去重复）</option>
+          <option value="email">每个邮箱一行</option>
+          <option value="none">不去重（全部保留）</option>
+        </select>
       </div>
-    </section>
+      <label class="check">
+        <input type="checkbox" id="includeLocal" checked>
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        含本机
+      </label>
+      <div class="mh-divider-v"></div>
+      <span class="mh-totals">合计 <b id="totalAll">0</b> · 去重后 <b id="accTotal">0</b></span>
+      <div class="mh-spacer"></div>
+      <span class="mh-label" style="font-weight:400;color:var(--text-3);font-size:11.5px">节点</span>
+      <span id="nodeList"><span class="node-chip"><span class="dot"></span>本机 <em>…</em></span></span>
+      <textarea id="hosts" hidden></textarea>
+    </div>
 
-    <!-- 集群节点 / 聚合：主机显示自动检测到的子节点(无需手填)；默认折叠 -->
-    <section class="panel adv">
-      <button type="button" id="advToggle" class="adv-toggle"><span id="advLabel">🖧 集群节点 / 聚合</span><span class="caret">▾</span></button>
-      <div id="advBody" hidden>
-        <div class="cluster-controls">
-          <label style="margin:0;">去重方式
-            <select id="dedupe">
-              <option value="email+apiKey">每个 邮箱+Key 一行（去重复）</option>
-              <option value="email">按邮箱合并（同邮箱只留最新 Key）</option>
-              <option value="none">不去重（含完全重复）</option>
-            </select>
-          </label>
-          <label class="inline"><input type="checkbox" id="includeLocal" checked /> 含本机</label>
-          <button id="loadBtn" type="button">↻ 立即聚合</button>
-          <label class="inline"><input type="checkbox" id="autoRefresh" checked /> 自动刷新(5s)</label>
-          <!-- 手填节点已改为自动检测；保留隐藏字段兼容(可在 config.json 配 cluster.hosts 兜底) -->
-          <textarea id="hosts" hidden></textarea>
-        </div>
-        <div id="msg" class="muted" style="margin-top:10px;font-size:12px;"></div>
-        <div class="node-list-title muted">检测到的节点（本机 + 自动注册/推送的子机）</div>
-        <div id="sources" class="node-list"></div>
+    <!-- strip 3: search + export -->
+    <div class="mh-strip mh-tools">
+      <div class="search-box mh-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="search" placeholder="搜索 邮箱 / Key / 节点…">
       </div>
-    </section>
+      <div class="mh-spacer"></div>
+      <button class="btn btn-soft btn-sm" id="copyBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制 email · Key</button>
+      <button class="btn btn-soft btn-sm" id="copyPwBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>复制 email · 密码</button>
+      <button class="btn btn-ghost btn-sm" id="dlTxtBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>下载 .txt</button>
+      <button class="btn btn-ghost btn-sm" id="dlJsonBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>下载 .json</button>
+    </div>
+  </section>
 
-    <!-- 成功账号表：全宽 -->
-    <section class="panel">
-      <div class="stat-bar">
-        <div class="stat"><span class="stat-num" id="statCount">0</span><span class="stat-label">账号数</span></div>
-        <div class="stat"><span class="stat-num" id="statNodes">0</span><span class="stat-label">来源节点</span></div>
-        <div class="stat" style="flex:3;">
-          <input type="text" id="search" placeholder="搜索 邮箱 / Key / 节点…" style="margin:0;" />
-        </div>
-      </div>
-      <div class="actions" style="margin-bottom:10px;flex-wrap:wrap;">
-        <button id="copyBtn" type="button" class="link-btn">复制(email:apiKey)</button>
-        <button id="copyPwBtn" type="button" class="link-btn">复制(email:密码)</button>
-        <button id="dlTxtBtn" type="button" class="link-btn">下载 .txt</button>
-        <button id="dlJsonBtn" type="button" class="link-btn">下载 .json(全字段)</button>
-      </div>
-      <div style="overflow:auto;max-height:55vh;">
-        <table id="tbl" class="rtbl">
-          <thead><tr>
-            <th>#</th><th>邮箱</th><th>现在密码</th><th>原密码</th><th>API Key</th>
-            <th>billing</th><th>额度</th><th>卡</th><th>改密</th><th>出口IP</th><th>节点</th><th>时间</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
+  <div class="section-gap"></div>
 
-    <!-- 卡池 + 台账：全宽双栏 -->
-    <section class="panel">
-      <div class="two-col">
-        <div class="col">
-          <h2>卡池使用情况（本节点）
-            <button type="button" id="refreshCardsBtn" class="link-btn">↻ 刷新</button>
-            <span id="cardSummary" class="muted" style="font-size:12px;margin-left:8px;"></span>
-          </h2>
-          <div id="cardPool" class="card-pool muted">加载中…</div>
-        </div>
-        <div class="col">
-          <h2>充值台账（本节点）
-            <button type="button" id="refreshBillBtn" class="link-btn">↻ 刷新</button>
-          </h2>
-          <div id="billingLedger" class="card-pool muted">加载中…</div>
-        </div>
-      </div>
-    </section>
+  <!-- ============ ACCOUNTS TABLE ============ -->
+  <section class="card">
+    <div class="card-head">
+      <span class="idx c-green">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </span>
+      <h3>成功账号</h3>
+      <span class="head-hint">点行展开查看完整 Key / 账单地址</span>
+    </div>
+    <div class="tbl-wrap" style="border:none;border-radius:0;max-height:520px">
+      <table class="tbl" id="accTable">
+        <thead><tr>
+          <th>#</th><th>邮箱</th><th>现在密码</th><th>原密码</th><th>API Key</th>
+          <th>billing</th><th>额度</th><th>卡</th><th>改密</th><th>出口 IP</th><th>节点</th><th>时间</th>
+        </tr></thead>
+        <tbody id="accBody"></tbody>
+      </table>
+    </div>
+  </section>
 
-    <!-- 账号状态：断点续跑进度（本节点） -->
-    <section class="panel">
-      <h2>账号状态 · 断点续跑（本节点）
-        <button type="button" id="refreshAcctBtn" class="link-btn">↻ 刷新</button>
-        <button type="button" id="clearAcctBtn" class="link-btn">🗑 清空</button>
-        <span id="acctSummary" class="muted" style="font-size:13px;margin-left:8px;"></span>
-      </h2>
-      <div class="muted" style="font-size:13px;margin-bottom:8px;">记录每个账号跑到哪一步。重跑会自动跳过已完成阶段（已注册→直接登录、已有Key→复用、账单达标→不复扣、已改密→跳过）。「重置」让某账号下次从头跑。</div>
-      <div id="acctTable" class="card-pool muted">加载中…</div>
-    </section>
+  <div class="section-gap"></div>
 
-    <!-- 错误记录：每次阶段失败的事件（本节点） -->
-    <section class="panel">
-      <h2>错误记录（本节点）
-        <button type="button" id="refreshErrBtn" class="link-btn">↻ 刷新</button>
-        <button type="button" id="clearErrBtn" class="link-btn">🗑 清空</button>
-        <span id="errSummary" class="muted" style="font-size:13px;margin-left:8px;"></span>
-      </h2>
-      <div class="muted" style="font-size:13px;margin-bottom:8px;">每次阶段失败都会记一条（含被路由成什么动作）。错误的「说明 / 策略配置」在控制台「📖 错误策略 / 说明」里改。</div>
-      <div id="errChips" class="chips" style="margin-bottom:10px;"></div>
-      <div id="errTable" class="card-pool muted">加载中…</div>
-    </section>
-  </main>
+  <!-- ============ POOL USAGE ============ -->
+  <section class="card card-pad">
+    <div class="sub-head">
+      <h4>卡池使用情况</h4>
+      <span class="cnt-pill" id="poolSummary">本节点 · 加载中…</span>
+      <div class="right"><button class="btn btn-ghost btn-sm" id="refreshPoolBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>刷新</button></div>
+    </div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>卡号 (末4)</th><th>有效期</th><th>已用 / 上限</th><th>状态</th></tr></thead>
+        <tbody id="poolBody"><tr><td colspan="4" class="tbl-empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
 
-  <script src="/auth.js?v=20260609f"></script>
-  <script src="/results.js?v=20260609f"></script>
+</main>
+
+<script src="auth.js?v=20260609g"></script>
+<script src="results.js?v=20260609g"></script>
 </body>
 </html>
