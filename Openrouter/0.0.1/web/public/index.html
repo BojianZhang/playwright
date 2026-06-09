@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20260609g">
+<link rel="stylesheet" href="styles.css?v=20260609h">
 </head>
 <body>
 
@@ -20,7 +20,7 @@
     <span class="brand-title">OpenRouter <span class="dim">自动化控制台</span></span>
   </div>
   <span class="node-badge" id="nodeBadge"><span class="dot"></span>node&nbsp;…</span>
-  <span class="node-badge" id="buildTag" title="前端构建版本">build 0609g</span>
+  <span class="node-badge" id="buildTag" title="前端构建版本">build 0609h</span>
   <div class="topbar-spacer"></div>
   <a class="link-btn" href="results.html">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
@@ -132,6 +132,14 @@
       <div class="field" style="margin:0">
         <div class="label"><span class="l-name">每张卡最大次数</span><span class="l-hint">用尽换下一张</span></div>
         <input type="number" id="cardMax" value="10" min="1">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">充值金额</span><span class="l-hint">勾「充值」才生效·最低 5</span></div>
+        <input type="number" id="topUp" value="5" min="5" step="1">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">最多试卡数</span><span class="l-hint">被拒自动换下一张</span></div>
+        <input type="number" id="maxCardTries" value="3" min="1" max="10">
       </div>
     </div>
 
@@ -516,8 +524,8 @@
   </div>
 </div>
 
-<script src="auth.js?v=20260609g"></script>
-<script src="controller.js?v=20260609g"></script>
-<script src="modals.js?v=20260609g"></script>
+<script src="auth.js?v=20260609h"></script>
+<script src="controller.js?v=20260609h"></script>
+<script src="modals.js?v=20260609h"></script>
 </body>
 </html>
