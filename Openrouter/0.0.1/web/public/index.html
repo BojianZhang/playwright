@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenRouter 自动化控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260609b" />
+  <link rel="stylesheet" href="/styles.css?v=20260609c" />
 </head>
 <body>
   <header>
     <div class="bar">
       <h1>OpenRouter 自动化控制台</h1>
-      <span class="build-tag" title="前端构建版本，用于确认浏览器是否加载到最新代码">build 0609b</span>
+      <span class="build-tag" title="前端构建版本，用于确认浏览器是否加载到最新代码">build 0609c</span>
       <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 卡池 / 聚合</a>
     </div>
   </header>
@@ -104,7 +104,7 @@
               <input type="text" name="addressStates" value="Oregon, Delaware, Montana, New Hampshire" />
             </label>
             <div id="addressPoolWrap" style="display:none;">
-              <label>账单地址池 <small><code>姓名|地址1|城市|州|邮编</code></small>
+              <label>账单地址池 <small><code>姓名|地址1|城市|州|邮编</code>，或直接传带表头的 CSV（Name/Address 列，整串美式地址自动拆分）</small>
                 <span class="up-ctl"><button type="button" class="up-btn" data-up="billingAddressesRaw" data-kind="address" title="上传 .txt/.csv 文件，自动解析填入（也可直接把文件拖到下方框里）">📁 上传文件</button><small class="up-msg" data-msg="billingAddressesRaw"></small></span>
                 <input type="file" class="up-input" data-for="billingAddressesRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
                 <textarea name="billingAddressesRaw" data-drop="address" rows="2" placeholder="Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209"></textarea>
@@ -268,7 +268,7 @@
     </div>
   </div>
 
-  <script src="/auth.js?v=20260609b"></script>
-  <script src="/app.js?v=20260609b"></script>
+  <script src="/auth.js?v=20260609c"></script>
+  <script src="/app.js?v=20260609c"></script>
 </body>
 </html>

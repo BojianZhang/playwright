@@ -710,7 +710,7 @@ if (policyModal) {
 (function () {
   const KIND_LABEL = { accounts: '邮箱:密码', proxies: 'host:port:user:pass', cards: '银行卡(卡号 有效期 CVV)', address: '姓名|地址|城市|州|邮编' };
   const unq = (s) => s.replace(/^["']|["']$/g, '').trim();
-  // 每个抽取器：返回规范化后的字符串(保留)，或 null(丢弃)。
+  // 单行抽取器：返回规范化后的字符串(保留)，或 null(丢弃)。
   const EXTRACT = {
     // 锚定邮箱；其后第一个分隔符起、到下个空白/竖线/逗号前为密码（冒号可出现在密码里）。
     accounts(line) {
@@ -736,11 +736,86 @@ if (policyModal) {
       const compact = line.replace(/[ \-]/g, '');
       return /(?:^|\D)\d{13,19}(?:\D|$)/.test(compact) ? line.trim() : null;
     },
-    // 至少 4 段（姓名|地址|城市|州[|邮编]）；统一成竖线分隔。单段(如 JWT)直接丢。
-    address(line) {
-      const parts = line.split(/\s*[|\t]\s*|\s*,\s*/).map((s) => s.trim()).filter(Boolean);
-      return parts.length >= 4 ? parts.join('|') : null;
-    },
+  };
+  // 逐行抽取 → {kept, ignored}
+  function lineParse(text, ex) {
+    const kept = []; let ignored = 0;
+    text.split(/\r?\n/).forEach((line) => {
+      const s = line.trim();
+      if (!s || s.startsWith('#')) return;          // 空行/注释：静默跳过
+      const out = ex(s);
+      if (out) kept.push(out); else ignored += 1;
+    });
+    return { kept, ignored };
+  }
+  // ── CSV 解析（支持引号字段、字段内逗号、"" 转义、BOM、CRLF）────────────────
+  function csvRows(text) {
+    const s = String(text).replace(/^﻿/, '');
+    const rows = []; let row = [], cell = '', inQ = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inQ) {
+        if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else inQ = false; }
+        else cell += c;
+      } else if (c === '"') inQ = true;
+      else if (c === ',') { row.push(cell); cell = ''; }
+      else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else if (c !== '\r') cell += c;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  // 美式整串地址 "line1, city, State ZIP, United States" → 各字段
+  function splitUsAddress(addr) {
+    let parts = String(addr).split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length && /^(united states|usa|u\.?s\.?a?\.?)$/i.test(parts[parts.length - 1])) parts.pop();
+    if (parts.length < 3) return null;
+    const sz = parts.pop().match(/^(.+?)\s+(\d{5}(?:-\d{4})?)$/);
+    if (!sz) return null;
+    const state = sz[1].trim(); const zip = sz[2];
+    const city = parts.pop();
+    const line1 = parts.join(' ').replace(/\s+/g, ' ').trim(); // 去掉逗号，避免与后端按逗号再切冲突
+    return (line1 && city && state && zip) ? { line1, city, state, zip } : null;
+  }
+  // 一行 CSV 单元 → "姓名|地址|城市|州|邮编"，失败返回 null
+  function rowToAddress(cells, nameIdx, addrIdx) {
+    const name = (nameIdx >= 0 ? cells[nameIdx] : cells[0] || '').trim();
+    let addr = addrIdx >= 0 ? (cells[addrIdx] || '').trim()
+      : (cells.find((c) => /\d{5}(?:-\d{4})?\s*,\s*united states/i.test(c) || /,\s*[A-Za-z][A-Za-z .]+\s+\d{5}(?:-\d{4})?\b/.test(c)) || '').trim();
+    if (!name || !addr) return null;
+    const c = splitUsAddress(addr);
+    return c ? [name, c.line1, c.city, c.state, c.zip].join('|') : null;
+  }
+  // 地址池智能解析：既吃旧的「姓名|地址|城市|州|邮编」竖线格式，也吃富 CSV（带表头/引号/整串地址）。
+  function parseAddressSmart(text) {
+    const rows = csvRows(text);
+    const kept = []; let ignored = 0;
+    let nameIdx = -1, addrIdx = -1, start = 0;
+    if (rows.length) {
+      rows[0].forEach((c, i) => { const h = String(c).toLowerCase(); if (nameIdx < 0 && /(name|姓名)/.test(h)) nameIdx = i; if (addrIdx < 0 && /(address|地址)/.test(h)) addrIdx = i; });
+      if (nameIdx >= 0 && addrIdx >= 0) start = 1; // 识别到表头才跳过首行
+    }
+    for (let r = start; r < rows.length; r++) {
+      const cells = rows[r];
+      if (!cells || !cells.join('').trim()) continue;
+      if (cells.length === 1 && cells[0].includes('|')) { // 旧的竖线格式
+        const p = cells[0].split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean);
+        if (p.length >= 4) { kept.push(p.join('|')); continue; }
+        ignored += 1; continue;
+      }
+      const canon = rowToAddress(cells, nameIdx, addrIdx); // 富 CSV（姓名 + 整串地址）
+      if (canon) { kept.push(canon); continue; }
+      const flat = cells.map((s) => s.trim()).filter(Boolean); // 朴素 CSV：姓名,地址,城市,州,邮编
+      if (flat.length >= 4 && /\d{5}/.test(flat[flat.length - 1] || flat[flat.length - 2])) { kept.push(flat.join('|')); continue; }
+      ignored += 1;
+    }
+    return { kept, ignored };
+  }
+  const PARSE = {
+    accounts: (t) => lineParse(t, EXTRACT.accounts),
+    proxies: (t) => lineParse(t, EXTRACT.proxies),
+    cards: (t) => lineParse(t, EXTRACT.cards),
+    address: parseAddressSmart,
   };
   async function readFiles(fileList) {
     const parts = [];
@@ -755,14 +830,8 @@ if (policyModal) {
     const msgEl = document.querySelector(`.up-msg[data-msg="${targetName}"]`);
     if (msgEl) { msgEl.textContent = '解析中…'; msgEl.classList.remove('warn'); }
     const raw = (await readFiles(fileList)).replace(/^﻿/, '');
-    const ex = EXTRACT[kind] || ((l) => l || null);
-    const kept = []; let ignored = 0;
-    raw.split(/\r?\n/).forEach((line) => {
-      const s = line.trim();
-      if (!s || s.startsWith('#')) return;        // 空行/注释：静默跳过
-      const out = ex(s);
-      if (out) kept.push(out); else ignored += 1;  // 不符该字段格式：忽略并计数
-    });
+    const parser = PARSE[kind] || ((t) => lineParse(t, (l) => l || null));
+    const { kept, ignored } = parser(raw);
     const ta = els.form.elements[targetName];
     if (!ta) return;
     const prev = ta.value.replace(/\s+$/, '');
