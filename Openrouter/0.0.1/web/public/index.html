@@ -8,8 +8,10 @@
 </head>
 <body>
   <header>
-    <h1>OpenRouter 自动化控制台</h1>
-    <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 卡池 / 聚合</a>
+    <div class="bar">
+      <h1>OpenRouter 自动化控制台</h1>
+      <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 卡池 / 聚合</a>
+    </div>
   </header>
 
   <main class="dash">
@@ -34,6 +36,8 @@
           <div class="cfg-col">
             <h3>② 运行 &amp; 模式</h3>
             <label class="inline big"><input type="checkbox" name="headed" /> 有头模式（显示浏览器）</label>
+            <label class="inline big"><input type="checkbox" name="resume" checked /> 断点续跑（跳过已完成阶段·复用Key·不复扣）</label>
+            <button type="button" class="link-btn" id="policyBtn" style="margin:2px 0 10px;">📖 错误策略 / 说明（每个错误怎么走）</button>
             <div class="row">
               <label>并发数 <small>受全局上限约束</small> <input type="number" name="concurrency" value="1" min="1" max="100" /></label>
               <label>处理数量 <small>0=全部</small> <input type="number" name="count" value="0" min="0" /></label>
@@ -63,14 +67,24 @@
 
           <div class="cfg-col">
             <h3>③ 账单 / 卡池（S5）</h3>
-            <label>账单 / 卡 / 充值动作 <small>逐级递进，只有「真实充值」才扣钱</small>
-              <select name="billingAction" id="billingAction">
-                <option value="none">不操作（只注册 + 取 Key）</option>
-                <option value="address">仅绑定账单地址</option>
-                <option value="card">绑定地址 + 加卡（不扣费）</option>
-                <option value="charge">绑定地址 + 加卡 + 真实充值（扣钱）</option>
-              </select>
-            </label>
+            <label>要执行的阶段 <small>注册/登录每次必跑·勾选要做的（可任意组合）·勾「充值」才扣钱</small></label>
+            <div class="stage-pick">
+              <label class="inline"><input type="checkbox" id="pkApiKey" name="doApiKey" checked /> 取Key</label>
+              <label class="inline"><input type="checkbox" id="pkAddress" /> 绑地址</label>
+              <label class="inline"><input type="checkbox" id="pkCard" /> 加卡</label>
+              <label class="inline"><input type="checkbox" id="pkCharge" /> 充值<small>(扣钱)</small></label>
+              <label class="inline" id="pkPwdLabel" title="把邮箱密码改成「统一密码」；需先满足：取Key + 充值成功 + 填上方统一密码"><input type="checkbox" id="pkPwd" name="doPasswordChange" /> 改密</label>
+            </div>
+            <input type="hidden" name="billingAction" id="billingAction" value="none" />
+            <div class="stage-flow" id="stageFlow" title="按顺序跑；蓝=本次会执行；灰=未勾或断点续跑已完成而跳过">
+              <span class="stg base" data-stg="register">注册/登录</span><span class="arr">→</span>
+              <span class="stg" data-stg="apikey">取Key</span><span class="arr">→</span>
+              <span class="stg" data-stg="address">绑地址</span><span class="arr">→</span>
+              <span class="stg" data-stg="card">加卡</span><span class="arr">→</span>
+              <span class="stg" data-stg="charge">充值</span><span class="arr">→</span>
+              <span class="stg" data-stg="pwd">改密</span>
+            </div>
+            <small class="hint">各阶段独立勾选（想单独补跑哪一步就只勾哪步），底层依赖由断点续跑自动补齐、已完成的自动跳过、不重复建Key/不复扣。改密需「取Key+充值成功」。</small>
             <div class="row" id="chargeOpts">
               <label>充值金额 <small>最低 5</small> <input type="number" name="topUpAmount" value="5" min="5" step="1" /></label>
               <label>最多试卡数 <small>被拒换卡</small> <input type="number" name="maxCardTries" value="3" min="1" max="10" /></label>
@@ -107,11 +121,15 @@
 
           <div class="cfg-col">
             <h3>④ 回显模板</h3>
-            <label>成功回显 <small>{{email}} {{password}} {{originalPassword}} {{apiKey}} {{billingStatus}} {{charged}} {{cardLast4}} {{passwordChanged}} {{exitIp}}</small>
-              <textarea name="successTemplate" rows="4">{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} card:{{cardLast4}} | ip:{{exitIp}}</textarea>
+            <label>成功回显
+              <textarea name="successTemplate" rows="4" hidden>{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} card:{{cardLast4}} | ip:{{exitIp}}</textarea>
+              <div class="tpl-preview" data-for="successTemplate" title="点击编辑格式"></div>
+              <button type="button" class="link-btn vars-btn" data-target="successTemplate">📖 可用变量 / 编辑格式</button>
             </label>
-            <label>失败回显 <small>{{email}} {{password}} {{reason}} {{stage}} {{failClass}} {{attempts}} {{detail}}</small>
-              <textarea name="failureTemplate" rows="3">{{email}}:{{password}} | ✗{{stage}} | {{reason}} | 试{{attempts}}次</textarea>
+            <label>失败回显
+              <textarea name="failureTemplate" rows="3" hidden>{{email}}:{{password}} | ✗{{stage}} | {{reason}} | 试{{attempts}}次</textarea>
+              <div class="tpl-preview" data-for="failureTemplate" title="点击编辑格式"></div>
+              <button type="button" class="link-btn vars-btn" data-target="failureTemplate">📖 可用变量 / 编辑格式</button>
             </label>
           </div>
         </div>
@@ -177,6 +195,8 @@
         </div>
         <div class="tab-pane" data-pane="faildetail" hidden>
           <div id="failureStats" class="failure-stats muted">暂无</div>
+          <div id="failTypeBar" class="ftabs"></div>
+          <div id="failStrategy" class="fail-strategy"></div>
           <div id="failTable" class="card-pool muted">暂无失败</div>
         </div>
         <div class="tab-pane" data-pane="log" hidden>
@@ -185,6 +205,58 @@
       </div>
     </section>
   </main>
+
+  <!-- 回显模板：可用变量 / 编辑格式 弹出框 -->
+  <div id="varsModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 id="varsModalTitle">可用变量</h3>
+        <button type="button" class="modal-x" data-close aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin:0 0 12px;">把变量写进下面的格式里，运行结束时会自动替换成真实值。点变量右侧「插入」可加到光标处；下方为示例数据的实时预览。</p>
+        <label style="margin-bottom:12px;">输出格式
+          <textarea id="varsFormatEdit" rows="3" placeholder="例如：{{email}}:{{password}} | key:{{apiKey}} | ip:{{exitIp}}"></textarea>
+        </label>
+        <div class="muted" style="margin:0 0 6px;">实时预览（示例数据）</div>
+        <pre id="varsPreview" class="log"></pre>
+        <div class="muted" style="margin:14px 0 8px;font-weight:600;color:var(--text);">分隔符（点击插入到光标处）</div>
+        <div id="varsSeps" class="seps">
+          <button type="button" class="vins sep" data-sep=" ">空格</button>
+          <button type="button" class="vins sep" data-sep=" | ">|</button>
+          <button type="button" class="vins sep" data-sep=":">:</button>
+          <button type="button" class="vins sep" data-sep=", ">,</button>
+          <button type="button" class="vins sep" data-sep="newline">换行</button>
+        </div>
+        <div class="muted" style="margin:14px 0 8px;font-weight:600;color:var(--text);">可用变量及含义（「插入」=只插变量；「带名」=简称:变量）</div>
+        <div id="varsTable" class="vars-table"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="vins ghost" id="varsClear">清空格式</button>
+        <button type="button" class="vins" data-close>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 错误策略 / 说明 弹出框 -->
+  <div id="policyModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-box" style="width:min(820px,94vw);">
+      <div class="modal-head">
+        <h3>错误策略 / 说明</h3>
+        <button type="button" class="modal-x" data-close aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin:0 0 12px;">每个错误对应一条恢复流程。可改「动作」和「重试次数」覆盖内置默认，改完点该行「保存」。最下方「兜底桶」是未知报错文本按关键字归类的规则（不可单独配置）。错误的实际发生记录见「成功账号 / 聚合」页的「错误记录」面板。</p>
+        <div id="policyTable" class="policy-table muted">加载中…</div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="vins ghost" id="policyResetAll">全部重置为内置</button>
+        <button type="button" class="vins" data-close>完成</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/auth.js"></script>
   <script src="/app.js"></script>

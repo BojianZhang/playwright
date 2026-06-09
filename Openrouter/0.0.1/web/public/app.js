@@ -52,23 +52,102 @@ if (els.requeueFailedBtn) {
   });
 }
 
-// 失败明细表：每个账号卡在哪一步、为什么。
-function renderFailTable() {
+// 失败明细：按错误类型分 tab + 每类的恢复策略 + 自动配置重跑。
+const ESC = (s) => String(s == null ? '' : s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const ACTION_LABEL = { retry: '同代理重试', 'retry-new-proxy': '换代理重试', relogin: '重新登录', blacklist: '拉黑(不重试)', abort: '放弃' };
+let failType = '__all__';
+const POLICY_MAP = {}; // code -> { why, action, maxRetries }
+async function loadPolicyMap() {
+  try {
+    const r = await authFetch('/api/policy', {}, true); if (!r || !r.ok) return;
+    const d = await r.json();
+    (d.policy || []).forEach((p) => { POLICY_MAP[p.code] = { why: p.why, action: p.effective && p.effective.action, maxRetries: p.effective && p.effective.maxRetries }; });
+    renderFailDetail();
+  } catch (_e) { /* ignore */ }
+}
+function failGroups() {
+  const g = {};
+  failedAccounts.forEach((d) => { const k = d.reason || 'UNKNOWN'; (g[k] = g[k] || []).push(d); });
+  return g;
+}
+function dominantStage(list) {
+  const c = {}; let best = '', n = 0;
+  list.forEach((d) => { const s = d.stage || ''; c[s] = (c[s] || 0) + 1; if (c[s] > n) { n = c[s]; best = s; } });
+  return best;
+}
+function setCb(id, val) { const cb = $(id); if (cb && cb.checked !== val) { cb.checked = val; cb.dispatchEvent(new Event('change')); } }
+function applyTargetStage(stage) {
+  // 按主要失败步骤把表单阶段配好；其余靠断点续跑自动补/跳过。
+  if (stage === 'api-key') setCb('pkApiKey', true);
+  else if (stage === 'billing-card-topup') setCb('pkCharge', true);
+  else if (stage === 'export') {
+    setCb('pkApiKey', true); setCb('pkCharge', true);
+    const pw = $('pkPwd'); if (pw && !pw.disabled) { pw.checked = true; pw.dispatchEvent(new Event('change')); }
+  }
+  // 注册/邮箱/代理阶段失败 → 不强改阶段，走全流程
+}
+function autoConfigRerun(code, list) {
+  if (!list.length) return;
+  const pol = POLICY_MAP[code] || {}; const action = pol.action || 'retry';
+  const F = els.form.elements;
+  if (F.accountsRaw) F.accountsRaw.value = list.map((d) => `${d.email}:${d.originalPassword || d.password || ''}`).join('\n');
+  if (F.resume) F.resume.checked = true;
+  if (F.mode) F.mode.value = (action === 'relogin' || code === 'ACCOUNT_ALREADY_EXISTS') ? 'login' : 'auto';
+  applyTargetStage(dominantStage(list));
+  let note = `已按【${ACTION_LABEL[action] || action}】策略填入 ${list.length} 个「${code}」账号`;
+  if (action === 'blacklist') note += '；⚠ 这些账号已判拉黑，需先到「成功账号/聚合」页的账号状态里解黑再跑';
+  else if (action === 'retry-new-proxy') note += '；建议在「代理」框换一批新代理再跑';
+  else if (dominantStage(list) === 'export' && !String((F.unifiedPassword && F.unifiedPassword.value) || '').trim()) note += '；改密需先填「统一密码」';
+  els.formMsg.textContent = `${note}，核对后点「开始执行」`;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function renderFailDetail() {
   if (!els.failTable) return;
-  if (!failedAccounts.length) { els.failTable.classList.add('muted'); els.failTable.innerHTML = '暂无失败'; return; }
+  const groups = failGroups();
+  const codes = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+  const bar = $('failTypeBar');
+  if (bar) {
+    bar.innerHTML = failedAccounts.length
+      ? [`<button type="button" class="ftab ${failType === '__all__' ? 'on' : ''}" data-ft="__all__">全部 (${failedAccounts.length})</button>`]
+        .concat(codes.map((c) => `<button type="button" class="ftab ${failType === c ? 'on' : ''}" data-ft="${ESC(c)}">${ESC(c)} (${groups[c].length})</button>`)).join('')
+      : '';
+  }
+  if (failType !== '__all__' && !groups[failType]) failType = '__all__';
+  const list = failType === '__all__' ? failedAccounts : (groups[failType] || []);
+  const strat = $('failStrategy');
+  if (strat) {
+    if (failType === '__all__' || !failedAccounts.length) strat.innerHTML = '';
+    else {
+      const pol = POLICY_MAP[failType] || {}; const act = pol.action || 'retry';
+      strat.innerHTML = `<div class="fs-box">
+        <div><b>${ESC(failType)}</b>${pol.why ? ` — ${ESC(pol.why)}` : ''}</div>
+        <div class="muted">恢复策略：<b>${ACTION_LABEL[act] || act}</b>${pol.maxRetries != null ? ` · 重试 ${pol.maxRetries} 次` : ''}（运行时按此自动执行；下面按钮把表单也配好）</div>
+        <button type="button" class="link-btn" id="autoCfgBtn">🔧 自动配置重跑（${list.length}）</button>
+      </div>`;
+    }
+  }
+  if (!list.length) { els.failTable.classList.add('muted'); els.failTable.innerHTML = '暂无失败'; return; }
   els.failTable.classList.remove('muted');
-  const rows = failedAccounts.map((d) => `<tr class="bad">
-    <td>${d.email || ''}</td>
-    <td>${STAGE_LABELS[d.stage] || d.stage || '—'}</td>
-    <td>${d.reason || ''}</td>
-    <td>${d.failClass || ''}</td>
+  const rows = list.map((d) => `<tr class="bad">
+    <td>${ESC(d.email || '')}</td>
+    <td>${ESC(STAGE_LABELS[d.stage] || d.stage || '—')}</td>
+    <td>${ESC(d.reason || '')}</td>
     <td>${d.attempts || 1}</td>
-    <td class="err" title="${(d.detail || '').replace(/"/g, '&quot;')}">${d.detail ? d.detail.slice(0, 40) : ''}</td>
+    <td class="err" title="${ESC(d.detail || '')}">${ESC((d.detail || '').slice(0, 40))}</td>
   </tr>`).join('');
   els.failTable.innerHTML = `<table class="card-table">
-    <thead><tr><th>邮箱</th><th>失败步骤</th><th>原因</th><th>类型</th><th>尝试</th><th>详情</th></tr></thead>
+    <thead><tr><th>邮箱</th><th>失败步骤</th><th>原因</th><th>尝试</th><th>详情</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
+// 失败类型 tab 切换 + 自动配置按钮（事件委托）。
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('#failTypeBar .ftab');
+  if (tab) { failType = tab.dataset.ft; renderFailDetail(); return; }
+  if (e.target.closest('#autoCfgBtn') && failType !== '__all__') {
+    const list = failGroups()[failType] || [];
+    autoConfigRerun(failType, list);
+  }
+});
 
 // ── 卡池统计 ──────────────────────────────────────────────────────────────
 const STATUS_LABEL = { active: '可用', exhausted: '用尽', declined: '被拒', disabled: '已禁用' };
@@ -217,13 +296,37 @@ window.addEventListener('load', fetchBilling);
   sync();
 })();
 
-// 账单动作切换：none/address 时隐藏「充值金额/试卡数」(那些只对 card/charge 有意义)。
+// 阶段勾选清单 → 推导 billingAction（隐藏域）+ 级联联动 + 流程条高亮 + chargeOpts 显隐。
 (function () {
-  const sel = $('billingAction');
+  const billing = $('billingAction'); // 隐藏域，承载推导出的 none/address/card/charge
   const opts = $('chargeOpts');
-  if (!sel || !opts) return;
-  const sync = () => { opts.style.display = (sel.value === 'card' || sel.value === 'charge') ? '' : 'none'; };
-  sel.addEventListener('change', sync);
+  const cbKey = $('pkApiKey'); const cbAddr = $('pkAddress'); const cbCard = $('pkCard'); const cbCharge = $('pkCharge'); const cbPwd = $('pkPwd');
+  if (!billing || !cbAddr) return;
+  const pwd = els.form.elements.unifiedPassword;
+  // 账单档位 = 勾选里最深的一档（独立勾选、不级联；底层依赖由 billing 阶段/断点续跑自动补齐）。
+  const deriveAction = () => (cbCharge.checked ? 'charge' : cbCard.checked ? 'card' : cbAddr.checked ? 'address' : 'none');
+  const updateStageFlow = () => {
+    const on = { register: true, apikey: cbKey.checked, address: cbAddr.checked, card: cbCard.checked, charge: cbCharge.checked, pwd: cbPwd.checked };
+    document.querySelectorAll('#stageFlow .stg').forEach((s) => s.classList.toggle('on', !!on[s.dataset.stg]));
+  };
+  // 改密前置（用户规则）：取Key + 充值 + 统一密码 三者齐全才可勾；缺一即禁用置灰。
+  const syncPwd = () => {
+    const ok = !!(pwd && pwd.value.trim()) && cbKey.checked && cbCharge.checked;
+    cbPwd.disabled = !ok;
+    if (cbPwd.parentElement) cbPwd.parentElement.classList.toggle('disabled', !ok);
+    if (!ok) cbPwd.checked = false;
+    else if (!cbPwd.dataset.touched) cbPwd.checked = true;
+  };
+  const sync = () => {
+    billing.value = deriveAction();
+    if (opts) opts.style.display = (cbCard.checked || cbCharge.checked) ? '' : 'none';
+    syncPwd();
+    updateStageFlow();
+  };
+  // 独立勾选，互不联动；任一变化只重新推导档位/前置/流程条。
+  [cbAddr, cbCard, cbCharge, cbKey].forEach((cb) => cb.addEventListener('change', sync));
+  cbPwd.addEventListener('change', () => { cbPwd.dataset.touched = '1'; updateStageFlow(); });
+  if (pwd) pwd.addEventListener('input', sync);
   sync();
 })();
 
@@ -290,8 +393,9 @@ function resetView(total) {
   els.runLog.textContent = '';
   // 清空失败面板
   failedAccounts.length = 0;
+  failType = '__all__';
   if (els.failLog) els.failLog.textContent = '';
-  if (els.failTable) { els.failTable.classList.add('muted'); els.failTable.innerHTML = '暂无失败'; }
+  renderFailDetail();
   if (els.downloadFailedBtn) els.downloadFailedBtn.disabled = true;
   if (els.requeueFailedBtn) els.requeueFailedBtn.disabled = true;
   if (typeof updateFailBadge === 'function') updateFailBadge();
@@ -350,7 +454,7 @@ function openStream(jobId) {
     appendLine(els.failLog, d.rendered || `${d.email || ''} | ${d.reason || ''}`);
     appendLine(els.runLog, `[${ts()}] ✗ ${d.email || ''} → ${d.reason} (${d.failClass})`);
     failedAccounts.push(d);
-    renderFailTable();
+    renderFailDetail();
     updateFailBadge();
     if (els.downloadFailedBtn) els.downloadFailedBtn.disabled = false;
     if (els.requeueFailedBtn) els.requeueFailedBtn.disabled = false;
@@ -400,6 +504,7 @@ els.form.addEventListener('submit', async (e) => {
     accountsRaw: fd.get('accountsRaw') || '',
     proxiesRaw: fd.get('proxiesRaw') || '',
     headed: fd.get('headed') === 'on',
+    resume: fd.get('resume') === 'on',
     concurrency: fd.get('concurrency'),
     count: fd.get('count'),
     mode: fd.get('mode') || 'register',
@@ -408,6 +513,8 @@ els.form.addEventListener('submit', async (e) => {
     apiKeyExpiration: fd.get('apiKeyExpiration') || 'No expiration',
     topUpAmount: fd.get('topUpAmount'),
     billingAction: fd.get('billingAction') || 'none',
+    doApiKey: fd.get('doApiKey') === 'on',
+    doPasswordChange: fd.get('doPasswordChange') === 'on',
     maxCardTries: fd.get('maxCardTries') || 3,
     addressMode: fd.get('addressMode') || 'random',
     addressStates: fd.get('addressStates') || '',
@@ -439,3 +546,150 @@ els.form.addEventListener('submit', async (e) => {
     els.startBtn.disabled = false;
   }
 });
+
+// ── 回显模板：可用变量 / 编辑格式 弹出框 ──────────────────────────────────
+// 每项：[变量名, 中文简称(带名插入时作前缀), 含义说明]
+const TPL_VARS = {
+  successTemplate: [
+    ['email', '邮箱', '账号邮箱'],
+    ['password', '密码', '当前密码：设了统一密码并改密成功后=新密码，否则=原密码'],
+    ['originalPassword', '原密码', '邮箱原始密码（注册时用的）'],
+    ['apiKey', 'key', 'OpenRouter API Key'],
+    ['billingStatus', 'billing', '账单状态：skipped未操作 / address-bound已绑地址 / card-bound已加卡 / success已充值 / declined被拒'],
+    ['charged', '充值', '实际充值金额（美元，未充值为 0）'],
+    ['cardLast4', 'card', '本次所用卡号末 4 位'],
+    ['passwordChanged', '改密', '邮箱密码是否已改为统一密码（true / false）'],
+    ['exitIp', 'ip', '代理出口 IP（该线路实际出网 IP）'],
+  ],
+  failureTemplate: [
+    ['email', '邮箱', '账号邮箱'],
+    ['password', '密码', '密码（失败时为原密码）'],
+    ['reason', '原因', '失败原因码（如 ACCOUNT_LOCKED、TURNSTILE_FAILED）'],
+    ['stage', '阶段', '失败发生的阶段'],
+    ['failClass', '分类', '失败分类（便于统计归类）'],
+    ['attempts', '尝试', '实际尝试次数'],
+    ['detail', '详情', '失败详情（最多 300 字）'],
+  ],
+};
+const TPL_SAMPLE = {
+  successTemplate: { email: 'user1@firstmail.com', password: 'MyNewPass#2026', originalPassword: 'oldpw123', apiKey: 'sk-or-v1-abcd…ef01', billingStatus: 'success', charged: 10, cardLast4: '8695', passwordChanged: true, exitIp: '203.0.113.7' },
+  failureTemplate: { email: 'user2@firstmail.com', password: 'oldpw456', reason: 'ACCOUNT_LOCKED', stage: 'signup', failClass: 'account', attempts: 3, detail: 'account is restricted' },
+};
+function renderTpl(tpl, sample) {
+  return String(tpl || '').replace(/\{\{\s*([\w.$-]+)\s*\}\}/g, (_m, k) => (k in sample ? String(sample[k]) : ''));
+}
+
+const varsModal = $('varsModal');
+if (varsModal) {
+  let varsTarget = 'successTemplate';
+  const fmtEdit = $('varsFormatEdit');
+  const fieldOf = (id) => els.form.elements[id];
+  const updatePreview = () => { $('varsPreview').textContent = renderTpl(fmtEdit.value, TPL_SAMPLE[varsTarget]) || '（空）'; };
+  const refreshTplPreview = (id) => {
+    const f = fieldOf(id);
+    const pv = document.querySelector(`.tpl-preview[data-for="${id}"]`);
+    if (pv) pv.textContent = (f && f.value) ? f.value : '（未设置，点此编辑）';
+  };
+  const syncBack = () => { const f = fieldOf(varsTarget); if (f) f.value = fmtEdit.value; refreshTplPreview(varsTarget); };
+  const open = (targetId) => {
+    varsTarget = targetId;
+    $('varsModalTitle').textContent = (targetId === 'successTemplate' ? '成功回显' : '失败回显') + ' — 可用变量 / 编辑格式';
+    const f = fieldOf(targetId);
+    fmtEdit.value = f ? f.value : '';
+    $('varsTable').innerHTML = TPL_VARS[targetId].map(([k, abbr, d]) =>
+      `<div class="vrow"><code>{{${k}}}</code><span class="vabbr">${abbr}</span><span class="vdesc">${d}</span>`
+      + `<button type="button" class="vins" data-ins="{{${k}}}">插入</button>`
+      + `<button type="button" class="vins ghost2" data-ins="${abbr}:{{${k}}}">带名</button></div>`).join('');
+    updatePreview();
+    varsModal.hidden = false;
+  };
+  const close = () => { syncBack(); varsModal.hidden = true; };
+
+  document.querySelectorAll('.vars-btn').forEach((b) => b.addEventListener('click', () => open(b.dataset.target)));
+  document.querySelectorAll('.tpl-preview').forEach((pv) => { refreshTplPreview(pv.dataset.for); pv.addEventListener('click', () => open(pv.dataset.for)); });
+  fmtEdit.addEventListener('input', () => { updatePreview(); syncBack(); });
+  // 在光标处插入文本。autoSpace=true 时(插变量)若紧挨上一个变量/单词，自动补空格分隔
+  const insertText = (text, autoSpace) => {
+    const s = fmtEdit.selectionStart, en = fmtEdit.selectionEnd;
+    const before = fmtEdit.value.slice(0, s);
+    let t = text;
+    if (autoSpace && before && /[}\w]$/.test(before)) t = ' ' + t;
+    fmtEdit.value = before + t + fmtEdit.value.slice(en);
+    const pos = s + t.length; fmtEdit.focus(); fmtEdit.setSelectionRange(pos, pos);
+    updatePreview(); syncBack();
+  };
+  $('varsTable').addEventListener('click', (e) => {
+    const ins = e.target.closest('[data-ins]'); if (!ins) return;
+    insertText(ins.dataset.ins, true);
+  });
+  $('varsSeps').addEventListener('click', (e) => {
+    const s = e.target.closest('[data-sep]'); if (!s) return;
+    insertText(s.dataset.sep === 'newline' ? '\n' : s.dataset.sep, false);
+  });
+  const clearBtn = $('varsClear');
+  if (clearBtn) clearBtn.addEventListener('click', () => { fmtEdit.value = ''; fmtEdit.focus(); updatePreview(); syncBack(); });
+  varsModal.querySelectorAll('[data-close]').forEach((x) => x.addEventListener('click', close));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !varsModal.hidden) close(); });
+}
+
+// ── 错误策略 / 说明 弹出框 ────────────────────────────────────────────────
+const policyModal = $('policyModal');
+if (policyModal) {
+  const ACTION_LABEL = { retry: '同代理重试', 'retry-new-proxy': '换代理重试', relogin: '重新登录', blacklist: '拉黑(不重试)', abort: '放弃' };
+  const esc = (s) => String(s == null ? '' : s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  let ACTIONS = ['retry', 'retry-new-proxy', 'relogin', 'blacklist', 'abort'];
+  const render = (list) => {
+    const box = $('policyTable'); box.classList.remove('muted');
+    box.innerHTML = list.map((p) => {
+      const eff = p.effective || {}; const overridden = !!p.override;
+      if (!p.settable) {
+        return `<div class="prow mute"><code>${esc(p.code)}</code><span class="pdesc">${esc(p.why)}</span><span class="pact">${ACTION_LABEL[eff.action] || eff.action || ''}</span></div>`;
+      }
+      const opts = ACTIONS.map((a) => `<option value="${a}"${a === eff.action ? ' selected' : ''}>${ACTION_LABEL[a]}</option>`).join('');
+      return `<div class="prow" data-code="${esc(p.code)}">
+        <code>${esc(p.code)}</code>
+        <span class="pdesc">${esc(p.why)}</span>
+        <select class="pol-action">${opts}</select>
+        <input class="pol-max" type="number" min="0" max="10" value="${Number(eff.maxRetries) || 0}" title="重试次数(0=首错即止)" />
+        <span class="pbadge ${overridden ? 'on' : ''}">${overridden ? '已覆盖' : '内置'}</span>
+        <button type="button" class="vins pol-save">保存</button>
+        <button type="button" class="vins ghost2 pol-reset">重置</button>
+      </div>`;
+    }).join('');
+  };
+  const load = async () => {
+    try {
+      const r = await authFetch('/api/policy', {}, true); if (!r || !r.ok) return;
+      const d = await r.json(); if (Array.isArray(d.actions) && d.actions.length) ACTIONS = d.actions;
+      render(d.policy || []);
+    } catch (_e) { /* ignore */ }
+  };
+  const openModal = () => { $('policyTable').classList.add('muted'); $('policyTable').textContent = '加载中…'; policyModal.hidden = false; load(); };
+  const closeModal = () => { policyModal.hidden = true; };
+  const policyBtn = $('policyBtn'); if (policyBtn) policyBtn.addEventListener('click', openModal);
+  policyModal.querySelectorAll('[data-close]').forEach((x) => x.addEventListener('click', closeModal));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !policyModal.hidden) closeModal(); });
+  $('policyTable').addEventListener('click', async (e) => {
+    const row = e.target.closest('.prow[data-code]'); if (!row) return;
+    const code = row.dataset.code;
+    if (e.target.closest('.pol-save')) {
+      const action = row.querySelector('.pol-action').value;
+      const maxRetries = Number(row.querySelector('.pol-max').value) || 0;
+      const r = await authFetch('/api/policy/set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, action, maxRetries }) });
+      if (r.ok) { const d = await r.json(); render(d.policy || []); }
+      else { const d = await r.json().catch(() => ({})); alert('保存失败：' + (d.error || r.status)); }
+    } else if (e.target.closest('.pol-reset')) {
+      const r = await authFetch('/api/policy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+      if (r.ok) { const d = await r.json(); render(d.policy || []); }
+    }
+  });
+  const resetAll = $('policyResetAll');
+  if (resetAll) resetAll.addEventListener('click', async () => {
+    if (!confirm('把所有错误策略恢复为内置默认？')) return;
+    const r = await authFetch('/api/policy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    if (r.ok) { const d = await r.json(); render(d.policy || []); }
+  });
+}
+
+// 启动：拉一次错误策略表（失败分类的恢复策略展示用）。
+loadPolicyMap();

@@ -8,34 +8,47 @@
 </head>
 <body>
   <header>
-    <h1>成功账号查看 / 聚合</h1>
-    <span class="badge" id="nodeBadge">node: …</span>
-    <a class="link-btn" href="/" style="margin-left:auto;text-decoration:none;">← 返回控制台</a>
+    <div class="bar">
+      <h1>成功账号查看 / 聚合</h1>
+      <span class="badge" id="nodeBadge">node: …</span>
+      <a class="link-btn" href="/" style="margin-left:auto;text-decoration:none;">← 返回控制台</a>
+    </div>
   </header>
 
   <main class="dash">
-    <!-- 数据源：横向一条 -->
-    <section class="panel">
-      <h2>数据源 / 聚合</h2>
-      <div class="src-bar">
-        <label class="inline"><input type="checkbox" id="includeLocal" checked /> 包含本节点</label>
-        <label style="flex:2 1 320px;margin:0;">其它节点地址 <small>每行一个,如 <code>http://10.0.0.11:4317</code></small>
-          <textarea id="hosts" rows="2" placeholder="http://10.0.0.11:4317&#10;http://10.0.0.12:4317"></textarea>
-        </label>
-        <label style="flex:1 1 150px;margin:0;">去重方式
-          <select id="dedupe">
-            <option value="email">按邮箱去重</option>
-            <option value="email+apiKey">按邮箱+Key去重</option>
-            <option value="none">不去重</option>
-          </select>
-        </label>
-        <div class="src-actions">
-          <button id="loadBtn" type="button">拉取 / 聚合</button>
-          <label class="inline"><input type="checkbox" id="autoRefresh" checked /> 自动刷新(5s)</label>
+    <!-- 子节点横幅：仅当本机是子节点(配了 centralUrl)时显示，不展示聚合 -->
+    <section class="panel" id="subBanner" hidden>
+      <div class="sub-banner">
+        <span class="dot"></span>
+        <div>
+          <b>本机为子节点</b>（<span id="subNode">…</span>）
+          <div class="muted" style="font-size:12px;margin-top:3px;">成功账号已自动推送至中心机 <code id="subCentral">…</code>，请到中心机汇总查看全集群。下表仅本机数据。</div>
         </div>
       </div>
-      <div id="msg" class="muted" style="margin-top:8px;font-size:12px;"></div>
-      <div id="sources" class="muted" style="margin-top:6px;font-size:12px;"></div>
+    </section>
+
+    <!-- 集群节点 / 聚合：主机显示自动检测到的子节点(无需手填)；默认折叠 -->
+    <section class="panel adv">
+      <button type="button" id="advToggle" class="adv-toggle"><span id="advLabel">🖧 集群节点 / 聚合</span><span class="caret">▾</span></button>
+      <div id="advBody" hidden>
+        <div class="cluster-controls">
+          <label style="margin:0;">去重方式
+            <select id="dedupe">
+              <option value="email+apiKey">每个 邮箱+Key 一行（去重复）</option>
+              <option value="email">按邮箱合并（同邮箱只留最新 Key）</option>
+              <option value="none">不去重（含完全重复）</option>
+            </select>
+          </label>
+          <label class="inline"><input type="checkbox" id="includeLocal" checked /> 含本机</label>
+          <button id="loadBtn" type="button">↻ 立即聚合</button>
+          <label class="inline"><input type="checkbox" id="autoRefresh" checked /> 自动刷新(5s)</label>
+          <!-- 手填节点已改为自动检测；保留隐藏字段兼容(可在 config.json 配 cluster.hosts 兜底) -->
+          <textarea id="hosts" hidden></textarea>
+        </div>
+        <div id="msg" class="muted" style="margin-top:10px;font-size:12px;"></div>
+        <div class="node-list-title muted">检测到的节点（本机 + 自动注册/推送的子机）</div>
+        <div id="sources" class="node-list"></div>
+      </div>
     </section>
 
     <!-- 成功账号表：全宽 -->
@@ -81,6 +94,29 @@
           <div id="billingLedger" class="card-pool muted">加载中…</div>
         </div>
       </div>
+    </section>
+
+    <!-- 账号状态：断点续跑进度（本节点） -->
+    <section class="panel">
+      <h2>账号状态 · 断点续跑（本节点）
+        <button type="button" id="refreshAcctBtn" class="link-btn">↻ 刷新</button>
+        <button type="button" id="clearAcctBtn" class="link-btn">🗑 清空</button>
+        <span id="acctSummary" class="muted" style="font-size:13px;margin-left:8px;"></span>
+      </h2>
+      <div class="muted" style="font-size:13px;margin-bottom:8px;">记录每个账号跑到哪一步。重跑会自动跳过已完成阶段（已注册→直接登录、已有Key→复用、账单达标→不复扣、已改密→跳过）。「重置」让某账号下次从头跑。</div>
+      <div id="acctTable" class="card-pool muted">加载中…</div>
+    </section>
+
+    <!-- 错误记录：每次阶段失败的事件（本节点） -->
+    <section class="panel">
+      <h2>错误记录（本节点）
+        <button type="button" id="refreshErrBtn" class="link-btn">↻ 刷新</button>
+        <button type="button" id="clearErrBtn" class="link-btn">🗑 清空</button>
+        <span id="errSummary" class="muted" style="font-size:13px;margin-left:8px;"></span>
+      </h2>
+      <div class="muted" style="font-size:13px;margin-bottom:8px;">每次阶段失败都会记一条（含被路由成什么动作）。错误的「说明 / 策略配置」在控制台「📖 错误策略 / 说明」里改。</div>
+      <div id="errChips" class="chips" style="margin-bottom:10px;"></div>
+      <div id="errTable" class="card-pool muted">加载中…</div>
     </section>
   </main>
 

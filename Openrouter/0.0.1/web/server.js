@@ -22,6 +22,10 @@ const jobRunner = require('../Openrouter-job-runner');
 const eventBus = require('./event-bus');
 const cardPool = require('../billing/card-pool');
 const billingLedger = require('../billing/billing-ledger');
+const accountStore = require('../account-state/account-store');
+const failurePolicy = require('../failure-policy');
+const policyStore = require('../account-state/policy-store');
+const errorLog = require('../error-log');
 
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -45,6 +49,9 @@ function readCluster(key) {
   }
   return undefined;
 }
+// 节点角色：配了中心机地址(centralUrl)的是子机(启动后自动注册+推送);否则是主机/中心机。
+function getCentralUrl() { return process.env.OPENROUTER_CENTRAL_URL || readCluster('centralUrl') || ''; }
+function nodeRole() { return getCentralUrl() ? 'sub' : 'master'; }
 
 // ── 动态节点注册表(子机心跳上报 → 主机自动聚合,无需手填机器清单)──────────
 const PEERS = new Map(); // nodeId -> { nodeId, url, lastSeen }
@@ -213,6 +220,11 @@ async function handleStartJob(req, res) {
 
   const taskParams = {
     mode: payload.mode === 'login' ? 'login' : 'register',
+    // 断点续跑：默认开启；跳过已完成阶段、复用已取 Key、不对已充值账号复扣。
+    resume: payload.resume !== false,
+    // 阶段开关（自由组合）：取Key 默认开；改密默认仅在设了统一密码时开。
+    doApiKey: payload.doApiKey !== false,
+    doPasswordChange: payload.doPasswordChange === true,
     apiKeyName: payload.apiKeyName || '',
     apiKeyExpiration: payload.apiKeyExpiration || 'No expiration',
     // 统一密码：OpenRouter 注册用此密码；最终状态把邮箱密码改成它。留空=用输入里的原密码、不改密。
@@ -424,7 +436,7 @@ async function handleApiAggregate(req, res) {
   // 合并:请求传入 + 配置 cluster.hosts + 动态注册的在线子机
   const hosts = [...new Set([...bodyHosts, ...loadClusterHosts(), ...getActivePeers().map((p) => p.url)].map((h) => String(h).trim()).filter(Boolean))];
   const includeLocal = body.includeLocal !== false;
-  const dedupeMode = body.dedupe || 'email';
+  const dedupeMode = body.dedupe || 'email+apiKey'; // 默认每个 邮箱+Key 一行(同邮箱多 key 不丢)
   const all = [];
   const sources = [];
   if (includeLocal) {
@@ -442,7 +454,7 @@ async function handleApiAggregate(req, res) {
       const j = await resp.json();
       const arr = j.accounts || [];
       arr.forEach((a) => all.push(a));
-      sources.push({ source: h, count: arr.length, ok: true });
+      sources.push({ source: j.nodeId || h, count: arr.length, ok: true }); // 用对方 nodeId 显示更直观
     } catch (e) {
       sources.push({ source: h, count: 0, ok: false, error: String(e.message || e) });
     }
@@ -453,8 +465,16 @@ async function handleApiAggregate(req, res) {
   if (dedupeMode !== 'none') {
     const seen = new Map();
     for (const r of all) {
-      const key = dedupeMode === 'email+apiKey' ? `${r.email}|${r.apiKey}` : (r.email || JSON.stringify(r));
-      if (!seen.has(key) || (!seen.get(key).apiKey && r.apiKey)) seen.set(key, r);
+      if (dedupeMode === 'email+apiKey') {
+        // 每个 邮箱+Key 一行：仅去掉完全相同的 (email,key) 重复(如 pull 与 push 的同一条重叠)
+        const key = `${r.email}|${r.apiKey}`;
+        if (!seen.has(key)) seen.set(key, r);
+      } else {
+        // 按邮箱合并：同邮箱只留"最新"的一个 key(按 createdAt)，消除"留哪个 key"的不确定
+        const key = r.email || JSON.stringify(r);
+        const prev = seen.get(key);
+        if (!prev || String(r.createdAt || '') > String(prev.createdAt || '')) seen.set(key, r);
+      }
     }
     merged = [...seen.values()];
   }
@@ -495,6 +515,56 @@ function handleBillingSummary(res) {
 async function handleBillingClear(res) {
   await billingLedger.clear();
   sendJson(res, 200, { ok: true, ...billingLedger.summary() });
+}
+
+// 账号进度状态（断点续跑）：列表 / 清空 / 单条重置。
+function handleAccountsList(res) {
+  const accounts = accountStore.list();
+  sendJson(res, 200, { count: accounts.length, accounts });
+}
+async function handleAccountsClear(res) {
+  await accountStore.clear();
+  sendJson(res, 200, { ok: true, count: 0, accounts: [] });
+}
+async function handleAccountsReset(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const email = String(body.email || '').trim();
+  if (!email) { sendJson(res, 400, { error: 'MISSING_EMAIL' }); return; }
+  await accountStore.reset(email);
+  sendJson(res, 200, { ok: true, accounts: accountStore.list() });
+}
+
+// 错误策略：查看(含说明+生效) / 配置覆盖 / 重置。
+function handlePolicyGet(res) {
+  sendJson(res, 200, { actions: failurePolicy.ACTIONS, policy: failurePolicy.effectivePolicy() });
+}
+async function handlePolicySet(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const code = String(body.code || '').trim();
+  if (!code || !failurePolicy.CATALOG[code] || code.startsWith('_')) { sendJson(res, 400, { error: 'BAD_CODE' }); return; }
+  if (!failurePolicy.ACTIONS.includes(body.action)) { sendJson(res, 400, { error: 'BAD_ACTION' }); return; }
+  const n = Number(body.maxRetries);
+  if (!Number.isInteger(n) || n < 0 || n > 10) { sendJson(res, 400, { error: 'BAD_MAX_RETRIES' }); return; }
+  await policyStore.setOverride(code, { action: body.action, maxRetries: n });
+  sendJson(res, 200, { ok: true, actions: failurePolicy.ACTIONS, policy: failurePolicy.effectivePolicy() });
+}
+async function handlePolicyReset(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const code = String(body.code || '').trim();
+  if (code) await policyStore.resetOverride(code); else await policyStore.clear();
+  sendJson(res, 200, { ok: true, policy: failurePolicy.effectivePolicy() });
+}
+
+// 错误记录：汇总 / 清空。
+function handleErrorsSummary(res) {
+  sendJson(res, 200, errorLog.summary());
+}
+async function handleErrorsClear(res) {
+  await errorLog.clear();
+  sendJson(res, 200, { ok: true, ...errorLog.summary() });
 }
 
 // ── 服务器 ──────────────────────────────────────────────────────────────
@@ -573,7 +643,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/jobs') return void handleStartJob(req, res);
   if (req.method === 'GET' && pathname === '/events') return void handleEvents(req, res, url.searchParams);
   if (req.method === 'GET' && pathname === '/download') return void handleDownload(req, res, url.searchParams);
-  if (req.method === 'GET' && pathname === '/api/node') return void sendJson(res, 200, { nodeId: NODE_ID, hostname: os.hostname() });
+  if (req.method === 'GET' && pathname === '/api/node') return void sendJson(res, 200, { nodeId: NODE_ID, hostname: os.hostname(), role: nodeRole(), centralUrl: getCentralUrl() });
   if (req.method === 'GET' && pathname === '/api/cluster') return void sendJson(res, 200, { nodeId: NODE_ID, hosts: loadClusterHosts(), peers: getActivePeers().map((p) => ({ nodeId: p.nodeId, url: p.url, ageSec: Math.round((Date.now() - p.lastSeen) / 1000) })) });
   if (req.method === 'GET' && pathname === '/api/results') return void handleApiResults(res);
   if (req.method === 'GET' && pathname === '/api/results/all') return void handleApiResultsAll(res, url.searchParams);
@@ -591,6 +661,14 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/cards/clear') return void handleCardAction(req, res, 'clear');
   if (req.method === 'GET' && pathname === '/api/billing') return void handleBillingSummary(res);
   if (req.method === 'POST' && pathname === '/api/billing/clear') return void handleBillingClear(res);
+  if (req.method === 'GET' && pathname === '/api/accounts') return void handleAccountsList(res);
+  if (req.method === 'POST' && pathname === '/api/accounts/clear') return void handleAccountsClear(res);
+  if (req.method === 'POST' && pathname === '/api/accounts/reset') return void handleAccountsReset(req, res);
+  if (req.method === 'GET' && pathname === '/api/policy') return void handlePolicyGet(res);
+  if (req.method === 'POST' && pathname === '/api/policy/set') return void handlePolicySet(req, res);
+  if (req.method === 'POST' && pathname === '/api/policy/reset') return void handlePolicyReset(req, res);
+  if (req.method === 'GET' && pathname === '/api/errors') return void handleErrorsSummary(res);
+  if (req.method === 'POST' && pathname === '/api/errors/clear') return void handleErrorsClear(res);
   if (req.method === 'GET') return void serveStatic(req, res, pathname);
 
   res.writeHead(405); res.end('Method Not Allowed');
@@ -603,7 +681,7 @@ server.listen(PORT, HOST, () => {
   if (ALLOW_HOSTS.length) console.log(`🔒 域名白名单(+localhost): ${ALLOW_HOSTS.join(', ')}`);
 
   // 子机自动注册:配了中心机地址就启动时 + 每 30s 心跳上报,中心机自动聚合本机。
-  const CENTRAL_URL = process.env.OPENROUTER_CENTRAL_URL || readCluster('centralUrl') || '';
+  const CENTRAL_URL = getCentralUrl();
   const SELF_URL = process.env.OPENROUTER_SELF_URL || readCluster('selfUrl') || '';
   if (CENTRAL_URL) {
     const base = CENTRAL_URL.replace(/\/+$/, '');
