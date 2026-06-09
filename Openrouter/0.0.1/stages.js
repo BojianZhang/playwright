@@ -175,6 +175,7 @@ async function signInExisting(page, account, runtime, context) {
   const mb = cfg.mailbox || {};
   const log = (m) => context.log && context.log(`[signin] ${m}`);
   try {
+    const sinceTs = Date.now(); // 本次登录开始时间：只接受发件时间晚于它的验证码，避免抓到上一次的旧码
     await page.goto(signinUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForSelector('#identifier-field', { timeout: 20000 }).catch(() => {});
     await page.fill('#identifier-field', account.email).catch(() => {});
@@ -220,7 +221,7 @@ async function signInExisting(page, account, runtime, context) {
     // 二次校验:邮箱验证码
     if (/factor-two|verify/.test(page.url())) {
       log('需要邮箱验证码,读取中…');
-      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account), baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, log: (m) => log(`[mail] ${m}`) });
+      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account), baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, sinceTs, log: (m) => log(`[mail] ${m}`) });
       if (!code) { log('未取到验证码'); return { ok: false, reason: 'SIGNIN_CODE_NOT_FOUND' }; }
       const otp = page.locator('input[inputmode="numeric"], input[name="code"], input[id*="code"], input[autocomplete="one-time-code"]').first();
       await otp.click({ timeout: 5000 }).catch(() => {});
@@ -446,7 +447,7 @@ async function billing(ctx) {
   const amount = Math.max(0, Number(tp.topUpAmount) || 0);
   if (doPurchase && amount < 5) {
     log(`充值金额 $${amount} < 最低 $5，跳过`);
-    return softBilling(cfg, 'skipped');
+    return softBilling(cfg, 'skipped', action);
   }
 
   // 充值台账：每个账号终态记一条，避免糊涂账(哪个邮箱/哪张卡/多少钱/成败)。
@@ -461,7 +462,7 @@ async function billing(ctx) {
   if (page.isClosed()) {
     log('页面/浏览器已关闭，跳过账单（不消耗卡）');
     await recordBilling('no-card', 0, '', 'PAGE_CLOSED');
-    return softBilling(cfg, 'page-closed');
+    return softBilling(cfg, 'page-closed', action);
   }
 
   // 账单地址：默认随机生成(免税州)，每个账号一条；'pool' 模式才用手动地址池。
@@ -472,7 +473,7 @@ async function billing(ctx) {
     if (!address) {
       log('地址池为空(手动模式) → 跳过，账号(含Key)仍交付');
       await recordBilling('no-address', 0, '');
-      return softBilling(cfg, 'no-address');
+      return softBilling(cfg, 'no-address', action);
     }
   } else {
     address = generateAddress({ states: tp.addressStates });
@@ -489,7 +490,7 @@ async function billing(ctx) {
     const status = outcome.result === 'address-bound' ? 'address-bound' : outcome.result;
     await recordBilling(status, 0, '', outcome.error);
     if (status === 'address-bound') { log('✓ 账单地址已绑定'); return ok('BILLING_OK', { billingStatus: 'address-bound', charged: 0, cardLast4: '' }); }
-    return softBilling(cfg, status);
+    return softBilling(cfg, status, action);
   }
 
   // 需要加卡(card / charge)：从卡池取卡，被拒自动换下一张。
@@ -535,7 +536,7 @@ async function billing(ctx) {
     log(`✗ 卡 ••${card.last4} 结果=${outcome.result} ${outcome.error || ''} → 换下一张`);
   }
   await recordBilling(lastResult === 'no-card' ? 'no-card' : 'declined', 0, '', '');
-  return softBilling(cfg, lastResult);
+  return softBilling(cfg, lastResult, action);
 }
 
 // 解析账单动作：优先 taskParams.billingAction；兼容老的 allowCharges 布尔。
@@ -545,10 +546,14 @@ function resolveBillingAction(tp) {
   return tp.allowCharges ? 'charge' : 'none';
 }
 
-// soft/hard 失败收口：默认 soft(账号仍交付)；config.billing.failureMode='hard' 则判失败。
-function softBilling(cfg, status) {
-  if ((cfg.billing?.failureMode || 'soft') === 'hard') {
-    return fail('BILLING_FAILED', `BILLING_${String(status).toUpperCase()}`, { billingStatus: status, charged: 0 });
+// 账单收口：用户**明确要求的等级没达到 → 判失败**（账号进失败列表、断点续跑会重跑；
+// Key 仍已落盘不丢失），不再揣着半成品当成功。只有"没要求该等级"或显式 soft 才软放过。
+function softBilling(cfg, status, action) {
+  const requested = action && action !== 'none';
+  const missed = requested && !accountStore.billingSatisfied(status, action);
+  if (missed || (cfg.billing && cfg.billing.failureMode === 'hard')) {
+    const code = `BILLING_${String(status || 'INCOMPLETE').toUpperCase().replace(/-/g, '_')}`;
+    return fail('BILLING_FAILED', code, { billingStatus: status, charged: 0 });
   }
   return ok('BILLING_SOFT_FAIL', { billingStatus: status, charged: 0 });
 }
@@ -846,13 +851,15 @@ async function exportStage(ctx) {
   // 两者可来自本次阶段结果或断点续跑的已存状态。
   const apiKeyOk = !!((context.stageResults?.apiKey?.detail?.apiKey) || (ps && ps.apiKey));
   const billingStatus = context.stageResults?.billing?.detail?.billingStatus || (ps && ps.billingStatus) || 'skipped';
+  // 走到这里说明用户**要求了改密**(doPasswordChange!==false)。改密做不成 = 流程没真正完成 → 判失败
+  // （账号进失败列表、断点续跑重跑；Key/充值已落盘，重跑会跳过、只补改密）。
   if (!apiKeyOk || billingStatus !== 'success') {
-    log(`改密前置未满足(取Key=${apiKeyOk ? '是' : '否'}, 充值=${billingStatus})，跳过改密、保留原密码`);
-    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeNote: `need-key+charge(key=${apiKeyOk},billing=${billingStatus})` });
+    log(`改密前置未满足(取Key=${apiKeyOk ? '是' : '否'}, 充值=${billingStatus})，未改密`);
+    return fail('PASSWORD_CHANGE_BLOCKED', 'PWD_PREREQ_NOT_MET', { passwordChanged: false, passwordChangeNote: `need-key+charge(key=${apiKeyOk},billing=${billingStatus})` });
   }
   if (!mb.apiKey) {
     log('未配置 Firstmail apiKey，无法改密');
-    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: 'NO_MAILBOX_APIKEY' });
+    return fail('PASSWORD_CHANGE_FAILED', 'NO_MAILBOX_APIKEY', { passwordChanged: false, passwordChangeError: 'NO_MAILBOX_APIKEY' });
   }
 
   try {
@@ -867,10 +874,10 @@ async function exportStage(ctx) {
     }
     const detail = (typeof r.json === 'object') ? JSON.stringify(r.json).slice(0, 140) : '';
     log(`✗ 邮箱改密失败 status=${r.status} ${detail}`);
-    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: `HTTP ${r.status} ${detail}` });
+    return fail('PASSWORD_CHANGE_FAILED', `HTTP ${r.status}`, { passwordChanged: false, passwordChangeError: `HTTP ${r.status} ${detail}` });
   } catch (e) {
     log(`✗ 邮箱改密异常 ${e.message}`);
-    return ok('EXPORT_OK', { passwordChanged: false, passwordChangeError: String(e.message || e) });
+    return fail('PASSWORD_CHANGE_FAILED', String(e.message || e).slice(0, 80), { passwordChanged: false, passwordChangeError: String(e.message || e) });
   }
 }
 
