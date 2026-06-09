@@ -669,13 +669,24 @@ async function detectModalState(page) {
   }).catch(() => 'none');
 }
 
-// 读取被拒/错误提示文本(toast 或内联)。
+// 读取被拒/错误提示文本。关键：**只在付款弹窗/告警区 + Stripe iframe 内找**，
+// 绝不扫整页背景——否则会误抓 OpenRouter 模型列表里无关的 "Error 5xx"，把好卡当成被拒。
 async function readBillingError(page) {
-  return page.evaluate(() => {
-    const t = (document.body.innerText || '');
-    const m = t.match(/(your card was declined|card was declined|银行卡被拒绝[^\n]*|payment issue|declined[^\n]*|Error 5\d\d[^\n]*)/i);
-    return m ? m[0].slice(0, 160) : '';
-  }).catch(() => '');
+  const RE = /(your card was declined|card was declined|银行卡被拒绝[^\n]*|insufficient funds|card (number )?is (incorrect|invalid)|incorrect (card )?number|security code is (incorrect|invalid)|card (has )?expired|payment (method )?(failed|could not|was declined|was not completed)|Error 5\d\d[^\n]*|bad gateway|service unavailable|something went wrong|declined)/i;
+  const frames = [page.mainFrame(), ...page.frames()];
+  for (const f of frames) {
+    const t = await f.evaluate(() => {
+      const u = location.href || '';
+      // Stripe 子框架：报错就在里面，读全文。
+      if (/stripe\.com|stripe\.network/.test(u)) return document.body.innerText || '';
+      // 主站：只读弹窗/告警/toast 区，避开背景内容。
+      const sc = Array.from(document.querySelectorAll('[role="dialog"],[role="alert"],[aria-live],[class*="toast" i],[class*="error" i],[class*="alert" i],[class*="danger" i]'));
+      return sc.map((e) => e.innerText || '').join('\n');
+    }).catch(() => '');
+    const m = t.match(RE);
+    if (m) return m[0].slice(0, 160);
+  }
+  return '';
 }
 
 // 综合判定结果(被拒/成功)；dialogs 为已捕获的 JS alert 文案数组。
