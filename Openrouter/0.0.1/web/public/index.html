@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpenRouter 自动化控制台</title>
-  <link rel="stylesheet" href="/styles.css?v=20260609e" />
+  <link rel="stylesheet" href="/styles.css?v=20260609f" />
 </head>
 <body>
   <header>
     <div class="bar">
       <h1>OpenRouter 自动化控制台</h1>
-      <span class="build-tag" title="前端构建版本，用于确认浏览器是否加载到最新代码">build 0609e</span>
+      <span class="build-tag" title="前端构建版本，用于确认浏览器是否加载到最新代码">build 0609f</span>
       <a class="link-btn" href="/results.html" style="margin-left:auto;text-decoration:none;">📋 成功账号 / 卡池 / 聚合</a>
     </div>
   </header>
@@ -22,20 +22,20 @@
         <div class="config-grid">
           <div class="cfg-col">
             <h3>① 账号 &amp; 密码</h3>
-            <label>账号凭证 <small><code>email:原邮箱密码</code></small>
+            <label for="ta-accountsRaw">账号凭证 <small><code>email:原邮箱密码</code></small>
               <span class="up-ctl"><button type="button" class="up-btn" data-up="accountsRaw" data-kind="accounts" title="上传 .txt/.csv 文件，自动解析填入（也可直接把文件拖到下方框里）">📁 上传文件</button><small class="up-msg" data-msg="accountsRaw"></small></span>
-              <input type="file" class="up-input" data-for="accountsRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
-              <textarea name="accountsRaw" data-drop="accounts" rows="5" placeholder="user1@firstmail.com:原密码1&#10;user2@firstmail.com:原密码2"></textarea>
+              <textarea id="ta-accountsRaw" name="accountsRaw" data-drop="accounts" rows="5" placeholder="user1@firstmail.com:原密码1&#10;user2@firstmail.com:原密码2"></textarea>
             </label>
+            <input type="file" class="up-input" data-for="accountsRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
             <label>统一密码 <small>留空=用原密码且不改密</small>
               <input type="text" name="unifiedPassword" autocomplete="off" placeholder="如 MyNewPass#2026" />
               <small class="hint">设置后：注册就用它；<b>全部流程跑完</b>后再把邮箱密码从原密码改成它。</small>
             </label>
-            <label>代理 <small><code>host:port:user:pass</code>，可留空</small>
+            <label for="ta-proxiesRaw">代理 <small><code>host:port:user:pass</code>，可留空</small>
               <span class="up-ctl"><button type="button" class="up-btn" data-up="proxiesRaw" data-kind="proxies" title="上传 .txt/.csv 文件，自动解析填入（也可直接把文件拖到下方框里）">📁 上传文件</button><small class="up-msg" data-msg="proxiesRaw"></small></span>
-              <input type="file" class="up-input" data-for="proxiesRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
-              <textarea name="proxiesRaw" data-drop="proxies" rows="2" placeholder="1.2.3.4:8080:user:pass"></textarea>
+              <textarea id="ta-proxiesRaw" name="proxiesRaw" data-drop="proxies" rows="2" placeholder="1.2.3.4:8080:user:pass"></textarea>
             </label>
+            <input type="file" class="up-input" data-for="proxiesRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
           </div>
 
           <div class="cfg-col">
@@ -104,20 +104,20 @@
               <input type="text" name="addressStates" value="Oregon, Delaware, Montana, New Hampshire" />
             </label>
             <div id="addressPoolWrap" style="display:none;">
-              <label>账单地址池 <small><code>姓名|地址1|城市|州|邮编</code>，或直接传带表头的 CSV（Name/Address 列，整串美式地址自动拆分）</small>
+              <label for="ta-billingAddressesRaw">账单地址池 <small><code>姓名|地址1|城市|州|邮编</code>，或直接传带表头的 CSV（Name/Address 列，整串美式地址自动拆分）</small>
                 <span class="up-ctl"><button type="button" class="up-btn" data-up="billingAddressesRaw" data-kind="address" title="上传 .txt/.csv 文件，自动解析填入（也可直接把文件拖到下方框里）">📁 上传文件</button><small class="up-msg" data-msg="billingAddressesRaw"></small></span>
-                <input type="file" class="up-input" data-for="billingAddressesRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
-                <textarea name="billingAddressesRaw" data-drop="address" rows="2" placeholder="Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209"></textarea>
+                <textarea id="ta-billingAddressesRaw" name="billingAddressesRaw" data-drop="address" rows="2" placeholder="Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209"></textarea>
               </label>
+              <input type="file" class="up-input" data-for="billingAddressesRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
               <label>地址分配
                 <select name="billingAddressStrategy"><option value="random">随机</option><option value="round-robin">轮询</option></select>
               </label>
             </div>
-            <label>卡池导入 <small>每行一卡，自动解析</small>
+            <label for="ta-cardsRaw">卡池导入 <small>每行一卡，自动解析</small>
               <span class="up-ctl"><button type="button" class="up-btn" data-up="cardsRaw" data-kind="cards" title="上传 .txt/.csv 文件，自动解析填入（也可直接把文件拖到下方框里）">📁 上传文件</button><small class="up-msg" data-msg="cardsRaw"></small></span>
-              <input type="file" class="up-input" data-for="cardsRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
-              <textarea name="cardsRaw" data-drop="cards" rows="2" placeholder="4361 2080 0908 8695  02/29  093&#10;4737023115115911|05/30|130"></textarea>
+              <textarea id="ta-cardsRaw" name="cardsRaw" data-drop="cards" rows="2" placeholder="4361 2080 0908 8695  02/29  093&#10;4737023115115911|05/30|130"></textarea>
             </label>
+            <input type="file" class="up-input" data-for="cardsRaw" accept=".txt,.csv,.tsv,text/plain" multiple hidden />
             <div class="row">
               <label>每张卡最大次数 <input type="number" name="cardMaxUses" value="10" min="1" max="100" /></label>
             </div>
@@ -268,7 +268,7 @@
     </div>
   </div>
 
-  <script src="/auth.js?v=20260609e"></script>
-  <script src="/app.js?v=20260609e"></script>
+  <script src="/auth.js?v=20260609f"></script>
+  <script src="/app.js?v=20260609f"></script>
 </body>
 </html>
