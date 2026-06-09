@@ -614,9 +614,16 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps) {
         const declErr = await readBillingError(page);
         await clickFirst(page, ['button:has-text("Save payment method")', 'button:has-text("Save")'], 8000).catch(() => {});
         await page.waitForTimeout(3000);
-        const afterErr = await readBillingError(page);
-        if (afterErr) return { result: 'declined', error: afterErr };
-        if (declErr) return { result: 'declined', error: declErr };
+        const err = (await readBillingError(page)) || declErr;
+        if (err) {
+          // 5xx / 网关 / "稍后再试" = 服务器或代理错误（多半是代理 IP 被 Stripe 风控），
+          // 不是卡被拒 → 按瞬时错误处理：不踢卡、不消耗卡用量、可换代理重试。
+          if (/error\s*5\d\d|bad gateway|gateway time|service unavailable|temporarily unavailable|try again|something went wrong|稍后|服务(暂时)?不可用|网关/i.test(err)) {
+            log(`付款返回服务器/网关错误：${err.slice(0, 80)} → 按瞬时错误(不踢卡，建议换代理重试)`);
+            return { result: 'error', error: `SERVER_ERROR:${err.slice(0, 80)}` };
+          }
+          return { result: 'declined', error: err }; // 真·卡被拒 → 踢卡
+        }
         cardSaved = true;
       } else if (state === 'purchase') {
         if (!doCard) return { result: 'address-bound' };
@@ -726,6 +733,21 @@ async function addPaymentMethod(page, card, address, log) {
   const okCvc = await fillAcross(page, ['input[name="cvc"]', 'input[autocomplete="cc-csc"]', 'input[id*="cvcInput" i]', 'input[placeholder*="CVC" i]', 'input[placeholder*="安全码"]'], card.cvc, log);
   // 诊断：到底哪个卡字段没填上（iframe 数 + 命中情况），定位 Stripe 表单问题
   log(`填卡: 卡号=${okNum ? '✓' : '✗'} 有效期=${okExp ? '✓' : '✗'} CVC=${okCvc ? '✓' : '✗'} | iframe数=${page.frames().length}`);
+  // 诊断：付款时弹出的"校验"到底是 Cloudflare 人机 还是 银行 3DS（只在首次付款步打一次，避免刷屏）。
+  if (!page._obstacleDumped) {
+    page._obstacleDumped = true;
+    const ob = await page.evaluate(() => {
+      const t = document.body.innerText || '';
+      const frames = Array.from(document.querySelectorAll('iframe')).map((f) => f.src || f.title || '').filter(Boolean);
+      const hints = [];
+      if (/verify you are human|are you human|i'?m not a robot|确认您是真人|人机验证|需要验证/i.test(t)) hints.push('人机/Cloudflare文案');
+      if (/3-?d secure|3ds|authenticate|authoriz|verification code|enter the code|短信验证码|授权这?笔|银行验证/i.test(t)) hints.push('3DS/银行验证文案');
+      return { cfHook: !!(window.__cfParams && window.__cfParams.sitekey), frames: frames.slice(0, 12), hints, snippet: t.replace(/\s+/g, ' ').slice(0, 240) };
+    }).catch(() => ({}));
+    log(`付款校验诊断: cfHook=${ob.cfHook} 文案=${(ob.hints || []).join('/') || '无'}`);
+    log(`付款 iframe: ${JSON.stringify(ob.frames || [])}`);
+    log(`付款弹窗文案: ${(ob.snippet || '').slice(0, 200)}`);
+  }
   // 卡片邮编(优先卡自带，否则用地址邮编)。
   const zip = card.zip || (address && address.zip) || '';
   if (zip) await fillAcross(page, ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[id*="postalCodeInput" i]', 'input[placeholder*="邮政编码"]'], zip, log);
