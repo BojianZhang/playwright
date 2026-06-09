@@ -228,7 +228,7 @@ small.hint { display: block; margin-top: 4px; color: var(--muted); font-weight: 
 small.hint b { color: var(--text); }
 
 /* 文件上传 / 实时解析控件 */
-.up-ctl { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; flex-wrap: wrap; }
+.up-ctl { display: inline-flex; width: fit-content; max-width: 100%; vertical-align: middle; align-items: center; gap: 8px; margin: 4px 0 2px; flex-wrap: wrap; }
 .up-btn {
   background: transparent; border: 1px dashed var(--accent); color: var(--accent);
   border-radius: 6px; padding: 1px 9px; font-size: 12px; cursor: pointer; margin: 0;
