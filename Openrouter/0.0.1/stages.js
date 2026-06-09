@@ -721,9 +721,11 @@ async function addPaymentMethod(page, card, address, log) {
   await clickFirst(page, ['button:has-text("银行卡")', 'button:has-text("Card")', '[role="tab"]:has-text("Card")'], 2500).catch(() => {});
   await page.waitForTimeout(400);
   const exp = `${card.expMonth}${card.expYear}`; // Stripe 自动格式化 MM/YY
-  await fillAcross(page, ['input[name="number"]', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]', 'input[id*="numberInput" i]', 'input[placeholder*="1234" i]', 'input[placeholder*="卡号"]'], card.number, log);
-  await fillAcross(page, ['input[name="expiry"]', 'input[name="exp-date"]', 'input[autocomplete="cc-exp"]', 'input[id*="expiryInput" i]', 'input[placeholder*="MM" i]'], exp, log);
-  await fillAcross(page, ['input[name="cvc"]', 'input[autocomplete="cc-csc"]', 'input[id*="cvcInput" i]', 'input[placeholder*="CVC" i]', 'input[placeholder*="安全码"]'], card.cvc, log);
+  const okNum = await fillAcross(page, ['input[name="number"]', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]', 'input[id*="numberInput" i]', 'input[placeholder*="1234" i]', 'input[placeholder*="卡号"]'], card.number, log);
+  const okExp = await fillAcross(page, ['input[name="expiry"]', 'input[name="exp-date"]', 'input[autocomplete="cc-exp"]', 'input[id*="expiryInput" i]', 'input[placeholder*="MM" i]'], exp, log);
+  const okCvc = await fillAcross(page, ['input[name="cvc"]', 'input[autocomplete="cc-csc"]', 'input[id*="cvcInput" i]', 'input[placeholder*="CVC" i]', 'input[placeholder*="安全码"]'], card.cvc, log);
+  // 诊断：到底哪个卡字段没填上（iframe 数 + 命中情况），定位 Stripe 表单问题
+  log(`填卡: 卡号=${okNum ? '✓' : '✗'} 有效期=${okExp ? '✓' : '✗'} CVC=${okCvc ? '✓' : '✗'} | iframe数=${page.frames().length}`);
   // 卡片邮编(优先卡自带，否则用地址邮编)。
   const zip = card.zip || (address && address.zip) || '';
   if (zip) await fillAcross(page, ['input[name="postalCode"]', 'input[name="postal"]', 'input[autocomplete="postal-code"]', 'input[id*="postalCodeInput" i]', 'input[placeholder*="邮政编码"]'], zip, log);
