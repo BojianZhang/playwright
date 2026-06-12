@@ -17,10 +17,10 @@
 
 const path = require('path');
 const fs = require('fs');
-const { runBatchOrchestration } = require('../../shared-batch-orchestration');
-const { createBrowserRuntime } = require('../../shared-browser-runtime/create-browser-runtime');
+const { runBatchOrchestration } = require('../../../shared-batch-orchestration');
+const { createBrowserRuntime } = require('../../../shared-browser-runtime/create-browser-runtime');
 const { runOpenrouterRegisterFlow } = require('./Openrouter-register');
-const accountStore = require('./account-state/account-store');
+const accountStore = require('../account-state/account-store');
 const failurePolicy = require('./failure-policy');
 const errorLog = require('./error-log');
 const exportTemplates = require('./export-templates');
@@ -28,11 +28,11 @@ const { installTurnstileIntercept } = require('./openrouter-turnstile');
 const { installHCaptchaIntercept } = require('./openrouter-hcaptcha');
 const { installStealth, IGNORE_DEFAULT_ARGS } = require('./openrouter-stealth');
 const adspower = require('./openrouter-adspower');
-const browserProviders = require('./browser-provider'); // 可插拔指纹浏览器层(adspower/bitbrowser/dolphin/…)
-const { computeWorkerWindowLayout } = require('../../shared-window-layout');
+const browserProviders = require('../browser-provider'); // 可插拔指纹浏览器层(adspower/bitbrowser/dolphin/…)
+const { computeWorkerWindowLayout } = require('../../../shared-window-layout');
 const { execSync } = require('child_process');
 let LAYOUT_PROFILE = {};
-try { LAYOUT_PROFILE = require('../../shared-window-layout/window-layout-profile.json'); } catch (_e) { LAYOUT_PROFILE = {}; }
+try { LAYOUT_PROFILE = require('../../../shared-window-layout/window-layout-profile.json'); } catch (_e) { LAYOUT_PROFILE = {}; }
 
 // 自动探测当前屏幕可用工作区。Windows 用 WinForms WorkingArea；Linux(含 Xvfb)用
 // xdpyinfo / xrandr 读 DISPLAY 分辨率。探测一次缓存复用；失败返回 null（回退默认）。
@@ -70,8 +70,8 @@ function deepMerge(a, b) {
   return out;
 }
 let CONFIG = {};
-try { CONFIG = require('./config.json'); } catch (_e) { CONFIG = {}; }
-try { CONFIG = deepMerge(CONFIG, require('./config.local.json')); } catch (_e) { /* optional */ }
+try { CONFIG = require('../config.json'); } catch (_e) { CONFIG = {}; }
+try { CONFIG = deepMerge(CONFIG, require('../config.local.json')); } catch (_e) { /* optional */ }
 // 环境变量兜底密钥
 if (process.env.OPENROUTER_CAPTCHA_KEY) CONFIG = deepMerge(CONFIG, { captcha: { apiKey: process.env.OPENROUTER_CAPTCHA_KEY } });
 if (process.env.OPENROUTER_FIRSTMAIL_KEY) CONFIG = deepMerge(CONFIG, { mailbox: { apiKey: process.env.OPENROUTER_FIRSTMAIL_KEY } });
@@ -151,7 +151,7 @@ async function runJob(opts = {}) {
   const live = { running: 0, queued: 0, done: 0 };
 
   // 结果导出：成功账号实时写入文件（关页面也不丢；可在 /download?jobId= 下载）。
-  const resultsDir = path.join(__dirname, CONFIG.output?.baseDir || 'batch-results');
+  const resultsDir = path.join(__dirname, '..', CONFIG.output?.baseDir || 'batch-results');
   let successFile = '';
   try { fs.mkdirSync(resultsDir, { recursive: true }); successFile = path.join(resultsDir, `${jobId}-success.txt`); } catch (_e) { successFile = ''; }
   const recordSuccess = (rendered, raw) => {

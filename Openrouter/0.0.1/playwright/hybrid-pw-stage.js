@@ -4,8 +4,13 @@
 // 跑 register → magicLinkLogin → apiKey → billing(只绑地址)，然后【断开但不关浏览器】，
 // 把同一个环境留给 Python-Selenium 去加卡。
 //
-// 用法: node hybrid-pw-stage.js <cdp-endpoint> <email> <mailbox_pw> <openrouter_pw> [apiKeyName]
+// 用法: node playwright/hybrid-pw-stage.js <cdp-endpoint> <email> <mailbox_pw> <openrouter_pw> [mode] [priorApiKey] [x,y,w,h]
 // 约定: stdout 只输出【最后一行 JSON 结果】；所有日志走 stderr，方便 Python 解析。
+//
+// 边界(BOUNDARY)：
+//   ✅ 负责 —— 混合模式接管 Python 已建/已启的 AdsPower 环境(connectOverCDP),跑 register→login→apiKey→billing(仅绑地址),
+//             完事【disconnect 但不关浏览器】,把同一环境留给 Python-Selenium 加卡。是 Node↔Python 的 Playwright 半边入口。
+//   ❌ 不负责 —— 加卡(留 Selenium Fix C)、建环境/代理(Python 建)、并发调度(Python hybrid_run 调度)、充值。
 // ═══════════════════════════════════════════════════════════════════════
 const { chromium } = require('playwright');
 const { runOpenrouterRegisterFlow, STAGE_DEFS } = require('./Openrouter-register');
@@ -20,8 +25,8 @@ function loadConfig() {
     return out;
   }
   let cfg = {};
-  try { cfg = require('./config.json'); } catch (_e) {}
-  try { cfg = deepMerge(cfg, require('./config.local.json')); } catch (_e) {}
+  try { cfg = require('../config.json'); } catch (_e) {}
+  try { cfg = deepMerge(cfg, require('../config.local.json')); } catch (_e) {}
   if (process.env.OPENROUTER_CAPTCHA_KEY) cfg = deepMerge(cfg, { captcha: { apiKey: process.env.OPENROUTER_CAPTCHA_KEY } });
   if (process.env.OPENROUTER_FIRSTMAIL_KEY) cfg = deepMerge(cfg, { mailbox: { apiKey: process.env.OPENROUTER_FIRSTMAIL_KEY } });
   return cfg;

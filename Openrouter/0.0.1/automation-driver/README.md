@@ -1,5 +1,7 @@
 # 自动化驱动层
 
+> 共享库:在三引擎架构中的定位见 [../ARCHITECTURE.md](../ARCHITECTURE.md)。✅ 负责自动化工具(playwright/puppeteer/selenium)抽象;❌ 不做业务流程。
+
 可切换的"自动化工具"层 —— **Playwright / Puppeteer / Selenium / playwright-python**,任意驱动接任意指纹浏览器。
 与 `browser-provider/` 对偶:**provider 给一个 CDP 端点(ws/debugPort),driver 接管这个端点**。
 

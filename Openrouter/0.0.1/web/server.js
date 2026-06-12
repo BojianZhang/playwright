@@ -18,14 +18,14 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 
-const jobRunner = require('../Openrouter-job-runner');
+const jobRunner = require('../playwright/Openrouter-job-runner');
 const eventBus = require('./event-bus');
 const cardPool = require('../billing/card-pool');
 const billingLedger = require('../billing/billing-ledger');
 const accountStore = require('../account-state/account-store');
-const failurePolicy = require('../failure-policy');
+const failurePolicy = require('../playwright/failure-policy');
 const policyStore = require('../account-state/policy-store');
-const errorLog = require('../error-log');
+const errorLog = require('../playwright/error-log');
 
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');

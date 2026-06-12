@@ -3,12 +3,17 @@
 // ═══════════════════════════════════════════════════════════════════════
 // Openrouter / 结果聚合脚本（分布式整合）
 //
-// 文件定位：Openrouter/0.0.1/aggregate-results.js
+// 文件定位：Openrouter/0.0.1/playwright/aggregate-results.js
 //
 // 用途：
 //   - 本机:扫描本地 batch-results/*-success.jsonl,汇总成功账号。
 //   - 多机:逐台请求 http://host:port/api/results/all,拉取并合并去重。
 //   - 输出:batch-results/<out>-<时间戳>.json 与 .txt（email:apiKey）。
+//
+// 边界(BOUNDARY)：
+//   ✅ 负责 —— 跨机/本机聚合【已成功账号】去重导出(读 ../batch-results,只读不改业务数据)。
+//   ❌ 不负责 —— 单账号自动化(引擎①各阶段)、卡池/账号写入(account-state)、跑批调度(web)。
+//   纯离线汇总工具,与运行期流程无耦合。
 //
 // 用法示例：
 //   # 只看/导出本机成功账号
@@ -27,7 +32,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const RESULTS_DIR = path.join(__dirname, 'batch-results');
+const RESULTS_DIR = path.join(__dirname, '..', 'batch-results');
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : def; }
 function hasFlag(name) { return process.argv.includes(name); }
@@ -42,7 +47,7 @@ function loadConfig() {
 function loadToken() {
   if (process.env.OPENROUTER_AUTH_TOKEN) return process.env.OPENROUTER_AUTH_TOKEN;
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, f), 'utf8')); if (c.security && c.security.token) return c.security.token; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && c.security.token) return c.security.token; } catch (_e) { /* none */ }
   }
   return '';
 }

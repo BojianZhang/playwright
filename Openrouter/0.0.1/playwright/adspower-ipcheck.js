@@ -3,10 +3,14 @@
 // ═══════════════════════════════════════════════════════════════════════
 // 工具 — AdsPower 环境出口IP干净度批量检测
 //
-// 文件定位：Openrouter/0.0.1/adspower-ipcheck.js
+// 文件定位：Openrouter/0.0.1/playwright/adspower-ipcheck.js
 //
 // 用途：逐个启动 AdsPower 环境 → CDP 接管 → 查出口IP的 proxy/hosting 标记 → 关闭，
 //       输出 proxy=false && hosting=false 的「干净环境」列表，便于挑选用于加卡。
+//
+// 边界(BOUNDARY)：
+//   ✅ 负责 —— 批量体检 AdsPower 环境出口 IP 干净度,产出干净环境 ID 清单(辅助工具)。
+//   ❌ 不负责 —— 注册/取key/加卡等业务流程;环境创建/代理分配(browser-provider);卡池/账号数据。
 //
 // 用法：
 //   node adspower-ipcheck.js k1db9yk8 k1db9yk7 ...   # 检测指定环境(user_id 或 serial)

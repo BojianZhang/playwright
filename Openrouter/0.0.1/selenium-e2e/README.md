@@ -1,5 +1,7 @@
 # OpenRouter 自动化流水线（Selenium / Playwright+Selenium 混合）
 
+> 引擎②:在三引擎架构中的定位见 [../ARCHITECTURE.md](../ARCHITECTURE.md)。✅ Fix C 原生CDP绑卡 + 混合编排(子进程拉引擎① `../playwright/hybrid-pw-stage.js`) + 纯Selenium全流程 + 充值。
+
 接管 AdsPower 指纹浏览器，批量做 OpenRouter 账号的 **注册 / 登录 / 取 API Key / 绑账单地址 / 加卡**。
 **每账号新建一个干净 AdsPower 环境，跑完即删** —— 保证账号状态干净、互不串味。
 
@@ -134,7 +136,7 @@ PW 阶段经 CDP `Browser.setWindowBounds` 摆窗，Selenium 阶段经 `set_wind
 **编排**
 - `pipeline.py` / `run.py` — 纯 Selenium 单账号编排 / 批量入口。
 - `hybrid_run.py` — 混合编排（PW→关→Selenium重开），支持并发 + 断点续跑。
-- `hybrid-pw-stage.js`（在 `../`）— Playwright 那半：接管已启环境跑 register→取Key→绑地址，断开留浏览器。
+- `hybrid-pw-stage.js`（在 `../playwright/`）— Playwright 那半：接管已启环境跑 register→取Key→绑地址，断开留浏览器。
 - `hyb_loop.py` — 混合自重试循环（每轮换IP，跑到全绑）。`HYB_CONCURRENCY` 环境变量调并发。
 - `_cardloop.py` — 纯 Selenium 加卡自重试循环。
 

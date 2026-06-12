@@ -23,7 +23,7 @@ from common import log
 _WRITE_LOCK = threading.Lock()   # 并发写 results.jsonl 用
 
 ROOT = os.path.normpath(os.path.join(common.HERE, ".."))
-NODE_CLI = os.path.join(ROOT, "hybrid-pw-stage.js")
+NODE_CLI = os.path.join(ROOT, "playwright", "hybrid-pw-stage.js")
 
 # Fix C:绑卡默认走【原生CDP Input】(脱离 chromedriver 躲 Stripe 检测,实测能绑成);FIXC=0 回退旧 Selenium add_card。
 FIXC = os.environ.get("FIXC", "1") != "0"
@@ -136,7 +136,7 @@ def run_pw_stage(ep, email, mailbox_pw, op_pw, mode="register", prior_api_key=""
     try:
         # encoding 必须显式 utf-8：Node 输出含非 GBK 字节,Windows 默认 GBK 解码会在读取线程抛
         # UnicodeDecodeError → 读不到 JSON → PW_NO_JSON 白白重试。errors=replace 兜底任何脏字节。
-        r = subprocess.run(["node", "hybrid-pw-stage.js", ep, email, mailbox_pw, op_pw, mode, prior_api_key or "", win_bounds or ""],
+        r = subprocess.run(["node", "playwright/hybrid-pw-stage.js", ep, email, mailbox_pw, op_pw, mode, prior_api_key or "", win_bounds or ""],
                            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired as e:
         # 即便超时被杀,也从已捕获的输出里抢救已建出的 key,避免重试重建第二把 key、首把成孤儿

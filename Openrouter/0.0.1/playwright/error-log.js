@@ -14,9 +14,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createMutex } = require('../../shared-batch-orchestration/mutex');
+const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 
-const ERROR_LOG_FILE = path.join(__dirname, 'account-state', 'error-log.json');
+const ERROR_LOG_FILE = path.join(__dirname, '..', 'account-state', 'error-log.json');
 const MAX_ENTRIES = 2000;
 const mutex = createMutex();
 

@@ -1,5 +1,7 @@
 # 指纹浏览器 Provider 层
 
+> 共享库:在三引擎架构中的定位见 [../ARCHITECTURE.md](../ARCHITECTURE.md)。✅ 负责环境/代理建立与抽象;❌ 不做业务流程。被引擎①(playwright)调用。
+
 让本系统**不绑死 AdsPower**，可切换/扩展任意指纹浏览器。业务流程(stages.js)完全不感知是哪家——
 它只拿到一个被 Playwright 接管的 `{ browser, context, page }`。
 

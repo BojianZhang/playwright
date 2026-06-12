@@ -30,17 +30,17 @@ function openrouterPassword(runtime, account) {
 function mailboxPassword(runtime, account) {
   return (runtime && runtime.priorState && runtime.priorState.mailboxPassword) || account.password;
 }
-const cardPool = require('./billing/card-pool');
-const billingLedger = require('./billing/billing-ledger');
-const accountStore = require('./account-state/account-store');
-const { generateAddress } = require('./billing/address-gen');
+const cardPool = require('../billing/card-pool');
+const billingLedger = require('../billing/billing-ledger');
+const accountStore = require('../account-state/account-store');
+const { generateAddress } = require('../billing/address-gen');
 // 填卡引擎(可切换 + 失败兜底链);fillAcross/humanPause 抽到 fill-primitive，本文件其它调用点继续复用。
-const cardFill = require('./billing/card-fill');
-const cardSelectors = require('./billing/card-fill/selectors');
-const { fillAcross, humanPause } = require('./billing/card-fill/fill-primitive');
-const humanBehavior = require('./billing/card-fill/human-behavior');
-const { buildZipCandidates } = require('./billing/taxfree-zips');
-const { envInt } = require('./billing/env-tunables');
+const cardFill = require('../billing/card-fill');
+const cardSelectors = require('../billing/card-fill/selectors');
+const { fillAcross, humanPause } = require('../billing/card-fill/fill-primitive');
+const humanBehavior = require('../billing/card-fill/human-behavior');
+const { buildZipCandidates } = require('../billing/taxfree-zips');
+const { envInt } = require('../billing/env-tunables');
 
 const ok = (state, detail) => ({ success: true, state, reason: '', detail: detail || {} });
 const fail = (state, reason, detail) => ({ success: false, state, reason: reason || state, detail: detail || {} });

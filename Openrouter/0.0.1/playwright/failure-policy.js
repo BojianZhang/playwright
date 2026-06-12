@@ -104,7 +104,7 @@ const CATALOG = {
 // 覆盖表来源（用户在 UI 配的）。守护式 require：缺文件/未建库时退化为「无覆盖」，
 // 保证 failure-policy 纯逻辑可单测、不依赖磁盘。
 let policyStore;
-try { policyStore = require('./account-state/policy-store'); }
+try { policyStore = require('../account-state/policy-store'); }
 catch (_e) { policyStore = { getOverrides: () => ({}) }; }
 
 /**
