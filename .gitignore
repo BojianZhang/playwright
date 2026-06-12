@@ -71,3 +71,6 @@ Openrouter/0.0.1/billing/card-fill/py/__pycache__/
 
 # 实测/scratch 测试脚本(含实测交互,不入库)
 tests/test-*.spec.ts
+
+# Dreamina 历史运行数据归档(浏览器存储dump/结果,非源码,曾含已提交密钥)
+Dreamina/history/
