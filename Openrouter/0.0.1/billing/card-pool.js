@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createMutex } = require('../../../shared-batch-orchestration/mutex');
+const { envInt, envFloat } = require('./env-tunables');
 
 const POOL_FILE = path.join(__dirname, '..', 'account-state', 'card-pool.json');
 const mutex = createMutex();
@@ -145,7 +146,7 @@ function parseCardLines(text, defaultMaxUses) {
 // ── 池操作（全部经 mutex 串行，保证并发安全）─────────────────────────────
 function freshCounters() {
   return {
-    usedCount: 0, successCount: 0, declineCount: 0,
+    usedCount: 0, successCount: 0, declineCount: 0, errorCount: 0, captchaCount: 0,
     status: 'active', firstUsedAt: '', lastUsedAt: '', lastResult: '', lastError: '',
   };
 }
@@ -189,12 +190,15 @@ function upsertMany(cards) {
 function acquire() {
   return mutex(() => {
     ensureLoaded();
-    for (const c of POOL.values()) {
-      if (c.status === 'active' && c.usedCount < c.maxUses && !c.inUse) {
-        c.inUse = true;
-        return { id: c.id, last4: c.last4, number: c.number, expMonth: c.expMonth, expYear: c.expYear, cvc: c.cvc, zip: c.zip, maxUses: c.maxUses, usedCount: c.usedCount };
-      }
-    }
+    const nowIso = new Date().toISOString();
+    const _cooled = (c) => !!(c.cooldownUntil && c.cooldownUntil > nowIso); // ISO 带 Z,字典序可比(对齐 Selenium common.py _cooled)
+    const usable = (c) => c.status === 'active' && c.usedCount < c.maxUses && !c.inUse;
+    const _take = (c) => { c.inUse = true; return { id: c.id, last4: c.last4, number: c.number, expMonth: c.expMonth, expYear: c.expYear, cvc: c.cvc, zip: c.zip, maxUses: c.maxUses, usedCount: c.usedCount }; };
+    // ① 优先没在冷却的可用卡
+    for (const c of POOL.values()) { if (usable(c) && !_cooled(c)) return _take(c); }
+    // ② 全在冷却 → 退回挑 cooldownUntil 最早到期的(别因都在冷却就阻塞;对齐 Selenium load_card 兜底)
+    const cooled = Array.from(POOL.values()).filter(usable).sort((a, b) => String(a.cooldownUntil || '').localeCompare(String(b.cooldownUntil || '')));
+    if (cooled.length) return _take(cooled[0]);
     return null;
   });
 }
@@ -234,13 +238,21 @@ function report(id, outcome) {
     c.lastError = (outcome && outcome.error) ? String(outcome.error).slice(0, 200) : '';
     if (result === 'success') {
       c.usedCount += 1; c.successCount += 1;
+      c.declineCount = 0; c.errorCount = 0; delete c.cooldownUntil; // 绑成清账(好卡不被环境declined误累计;对齐 common.py:655-662)
       if (c.usedCount >= c.maxUses) c.status = 'exhausted';
     } else if (result === 'bound') {
-      // 仅加卡(未扣费)：不消耗付款次数，保持可用，仅更新时间/结果。
+      // 仅加卡(未扣费)：不消耗付款次数，保持可用，仅更新时间/结果。绑成同样清 declined 账。
       c.lastResult = 'bound';
+      c.declineCount = 0; c.errorCount = 0; delete c.cooldownUntil;
     } else if (result === 'declined') {
+      // declined 多是环境因素(AVS/ZIP·IP)→ 单次只【冷却不禁卡】;累到阈值(多会话都拒=真坏卡)才禁。对齐 common.py:663-679。
       c.declineCount += 1;
-      c.status = 'declined'; // 被拒 → 直接踢出可用池
+      if (c.declineCount >= envInt('CARD_DECLINE_DISABLE_AT', 2)) {
+        c.status = 'disabled'; c.disabledReason = 'declined'; c.disabledAt = now; // ★禁用写 'disabled'(不是 'declined'),与 Selenium 一致
+      } else {
+        const mins = envFloat('CARD_DECLINE_COOLDOWN_MIN', 30);
+        c.cooldownUntil = new Date(Date.now() + mins * 60000).toISOString(); // status 保持 'active',只冷却
+      }
     } else {
       // error / 超时(BILLING_FLOW_TIMEOUT) / 页面关闭 / 没出现账单弹窗：
       // 卡并未真正提交给 Stripe 判定（流程没走到付款，或页面中途断了），
@@ -268,6 +280,8 @@ function sanitize(c) {
     lastUsedAt: c.lastUsedAt || '',
     lastResult: c.lastResult || '',
     lastError: c.lastError || '',
+    cooldownUntil: c.cooldownUntil || '',
+    disabledReason: c.disabledReason || '',
     inUse: !!c.inUse,
   };
 }

@@ -8,6 +8,7 @@
 # 每账号【新建+删除】一个干净 AdsPower 环境(try/finally 保证删)，保证状态干净、不短路全流程。
 # ═══════════════════════════════════════════════════════════════════════
 
+import os
 import time
 
 import common
@@ -19,6 +20,9 @@ import steps_key
 import steps_billing
 import firstmail
 from common import log
+
+# Fix C:加卡默认走【原生CDP Input】(脱 chromedriver 躲 Stripe 检测,实测能绑成);FIXC=0 回退旧 Selenium 填卡路。对齐 hybrid_run.py。
+FIXC = os.environ.get("FIXC", "1") != "0"
 
 
 def _acquire_browser(proxies, start_idx, group_id, name, max_try=5):
@@ -87,7 +91,8 @@ def run_account(acct, proxies, start_idx, group_id, opts):
         if opts.get("do_card"):
             card = common.load_card(email)        # 给本号分配专属卡(一号一卡,避开 velocity)
             addr = common.rand_address()
-            r = steps_billing.add_card(page, card, addr, cfg, opts.get("manual_hcaptcha", True))
+            r = steps_billing.add_card(page, card, addr, cfg, opts.get("manual_hcaptcha", True),
+                                       fill_mode=("cdp" if FIXC else "selenium"))   # 默认 Fix C 原生CDP绑卡(FIXC=0回退旧路)
             res["steps"]["card"] = r.get("result")
             res["card_last4"] = card.get("last4")
             res["card_id"] = card.get("id") or card.get("number")

@@ -39,6 +39,8 @@ const cardFill = require('./billing/card-fill');
 const cardSelectors = require('./billing/card-fill/selectors');
 const { fillAcross, humanPause } = require('./billing/card-fill/fill-primitive');
 const humanBehavior = require('./billing/card-fill/human-behavior');
+const { buildZipCandidates } = require('./billing/taxfree-zips');
+const { envInt } = require('./billing/env-tunables');
 
 const ok = (state, detail) => ({ success: true, state, reason: '', detail: detail || {} });
 const fail = (state, reason, detail) => ({ success: false, state, reason: reason || state, detail: detail || {} });
@@ -999,7 +1001,9 @@ async function billing(ctx) {
   // 台账状态如实记：server-error/page-closed/no-card 各记本名(可重试)，其余按 declined。
   const ledgerStatus = ['no-card', 'page-closed', 'server-error'].includes(lastResult) ? lastResult : 'declined';
   await recordBilling(ledgerStatus, 0, '', '');
-  return softBilling(cfg, lastResult, action);
+  // declined 用尽 maxCardTries 张卡仍全被拒 → 出细码 BILLING_DECLINED_EXHAUSTED,
+  // 触发编排层【换干净环境(新IP+刷指纹)重试】(对齐 Selenium 换卡用尽后切IP);其余状态走原收口。
+  return softBilling(cfg, lastResult === 'declined' ? 'declined-exhausted' : lastResult, action);
 }
 
 // 解析账单动作：优先 taskParams.billingAction；兼容老的 allowCharges 布尔。
@@ -1104,6 +1108,8 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps, runt
         // 点 Save 保存卡。关键：Error 502「try again」是**瞬时错误**——人工再点一次就成功，
         // 所以这里像人一样最多重试 4 次 Save；只有「真·卡被拒(非5xx)」才立即踢卡。
         const TRANSIENT = BILLING_TRANSIENT; // 瞬时/网关错正则(模块级单一定义，detectOutcome 同款判定)
+        // declined 自救:放弃这张卡前先【轮换免税州 ZIP 重试同一张卡】(候选首个=初填已用,其后=重试用)。
+        const altZips = buildZipCandidates(activeCard && activeCard.zip).slice(1, 1 + envInt('ZIP_RETRY', 3, cfg));
         let err = '';
         let saved = false;
         for (let sAttempt = 0; sAttempt < 4; sAttempt += 1) {
@@ -1123,6 +1129,7 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps, runt
           await page.waitForTimeout(2500);
           // Save 后可能弹 hCaptcha；skipCaptchaSolve 时完全不碰(靠指纹被动过，避免污染)。
           await solveHCaptchaIfPresent(page, cfg, log, steps.manualCaptchaFallback, steps.skipCaptchaSolve);
+          await dismissLinkDialog(page, log); // Save 后 Stripe Link 弹 "Save card?"(DOM弹窗)→ 点 No thanks,否则卡在弹窗
           await page.waitForTimeout(1500);
           // 判定顺序很关键(先拒后存)：①明确成功→返回 ②真·卡被拒→踢卡 ③瞬时/网关错→重试
           //   ④无任何错且弹窗推进→卡确已存上 ⑤无错但仍停在付款弹窗(验证码没过/没提交上)→重试。
@@ -1130,7 +1137,13 @@ async function runBillingFlow(page, card, address, amount, cfg, log, steps, runt
           const early = await detectOutcome(page, dialogs);
           if (early && early.result === 'success') return early;
           err = await readBillingError(page);
-          if (err && !TRANSIENT.test(err)) return { result: 'declined', error: err }; // 真·卡被拒(余额不足/卡号错/过期…) → 踢卡，不重试
+          if (err && !TRANSIENT.test(err)) {
+            // 真·卡被拒(非5xx):放弃这张卡之前,先【同卡轮换免税州ZIP重试】(declined 多是 AVS/ZIP 不匹配,不烧卡)。
+            const zr = await retryWithAltZips(page, activeCard, address, cfg, log, steps, dialogs, altZips, runtime);
+            if (zr && zr.result === 'success') return zr;                  // 某个 ZIP 过了 → 成功
+            if (zr && zr.result === 'card-bound') { saved = true; break; } // 弹窗推进=卡已存
+            return { result: 'declined', error: err, usedZip: (zr && zr.usedZip) || '' }; // ZIP 全用尽仍拒 → 踢卡
+          }
           if (!err && (await detectModalState(page)) !== 'payment') { saved = true; break; } // 无任何错且弹窗推进 → 卡确已存上
           // 到这步：要么瞬时/网关错，要么无错但仍卡在付款弹窗 → 一律按「没存上」重试，绝不当成功。
           if (err && !page._serverErrDumped) { page._serverErrDumped = true; await dumpBillingErrSource(page, log); }
@@ -1341,8 +1354,40 @@ async function detectModalState(page) {
 // 保证「该重试 vs 该踢卡」两处判定完全一致(避免循环顶 detectOutcome 把 502 当 declined 踢卡，而循环内却在重试)。
 const BILLING_TRANSIENT = /error\s*5\d\d|bad gateway|gateway time|service unavailable|temporarily unavailable|try again|something went wrong|稍后|服务(暂时)?不可用|网关|incomplete|不完整/i;
 
+// declined 后【同一张卡轮换 ZIP 重试】(declined 多是 AVS/ZIP 不匹配,换免税州ZIP常能过,不烧卡)。
+// 【关键】只重填 postal 字段 → 重点 Save → 重判,绝不重填卡号(不动 cardEntered;每次 Save 前查卡号还在不在)。
+// 逐字镜像 selenium-e2e/fixc_core.py:426-464。过了返回 {result:'success',...}/{result:'card-bound'};全用尽返回 {result:'declined'}。带回 usedZip 供日志。
+async function retryWithAltZips(page, card, address, cfg, log, steps, dialogs, altZips, runtime) {
+  let usedZip = '';
+  for (const z of (altZips || [])) {
+    usedZip = z;
+    log(`✗ declined → 切 ZIP=${z} 重试同一张卡(疑 AVS,不烧卡)`);
+    // 只重填 postal(不调 addPaymentMethod→卡号保持已填);卡号被重渲染冲掉了才补填一次。
+    if (!(await cardNumberFilled(page, card))) {
+      await addPaymentMethod(page, card, address, log, { engine: steps.cardFillEngine || 'playwright', runtime }).catch(() => {});
+      await page.waitForTimeout(800);
+    }
+    await fillAcross(page, cardSelectors.postal, z, log).catch(() => {});
+    await page.waitForTimeout(400);
+    await clickFirst(page, ['button:has-text("Save payment method")', 'button:has-text("Save")'], 8000).catch(() => {});
+    await page.waitForTimeout(2200);
+    await solveHCaptchaIfPresent(page, cfg, log, steps.manualCaptchaFallback, steps.skipCaptchaSolve);
+    await dismissLinkDialog(page, log); // Save 后 Link "Save card?" 弹窗 → No thanks
+    // 轮询 ~18s 等这个 ZIP 的结果
+    for (let i = 0; i < 12; i += 1) {
+      const early = await detectOutcome(page, dialogs);
+      if (early && early.result === 'success') { log(`✓ 切 ZIP=${z} 后过了`); return { ...early, usedZip: z }; }
+      const e2 = await readBillingError(page);
+      if (e2 && /declined|do not honou?r|insufficient|incorrect|invalid|expired/i.test(e2)) break; // 这个 ZIP 仍拒 → 下一个
+      if (!e2 && (await detectModalState(page)) !== 'payment') { log(`✓ 切 ZIP=${z} 后弹窗推进=已存`); return { result: 'card-bound', usedZip: z }; }
+      await page.waitForTimeout(1500);
+    }
+  }
+  return { result: 'declined', usedZip };
+}
+
 async function readBillingError(page) {
-  const RE = /(your card was declined|card was declined|银行卡被拒绝[^\n]*|insufficient funds|card (number )?is (incorrect|invalid)|incorrect (card )?number|security code is (incorrect|invalid)|card (has )?expired|payment (method )?(failed|could not|was declined|was not completed)|Error 5\d\d[^\n]*|bad gateway|service unavailable|something went wrong|declined)/i;
+  const RE = /(your card was declined|card was declined|银行卡被拒绝[^\n]*|insufficient funds|card (number )?is (incorrect|invalid)|incorrect (card )?number|security code is (incorrect|invalid)|card (has )?expired|payment (method )?(failed|could not|was declined|was not completed)|Error 5\d\d[^\n]*|bad gateway|service unavailable|something went wrong|do not honou?r|declined)/i;
   const frames = [page.mainFrame(), ...page.frames()];
   for (const f of frames) {
     const t = await f.evaluate(() => {
@@ -1526,6 +1571,27 @@ async function uncheckLink(page, log) {
       }
     }
   } catch (_e) { /* ignore */ }
+}
+
+// 关掉 Stripe Link 的 "Save card? / Pay faster" 弹窗(点 No thanks/Not now/Skip)。
+// 这是 DOM 模态(不是 JS alert → page.on('dialog') 接不住),必须原生 click 触发 React。镜像 selenium-e2e/fixc_core.py _dismiss_link_dialog。
+async function dismissLinkDialog(page, log) {
+  try {
+    const RE = /^(no thanks|not now|skip|maybe later|continue without.*|close)$/i;
+    for (const f of [page.mainFrame(), ...page.frames()]) {
+      const btns = f.locator('button, [role="button"]');
+      const n = await btns.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 40); i += 1) {
+        const b = btns.nth(i);
+        const txt = ((await b.innerText().catch(() => '')) || '').trim();
+        if (RE.test(txt)) {
+          const ok = await b.click({ timeout: 1500 }).then(() => true).catch(() => false);
+          if (ok) { log && log(`关 Link 弹窗: ${txt}`); return true; }
+        }
+      }
+    }
+  } catch (_e) { /* ignore */ }
+  return false;
 }
 
 // 设置购买额度。

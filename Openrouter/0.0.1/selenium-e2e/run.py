@@ -15,6 +15,8 @@ import os
 import json
 import time
 import argparse
+import threading
+import concurrent.futures
 
 import common
 import adspower_env
@@ -53,6 +55,7 @@ def main():
     ap.add_argument("--auto-hcaptcha-only", action="store_true", help="hCaptcha 只走 2captcha,不转人工")
     ap.add_argument("--gap", type=int, default=5, help="账号间隔秒(默认5)")
     ap.add_argument("--proxy-offset", type=int, default=0, help="代理起始下标偏移(每轮重试+1换不同IP)")
+    ap.add_argument("--concurrency", type=int, default=1, help="并发数(同时跑几个号,默认1=串行;Fix C 每浏览器独立CDP连接、窗口无关,可并发)")
     args = ap.parse_args()
 
     cfg = common.load_config()
@@ -94,18 +97,46 @@ def main():
         "delete_env": not args.no_delete_env,
     }
 
-    for i, acct in enumerate(accounts):
-        if acct["email"] in done:
-            log("跳过已完成 %s" % acct["email"]); continue
+    write_lock = threading.Lock()                 # 并发写 results.jsonl 加锁,防多 worker 交错
+    conc = max(1, args.concurrency)
+    for _i, _a in enumerate(accounts):
+        if _a["email"] in done:
+            log("跳过已完成 %s" % _a["email"])
+    pending = [(i, acct) for i, acct in enumerate(accounts) if acct["email"] not in done]
+
+    def worker(i, acct):
         start_idx = (i + args.proxy_offset) % len(proxies)
         log("════ [%d/%d] %s （代理从池中第 %d 个起 offset=%d，失败自动轮换）════" % (
             i + 1, len(accounts), acct["email"], start_idx, args.proxy_offset))
         r = pipeline.run_account(acct, proxies, start_idx, group_id, opts)
         r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(res_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        log("════ 结果 ok=%s steps=%s ════" % (r.get("ok"), r.get("steps")))
-        time.sleep(args.gap)
+        with write_lock:
+            with open(res_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        log("════ 结果 %s ok=%s steps=%s ════" % (acct["email"].split("@")[0], r.get("ok"), r.get("steps")))
+        return r
+
+    if conc <= 1:
+        # 串行(默认):一个个跑,保留 --gap 间隔(原行为)
+        for i, acct in pending:
+            try:
+                worker(i, acct)
+            except Exception as e:
+                log("账号异常 %s: %s" % (acct["email"], str(e)[:80]))
+            time.sleep(args.gap)
+    else:
+        # 并发:N 个号同时跑(Fix C 每浏览器独立 CDP、窗口无关,可并行;AdsPower 本地API 在 common.ads_call 已全局限频)
+        log("并发 %d 跑 %d 个号(纯Selenium全套)" % (conc, len(pending)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=conc) as ex:
+            futs = []
+            for i, acct in pending:
+                futs.append(ex.submit(worker, i, acct))
+                time.sleep(min(args.gap, 3))      # 错峰提交,避免同时猛建环境
+            for fu in concurrent.futures.as_completed(futs):
+                try:
+                    fu.result()
+                except Exception as e:
+                    log("worker 异常: %s" % str(e)[:80])
 
     log("全部跑完。结果见 %s" % res_file)
 

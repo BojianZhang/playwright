@@ -51,6 +51,9 @@ const TABLE = {
 
   // 硬模式账单失败 —— 放弃（换卡是 billing 阶段内的事，换浏览器治不了被拒卡）
   BILLING_FAILED: { action: 'abort', maxRetries: 0 },
+  // declined 换够卡仍全被拒 —— 疑 IP/AVS 风控。env-pool 模式由 job-runner@388 抢先 env-rotate;
+  // 原生(无 env-pool)模式落到这里→换代理换 IP 重试。maxRetries 对齐 MAX_CARD_SWAPS 默认 2。
+  BILLING_DECLINED_EXHAUSTED: { action: 'retry-new-proxy', maxRetries: 2 },
 };
 
 // 正则兜底：抛异常的阶段把原始报错文本放进 reason（非 *_THREW 码），精确表会漏。
@@ -90,6 +93,7 @@ const CATALOG = {
   ACCOUNT_NOT_ALLOWED: { stage: '账号', why: '账号不被允许（地区/风控）' },
   ACCOUNT_ALREADY_EXISTS: { stage: '账号', why: '账号已存在（如需续跑改「仅登录」模式）' },
   BILLING_FAILED: { stage: '账单', why: '账单/充值硬失败（卡被拒等，换浏览器治不了）' },
+  BILLING_DECLINED_EXHAUSTED: { stage: '账单', why: '换够卡仍全被拒(疑IP/AVS风控) → 换干净环境/代理(新IP)重试' },
   _FALLBACK_PROXY: { stage: '兜底', why: '原始报错含 PROXY/UNREACHABLE/TURNSTILE/CONNECT/TIMEOUT → 按代理类处理' },
   _FALLBACK_RELOGIN: { stage: '兜底', why: '原始报错含 NOT_LOGGED_IN/SIGNIN/LOGIN → 按会话失效处理' },
   _FALLBACK_BLACKLIST: { stage: '兜底', why: '原始报错含 LOCKED/NOT_ALLOWED/ALREADY_EXISTS/BANNED → 按永久问题处理' },

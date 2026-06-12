@@ -383,14 +383,16 @@ async function processTask(ctx) {
       publish(jobId, 'account-success', { rendered, raw: last.payload, attempts: attempt });
       return { success: true };
     }
-    // 账单服务端/网关错(本环境疑似被目标站点风控) → 优先换一个【干净】环境重试(抢在 classify→abort 之前)。
-    // 只认细码 last.reason(=BILLING_SERVER_ERROR)：笼统的 last.code 是 'BILLING_FAILED'(→abort)，不能用它判定。
-    if (envPool && envPool.size && last.reason === 'BILLING_SERVER_ERROR') {
+    // 账单服务端/网关错 或 declined换卡用尽(本环境疑似被目标站点风控/IP脏) → 优先换一个【干净】环境重试(抢在 classify→abort 之前)。
+    // 只认细码 last.reason(=BILLING_SERVER_ERROR / BILLING_DECLINED_EXHAUSTED)：笼统的 last.code 是 'BILLING_FAILED'(→abort)，不能用它判定。
+    const billEnvRotate = last.reason === 'BILLING_SERVER_ERROR' || last.reason === 'BILLING_DECLINED_EXHAUSTED';
+    if (envPool && envPool.size && billEnvRotate) {
       envPool.markBurned(curEnv);
       budget['env-rotate'] = (budget['env-rotate'] || 0) + 1;
       if (budget['env-rotate'] <= envRotateMax && attempt < maxAttempts && envPool.hasFresh()) {
-        errorLog.record({ email: account.email, stage: last.stage, reason: 'BILLING_SERVER_ERROR', action: 'retry-new-env', attempt, jobId }).catch(() => {});
-        publish(jobId, 'log', `W${workerId} ${account.email} 环境 ${curEnv} 触发付款服务端错误(疑似被风控) → 换干净环境重试 (${budget['env-rotate']}/${envRotateMax})`);
+        errorLog.record({ email: account.email, stage: last.stage, reason: last.reason, action: 'retry-new-env', attempt, jobId }).catch(() => {});
+        const why = last.reason === 'BILLING_DECLINED_EXHAUSTED' ? '换卡均被拒(疑IP/AVS风控)' : '付款服务端错误(疑似被风控)';
+        publish(jobId, 'log', `W${workerId} ${account.email} 环境 ${curEnv} ${why} → 换干净环境(新IP+刷指纹)重试 (${budget['env-rotate']}/${envRotateMax})`);
         publish(jobId, 'worker-update', { worker: { workerId, status: 'running', stage: `retry-env-${attempt + 1}`, account: account.email } });
         await new Promise(r => setTimeout(r, 1500 + (workerId % 5) * 300));
         continue; // 不走 classify(否则 BILLING_FAILED→abort)；下一轮 acquire 自动挑未试·未烧的环境

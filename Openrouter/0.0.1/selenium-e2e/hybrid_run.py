@@ -190,7 +190,7 @@ def _pick_live_proxy(proxies, start_idx):
 
 def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 prior=None, slot=0, slots_total=1, max_rotations=6, isolate=False, manual_card=False,
-                keep_failed_env=False):
+                keep_failed_env=False, do_purchase=False, amount=5):
     email, mailbox_pw = acct["email"], acct["mailbox_pw"]
     res = {"email": email, "ok": False, "steps": {}, "timings": {}}
     # 隔离模式:每次 Selenium 加卡都是【全新环境】一次尝试,按尝试次数封顶(替代 reopen_count)
@@ -532,6 +532,16 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             if result == "card-bound":
                 res["ok"] = True
                 success = True
+                # 充值($5):仅 --do-purchase 显式开启才【真扣费】(默认关,防误扣);卡刚绑成、page.d 活着、环境未删,直接复用。
+                if do_purchase:
+                    try:
+                        pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
+                        res["purchase"] = pr.get("result")
+                        res["charged"] = amount if pr.get("result") == "success" else 0
+                        log("[混合] %s 充值 $%s 结果=%s" % (email, amount, pr.get("result")))
+                    except Exception as e:
+                        res["purchase"] = "error"
+                        log("[混合] %s 充值异常(不影响绑卡成功): %s" % (email, str(e)[:80]))
                 break
 
             if result == "card-502":
@@ -718,6 +728,8 @@ def main():
     ap.add_argument("--no-gc", action="store_true", help="开跑前不做环境兜底GC(默认会回收孤儿 hyb-* 环境)")
     ap.add_argument("--gc-min-age", type=int, default=30, help="GC 只删建龄超过这么多分钟的环境(默认30,防误删并发刚建的)")
     ap.add_argument("--no-delete-env", action="store_true", help="即使绑卡成功也不删环境(调试用)")
+    ap.add_argument("--do-purchase", action="store_true", help="绑卡成功后【充值扣费】(★真扣费,默认关,显式开才充);绑成→删环境前复用同环境充值")
+    ap.add_argument("--amount", type=int, default=5, help="充值金额(美元,默认5;仅 --do-purchase 时生效)")
     ap.add_argument("--isolate", action="store_true",
                     help="隔离架构:PW 用完即删环境,加卡换【全新 AdsPower 环境】登录(干净指纹绕开账号级 hCaptcha);"
                          "env_B 成败都删、每次重试都换全新环境;hcaptcha 不再永久放弃(换环境可能就不弹)")
@@ -845,7 +857,8 @@ def main():
             r = run_account(acct, proxies, start_idx, group_id, args.op_pw, cfg,
                             delete_env=not args.no_delete_env, prior=prior, slot=slot,
                             slots_total=conc, max_rotations=args.max_rotations, isolate=args.isolate,
-                            manual_card=args.manual_card, keep_failed_env=args.keep_failed_env)
+                            manual_card=args.manual_card, keep_failed_env=args.keep_failed_env,
+                            do_purchase=args.do_purchase, amount=args.amount)
         finally:
             _slots.put(slot)
         r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
