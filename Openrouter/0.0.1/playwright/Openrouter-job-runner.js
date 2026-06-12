@@ -20,7 +20,7 @@ const fs = require('fs');
 const { runBatchOrchestration } = require('../../../shared-batch-orchestration');
 const { createBrowserRuntime } = require('../../../shared-browser-runtime/create-browser-runtime');
 const { runOpenrouterRegisterFlow } = require('./Openrouter-register');
-const accountStore = require('../account-state/account-store');
+const accountStore = require('../data/account-store');
 const failurePolicy = require('./failure-policy');
 const errorLog = require('./error-log');
 const exportTemplates = require('./export-templates');
@@ -70,8 +70,8 @@ function deepMerge(a, b) {
   return out;
 }
 let CONFIG = {};
-try { CONFIG = require('../config.json'); } catch (_e) { CONFIG = {}; }
-try { CONFIG = deepMerge(CONFIG, require('../config.local.json')); } catch (_e) { /* optional */ }
+try { CONFIG = require('../config/config.json'); } catch (_e) { CONFIG = {}; }
+try { CONFIG = deepMerge(CONFIG, require('../config/config.local.json')); } catch (_e) { /* optional */ }
 // 环境变量兜底密钥
 if (process.env.OPENROUTER_CAPTCHA_KEY) CONFIG = deepMerge(CONFIG, { captcha: { apiKey: process.env.OPENROUTER_CAPTCHA_KEY } });
 if (process.env.OPENROUTER_FIRSTMAIL_KEY) CONFIG = deepMerge(CONFIG, { mailbox: { apiKey: process.env.OPENROUTER_FIRSTMAIL_KEY } });
@@ -151,7 +151,7 @@ async function runJob(opts = {}) {
   const live = { running: 0, queued: 0, done: 0 };
 
   // 结果导出：成功账号实时写入文件（关页面也不丢；可在 /download?jobId= 下载）。
-  const resultsDir = path.join(__dirname, '..', CONFIG.output?.baseDir || 'batch-results');
+  const resultsDir = path.join(__dirname, '..', CONFIG.output?.baseDir || 'data/batch-results');
   let successFile = '';
   try { fs.mkdirSync(resultsDir, { recursive: true }); successFile = path.join(resultsDir, `${jobId}-success.txt`); } catch (_e) { successFile = ''; }
   const recordSuccess = (rendered, raw) => {

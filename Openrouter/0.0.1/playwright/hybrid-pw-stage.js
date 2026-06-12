@@ -25,8 +25,8 @@ function loadConfig() {
     return out;
   }
   let cfg = {};
-  try { cfg = require('../config.json'); } catch (_e) {}
-  try { cfg = deepMerge(cfg, require('../config.local.json')); } catch (_e) {}
+  try { cfg = require('../config/config.json'); } catch (_e) {}
+  try { cfg = deepMerge(cfg, require('../config/config.local.json')); } catch (_e) {}
   if (process.env.OPENROUTER_CAPTCHA_KEY) cfg = deepMerge(cfg, { captcha: { apiKey: process.env.OPENROUTER_CAPTCHA_KEY } });
   if (process.env.OPENROUTER_FIRSTMAIL_KEY) cfg = deepMerge(cfg, { mailbox: { apiKey: process.env.OPENROUTER_FIRSTMAIL_KEY } });
   return cfg;

@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 
-const LEDGER_FILE = path.join(__dirname, '..', 'account-state', 'billing-ledger.json');
+const LEDGER_FILE = path.join(__dirname, '..', 'data', 'billing-ledger.json');
 const mutex = createMutex();
 
 /** @type {Array<object>|null} */

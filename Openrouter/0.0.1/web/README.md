@@ -10,10 +10,10 @@
 
 ## ❌ 不负责
 - **页面自动化本身** → 全部委托引擎① `../playwright/`(web 只编排、不碰浏览器)。
-- **卡池/台账数据** → 只读 `../billing/card-pool`、`../billing/billing-ledger`、`../account-state/*` 做展示,不自行定义其语义。
+- **卡池/台账数据** → 只读 `../billing/card-pool`、`../billing/billing-ledger`、`../data/*` 做展示,不自行定义其语义。
 - **加卡 Fix C / 纯Selenium** → 那是 `../selenium-e2e/` 的命令行模式,web 不涉及。
 
 ## 关键文件 / 依赖
-- `server.js` — 路由 + 调度;依赖 `../playwright/Openrouter-job-runner`、`../playwright/failure-policy`、`../playwright/error-log`、`../billing/card-pool`、`../billing/billing-ledger`、`../account-state/account-store`、`../account-state/policy-store`、`./event-bus`。
+- `server.js` — 路由 + 调度;依赖 `../playwright/Openrouter-job-runner`、`../playwright/failure-policy`、`../playwright/error-log`、`../billing/card-pool`、`../billing/billing-ledger`、`../data/account-store`、`../data/policy-store`、`./event-bus`。
 - `public/` — 前端(controller.js 组装 payload:`cardFillEngine` 默认 playwright、`billingAction` 由勾选阶段推导)。
 - 启动:`node web/server.js`。

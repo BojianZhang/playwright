@@ -20,9 +20,9 @@
 - 向后兼容：旧的 `useAdsPower:true` 自动映射成 `browserProvider:'adspower'`。
 
 ## 配置（API 基址 / token）
-精度：内置默认 < `config.json` `browserProviders.<name>` < `config.local.json` 同段 < 环境变量。
+精度：内置默认 < `config.json` `browserProviders.<name>` < `config/config.local.json` 同段 < 环境变量。
 - 基址：`OPENROUTER_<NAME>_API`（如 `OPENROUTER_BITBROWSER_API=http://127.0.0.1:54345`）。
-- **token 等敏感项只走环境变量或 `config.local.json`(已 gitignore)，绝不写进 `config.json`**：
+- **token 等敏感项只走环境变量或 `config/config.local.json`(已 gitignore)，绝不写进 `config.json`**：
   `OPENROUTER_DOLPHIN_TOKEN` / `OPENROUTER_GOLOGIN_TOKEN` 等。
 
 ## 各家状态

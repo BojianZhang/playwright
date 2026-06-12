@@ -23,8 +23,8 @@ const LOG_DIR = path.join(ROOT, 'logs');
 // config.json + config.local.json(密钥)合并 —— 替掉各 scratch 各写一遍的合并样板。
 function loadConfig() {
   let cfg = {};
-  try { cfg = require('../config.json'); } catch (_e) { /* none */ }
-  try { cfg = Object.assign({}, cfg, require('../config.local.json')); } catch (_e) { /* optional */ }
+  try { cfg = require('../config/config.json'); } catch (_e) { /* none */ }
+  try { cfg = Object.assign({}, cfg, require('../config/config.local.json')); } catch (_e) { /* optional */ }
   return cfg;
 }
 

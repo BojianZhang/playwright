@@ -22,14 +22,14 @@ const jobRunner = require('../playwright/Openrouter-job-runner');
 const eventBus = require('./event-bus');
 const cardPool = require('../billing/card-pool');
 const billingLedger = require('../billing/billing-ledger');
-const accountStore = require('../account-state/account-store');
+const accountStore = require('../data/account-store');
 const failurePolicy = require('../playwright/failure-policy');
-const policyStore = require('../account-state/policy-store');
+const policyStore = require('../data/policy-store');
 const errorLog = require('../playwright/error-log');
 
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const RESULTS_DIR = path.join(__dirname, '..', 'batch-results');
+const RESULTS_DIR = path.join(__dirname, '..', 'data', 'batch-results');
 const PUSHED_DIR = path.join(RESULTS_DIR, '_pushed'); // 子机推送过来的结果(每个节点一个文件)
 // 节点标识：分布式多机部署时用于区分来源、保证文件名/jobId 跨机不重复。
 const NODE_ID = (process.env.OPENROUTER_NODE_ID || os.hostname() || 'node').replace(/[^\w-]/g, '-').slice(0, 40);
@@ -38,14 +38,14 @@ const NODE_ID = (process.env.OPENROUTER_NODE_ID || os.hostname() || 'node').repl
 // 聚合接口会自动带上,这样 results 页无需每次手填即可汇总全集群。
 function loadClusterHosts() {
   let hosts = [];
-  try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.json'), 'utf8')); if (Array.isArray(c.cluster?.hosts)) hosts = c.cluster.hosts; } catch (_e) { /* none */ }
-  try { const l = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.local.json'), 'utf8')); if (Array.isArray(l.cluster?.hosts)) hosts = l.cluster.hosts; } catch (_e) { /* none */ }
+  try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'config.json'), 'utf8')); if (Array.isArray(c.cluster?.hosts)) hosts = c.cluster.hosts; } catch (_e) { /* none */ }
+  try { const l = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'config.local.json'), 'utf8')); if (Array.isArray(l.cluster?.hosts)) hosts = l.cluster.hosts; } catch (_e) { /* none */ }
   if (process.env.OPENROUTER_CLUSTER_HOSTS) hosts = process.env.OPENROUTER_CLUSTER_HOSTS.split(',').map((s) => s.trim()).filter(Boolean);
   return hosts;
 }
 function readCluster(key) {
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.cluster && c.cluster[key] !== undefined) return c.cluster[key]; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', f), 'utf8')); if (c.cluster && c.cluster[key] !== undefined) return c.cluster[key]; } catch (_e) { /* none */ }
   }
   return undefined;
 }
@@ -319,7 +319,7 @@ function handleEvents(req, res, query) {
 function loadAuthToken() {
   if (process.env.OPENROUTER_AUTH_TOKEN) return process.env.OPENROUTER_AUTH_TOKEN;
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security?.token) return c.security.token; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', f), 'utf8')); if (c.security?.token) return c.security.token; } catch (_e) { /* none */ }
   }
   return '';
 }
@@ -355,8 +355,8 @@ function handleDownload(req, res, query) {
   const jobId = query.get('jobId') || '';
   const type = query.get('type') === 'failed' ? 'failed' : 'success';
   if (!/^job-[\w-]+$/.test(jobId)) { sendJson(res, 400, { error: 'BAD_JOB_ID' }); return; }
-  const file = path.join(__dirname, '..', 'batch-results', `${jobId}-${type}.txt`);
-  if (!file.startsWith(path.join(__dirname, '..', 'batch-results'))) { res.writeHead(403); res.end('Forbidden'); return; }
+  const file = path.join(__dirname, '..', 'data', 'batch-results', `${jobId}-${type}.txt`);
+  if (!file.startsWith(path.join(__dirname, '..', 'data', 'batch-results'))) { res.writeHead(403); res.end('Forbidden'); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); res.end('结果文件不存在'); return; }
     res.writeHead(200, {
@@ -601,7 +601,7 @@ const HOST = process.env.OPENROUTER_WEB_HOST || '0.0.0.0';
 function loadGateStatic() {
   if (process.env.OPENROUTER_GATE_STATIC) return process.env.OPENROUTER_GATE_STATIC === '1' || process.env.OPENROUTER_GATE_STATIC === 'true';
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && typeof c.security.gateStatic === 'boolean') return c.security.gateStatic; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', f), 'utf8')); if (c.security && typeof c.security.gateStatic === 'boolean') return c.security.gateStatic; } catch (_e) { /* none */ }
   }
   return false;
 }
@@ -615,7 +615,7 @@ function isProtectedRoute(pathname) {
 // 配置来源:环境变量 > config.local.json/config.json 的 security.{allowIps,allowHosts,trustForwardedFor}。
 function readSec(key) {
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && c.security[key] !== undefined) return c.security[key]; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', f), 'utf8')); if (c.security && c.security[key] !== undefined) return c.security[key]; } catch (_e) { /* none */ }
   }
   return undefined;
 }

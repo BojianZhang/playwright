@@ -1,4 +1,4 @@
-# account-state/ — 数据层:运行态 JSON + 读写模块
+# data/ — 数据层:运行态 JSON + 读写模块
 
 在三引擎架构中的定位见 [../ARCHITECTURE.md](../ARCHITECTURE.md)。本目录是**跨任务、跨重启、跨进程**的运行态数据 + 其薄读写模块。
 

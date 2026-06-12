@@ -1,0 +1,13 @@
+{
+  "_note": "复制本文件为 config/config.local.json 后填入真实密钥。本模板无密钥、可入库;config.local.json 含密钥、已 gitignore 绝不入库。",
+  "captcha": {
+    "provider": "2captcha",
+    "apiKey": ""
+  },
+  "mailbox": {
+    "apiKey": ""
+  },
+  "security": {
+    "token": ""
+  }
+}

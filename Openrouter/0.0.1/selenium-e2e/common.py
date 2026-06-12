@@ -32,9 +32,9 @@ ROOT = os.path.normpath(os.path.join(HERE, ".."))
 # 127.0.0.1（不是 local.adspower.net）：后者不在系统代理绕过名单，开了本地代理(VPN/clash)会被转走→502。
 API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 _NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 强制不走系统代理
-POOL_FILE = os.path.join(ROOT, "account-state", "card-pool.json")
-CONFIG_LOCAL = os.path.join(ROOT, "config.local.json")
-CONFIG_JSON = os.path.join(ROOT, "config.json")
+POOL_FILE = os.path.join(ROOT, "data", "card-pool.json")
+CONFIG_LOCAL = os.path.join(ROOT, "config", "config.local.json")
+CONFIG_JSON = os.path.join(ROOT, "config", "config.json")
 
 CREDITS_URL = "https://openrouter.ai/settings/credits"
 KEYS_URL = "https://openrouter.ai/settings/keys"
@@ -502,7 +502,7 @@ def load_card(account=None, exclude=None, count_bin=True, exclude_bins=None):
                    and (c.get("id") or c.get("number")) not in exclude
                    and _bin_of(c) not in exclude_bins]
     if not base_active:
-        raise RuntimeError("卡池无可用卡(account-state/card-pool.json 没有 active 且有余次的卡)")
+        raise RuntimeError("卡池无可用卡(data/card-pool.json 没有 active 且有余次的卡)")
     # 优先用【没在冷却】的卡(延迟复用刚出错的卡,自动轮到别的);全在冷却→退回挑冷却快结束的,别阻塞
     active = [c for c in base_active if not _cooled(c)]
     if not active:

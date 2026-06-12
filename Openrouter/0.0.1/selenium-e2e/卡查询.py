@@ -22,7 +22,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
-POOL_FILE = os.path.join(ROOT, "account-state", "card-pool.json")
+POOL_FILE = os.path.join(ROOT, "data", "card-pool.json")
 
 
 def digits(s):

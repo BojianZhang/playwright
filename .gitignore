@@ -51,17 +51,20 @@ Dreamina/0.0.3/proxy-health.json
 Dreamina/0.0.3/batch-results/accounts-done.txt
 
 # Openrouter runtime / secrets / outputs
-Openrouter/0.0.1/config.local.json
-Openrouter/0.0.1/batch-results/
-Openrouter/0.0.1/account-state/local-accounts.json
-Openrouter/0.0.1/account-state/registered-accounts.json
-Openrouter/0.0.1/account-state/card-pool.json
-Openrouter/0.0.1/account-state/billing-ledger.json
-Openrouter/0.0.1/account-state/accounts.json
-Openrouter/0.0.1/account-state/error-log.json
-Openrouter/0.0.1/account-state/failure-policy.json
+Openrouter/0.0.1/config/config.local.json
+Openrouter/0.0.1/data/batch-results/
+Openrouter/0.0.1/data/local-accounts.json
+Openrouter/0.0.1/data/registered-accounts.json
+Openrouter/0.0.1/data/card-pool.json
+Openrouter/0.0.1/data/billing-ledger.json
+Openrouter/0.0.1/data/accounts.json
+Openrouter/0.0.1/data/error-log.json
+Openrouter/0.0.1/data/failure-policy.json
 Openrouter/0.0.1/_scratch-*.js
-Openrouter/0.0.1/account-state/*.backup*.json
+Openrouter/0.0.1/data/*.backup*.json
+Openrouter/0.0.1/data/card-pool*.json
+Openrouter/0.0.1/data/card-pool.json.*
+Openrouter/0.0.1/data/*.bak.*
 Openrouter/0.0.1/selenium-e2e/__pycache__/
 Openrouter/0.0.1/automation-driver/py/__pycache__/
 Openrouter/0.0.1/billing/card-fill/py/__pycache__/

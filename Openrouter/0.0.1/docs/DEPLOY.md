@@ -42,7 +42,7 @@ sudo yum install -y xorg-x11-server-Xvfb xorg-x11-utils
 ---
 
 ## 2. 放置密钥（不在 Git 里,需手动拷贝）
-`Openrouter/0.0.1/config.local.json`：
+`Openrouter/0.0.1/config/config.local.json`：
 ```json
 {
   "captcha": { "provider": "2captcha", "apiKey": "你的2captcha_key" },

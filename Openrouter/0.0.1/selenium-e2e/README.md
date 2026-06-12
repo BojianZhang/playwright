@@ -17,7 +17,7 @@
 ## 1. 准备
 
 ### 配置（密钥，不入库）
-`../config.local.json`（gitignore）里要有：
+`../config/config.local.json`（gitignore）里要有：
 ```json
 {
   "captcha": { "provider": "2captcha", "apiKey": "你的2captcha key" },
@@ -41,7 +41,7 @@ socks5://user:pass@host:port
 可从现有 AdsPower 环境复用住宅代理（`user/list` 的 `user_proxy_config`）。
 
 ### 卡池
-`../account-state/card-pool.json`（gitignore）。一卡可绑多号（实测 ~10），`maxUses` 控制上限。
+`../data/card-pool.json`（gitignore）。一卡可绑多号（实测 ~10），`maxUses` 控制上限。
 `load_card(email)` 把账号摊匀到各卡上，持久化到 `state/card-assign.json`。
 
 ---

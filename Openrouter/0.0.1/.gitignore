@@ -8,10 +8,10 @@ logs/*
 !logs/README.md
 
 # 账号状态/卡池/台账等本地运行数据（含卡号/CVC等敏感信息，绝不入库）
-account-state/card-pool.json
-account-state/accounts.json
-account-state/billing-ledger.json
-account-state/error-log.json
+data/card-pool.json
+data/accounts.json
+data/billing-ledger.json
+data/error-log.json
 
 # 临时 UI 测试产物
 _uitest*.png
@@ -32,12 +32,13 @@ selenium-e2e/*.local.txt
 cards*.txt
 selenium-e2e/cards*.txt
 # 卡池及其所有备份(真实卡号/CVC)
-account-state/card-pool*.json
-account-state/card-pool.json.*
-account-state/*.bak.*
-account-state/*.backup*
+data/card-pool*.json
+data/card-pool.json.*
+data/*.bak.*
+data/*.backup*
 # 主配置密钥(2captcha/firstmail key 等)
-config.local.json
+config/config.local.json
+data/failure-policy.json
 selenium-e2e/config.local.json
 selenium-e2e/*.local.json
 

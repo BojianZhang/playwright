@@ -32,7 +32,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const RESULTS_DIR = path.join(__dirname, '..', 'batch-results');
+const RESULTS_DIR = path.join(__dirname, '..', 'data', 'batch-results');
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : def; }
 function hasFlag(name) { return process.argv.includes(name); }
@@ -47,7 +47,7 @@ function loadConfig() {
 function loadToken() {
   if (process.env.OPENROUTER_AUTH_TOKEN) return process.env.OPENROUTER_AUTH_TOKEN;
   for (const f of ['config.local.json', 'config.json']) {
-    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', f), 'utf8')); if (c.security && c.security.token) return c.security.token; } catch (_e) { /* none */ }
+    try { const c = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', f), 'utf8')); if (c.security && c.security.token) return c.security.token; } catch (_e) { /* none */ }
   }
   return '';
 }

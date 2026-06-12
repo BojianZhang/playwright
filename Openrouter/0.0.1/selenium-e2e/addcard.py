@@ -13,7 +13,7 @@
 #   · 假设该环境【已登录】OpenRouter(我们的环境都有会话)。本脚本不做登录——登录要 Turnstile+收信，
 #     那是另一套，且 502 不在登录这步。若未登录，脚本会提示先登录。
 #   · hCaptcha 走【人工】(你在弹出的浏览器里点)，避免 2captcha 求解质量成为变量。
-#   · 卡从 account-state/card-pool.json(已 gitignore，含完整卡号)读第一张可用卡 —— 脚本本身不含卡号。
+#   · 卡从 data/card-pool.json(已 gitignore，含完整卡号)读第一张可用卡 —— 脚本本身不含卡号。
 #
 # 跑法：  python selenium-e2e/addcard.py <envId>
 #   例：  python selenium-e2e/addcard.py k1dd0xih
@@ -40,7 +40,7 @@ API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 # 再加一道保险：强制【不走任何系统代理】调 AdsPower(本地服务，经代理必 502)。
 _NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 HERE = os.path.dirname(os.path.abspath(__file__))
-POOL_FILE = os.path.join(HERE, "..", "account-state", "card-pool.json")
+POOL_FILE = os.path.join(HERE, "..", "data", "card-pool.json")
 CREDITS_URL = "https://openrouter.ai/settings/credits"
 
 NUM = ['input[name="number"]', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]', 'input[id*="numberInput"]']
@@ -119,7 +119,7 @@ def load_card():
     for c in pool if isinstance(pool, list) else []:
         if c.get("status") == "active" and (c.get("usedCount", 0) < c.get("maxUses", 1)):
             return c
-    raise RuntimeError("卡池无可用卡(account-state/card-pool.json 里没有 active 且有余次的卡)")
+    raise RuntimeError("卡池无可用卡(data/card-pool.json 里没有 active 且有余次的卡)")
 
 
 def rand_address():

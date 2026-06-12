@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 const { envInt, envFloat } = require('./env-tunables');
 
-const POOL_FILE = path.join(__dirname, '..', 'account-state', 'card-pool.json');
+const POOL_FILE = path.join(__dirname, '..', 'data', 'card-pool.json');
 const mutex = createMutex();
 
 /** @type {Map<string, object>} id -> card */

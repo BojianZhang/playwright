@@ -14,7 +14,7 @@
 - **加卡躲检测的 Fix C** → 是 `../selenium-e2e/`(Selenium 专属,Playwright 架构用不了)。
 - **环境/代理建立** → `../browser-provider/`。
 - **卡池数据 / 填卡引擎实现 / 账单台账** → `../billing/`(本层只调用)。
-- **数据持久化文件** → `../account-state/`。
+- **数据持久化文件** → `../data/`。
 - **http 服务 / 批量调度 UI** → `../web/`(由 web 调本层)。
 
 ## 关键文件
@@ -25,4 +25,4 @@
 - `failure-policy.js` — 纯函数错误码→动作表(可单测)。
 
 ## 依赖
-→ `../billing/`、`../browser-provider/`、`../account-state/`、`../config*.json`、仓库根 `../../../shared-*`。被 `../web/server.js` 与 `../selenium-e2e/hybrid_run.py`(子进程)调用。
+→ `../billing/`、`../browser-provider/`、`../data/`、`../config/*.json`、仓库根 `../../../shared-*`。被 `../web/server.js` 与 `../selenium-e2e/hybrid_run.py`(子进程)调用。

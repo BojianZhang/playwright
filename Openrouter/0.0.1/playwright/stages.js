@@ -32,7 +32,7 @@ function mailboxPassword(runtime, account) {
 }
 const cardPool = require('../billing/card-pool');
 const billingLedger = require('../billing/billing-ledger');
-const accountStore = require('../account-state/account-store');
+const accountStore = require('../data/account-store');
 const { generateAddress } = require('../billing/address-gen');
 // 填卡引擎(可切换 + 失败兜底链);fillAcross/humanPause 抽到 fill-primitive，本文件其它调用点继续复用。
 const cardFill = require('../billing/card-fill');

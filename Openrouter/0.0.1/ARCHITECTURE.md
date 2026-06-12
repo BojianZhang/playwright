@@ -10,9 +10,9 @@
 ├── billing/           共享库:卡池 / 多引擎填卡 / 账单台账 / 地址生成 / ZIP·参数  (① 与 ③ 共用)
 ├── browser-provider/  共享库:指纹浏览器环境/代理池抽象(adspower/bitbrowser/…)
 ├── automation-driver/ 共享库:自动化驱动抽象(playwright/puppeteer/selenium)
-├── account-state/     数据层:卡池/账号/台账/策略 JSON + 其读写模块(★含卡号,gitignore)
-├── batch-results/     数据层:跑批成功账号导出
-├── config.json        非密配置(密钥占位空) / config.local.json(密钥,gitignore)
+├── data/     数据层:卡池/账号/台账/策略 JSON + 其读写模块(★含卡号,gitignore)
+├── data/batch-results/     数据层:跑批成功账号导出
+├── config/config.json        非密配置(密钥占位空) / config/config.local.json(密钥,gitignore)
 └── *.md               文档(本文 + 操作/部署手册)
 ```
 
@@ -25,7 +25,7 @@
 | **③ Web 控制台** | `web/` | Node | http 服务/SSE 进度/表单配置 → 调引擎① 批量跑;集群主从聚合 | 自身不做页面自动化(只编排引擎①) |
 
 **共享库**(① 与 ③ 共用,故留根、不归任一引擎):`billing/`(卡池单一来源+填卡引擎+台账)、`browser-provider/`(环境/代理)、`automation-driver/`(驱动抽象)。
-**数据层**:`account-state/`(运行态,敏感,gitignore)、`batch-results/`(导出)。
+**数据层**:`data/`(运行态,敏感,gitignore)、`data/batch-results/`(导出)。
 
 ## 三种运行模式(各用哪些层)
 
@@ -40,18 +40,18 @@
 ## 跨层契约(改动勿破坏)
 
 1. **Node↔Python handoff**:混合模式 Python(`hybrid_run.py`)`subprocess` 拉 `playwright/hybrid-pw-stage.js`(`cwd=0.0.1/`)。约定:**stdout 只有末行 JSON**(结果),所有日志走 **stderr**;Python 解析末行 JSON。
-2. **共享卡池**:`account-state/card-pool.json` 被 **Node `billing/card-pool.js`** 与 **Python `selenium-e2e/common.py:load_card/mark_card_result`** 同时读写 → **字段/状态语义必须两端一致**(`status='disabled'` 不是 `'declined'`、`cooldownUntil`/`declineCount` 等;见 billing/README)。
+2. **共享卡池**:`data/card-pool.json` 被 **Node `billing/card-pool.js`** 与 **Python `selenium-e2e/common.py:load_card/mark_card_result`** 同时读写 → **字段/状态语义必须两端一致**(`status='disabled'` 不是 `'declined'`、`cooldownUntil`/`declineCount` 等;见 billing/README)。
 3. **key 抢救**:`stages.js` 抓到 key 当场 `console.error('[pw] APIKEY_CREATED <sk-or-...>')` → Python `_rescue_key` 即便 Node 超时被杀也能捞回已建 key,避免重建孤儿 key。
-4. **配置**:`config.json`(非密)+ `config.local.json`(密钥)双读合并;密钥只在 local、gitignore。
+4. **配置**:`config.json`(非密)+ `config/config.local.json`(密钥)双读合并;密钥只在 local、gitignore。
 5. **共享模块在仓库根**:`../../shared-batch-orchestration`、`../../shared-browser-runtime`、`../../shared-window-layout`(从引擎①文件看是 `../../../shared-*`,因其在 `playwright/` 下深一层)。
 
 ## 依赖方向(谁依赖谁,单向)
 ```
 web/ ─┐
        ├─→ playwright/ ─→ billing/ ─┐
-selenium-e2e/(子进程拉 playwright/hybrid-pw-stage.js)   ├─→ account-state/(数据)
+selenium-e2e/(子进程拉 playwright/hybrid-pw-stage.js)   ├─→ data/(数据)
                        └─→ browser-provider/ ──────────┘
                        └─→ automation-driver/
         (共享模块 shared-* 在仓库根)
 ```
-billing/browser-provider/automation-driver 是**叶子共享库**,不反向依赖引擎;account-state 是纯数据+读写模块。
+billing/browser-provider/automation-driver 是**叶子共享库**,不反向依赖引擎;data 是纯数据+读写模块。
