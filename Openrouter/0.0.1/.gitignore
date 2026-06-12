@@ -3,6 +3,10 @@ _server.log
 _server.err.log
 *.log
 
+# 统一日志目录:内容(日志/截图,含邮箱/Key/卡尾号)全忽略,只留 README
+logs/*
+!logs/README.md
+
 # 账号状态/卡池/台账等本地运行数据（含卡号/CVC等敏感信息，绝不入库）
 account-state/card-pool.json
 account-state/accounts.json
