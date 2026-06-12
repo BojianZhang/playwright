@@ -1,5 +1,8 @@
 # Dependencies
 node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
 
 # Playwright reports / caches
 /test-results/
@@ -13,6 +16,9 @@ node_modules/
 /screenshots/
 /storage/
 /output/
+*.zip
+*.7z
+*.rar
 
 # Runtime local data
 user.json
@@ -55,3 +61,10 @@ Openrouter/0.0.1/account-state/accounts.json
 Openrouter/0.0.1/account-state/error-log.json
 Openrouter/0.0.1/account-state/failure-policy.json
 Openrouter/0.0.1/_scratch-*.js
+Openrouter/0.0.1/account-state/*.backup*.json
+Openrouter/0.0.1/selenium-e2e/__pycache__/
+Openrouter/0.0.1/automation-driver/py/__pycache__/
+Openrouter/0.0.1/billing/card-fill/py/__pycache__/
+
+# 实测/scratch 测试脚本(含实测交互,不入库)
+tests/test-*.spec.ts

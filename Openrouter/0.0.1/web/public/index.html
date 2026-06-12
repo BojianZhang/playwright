@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20260609i">
+<link rel="stylesheet" href="styles.css?v=20260611e">
 </head>
 <body>
 
@@ -20,7 +20,7 @@
     <span class="brand-title">OpenRouter <span class="dim">自动化控制台</span></span>
   </div>
   <span class="node-badge" id="nodeBadge"><span class="dot"></span>node&nbsp;…</span>
-  <span class="node-badge" id="buildTag" title="前端构建版本">build 0609i</span>
+  <span class="node-badge" id="buildTag" title="前端构建版本">build 0610b</span>
   <div class="topbar-spacer"></div>
   <a class="link-btn" href="results.html">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
@@ -154,11 +154,66 @@
         <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
         断点续跑 <span class="sub">跳过已完成阶段</span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="manualCaptchaChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        验证码人工兜底 <span class="sub">解不动转手动·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="manualBillingChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        加卡人工兜底 <span class="sub">自动没成转手动·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="manualCardPickChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        手动选卡填入 <span class="sub">付款页弹卡池面板点选·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="humanLikeChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        拟人模式 <span class="sub">鼠标轨迹+提交前停顿+页面预热·压Radar行为分·更慢</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="skipDirtyIpChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        脏IP跳过加卡 <span class="sub">默认关·勾上才跳过 proxy/hosting</span>
+      </label>
+      <!-- 旧「AdsPower 接管」复选框已移除：改用下方「指纹浏览器」下拉(选 adspower 即原行为)，避免两个控件冲突。 -->
       <div style="flex:1"></div>
       <button class="btn btn-ghost btn-sm" data-open="modal-errors">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
         错误策略 / 说明 <span style="color:var(--text-3);font-weight:400">每个错误怎么走</span>
       </button>
+    </div>
+    <div class="field" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">指纹浏览器</span><span class="l-hint">不绑死 AdsPower·选一家·业务流程不变(都经 CDP 接管)</span></div>
+      <select id="browserProviderSel">
+        <option value="none" selected>原生 Playwright(无指纹浏览器)</option>
+        <option value="adspower">AdsPower</option>
+        <option value="bitbrowser">BitBrowser(比特)</option>
+        <option value="dolphin">Dolphin Anty</option>
+        <option value="gologin">GoLogin</option>
+        <option value="hubstudio">HubStudio(脚手架)</option>
+        <option value="morelogin">MoreLogin(脚手架)</option>
+        <option value="multilogin">Multilogin(脚手架)</option>
+        <option value="vmlogin">VMLogin(脚手架)</option>
+      </select>
+    </div>
+    <div class="field" id="adspowerRow" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">环境ID池</span><span class="l-hint">所选指纹浏览器的环境 id·一行/逗号一个·每账号分一个(自带代理)</span></div>
+      <textarea id="adspowerEnvIds" rows="2" placeholder="k1db9yk8&#10;k1db9yk7&#10;k1db9yk5"></textarea>
+    </div>
+    <div class="field" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">填卡引擎</span><span class="l-hint">默认 playwright(已验证穿跨域 Stripe)·可选兜底链</span></div>
+      <select id="cardFillEngineSel">
+        <option value="playwright" selected>Playwright(默认·推荐)</option>
+        <option value="playwright,osinput">Playwright → OS输入(兜底链)</option>
+        <option value="osinput">OS 级键盘输入(实验·兜底)</option>
+        <option value="extension">浏览器扩展(需预装进环境)</option>
+        <option value="selenium">Selenium(Python·冗余)</option>
+        <option value="api">API 直连(实验)</option>
+      </select>
     </div>
   </section>
 
@@ -202,7 +257,7 @@
             <button type="button" class="btn btn-soft btn-sm" id="importCardsBtn" style="margin-left:6px">导入卡池</button>
             <label class="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>上传<input type="file" hidden></label>
           </div>
-          <textarea spellcheck="false" style="min-height:128px" placeholder="4361 2080 0908 8695  02/29  093&#10;4737023115115911|05/30|130"></textarea>
+          <textarea spellcheck="false" style="min-height:128px" placeholder="4111 1111 1111 1111  02/29  093&#10;4111111111111111|05/30|130"></textarea>
           <span class="fname" data-fname></span>
         </div>
       </div>
@@ -286,6 +341,7 @@
     <div class="stat-cell s-fail"><div class="num" data-stat="fail">0</div><div class="lbl">失败</div></div>
     <div class="stat-cell s-br"><div class="num" data-stat="br">0/0</div><div class="lbl">浏览器 <span style="color:var(--text-3)">在用 / 上限</span></div></div>
     <div class="stat-cell s-q"><div class="num" data-stat="q">0</div><div class="lbl">排队中</div></div>
+    <div class="stat-cell s-env"><div class="num" data-stat="env">0/0</div><div class="lbl">环境 <span style="color:var(--text-3)">烧 / 总</span></div></div>
   </section>
 
   <div class="section-gap"></div>
@@ -524,8 +580,8 @@
   </div>
 </div>
 
-<script src="auth.js?v=20260609i"></script>
-<script src="controller.js?v=20260609i"></script>
-<script src="modals.js?v=20260609i"></script>
+<script src="auth.js?v=20260611e"></script>
+<script src="controller.js?v=20260611e"></script>
+<script src="modals.js?v=20260611e"></script>
 </body>
 </html>

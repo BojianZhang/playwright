@@ -3,7 +3,7 @@
   "runMode": "run",
   "firstmail": {
     "_comment": "Firstmail API 鉴权与邮件扫描行为配置",
-    "apiKey": "fSnDMyZOOQva-Mowux6QvkqBLFccQ9WsH8YnVIuUbkgZSpKPOJOzNARt0aflNzLE",
+    "apiKey": "",
     "apiBaseUrl": "https://firstmail.ltd",
     "apiTimeoutMs": 30000,
     "recentMessageScanLimit": 8,

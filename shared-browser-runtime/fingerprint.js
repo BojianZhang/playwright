@@ -129,7 +129,11 @@ function createRandomFingerprint(runtime = {}, options = {}) {
   const viewport = resolveViewport(runtime, windowLayout);
 
   const fingerprint = {
-    userAgent: String(runtime?.userAgent || (enabled ? pickOne(USER_AGENTS, USER_AGENTS[0]) : USER_AGENTS[0])),
+    // runtime.userAgent === null → 显式表示「不覆写 UA，用浏览器自身真实 UA」
+    // （channel:'chrome' 时真实 Chrome 的 UA 与 Client Hints 一致，比覆写池里的固定版本更不易被识别）。
+    userAgent: runtime?.userAgent === null
+      ? null
+      : String(runtime?.userAgent || (enabled ? pickOne(USER_AGENTS, USER_AGENTS[0]) : USER_AGENTS[0])),
     viewport,
     locale: String(runtime?.locale || (enabled ? pickOne(LOCALES, LOCALES[0]) : LOCALES[0])),
     timezoneId: String(runtime?.timezoneId || (enabled ? pickOne(TIMEZONES, TIMEZONES[0]) : TIMEZONES[0])),
@@ -140,7 +144,7 @@ function createRandomFingerprint(runtime = {}, options = {}) {
   return {
     ...fingerprint,
     summary: {
-      userAgent: fingerprint.userAgent,
+      userAgent: fingerprint.userAgent || '(browser-native)',
       viewport: `${fingerprint.viewport.width}x${fingerprint.viewport.height}`,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
@@ -177,7 +181,8 @@ function buildContextFingerprintOptions(runtime = {}, options = {}) {
       viewport: fingerprint.viewport,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
-      userAgent: fingerprint.userAgent,
+      // userAgent 为 null 时不传 → Playwright 使用浏览器自身真实 UA（与 Client Hints 一致）。
+      ...(fingerprint.userAgent ? { userAgent: fingerprint.userAgent } : {}),
       colorScheme: fingerprint.colorScheme,
       deviceScaleFactor: fingerprint.deviceScaleFactor,
       // 代理场景下目标站点的证书可能不受系统信任，统一忽略 HTTPS 错误。

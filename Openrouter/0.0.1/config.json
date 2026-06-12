@@ -53,7 +53,7 @@
     "topUpAmount": 10,
     "billingConcurrencyCap": 1,
     "maxCardTries": 3,
-    "defaultCardMaxUses": 10,
+    "defaultCardMaxUses": 3,
     "failureMode": "soft",
     "cardPoolFile": "account-state/card-pool.json",
     "_note": "allowCharges 由网页表单逐次覆盖(默认不勾=不扣费)。failureMode=soft 时充值失败不回退整账号(账号+Key 仍交付);hard 则判账号失败。卡池文件含卡号/CVC,已在 .gitignore。"
@@ -67,7 +67,7 @@
     "maxAttempts": 3,
     "maxGlobalConcurrency": "auto",
     "perBrowserMemGb": 0.5,
-    "workerStartStaggerMs": 1500,
+    "workerStartStaggerMs": 5000,
     "workerStatusIntervalMs": 5000
   },
   "output": {

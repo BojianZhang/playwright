@@ -79,15 +79,17 @@ function loadDreaminaVerificationProfile(options = {}) {
 }
 
 function resolveDreaminaVerificationRuntime(runtime = {}, profile = null) {
-  const verificationProfile = profile || loadDreaminaVerificationProfile();
-  const profileApiKey = String(verificationProfile?.mailProvider?.firstmail?.apiKey || '').trim();
   if (String(runtime?.firstmailApiKey || runtime?.FIRSTMAIL_API_KEY || '').trim()) {
     return runtime;
   }
 
-  if (!profileApiKey) {
+  if (String(process.env.FIRSTMAIL_API_KEY || '').trim()) {
     return runtime;
   }
+
+  const verificationProfile = profile || loadDreaminaVerificationProfile();
+  const profileApiKey = String(verificationProfile?.mailProvider?.firstmail?.apiKey || '').trim();
+  if (!profileApiKey) return runtime;
 
   return {
     ...runtime,

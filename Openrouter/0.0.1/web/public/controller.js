@@ -386,7 +386,7 @@
      =================================================== */
   const els = {
     total: $('[data-stat="total"]'), ok: $('[data-stat="ok"]'), fail: $('[data-stat="fail"]'),
-    br: $('[data-stat="br"]'), q: $('[data-stat="q"]'),
+    br: $('[data-stat="br"]'), q: $('[data-stat="q"]'), env: $('[data-stat="env"]'),
     workerList: $('#workerList'), workerCount: $('#workerCount'),
     okBox: $('[data-okbox]'), failBox: $('[data-failbox]'), okCount: $('[data-okcount]'), failCount: $('[data-failcount]'),
     log: $('#logBox'), runBtn: $('#runBtn'),
@@ -438,7 +438,7 @@
     counters.total = total; counters.ok = 0; counters.fail = 0;
     Object.keys(workers).forEach((k) => delete workers[k]);
     failedAccounts.length = 0;
-    setStat(els.total, total); setStat(els.ok, '0'); setStat(els.fail, '0'); setStat(els.br, '0/0'); setStat(els.q, '0');
+    setStat(els.total, total); setStat(els.ok, '0'); setStat(els.fail, '0'); setStat(els.br, '0/0'); setStat(els.q, '0'); setStat(els.env, '0/0');
     if (els.okBox) { els.okBox.classList.add('empty'); els.okBox.textContent = '运行中…'; els.okBox.dataset.seeded = '0'; }
     if (els.failBox) { els.failBox.classList.add('empty'); els.failBox.textContent = '运行中…'; els.failBox.dataset.seeded = '0'; }
     if (els.log) els.log.textContent = '';
@@ -462,6 +462,9 @@
       const s = JSON.parse(e.data) || {}; browsersMax = s.browsersMax || browsersMax;
       setStat(els.br, `${s.browsersActive || 0}/${s.browsersMax || 0}`);
       setStat(els.q, String(s.browsersQueued || 0));
+      // 环境池「烧/总」：烧>0 标红提示该补干净环境(无池时为 0/0)。
+      setStat(els.env, `${s.envBurned || 0}/${s.envTotal || 0}`);
+      if (els.env) els.env.style.color = (s.envBurned > 0) ? 'var(--danger, #e5484d)' : '';
     });
     evtSource.addEventListener('account-success', (e) => {
       const d = JSON.parse(e.data) || {}; counters.ok += 1; setStat(els.ok, counters.ok); if (els.okCount) els.okCount.textContent = counters.ok;
@@ -486,6 +489,8 @@
     evtSource.addEventListener('job-done', (e) => {
       const s = JSON.parse(e.data) || {};
       setStat(els.br, `0/${browsersMax}`); setStat(els.q, '0');
+      // 跑完保留环境烧/总(let 操作者看到本轮烧了几个)，仅清占用色；如需清零可重开任务。
+      if (els.env) els.env.style.color = '';
       log(`■ 任务结束：成功 ${s.success || 0} · 失败 ${s.failed || 0} · 用时 ${s.durationMs || 0}ms`, 'ln-ok');
       stopUI(true, s);
       loadPool(); loadLedger(); loadStatus(); loadErrors();
@@ -502,6 +507,15 @@
       billingAddressesRaw: fieldText('address'),
       headed: !!($('#headedChk') && $('#headedChk').checked),
       resume: !!($('#resumeChk') && $('#resumeChk').checked),
+      manualCaptchaFallback: !!($('#manualCaptchaChk') && $('#manualCaptchaChk').checked),
+      manualBillingFallback: !!($('#manualBillingChk') && $('#manualBillingChk').checked),
+      manualCardPick: !!($('#manualCardPickChk') && $('#manualCardPickChk').checked),
+      humanLike: !!($('#humanLikeChk') && $('#humanLikeChk').checked),
+      skipCardOnDirtyIp: !!($('#skipDirtyIpChk') && $('#skipDirtyIpChk').checked),
+      useAdsPower: !!($('#useAdsPowerChk') && $('#useAdsPowerChk').checked),
+      adspowerEnvIdsRaw: (($('#adspowerEnvIds') || {}).value || ''),
+      browserProvider: (($('#browserProviderSel') || {}).value || 'none'),
+      cardFillEngine: (($('#cardFillEngineSel') || {}).value || 'playwright'),
       concurrency: Number(($('#concInput') || {}).value) || 1,
       count: Number(($('#countInput') || {}).value) || 0,
       mode: ($('#modeSel') || {}).value === 'login' ? 'login' : 'register',

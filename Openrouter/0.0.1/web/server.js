@@ -240,7 +240,31 @@ async function handleStartJob(req, res) {
     addressStates: String(payload.addressStates || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
     billingAddresses: parseAddressLines(payload.billingAddressesRaw),
     billingAddressStrategy: payload.billingAddressStrategy === 'round-robin' ? 'round-robin' : 'random',
+    // 验证码人工兜底：加卡 hCaptcha 自动解不动时，停下等人工在有头浏览器里手动过（需配合「有头」）。
+    manualCaptchaFallback: payload.manualCaptchaFallback === true,
+    // 加卡人工兜底：自动填卡/保存没成时，停下等人工在有头浏览器里手动完成加卡（需配合「有头」）。
+    manualBillingFallback: payload.manualBillingFallback === true,
+    // 拟人模式：填卡/Save 加真鼠标轨迹+阅读停顿+页面预热，压 Stripe Radar 行为 bot-score（更拟人但更慢）。
+    humanLike: payload.humanLike === true,
+    // 手动选卡填入：付款弹窗处注入卡池面板，人工点选一张卡，自动填入（需配合「有头」）。
+    manualCardPick: payload.manualCardPick === true,
+    // 脏IP跳过加卡：出口IP被标记 proxy/hosting 时跳过加卡（默认开，避免白烧卡触发 Stripe 风控）。
+    skipCardOnDirtyIp: payload.skipCardOnDirtyIp !== false,
+    // AdsPower 接管：用 AdsPower 指纹浏览器(自带代理+反检测)跑，过 Stripe 最稳。
+    useAdsPower: payload.useAdsPower === true,
+    // AdsPower 环境ID池（一行一个 user_id，如 k1db9yk8），每账号分一个。
+    adspowerEnvIds: String(payload.adspowerEnvIdsRaw || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
+    // 填卡引擎(可逗号链，如 "playwright,osinput")：服务端白名单每段，未知段丢弃，全空则默认 playwright。
+    cardFillEngine: (String(payload.cardFillEngine || '').split(',').map((s) => s.trim())
+      .filter((s) => ['playwright', 'osinput', 'extension', 'selenium', 'api'].includes(s)).join(',') || 'playwright'),
+    // 指纹浏览器 provider：服务端白名单，未知→none(原生 Playwright)。
+    browserProvider: ['none', 'adspower', 'bitbrowser', 'dolphin', 'gologin', 'hubstudio', 'morelogin', 'multilogin', 'vmlogin']
+      .includes(payload.browserProvider) ? payload.browserProvider : 'none',
+    // 通用环境ID池(所选 provider 的环境 id)：兼容旧 adspowerEnvIdsRaw。
+    browserEnvIds: String(payload.browserEnvIdsRaw || payload.adspowerEnvIdsRaw || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
   };
+  // 向后兼容：旧「AdsPower 接管」勾选 → 指纹浏览器选 adspower。
+  if (taskParams.useAdsPower === true && taskParams.browserProvider === 'none') taskParams.browserProvider = 'adspower';
 
   // jobId 含节点标识 → 文件名 <jobId>-success.txt 跨机器不会重复。
   const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;

@@ -25,6 +25,10 @@ const failurePolicy = require('./failure-policy');
 const errorLog = require('./error-log');
 const exportTemplates = require('./export-templates');
 const { installTurnstileIntercept } = require('./openrouter-turnstile');
+const { installHCaptchaIntercept } = require('./openrouter-hcaptcha');
+const { installStealth, IGNORE_DEFAULT_ARGS } = require('./openrouter-stealth');
+const adspower = require('./openrouter-adspower');
+const browserProviders = require('./browser-provider'); // 可插拔指纹浏览器层(adspower/bitbrowser/dolphin/…)
 const { computeWorkerWindowLayout } = require('../../shared-window-layout');
 const { execSync } = require('child_process');
 let LAYOUT_PROFILE = {};
@@ -168,11 +172,18 @@ async function runJob(opts = {}) {
 
   // 每账号一条任务。account/proxy 必须是顶层字段：task-queue 会把整个 item 包成
   // task.payload，orchestration 再以 task.payload.account 驱动 worker 状态。
+  // 指纹浏览器接管：环境ID池（每账号一个，自带代理+指纹）。兼容旧 adspowerEnvIds。
+  const envIds = Array.isArray(taskParams.browserEnvIds) ? taskParams.browserEnvIds.filter(Boolean)
+    : (Array.isArray(taskParams.adspowerEnvIds) ? taskParams.adspowerEnvIds.filter(Boolean) : []);
+  // 环境池(全 worker 共享，经闭包传入每个 task)：账号因本环境被目标站点风控而失败时，换一个【干净】环境重试，
+  // 并把被烧环境本次 run 内全局规避。空池(原生模式/未配环境) → null，相关分支安全 no-op，行为与今天一致。
+  const envPool = envIds.length ? browserProviders.createEnvPool(envIds) : null;
   const tasks = accounts.map((account, i) => ({
     id: `acct-${i + 1}`,
     account,
     proxy: proxies.length ? proxies[i % proxies.length] : null,
     proxies, // 全代理池：错误策略 retry-new-proxy 用来轮换
+    adspowerEnvId: envIds.length ? envIds[i % envIds.length] : null,
   }));
 
   // 周期推送运行时统计：全局浏览器在用/上限/排队 + 本 job 运行中/排队/完成。
@@ -184,6 +195,10 @@ async function runJob(opts = {}) {
     jobQueued: live.queued,
     jobDone: live.done,
     jobTotal: accounts.length,
+    // 指纹环境池：总数 / 占用中 / 已被风控(烧)。让操作者实时看到环境被烧光时该补干净环境了。
+    envTotal: envPool ? envPool.size : 0,
+    envInUse: envPool ? envPool.inUseCount : 0,
+    envBurned: envPool ? envPool.burnedCount : 0,
   });
   const statsTimer = setInterval(emitStats, 1200);
   emitStats();
@@ -193,7 +208,7 @@ async function runJob(opts = {}) {
     tasks,
     concurrency,
     runTask: ({ workerId, payload }) => processTask({
-      workerId, concurrency, account: payload.account, proxy: payload.proxy, proxies: payload.proxies,
+      workerId, concurrency, account: payload.account, proxy: payload.proxy, proxies: payload.proxies, adspowerEnvId: payload.adspowerEnvId, envPool,
       runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess, recordFailed,
     }),
     onWorkerUpdate: (workerState, snapshot) => {
@@ -278,7 +293,7 @@ function proxyPicker(proxies, current) {
 }
 
 async function processTask(ctx) {
-  const { workerId, concurrency = 1, account, proxy, proxies = [], runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {}, recordFailed = () => {} } = ctx;
+  const { workerId, concurrency = 1, account, proxy, proxies = [], adspowerEnvId = null, envPool = null, runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live = {}, emitStats = () => {}, recordSuccess = () => {}, recordFailed = () => {} } = ctx;
   const maxAttempts = Math.max(1, Number(process.env.OPENROUTER_MAX_ATTEMPTS) || Number(CONFIG?.batch?.maxAttempts) || 3);
 
   // 预启动短路：断点续跑下，账号已对所选动作完全完成 → 直接用已存状态交付，不开浏览器。
@@ -320,20 +335,68 @@ async function processTask(ctx) {
     if (staggerMs > 0) await new Promise(r => setTimeout(r, staggerMs));
   }
 
-  const attemptCtx = { workerId, concurrency, account, headed, slowMo, taskParams, jobId, publish, live, emitStats };
+  const attemptCtx = { workerId, concurrency, account, headed, slowMo, taskParams, jobId, publish, live, emitStats, adspowerEnvId };
   let last = { success: false, reason: 'UNKNOWN' };
   let made = 0; // 实际尝试次数
   let curProxy = proxy;     // 可换：retry-new-proxy 时轮换
   let overrideMode = null;  // relogin 时下次强制登录模式
   const budget = {};        // 每动作的内层重试预算
+  let curEnv = adspowerEnvId;            // 本账号当前环境(初始=静态分配，亲和保留热身会话/代理)；retry-new-env 时换干净环境
+  // 每账号最多换几次环境：默认把池里【其它】环境各试一遍(size-1)；可经 env/config 调小。仍受 maxAttempts 硬顶兜底。
+  const envRotateCap = Number(process.env.OPENROUTER_MAX_ENV_ROTATIONS) || Number(CONFIG?.batch?.maxEnvRotations) || 0;
+  const envRotateMax = envPool ? (envRotateCap > 0 ? Math.min(envRotateCap, envPool.size - 1) : Math.max(0, envPool.size - 1)) : 0;
+  let poolWaits = 0;                      // 环境池暂满时连续等待次数(有上限，超了按可重试错误收口)
+  const maxPoolWaits = Number(process.env.OPENROUTER_MAX_ENV_POOL_WAITS) || 6;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     made = attempt;
-    last = await runAttempt({ ...attemptCtx, proxy: curProxy, overrideMode, attempt });
+    // 为本次尝试【占用】一个环境：优先 curEnv(亲和)，被烧的环境 acquire 内部自动跳过。
+    // 池满(其它 worker 正占着所有可用环境) → acquire 返回 null：绝不退回 curEnv 裸开!
+    //   裸开会与持锁 worker 双开同一指纹环境(违反独占)，且谁先结束就把对方的环境关掉。
+    //   → 退避后重试占用(不计入尝试次数)，连续多次仍占不到才按可重试错误收口。
+    let leasedEnv = null;
+    if (envPool && envPool.size) {
+      leasedEnv = envPool.acquire(curEnv);
+      if (leasedEnv) {
+        curEnv = leasedEnv; poolWaits = 0;
+      } else {
+        poolWaits += 1;
+        if (poolWaits > maxPoolWaits) {
+          publish(jobId, 'log', `W${workerId} ${account.email} 环境池持续繁忙(${maxPoolWaits} 次仍无空闲) → 本轮放弃，请加环境或降并发后重跑`);
+          last = { success: false, code: 'ENV_POOL_BUSY', reason: 'ENV_POOL_BUSY', stage: '' };
+          break;
+        }
+        publish(jobId, 'log', `W${workerId} ${account.email} 环境池暂满(无空闲干净环境)，退避后重试占用 (${poolWaits}/${maxPoolWaits})…`);
+        await new Promise(r => setTimeout(r, 1500 + (workerId % 5) * 300));
+        attempt -= 1; // 没开浏览器/没跑流程 → 不计入尝试次数
+        continue;
+      }
+    }
+    try {
+      // 有池时只用【已租到】的 leasedEnv(绝不裸开)；无池(原生模式)沿用原静态 adspowerEnvId，行为不变。
+      last = await runAttempt({ ...attemptCtx, proxy: curProxy, overrideMode, attempt, adspowerEnvId: (envPool && envPool.size) ? leasedEnv : adspowerEnvId });
+    } finally {
+      if (leasedEnv) envPool.release(leasedEnv);
+    }
     if (last.success) {
       const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, last.payload || {});
       recordSuccess(rendered, last.payload || {});
       publish(jobId, 'account-success', { rendered, raw: last.payload, attempts: attempt });
       return { success: true };
+    }
+    // 账单服务端/网关错(本环境疑似被目标站点风控) → 优先换一个【干净】环境重试(抢在 classify→abort 之前)。
+    // 只认细码 last.reason(=BILLING_SERVER_ERROR)：笼统的 last.code 是 'BILLING_FAILED'(→abort)，不能用它判定。
+    if (envPool && envPool.size && last.reason === 'BILLING_SERVER_ERROR') {
+      envPool.markBurned(curEnv);
+      budget['env-rotate'] = (budget['env-rotate'] || 0) + 1;
+      if (budget['env-rotate'] <= envRotateMax && attempt < maxAttempts && envPool.hasFresh()) {
+        errorLog.record({ email: account.email, stage: last.stage, reason: 'BILLING_SERVER_ERROR', action: 'retry-new-env', attempt, jobId }).catch(() => {});
+        publish(jobId, 'log', `W${workerId} ${account.email} 环境 ${curEnv} 触发付款服务端错误(疑似被风控) → 换干净环境重试 (${budget['env-rotate']}/${envRotateMax})`);
+        publish(jobId, 'worker-update', { worker: { workerId, status: 'running', stage: `retry-env-${attempt + 1}`, account: account.email } });
+        await new Promise(r => setTimeout(r, 1500 + (workerId % 5) * 300));
+        continue; // 不走 classify(否则 BILLING_FAILED→abort)；下一轮 acquire 自动挑未试·未烧的环境
+      }
+      publish(jobId, 'log', `W${workerId} ${account.email} 环境 ${curEnv} 疑似被风控，但暂无其它干净环境可换 → 按账单失败处理`);
+      // 落到下面 classify('BILLING_FAILED')→abort(今天的行为，不变)
     }
     // 错误 → 恢复动作：用稳定错误码(rcode)分类/路由/记录，而非原始报错文本。
     const rcode = last.code || last.reason || 'UNKNOWN';
@@ -382,7 +445,7 @@ async function processTask(ctx) {
  * 不直接做最终回显/统计，只返回 { success, reason, stage, payload }，由 processTask 汇总。
  */
 async function runAttempt(actx) {
-  const { workerId, concurrency = 1, account, proxy, headed, slowMo, taskParams, jobId, publish, live = {}, emitStats = () => {}, overrideMode = null } = actx;
+  const { workerId, concurrency = 1, account, proxy, headed, slowMo, taskParams, jobId, publish, live = {}, emitStats = () => {}, overrideMode = null, adspowerEnvId = null } = actx;
 
   // 窗口平铺布局：按 workerId/并发数计算位置，避免有头模式下窗口全叠在一起。
   // 工作区尺寸优先级：config 显式数字 > 自动探测当前屏幕 > profile 默认。
@@ -413,10 +476,18 @@ async function runAttempt(actx) {
   const extraArgs = ['--disable-blink-features=AutomationControlled'];
   if (process.platform !== 'win32') extraArgs.push('--no-sandbox', '--disable-dev-shm-usage');
 
+  // 降低 Stripe 付款风控：浏览器语言/时区必须与美国代理 IP 一致——否则「IP 在美国、时区在亚洲」
+  // 是 Stripe Radar 头号高风险信号，会触发 hCaptcha 九宫格 + Error 502。
+  // 这里强制 en-US + 随机一个美国时区（覆盖共享 fingerprint.js 里会随机到 Asia 的默认池）。
+  const US_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles'];
+  const usTimezone = US_TIMEZONES[Math.floor(Math.random() * US_TIMEZONES.length)];
   const baseLaunch = {
     headed, slowMo, windowLayout, extraArgs,
     proxy: proxy && proxy.server ? { server: proxy.server, username: proxy.username, password: proxy.password } : undefined,
     blockedResourceTypes: [],
+    // userAgent:null → 用真实 Chrome 自身 UA(与 Client Hints 一致，避免覆写池版本对不上而露馅)。
+    runtime: { locale: 'en-US', timezoneId: usTimezone, userAgent: null, enableRandomFingerprint: true },
+    ignoreDefaultArgs: IGNORE_DEFAULT_ARGS, // 去掉 --enable-automation 等自动化开关(反检测)
     browserIpCheckTimeoutMs: Number(CONFIG?.proxy?.connectivityTimeoutMs) || 8000,
   };
   // 全局并发闸：占用一个浏览器槽位（满了就排队），保证多用户/多任务下浏览器总数受控。
@@ -440,30 +511,53 @@ async function runAttempt(actx) {
     }
   };
 
-  // 优先真实 Chrome 通道（过 Turnstile 更稳）；若该通道不可用（服务器未装 Chrome），回退内置 Chromium。
-  const preferredChannel = CONFIG?.browser?.channel === '' ? undefined : (CONFIG?.browser?.channel || 'chrome');
+  // 反检测模式选择：
+  //   AdsPower 接管(useAdsPower + 分到 env) → 用 AdsPower 指纹浏览器(自带代理+指纹)，CDP 接管，过 Stripe 最稳；
+  //   否则 → 原生 Playwright(真实 Chrome 通道 + stealth 补丁 + 去自动化开关)。
+  // 指纹浏览器 provider(可插拔)。向后兼容：旧 useAdsPower 勾选映射成 adspower。
+  const browserProvider = (taskParams.browserProvider && taskParams.browserProvider !== 'none')
+    ? taskParams.browserProvider
+    : (taskParams.useAdsPower ? 'adspower' : 'none');
+  const useAds = browserProvider !== 'none' && !!adspowerEnvId;
   let runtimeBundle = null;
-  try {
-    runtimeBundle = await createBrowserRuntime({ ...baseLaunch, channel: preferredChannel });
-  } catch (error) {
-    if (preferredChannel) {
-      publish(jobId, 'log', `W${workerId} ${preferredChannel} 通道不可用,回退内置 Chromium: ${String(error?.message || error).slice(0, 120)}`);
-      try {
-        runtimeBundle = await createBrowserRuntime({ ...baseLaunch, channel: undefined });
-      } catch (error2) {
-        releaseSlot();
-        return { success: false, reason: 'BROWSER_LAUNCH_FAILED', detail: String(error2?.message || error2) };
-      }
-    } else {
+  let adsUserId = null;
+  if (useAds) {
+    adsUserId = adspowerEnvId;
+    publish(jobId, 'log', `W${workerId} 用 ${browserProvider} 环境 ${adsUserId} 接管(自带代理+指纹)`);
+    try {
+      runtimeBundle = await browserProviders.createRuntime(browserProvider, adsUserId, { headless: !headed, windowLayout, log: (m) => publish(jobId, 'log', `W${workerId} ${m}`) });
+    } catch (error) {
       releaseSlot();
-      return { success: false, reason: 'BROWSER_LAUNCH_FAILED', detail: String(error?.message || error) };
+      return { success: false, reason: 'BROWSER_PROVIDER_LAUNCH_FAILED', detail: String(error?.message || error) };
     }
+  } else {
+    // 优先真实 Chrome 通道（过 Turnstile 更稳）；若不可用回退内置 Chromium。
+    const preferredChannel = CONFIG?.browser?.channel === '' ? undefined : (CONFIG?.browser?.channel || 'chrome');
+    try {
+      runtimeBundle = await createBrowserRuntime({ ...baseLaunch, channel: preferredChannel });
+    } catch (error) {
+      if (preferredChannel) {
+        publish(jobId, 'log', `W${workerId} ${preferredChannel} 通道不可用,回退内置 Chromium: ${String(error?.message || error).slice(0, 120)}`);
+        try {
+          runtimeBundle = await createBrowserRuntime({ ...baseLaunch, channel: undefined });
+        } catch (error2) {
+          releaseSlot();
+          return { success: false, reason: 'BROWSER_LAUNCH_FAILED', detail: String(error2?.message || error2) };
+        }
+      } else {
+        releaseSlot();
+        return { success: false, reason: 'BROWSER_LAUNCH_FAILED', detail: String(error?.message || error) };
+      }
+    }
+    // 原生模式打 stealth 反检测补丁（AdsPower 模式不需要，其自身指纹已处理）。
+    try { await installStealth(runtimeBundle.context); } catch (_e) { /* 非致命 */ }
   }
 
   // 安装 Turnstile 拦截 + 收集 Cloudflare 请求 URL（sitekey 兜底）。
   const cfRequestUrls = [];
   try {
     await installTurnstileIntercept(runtimeBundle.context);
+    await installHCaptchaIntercept(runtimeBundle.context); // 加卡/付款阶段 Stripe 会弹 hCaptcha
     runtimeBundle.page.on('request', (req) => { if (req.url().includes('challenges.cloudflare.com')) cfRequestUrls.push(req.url()); });
   } catch (e) { /* 非致命 */ }
 
@@ -478,7 +572,7 @@ async function runAttempt(actx) {
   const effectiveTaskParams = (overrideMode || (priorState && priorState.registered))
     ? { ...taskParams, mode: overrideMode || 'login' }
     : taskParams;
-  const runtime = { headed, taskParams: effectiveTaskParams, priorState, resume, ipCheck: runtimeBundle.ipCheck, config: CONFIG };
+  const runtime = { headed, taskParams: effectiveTaskParams, priorState, resume, ipCheck: runtimeBundle.ipCheck, config: CONFIG, adspower: runtimeBundle.adspower, providerMeta: runtimeBundle.providerMeta };
 
   try {
     const result = await runOpenrouterRegisterFlow({
@@ -511,8 +605,14 @@ async function runAttempt(actx) {
   } catch (error) {
     return { success: false, code: 'REGISTER_FLOW_THREW', reason: 'REGISTER_FLOW_THREW', stage: '', detail: String(error && error.stack || error) };
   } finally {
-    if (runtimeBundle?.context) await runtimeBundle.context.close().catch(() => {});
-    if (runtimeBundle?.browser) await runtimeBundle.browser.close().catch(() => {});
+    if (useAds) {
+      // CDP 接管：断开连接 + 调对应指纹浏览器 API 关闭该环境（不直接关 context，避免影响其客户端）。
+      if (runtimeBundle?.browser) await runtimeBundle.browser.close().catch(() => {});
+      if (adsUserId) await browserProviders.stopRuntime(browserProvider, adsUserId).catch(() => {});
+    } else {
+      if (runtimeBundle?.context) await runtimeBundle.context.close().catch(() => {});
+      if (runtimeBundle?.browser) await runtimeBundle.browser.close().catch(() => {});
+    }
     releaseSlot(); // 浏览器关闭后再释放全局槽位
   }
 }

@@ -78,9 +78,9 @@ function fingerprint(number, expMonth, expYear) {
 
 /**
  * 解析多行卡片文本，自动识别多种格式：
- *   4361 2080 0908 8695  02/29  093
- *   4737023115115911|05/30|130
- *   4565991001389302,04/31,164          （可选尾部 |次数|邮编）
+ *   4111 1111 1111 1111  02/29  093
+ *   4111111111111111|05/30|130
+ *   4111111111111111,04/31,164          （可选尾部 |次数|邮编）
  * 无法解析的行返回 { raw, _parseError } 供 UI 反馈。
  *
  * @param {string} text
@@ -196,6 +196,22 @@ function acquire() {
       }
     }
     return null;
+  });
+}
+
+/**
+ * 按 id 取某张卡的完整密文（供「手动选卡填入」：用户已显式点选，不受 active/inUse 约束）。
+ * 标记 inUse=true，结果由 report() 回报后清除。
+ * @param {string} id
+ * @returns {Promise<object|null>}
+ */
+function getFull(id) {
+  return mutex(() => {
+    ensureLoaded();
+    const c = POOL.get(id);
+    if (!c) return null;
+    c.inUse = true;
+    return { id: c.id, last4: c.last4, number: c.number, expMonth: c.expMonth, expYear: c.expYear, cvc: c.cvc, zip: c.zip, maxUses: c.maxUses, usedCount: c.usedCount };
   });
 }
 
@@ -346,6 +362,7 @@ module.exports = {
   parseCardLines,
   upsertMany,
   acquire,
+  getFull,
   report,
   snapshot,
   disable,

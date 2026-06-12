@@ -170,6 +170,10 @@ function buildLaunchOptions(options = {}) {
   if (Array.isArray(options?.extraArgs) && options.extraArgs.length) {
     launchOptions.args = [...(launchOptions.args || []), ...options.extraArgs];
   }
+  // 可选：从默认启动参数里剔除自动化开关（如 --enable-automation），降低被检测（反爬/风控）。
+  if (Array.isArray(options?.ignoreDefaultArgs) && options.ignoreDefaultArgs.length) {
+    launchOptions.ignoreDefaultArgs = options.ignoreDefaultArgs;
+  }
 
   return launchOptions;
 }

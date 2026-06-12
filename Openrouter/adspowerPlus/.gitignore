@@ -1,0 +1,6 @@
+# 账号/密码/密钥等敏感数据 —— 绝不入库
+accounts.txt
+*.accounts.txt
+order_*.txt
+*.secret
+*.key

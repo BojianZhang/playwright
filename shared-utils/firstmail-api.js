@@ -98,9 +98,20 @@ function requestJson(url, { method = 'GET', headers = {}, body, timeoutMs = 3000
  * @returns {{ apiKey: string, baseUrl: string }}
  */
 function getFirstmailApiConfig(config = {}) {
-  const apiKey = String(config.firstmailApiKey || process.env.FIRSTMAIL_API_KEY || '').trim();
+  const firstmail = config && typeof config.firstmail === 'object' ? config.firstmail : {};
+  const apiKey = String(
+    config.firstmailApiKey
+    || config.FIRSTMAIL_API_KEY
+    || firstmail.apiKey
+    || process.env.FIRSTMAIL_API_KEY
+    || ''
+  ).trim();
   const baseUrl = String(
-    config.firstmailApiBaseUrl || process.env.FIRSTMAIL_API_BASE_URL || DEFAULT_BASE_URL
+    config.firstmailApiBaseUrl
+    || config.FIRSTMAIL_API_BASE_URL
+    || firstmail.apiBaseUrl
+    || process.env.FIRSTMAIL_API_BASE_URL
+    || DEFAULT_BASE_URL
   ).trim().replace(/\/+$/, '');
   return { apiKey, baseUrl };
 }

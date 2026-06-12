@@ -1477,6 +1477,8 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
         firstmailRecentMessageScanLimit: Number((firstmailConfig && firstmailConfig.recentMessageScanLimit) || 8),
         firstmailPollJitterMinMs: Number((firstmailConfig && firstmailConfig.pollJitterMinMs) || 0),
         firstmailPollJitterMaxMs: Number((firstmailConfig && firstmailConfig.pollJitterMaxMs) || 0),
+        firstmailApiKey: String((firstmailConfig && firstmailConfig.apiKey) || process.env.FIRSTMAIL_API_KEY || '').trim(),
+        firstmailApiBaseUrl: String((firstmailConfig && firstmailConfig.apiBaseUrl) || process.env.FIRSTMAIL_API_BASE_URL || '').trim(),
         readyTextSignals: [
           'Continue with email',
           'Sign in',

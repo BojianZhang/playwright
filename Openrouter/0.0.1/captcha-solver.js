@@ -124,14 +124,62 @@ async function solveWith2Captcha({ apiKey, sitekey, pageUrl, action, cdata, page
   throw new Error('2captcha:timeout');
 }
 
+/**
+ * 解 hCaptcha（加卡/付款时 Stripe 风控弹的「I am human」），返回 token。
+ * 目前只走 2Captcha（HCaptchaTaskProxyless）；CapSolver 亦支持，按需再加。
+ *
+ * @param {object} opts { provider?, apiKey, sitekey, pageUrl, userAgent?, timeoutMs?, log? }
+ * @returns {Promise<{ token: string|null, error: string|null, elapsedMs: number }>}
+ */
+async function solveHCaptcha(opts = {}) {
+  const { apiKey, sitekey, pageUrl, userAgent, rqdata, invisible, timeoutMs = 120000, log = () => {} } = opts;
+  const startedAt = Date.now();
+  const fail = (error) => ({ token: null, error, elapsedMs: Date.now() - startedAt });
+  if (!apiKey) return fail('CAPTCHA_API_KEY_MISSING');
+  if (!sitekey) return fail('HCAPTCHA_SITEKEY_MISSING');
+  if (!pageUrl) return fail('HCAPTCHA_PAGEURL_MISSING');
+  try {
+    const task = { type: 'HCaptchaTaskProxyless', websiteURL: pageUrl, websiteKey: sitekey };
+    if (userAgent) task.userAgent = userAgent;
+    if (invisible) task.isInvisible = true;
+    // 企业版 hCaptcha：必须带 rqdata，否则解出的 token 无效（站点后端认证失败 / Error 502）。
+    if (rqdata) task.enterprisePayload = { rqdata };
+    log(`hcaptcha 任务参数: invisible=${!!invisible} enterprise(rqdata)=${rqdata ? 'yes' : 'no'}`);
+    const createResp = await postJson('https://api.2captcha.com/createTask', { clientKey: apiKey, task });
+    if (createResp.errorId) return fail(`2captcha:createTask:${createResp.errorCode || createResp.errorDescription}`);
+    const taskId = createResp.taskId;
+    log(`2captcha hcaptcha task ${taskId} 创建,等待求解…`);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(5000);
+      const res = await postJson('https://api.2captcha.com/getTaskResult', { clientKey: apiKey, taskId });
+      if (res.errorId) return fail(`2captcha:getTaskResult:${res.errorCode || res.errorDescription}`);
+      if (res.status === 'ready') {
+        const token = res.solution && (res.solution.token || res.solution.gRecaptchaResponse);
+        return token ? { token, error: null, elapsedMs: Date.now() - startedAt } : fail('HCAPTCHA_SOLVE_EMPTY_TOKEN');
+      }
+    }
+    return fail('2captcha:timeout');
+  } catch (error) {
+    return fail(String((error && error.message) || 'HCAPTCHA_SOLVE_ERROR'));
+  }
+}
+
 // ── HTTP 小工具（Node 全局 fetch）─────────────────────────────────────────
+// 必须显式 AbortSignal 超时:裸 fetch 在半开连接(对端接受 TCP 但久不回 header)上,
+// undici 默认 headersTimeout 高达 300s,单次就能拖到 Python 360s 把整个 Node 进程强杀、
+// 丢掉已建的 key。30s 上限把单次外部 HTTP 卡死压到可控。
+function _timeoutSignal(ms) {
+  try { return AbortSignal.timeout(ms); } catch (_e) { return undefined; }   // 老 Node 没有则不加(不致命)
+}
 async function postJson(url, body) {
-  const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: _timeoutSignal(30000) });
   return resp.json();
 }
 async function getJson(url) {
-  const resp = await fetch(url);
+  const resp = await fetch(url, { signal: _timeoutSignal(30000) });
   return resp.json();
 }
 
-module.exports = { solveTurnstile };
+module.exports = { solveTurnstile, solveHCaptcha };

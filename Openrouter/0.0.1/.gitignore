@@ -1,0 +1,41 @@
+# 运行日志（重启会覆盖，含诊断输出，不入库）
+_server.log
+_server.err.log
+*.log
+
+# 账号状态/卡池/台账等本地运行数据（含卡号/CVC等敏感信息，绝不入库）
+account-state/card-pool.json
+account-state/accounts.json
+account-state/billing-ledger.json
+account-state/error-log.json
+
+# 临时 UI 测试产物
+_uitest*.png
+_uitest*.js
+
+# 诊断/自测脚本（_selftest / _probe_* / _check_ads / _import_card 等，含真实卡号/账号，绝不入库）
+_*.js
+
+# 纯 Selenium 流水线（selenium-e2e/）的本地数据：账号文件/代理池/终态/截图/诊断脚本——含邮箱密码/Key/卡号
+selenium-e2e/_*.py
+selenium-e2e/_*.png
+selenium-e2e/state/
+selenium-e2e/accounts*.txt
+selenium-e2e/proxies*.txt
+selenium-e2e/*.local.txt
+
+# 卡片导入文件(真实卡号/CVC,绝不入库)
+cards*.txt
+selenium-e2e/cards*.txt
+# 卡池及其所有备份(真实卡号/CVC)
+account-state/card-pool*.json
+account-state/card-pool.json.*
+account-state/*.bak.*
+account-state/*.backup*
+# 主配置密钥(2captcha/firstmail key 等)
+config.local.json
+selenium-e2e/config.local.json
+selenium-e2e/*.local.json
+
+# BIN黑名单(含尾号片段,操作数据非代码)
+selenium-e2e/card-blacklist-bins.txt
