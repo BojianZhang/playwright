@@ -13,14 +13,21 @@ import os, sys, json, time, argparse, subprocess, threading, re
 import concurrent.futures
 
 import common
-import adspower_env
-import steps_billing
-import steps_auth
-import captcha
-import cdp_fetch
+from services import adspower_env
+from steps import steps_billing
+from steps import steps_auth
+from services import captcha
+from services import cdp_fetch
 from common import log
 
 _WRITE_LOCK = threading.Lock()   # 并发写 results.jsonl 用
+
+# ── 批级 solve 熔断 ──────────────────────────────────────────────────────
+# 本批 2captcha "解了但框仍过不去(result=hcaptcha)" 累计次数:超阈值就【本批后续号一律改 swap】(弹框直接换卡),
+# 别再每张卡烧 ~120s 求解零产出(实测一批 13/13 解成功也没把框关掉时,纯属浪费算力/2captcha 费用)。
+_SOLVE_FUTILE = {"n": 0}
+_SOLVE_FUTILE_LOCK = threading.Lock()
+_SOLVE_FUTILE_CAP = int(os.environ.get("FIXC_SOLVE_FUTILE_CAP", "3"))
 
 ROOT = os.path.normpath(os.path.join(common.HERE, ".."))
 NODE_CLI = os.path.join(ROOT, "playwright", "hybrid-pw-stage.js")
@@ -186,6 +193,34 @@ def _pick_live_proxy(proxies, start_idx):
         if ok:
             return cand
     return proxies[start_idx % n]
+
+
+def _rank_rotation_candidates(proxies, start_idx):
+    """切IP 时把候选代理按 proxy_score 质量排序(高分在前):A优质/B可用 优先,待测居中,C差/烧热/退役殿后。
+       原来纯顺序扫 = 每段随机撞 Radar 门;优先用历史绑成率高、hcaptcha 率低的出口能提高单段抽签命中。
+       保持 start_idx 错开起点作为【同分稳定次序】(不同号错开降低撞同IP);已 tried 的过滤仍交调用方循环。"""
+    n = len(proxies)
+    order = [proxies[(start_idx + k) % n] for k in range(1, n + 1)]   # 原始扫描序(环绕),同分时保持它
+    try:
+        import proxy_score
+        stats = proxy_score.load_stats()
+    except Exception:
+        stats = None
+    if not stats:
+        return order
+
+    def _score_key(p):
+        key = "%s:%s" % (p.get("host"), p.get("port"))
+        try:
+            sc = proxy_score.score_proxy(stats.get(key, {}) or {})
+        except Exception:
+            return 50.0
+        if sc.get("retired"):
+            return -1.0                                  # 退役殿后(循环里还会被 proxy_retired 再跳过)
+        s = sc.get("score")
+        return float(s) if s is not None else 50.0       # 待测=中性50,排在 A/B 之后、C(<45) 之前
+
+    return sorted(order, key=_score_key, reverse=True)   # Python sort 稳定:同分保持 order 的错开次序
 
 
 def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
@@ -448,17 +483,21 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         tried = {"%s:%s" % (proxy.get("host"), proxy.get("port"))}   # 已试过的代理(含起始IP),切IP时跳过,别白切回老IP/坏IP
         cur_proxy = proxy   # 当前正在用的代理(切IP后更新),给 per-proxy 战绩记账用
 
-        def _start_hc_patcher():
+        def _start_hc_patcher(force=False):
             """加卡阶段起带 hcaptcha 规则的 CDP patcher:拦 hcaptcha api.js 把 HC 包装器注进 Stripe 跨域 OOPIF
                (抓 Stripe 真回调/sitekey),并提供跨 OOPIF 的 eval(读 sitekey/注 token 调回调)。
                Stripe 隐形 hCaptcha 能被 2Captcha 关掉,全靠它能进 OOPIF(Selenium 进不去)。
                但它【拦改 hcaptcha api.js + hook render + 往每个 OOPIF 注包装器】=篡改验证环境,hCaptcha 企业版
                可能检测到 → 压低信任分 → Stripe 502。人工模式(HCAP_2CAPTCHA=0)解的是原版验证框、根本不需要它,
-               故 HC_PATCHER=0 时不启,让验证环境保持 100% 未篡改(验证'注入码触发风控'假设/降 502)。"""
+               故 HC_PATCHER=0 时不启,让验证环境保持 100% 未篡改(验证'注入码触发风控'假设/降 502)。
+               ★force=True(本号选了自动解hcaptcha,_solve_hcap):即便 HC_PATCHER=0 也【必须】起 patcher——
+               2Captcha 求解全靠它进 Stripe OOPIF 注 token,没 patcher 求解白走(拿不到回调/sitekey)。"""
             import os as _os
-            if _os.environ.get("HC_PATCHER", "1") == "0":
+            if _os.environ.get("HC_PATCHER", "1") == "0" and not force:
                 log("[混合] HC_PATCHER=0 → 加卡阶段【不启】hCaptcha CDP patcher(人工模式不需要;避免篡改验证环境触发风控)")
                 return None
+            if _os.environ.get("HC_PATCHER", "1") == "0" and force:
+                log("[混合] HC_PATCHER=0 但本号选了自动解hcaptcha(_solve_hcap)→ 仍【强制起】patcher(求解必须靠它进 Stripe OOPIF,否则白走)")
             try:
                 dbg = (driver.capabilities.get("goog:chromeOptions") or {}).get("debuggerAddress") or ""
                 prt = dbg.rsplit(":", 1)[-1]
@@ -474,9 +513,30 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 log("[混合] 加卡 hcaptcha patcher 起失败(忽略): %s" % str(_e)[:60])
                 return None
 
-        # FIXC 走原生CDP绑卡,不需要(也不能用)hCaptcha CDP patcher——它是额外 CDP 连接,会污染干净会话。
-        hc_patcher = None if FIXC else _start_hc_patcher()
+        # 图片hcaptcha:每号一次性决定 解/换卡(FIXC_SOLVE_HCAPTCHA= on/off/random,默认random)。
+        import random as _rnd_hc
+        _hm = (os.environ.get("FIXC_SOLVE_HCAPTCHA") or "random").strip().lower()
+        _solve_hcap = (_hm in ("1", "on", "true", "yes", "solve")) or (
+            _hm not in ("0", "off", "false", "no", "swap") and _rnd_hc.random() < 0.5)
+        # 批级熔断:本批 solve 已多次"解了框仍过不去"→ 本号强制改 swap(弹框直接换卡),不再烧 ~120s 求解零产出。
+        if _solve_hcap:
+            with _SOLVE_FUTILE_LOCK:
+                _futile_n = _SOLVE_FUTILE["n"]
+            if _futile_n >= _SOLVE_FUTILE_CAP:
+                _solve_hcap = False
+                log("[混合] 本批 solve 已累计 %d 次'解了框仍在'零产出(≥%d)→ 熔断,本号改 swap(弹框直接换卡,省2captcha)"
+                    % (_futile_n, _SOLVE_FUTILE_CAP))
+        res["hcap_mode"] = "solve" if _solve_hcap else "swap"
+        # FIXC 默认不启 hcaptcha patcher(怕污染会话);但【本号选了求解】就启它(Selenium 侧实测启了也不 502、能解 2/2)。
+        # ★求解模式(_solve_hcap)传 force=True:即便 HC_PATCHER=0 也强制起,保证 2Captcha 有 patcher 进 OOPIF 注 token。
+        hc_patcher = _start_hc_patcher(force=_solve_hcap) if (_solve_hcap or not FIXC) else None
+        CARD_DEADLINE = int(os.environ.get("FIXC_CARD_DEADLINE", "480"))   # 单号加卡总耗时硬闸(秒),0=不限
         while True:
+            # 止损硬闸:加卡阶段总耗时超阈值就放弃,别像之前 hcaptcha 空耗 13-16min 死占并发槽(保留环境进冷却,换全新环境/IP再试)
+            if CARD_DEADLINE > 0 and (time.perf_counter() - t_card) > CARD_DEADLINE:
+                res["steps"]["giveup"] = "card-deadline"
+                log("[混合] %s 加卡阶段超 %ds 止损硬闸 → 放弃(保留环境进冷却,稍后换全新环境/IP再试)" % (email, CARD_DEADLINE))
+                break
             # 首次 Save 等 60s;切过IP后只等 45s(换了新IP还不放行基本就是不行了,早返回省时间)
             card_box = {"card": card}   # add_card 把【实际填的卡】(人工可能改过)回写进来,供本地记账用对卡
             try:
@@ -485,7 +545,8 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                                            proxy=cur_proxy,   # 让 2Captcha 走账号同代理解,token IP=会话IP 防502
                                            manual_card=manual_card,   # 页面内卡片面板:点卡改用(--manual-card)
                                            card_ref=card_box,
-                                           fill_mode=("cdp" if FIXC else "selenium"))   # 默认原生CDP绑卡(FIXC=0回退)
+                                           fill_mode=("cdp" if FIXC else "selenium"),   # 默认原生CDP绑卡(FIXC=0回退)
+                                           solve_hcap=_solve_hcap)   # 图片hcaptcha:本号选解就当场2captcha解,否则换卡
             except Exception as e:
                 # 双保险:浏览器中途崩了(session deleted)→【原环境就地重启】接着加卡,而不是整号放弃
                 if _is_browser_crash(e) and crash_restarts < MAX_CRASH_RESTARTS:
@@ -513,7 +574,8 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                                 hc_patcher.stop()
                         except Exception:
                             pass
-                        hc_patcher = _start_hc_patcher()
+                        # 求解模式传 force=_solve_hcap:HC_PATCHER=0 也要为求解强制重建(与初始一致)
+                        hc_patcher = _start_hc_patcher(force=_solve_hcap) if (_solve_hcap or not FIXC) else None
                     except Exception as e2:
                         log("[混合] 就地重启失败(%s)→停,保留环境" % str(e2)[:60])
                         break
@@ -573,6 +635,10 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 # declined=卡被拒(坏卡已禁用);hcaptcha=校验框过不去(Radar 判这张卡/这次提交风险高)。
                 # 两者都【换一张不同的卡(load_card 优选不同BIN)同会话再试】—— 换卡零成本,绑别的卡可能就过了,
                 # 比来回切IP/换指纹环境省太多(用户提的思路)。换够 MAX_CARD_SWAPS 张还不行才终止。
+                # 批级熔断计数:本号在 solve 模式下仍 hcaptcha=这次 2captcha 求解没把框关掉 → 累加,够阈值后本批弃 solve。
+                if result == "hcaptcha" and _solve_hcap:
+                    with _SOLVE_FUTILE_LOCK:
+                        _SOLVE_FUTILE["n"] += 1
                 tried_cards.add(card.get("id") or card.get("number"))
                 # hcaptcha=IP级风控→只换 MAX_HCAPTCHA_CARD_SWAPS(默认1)张就切IP;declined=卡级→换 MAX_CARD_SWAPS 张
                 swap_limit = MAX_CARD_SWAPS if result == "declined" else MAX_HCAPTCHA_CARD_SWAPS
@@ -607,8 +673,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 # 【整体重试】选+切+重接管 绑在一起:切/接管失败 = 这个IP也不行 → 试下一个候选,
                 # 绝不 continue 回顶端把已 quit 的死 page 喂给 add_card(那会被误判"浏览器崩"、白吃一次崩溃配额)。
                 switched = None   # True=切成功 / "auth-fail"=切成功但登录没保持 / None=没切成
-                for k in range(1, len(proxies) + 1):
-                    cand = proxies[(start_idx + k) % len(proxies)]
+                for cand in _rank_rotation_candidates(proxies, start_idx):   # 按 proxy_score 排:干净IP优先,烧热殿后
                     ckey = "%s:%s" % (cand.get("host"), cand.get("port"))
                     if ckey in tried or common.proxy_retired(cand):
                         continue
@@ -634,7 +699,8 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                                 hc_patcher.stop()
                         except Exception:
                             pass
-                        hc_patcher = _start_hc_patcher()
+                        # 求解模式传 force=_solve_hcap:HC_PATCHER=0 也要为求解强制重建(与初始一致)
+                        hc_patcher = _start_hc_patcher(force=_solve_hcap) if (_solve_hcap or not FIXC) else None
                     except Exception as e:
                         common.mark_proxy_result(cand, "dead")   # 切/接管不起来 = 这个IP不可用
                         log("[混合] 切IP/接管失败(坏代理 %s,已跳过)(%s)→试下一个" % (ckey, str(e)[:60]))
@@ -717,7 +783,7 @@ def main():
     ap = argparse.ArgumentParser(description="Playwright+Selenium 混合(注册/取Key/绑地址=PW, 加卡=Selenium)")
     ap.add_argument("--accounts", required=True)
     ap.add_argument("--proxies", required=True)
-    ap.add_argument("--op-pw", required=True, help="OpenRouter 登录密码(统一密码)")
+    ap.add_argument("--op-pw", default="", help="OpenRouter 登录密码(统一密码);留空=用各账号邮箱密码当登录密码(per-账号,与 Selenium 注册一致)")
     ap.add_argument("--gap", type=int, default=20)
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个(0=全部)")
     ap.add_argument("--proxy-offset", type=int, default=0)
@@ -814,13 +880,18 @@ def main():
         pass
 
     acct_emails = {a["email"] for a in accounts}
+    bad_mb = common.load_bad_mailboxes()          # 坏邮箱(404收不到验证邮件的号/域)→ 永久跳过
     in_cooldown = {em: t for em, t in cooldown.items() if em in acct_emails and em not in done and em not in banned and t > now}
     pending = [(i, acct) for i, acct in enumerate(accounts)
-               if acct["email"] not in done and acct["email"] not in banned and acct["email"] not in in_cooldown]
+               if acct["email"] not in done and acct["email"] not in banned and acct["email"] not in in_cooldown
+               and not common.is_bad_mailbox(acct["email"], bad_mb)]
     for em in (done & acct_emails):
         log("跳过已绑卡 %s" % em)
     for em in (banned & acct_emails):
         log("跳过被拒账号(not allowed,不再试错) %s" % em)
+    for em in acct_emails:
+        if common.is_bad_mailbox(em, bad_mb):
+            log("跳过坏邮箱(收不到验证邮件,永久) %s" % em)
     for em, t in sorted(in_cooldown.items(), key=lambda kv: kv[1]):
         log("⏳ 冷却队列中(切IP无效),还剩 %d 分钟再试: %s" % (max(0, int((t - now) / 60)), em))
     # 把被拒账号登记到 state/banned_accounts.txt(人看,防重复试错)
@@ -854,7 +925,8 @@ def main():
             acct["email"].split("@")[0], proxy0["host"], proxy0["port"],
             "（重开旧环境:免重登,直接加卡）" if reopen else ("（续跑:已有key只补加卡）" if (prior or {}).get("api_key") else "")))
         try:
-            r = run_account(acct, proxies, start_idx, group_id, args.op_pw, cfg,
+            _op = args.op_pw or acct["mailbox_pw"]   # 没给 --op-pw 就用各账号邮箱密码当 OpenRouter 登录密码(与 Selenium 注册时一致,登得进per-账号密码的号)
+            r = run_account(acct, proxies, start_idx, group_id, _op, cfg,
                             delete_env=not args.no_delete_env, prior=prior, slot=slot,
                             slots_total=conc, max_rotations=args.max_rotations, isolate=args.isolate,
                             manual_card=args.manual_card, keep_failed_env=args.keep_failed_env,
@@ -912,7 +984,12 @@ def main():
     log("混合跑 %d 个待办账号, 并发 %d (代理 %d 条, 窗口平铺, AdsPower API 已全局限频)" % (len(pending), conc, len(proxies)))
     if conc == 1:
         for i, acct in pending:
-            worker(i, acct)
+            # 串行也包 try/except(与并发路径 f.result() 一致):worker 内记账/写文件抛异常时
+            # 只跳过这一个号继续下一个,别让整批待办中断。
+            try:
+                worker(i, acct)
+            except Exception as e:
+                log("worker 异常(%s): %s" % (acct.get("email"), str(e)[:150]))
             time.sleep(args.gap)
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=conc) as ex:

@@ -25,19 +25,19 @@ def check(name, cond):
 def _tmpstate():
     """把所有状态文件指到临时目录,绝不碰真实 state/。"""
     d = tempfile.mkdtemp(prefix="orhelpertest_")
-    common.POOL_FILE = os.path.join(d, "pool.json")
-    common.CARD_ASSIGN_FILE = os.path.join(d, "assign.json")
-    common.BIN_USAGE_FILE = os.path.join(d, "bin.json")
-    common.PROXY_STATS_FILE = os.path.join(d, "proxy.json")
+    common.paths.POOL_FILE = os.path.join(d, "pool.json")
+    common.paths.CARD_ASSIGN_FILE = os.path.join(d, "assign.json")
+    common.paths.BIN_USAGE_FILE = os.path.join(d, "bin.json")
+    common.paths.PROXY_STATS_FILE = os.path.join(d, "proxy.json")
     return d
 
 
 def _pool(cards):
-    json.dump(cards, open(common.POOL_FILE, "w", encoding="utf-8"))
+    json.dump(cards, open(common.paths.POOL_FILE, "w", encoding="utf-8"))
 
 
 def _pool0():
-    return json.load(open(common.POOL_FILE, encoding="utf-8"))[0]
+    return json.load(open(common.paths.POOL_FILE, encoding="utf-8"))[0]
 
 
 def _card(cid, bin6, **kw):
@@ -69,22 +69,22 @@ def test_load_card_count_bin():
 
     c1 = common.load_card(EM)
     b1 = c1["number"][:6]
-    a1 = (json.load(open(common.BIN_USAGE_FILE)).get(today, {}).get(b1) or {}).get("assigned", 0)
+    a1 = (json.load(open(common.paths.BIN_USAGE_FILE)).get(today, {}).get(b1) or {}).get("assigned", 0)
     check("首次分配占 BIN 额度=1", a1 == 1)
-    check("assign 落盘", json.load(open(common.CARD_ASSIGN_FILE))[EM] == c1["id"])
+    check("assign 落盘", json.load(open(common.paths.CARD_ASSIGN_FILE))[EM] == c1["id"])
 
     c1b = common.load_card(EM)
     check("重试复用同卡", c1b["id"] == c1["id"])
 
     c2 = common.load_card(EM, exclude={c1["id"]}, count_bin=False)
     b2 = c2["number"][:6]
-    bu = json.load(open(common.BIN_USAGE_FILE))
+    bu = json.load(open(common.paths.BIN_USAGE_FILE))
     a2 = (bu.get(today, {}).get(b2) or {}).get("assigned", 0)
     a1after = (bu.get(today, {}).get(b1) or {}).get("assigned", 0)
     check("换卡返回不同卡", c2["id"] != c1["id"])
     check("换卡不占新 BIN 额度", a2 == 0)
     check("换卡不动原 BIN 额度", a1after == 1)
-    check("换卡不覆盖原分配", json.load(open(common.CARD_ASSIGN_FILE))[EM] == c1["id"])
+    check("换卡不覆盖原分配", json.load(open(common.paths.CARD_ASSIGN_FILE))[EM] == c1["id"])
 
     c3 = common.load_card(EM)
     check("续跑复用最初分配卡(非最后换的)", c3["id"] == c1["id"])
@@ -158,7 +158,7 @@ def test_mark_card_bin_histogram():
     _pool([_card("A", "436120")])
     common.mark_card_result({"id": "A", "number": "4361200000000000"}, "server-error")
     today = datetime.date.today().isoformat()
-    t = json.load(open(common.BIN_USAGE_FILE)).get(today, {}).get("436120", {})
+    t = json.load(open(common.paths.BIN_USAGE_FILE)).get(today, {}).get("436120", {})
     check("BIN 直方图记 server-error", t.get("server-error") == 1)
 
 
@@ -192,7 +192,7 @@ def test_binusage_legacy():
     """_bin_today 把旧 {BIN:int} 规整成 {BIN:{assigned:int}}。"""
     _tmpstate()
     today = datetime.date.today().isoformat()
-    json.dump({today: {"400111": 5}}, open(common.BIN_USAGE_FILE, "w"))
+    json.dump({today: {"400111": 5}}, open(common.paths.BIN_USAGE_FILE, "w"))
     bu = common._read_bin_usage()
     t = common._bin_today(bu, today)
     check("旧int格式兼容", isinstance(t.get("400111"), dict) and t["400111"].get("assigned") == 5)
@@ -200,7 +200,7 @@ def test_binusage_legacy():
 
 def test_firstmail_otp_strict():
     """Fix B:strict 不回退旧码 / 日期不明保守不吞 / 新码正常 / 无since_ts兼容。"""
-    import firstmail
+    from services import firstmail
     def ms(iso):
         return datetime.datetime.fromisoformat(iso).timestamp() * 1000.0
     OLD, NEW = "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"
@@ -267,8 +267,61 @@ def test_grid_rect():
 
 
 # ─────────────────────────────────────────────────────────────────────
+def test_bad_mailbox():
+    """坏邮箱判定:整邮箱命中 + 按 @domain 命中 + 空邮箱安全(2026-06-13)。"""
+    bad = {"dead@x.com": {}, "@deaddomain.com": {}}
+    check("坏邮箱:整邮箱命中", common.is_bad_mailbox("dead@x.com", bad) is True)
+    check("坏邮箱:按域命中", common.is_bad_mailbox("anyone@deaddomain.com", bad) is True)
+    check("坏邮箱:不命中", common.is_bad_mailbox("ok@good.com", bad) is False)
+    check("坏邮箱:空安全", common.is_bad_mailbox("", bad) is False)
+
+
+def test_card_captcha_disable():
+    """spread:弹框累计冷却,但撞≥5次禁用本卡(防反复重用热卡;2026-06-13)。"""
+    _tmpstate()
+    os.environ["CARD_STRATEGY"] = "spread"
+    os.environ.pop("CARD_CAPTCHA_DISABLE", None)
+    _pool([_card("A", "400111")])
+    for _ in range(4):
+        common.mark_card_result({"id": "A", "number": "4001110000000000"}, "hcaptcha")
+    check("spread撞4次仍active", _pool0()["status"] == "active")
+    common.mark_card_result({"id": "A", "number": "4001110000000000"}, "hcaptcha")
+    check("spread撞5次→禁用", _pool0()["status"] == "disabled" and _pool0().get("disabledReason") == "too-many-captcha")
+    os.environ.pop("CARD_STRATEGY", None)
+
+
+def test_file_lock():
+    """跨进程文件锁:获取建 lockfile、释放删之、可顺序重复获取(2026-06-13)。"""
+    d = _tmpstate()
+    tgt = os.path.join(d, "x.json")
+    with common._file_lock(tgt):
+        check("文件锁:lockfile 存在", os.path.exists(tgt + ".lock"))
+    check("文件锁:释放后删除", not os.path.exists(tgt + ".lock"))
+    with common._file_lock(tgt):
+        pass
+    with common._file_lock(tgt):
+        pass
+    check("文件锁:可顺序重复获取", not os.path.exists(tgt + ".lock"))
+
+
+def test_grid_min_size():
+    """窗口最小可用尺寸:高并发也不缩到不可用(≥600×500);10并发铺满非重叠(2026-06-13)。"""
+    os.environ["SCREEN_W"] = "3440"; os.environ["SCREEN_H"] = "1440"
+    for k in ("GRID_TOTAL", "GRID_SLOT_OFFSET", "GRID_MIN_W", "GRID_MIN_H"):
+        os.environ.pop(k, None)
+    r = common.grid_rect(0, 20)
+    check("20并发窗口仍≥可用(600×500)", r[2] >= 600 and r[3] >= 500)
+    rs = [common.grid_rect(i, 10) for i in range(10)]
+    check("10并发10格各不同(铺满非重叠)", len(set(rs)) == 10)
+    os.environ.pop("SCREEN_W", None); os.environ.pop("SCREEN_H", None)
+
+
 TESTS = [
     test_is_banned_reason,
+    test_bad_mailbox,
+    test_card_captcha_disable,
+    test_file_lock,
+    test_grid_min_size,
     test_load_card_count_bin,
     test_load_card_exclude_fallback,
     test_mark_card_declined,

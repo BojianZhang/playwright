@@ -763,11 +763,8 @@ async function handleOnboardingWizard(page, log) {
         return mm ? mm[0] : '';
       }).catch(() => '');
       if (key) break;
-      // 没抓到明文:点 "Your API Key" 旁的 Copy 复制按钮 → 读剪贴板(明文 key 会进剪贴板)。第 3 轮起再试,等 workspace-ready 渲染。
-      if (i >= 2) {
-        const clip = await _copyKeyFromClipboard(page).catch(() => '');
-        if (clip) { key = clip; L('向导抓到 key ✓(Copy按钮+剪贴板兜底)'); break; }
-      }
+      // 注:不读剪贴板兜底 —— navigator.clipboard.readText() 会弹 Chrome 权限框("…wants to see clipboard")把向导页卡死(hybrid侧同 Selenium)。
+      //   明文 key 就在 "workspace is ready" 的 fetch 示例 code/pre 里,上面的纯文本匹配已足够。
       await page.waitForTimeout(2000);
     }
     if (!key) {
@@ -1356,7 +1353,7 @@ const BILLING_TRANSIENT = /error\s*5\d\d|bad gateway|gateway time|service unavai
 
 // declined 后【同一张卡轮换 ZIP 重试】(declined 多是 AVS/ZIP 不匹配,换免税州ZIP常能过,不烧卡)。
 // 【关键】只重填 postal 字段 → 重点 Save → 重判,绝不重填卡号(不动 cardEntered;每次 Save 前查卡号还在不在)。
-// 逐字镜像 selenium-e2e/fixc_core.py:426-464。过了返回 {result:'success',...}/{result:'card-bound'};全用尽返回 {result:'declined'}。带回 usedZip 供日志。
+// 逐字镜像 selenium-e2e/cardbind/fixc_core.py 的 alt-ZIP 重试段。过了返回 {result:'success',...}/{result:'card-bound'};全用尽返回 {result:'declined'}。带回 usedZip 供日志。
 async function retryWithAltZips(page, card, address, cfg, log, steps, dialogs, altZips, runtime) {
   let usedZip = '';
   for (const z of (altZips || [])) {
@@ -1574,7 +1571,7 @@ async function uncheckLink(page, log) {
 }
 
 // 关掉 Stripe Link 的 "Save card? / Pay faster" 弹窗(点 No thanks/Not now/Skip)。
-// 这是 DOM 模态(不是 JS alert → page.on('dialog') 接不住),必须原生 click 触发 React。镜像 selenium-e2e/fixc_core.py _dismiss_link_dialog。
+// 这是 DOM 模态(不是 JS alert → page.on('dialog') 接不住),必须原生 click 触发 React。镜像 selenium-e2e/cardbind/fixc_core.py _dismiss_link_dialog。
 async function dismissLinkDialog(page, log) {
   try {
     const RE = /^(no thanks|not now|skip|maybe later|continue without.*|close)$/i;

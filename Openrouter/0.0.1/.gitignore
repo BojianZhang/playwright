@@ -22,11 +22,17 @@ _*.js
 
 # 纯 Selenium 流水线（selenium-e2e/）的本地数据：账号文件/代理池/终态/截图/诊断脚本——含邮箱密码/Key/卡号
 selenium-e2e/_*.py
+# 归档到 scratch/ 后的下划线探针(含真实卡号)同样不入库;README.md 不匹配本规则仍可入库
+selenium-e2e/scratch/_*.py
 selenium-e2e/_*.png
 selenium-e2e/state/
 selenium-e2e/accounts*.txt
 selenium-e2e/proxies*.txt
 selenium-e2e/*.local.txt
+# 验证跑批的账号输入清单(含邮箱:密码明文,绝不入库) + selenium-e2e 运行日志目录
+selenium-e2e/val_*.txt
+selenium-e2e/val_*.log
+selenium-e2e/logs/
 
 # 卡片导入文件(真实卡号/CVC,绝不入库)
 cards*.txt

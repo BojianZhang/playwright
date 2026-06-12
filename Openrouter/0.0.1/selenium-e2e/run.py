@@ -17,9 +17,10 @@ import time
 import argparse
 import threading
 import concurrent.futures
+import queue
 
 import common
-import adspower_env
+from services import adspower_env
 import pipeline
 from common import log
 
@@ -75,11 +76,14 @@ def main():
     res_file = os.path.join(state_dir, "results.jsonl")
     # 续跑判定：加卡模式下「卡已绑」才算完成；否则 ok=True 算完成
     done = set()
+    registered = set()        # 历史上注册成功过(auth=ok)的号 → 重跑直接登录,不再点注册(避免已存在号卡 verify→REGISTER_UNCONFIRMED)
     if os.path.exists(res_file):
         with open(res_file, "r", encoding="utf-8") as f:
             for line in f:
                 try:
                     r = json.loads(line)
+                    if (r.get("steps") or {}).get("auth") == "ok":
+                        registered.add(r.get("email"))
                     if args.do_card:
                         # 只有【已绑】才永久跳过；弹过验证的号下一轮换 IP+指纹再试(本轮内是快速跳过不卡住)
                         if (r.get("steps") or {}).get("card") == "card-bound":
@@ -88,6 +92,11 @@ def main():
                         done.add(r.get("email"))
                 except Exception:
                     pass
+    for _a in accounts:                              # 给已注册过的号打标记 → pipeline 据此直接登录
+        if _a["email"] in registered:
+            _a["registered"] = True
+    if registered:
+        log("已注册标记:%d 个号历史 auth=ok,重跑将直接登录(不再点注册)" % len(registered))
 
     opts = {
         "cfg": cfg, "do_key": (not args.no_key), "do_card": args.do_card,
@@ -99,22 +108,34 @@ def main():
 
     write_lock = threading.Lock()                 # 并发写 results.jsonl 加锁,防多 worker 交错
     conc = max(1, args.concurrency)
+    slot_q = queue.Queue()                        # 并发窗口槽位 0..conc-1,跑完归还复用 → grid_rect 按并发平铺
+    for _s in range(conc):
+        slot_q.put(_s)
+    bad_mb = common.load_bad_mailboxes()          # 坏邮箱(404收不到验证邮件的号/域)→ 永久跳过,不浪费注册
+    _skipbad = [a["email"] for a in accounts if common.is_bad_mailbox(a["email"], bad_mb)]
+    if _skipbad:
+        log("跳过坏邮箱 %d 个(已登记收不到验证邮件): %s" % (len(_skipbad), ", ".join(x.split("@")[0] for x in _skipbad)))
     for _i, _a in enumerate(accounts):
         if _a["email"] in done:
             log("跳过已完成 %s" % _a["email"])
-    pending = [(i, acct) for i, acct in enumerate(accounts) if acct["email"] not in done]
+    pending = [(i, acct) for i, acct in enumerate(accounts)
+               if acct["email"] not in done and not common.is_bad_mailbox(acct["email"], bad_mb)]
 
     def worker(i, acct):
-        start_idx = (i + args.proxy_offset) % len(proxies)
-        log("════ [%d/%d] %s （代理从池中第 %d 个起 offset=%d，失败自动轮换）════" % (
-            i + 1, len(accounts), acct["email"], start_idx, args.proxy_offset))
-        r = pipeline.run_account(acct, proxies, start_idx, group_id, opts)
-        r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        with write_lock:
-            with open(res_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        log("════ 结果 %s ok=%s steps=%s ════" % (acct["email"].split("@")[0], r.get("ok"), r.get("steps")))
-        return r
+        slot = slot_q.get()                       # 占一个网格槽位(决定本号窗口在屏幕哪格)
+        try:
+            start_idx = (i + args.proxy_offset) % len(proxies)
+            log("════ [%d/%d] %s （代理从池中第 %d 个起 offset=%d，失败自动轮换，窗口槽位 %d/%d）════" % (
+                i + 1, len(accounts), acct["email"], start_idx, args.proxy_offset, slot, conc))
+            r = pipeline.run_account(acct, proxies, start_idx, group_id, opts, slot=slot, slots_total=conc)
+            r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            with write_lock:
+                with open(res_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            log("════ 结果 %s ok=%s steps=%s ════" % (acct["email"].split("@")[0], r.get("ok"), r.get("steps")))
+            return r
+        finally:
+            slot_q.put(slot)                      # 归还槽位给后续账号复用
 
     if conc <= 1:
         # 串行(默认):一个个跑,保留 --gap 间隔(原行为)

@@ -90,12 +90,12 @@ PW 阶段经 CDP `Browser.setWindowBounds` 摆窗，Selenium 阶段经 `set_wind
 - **校验框(hCaptcha)→换卡,不切IP**：可见 hCaptcha 是 Radar 判【这张卡】风险高的升级,2captcha 解不动。所以**换一张不同的卡(优选不同BIN)同会话再试**(`load_card(exclude=)`),绑别的卡可能就过了——换卡零成本,比来回切IP/换指纹环境省太多。换够2张(`MAX_CARD_SWAPS`)还校验框才终止。declined 同理换卡。2captcha 无人值守超时也砍到 30s。
 - **卡表单没加载(unknown)→刷新重载 Stripe.js**：卡号框等不出=Payment Element 没初始化(累代理上加载慢)→刷新页面重开(2次,短等待)比重点按钮有效;根治靠换新代理。
 - **切代理更聪明**：① 切之前 `proxy_ok` 验通(HEAD js.stripe.com)——死/慢代理直接跳过,不浪费~20s重启;② per-proxy 战绩(`state/proxy-stats.json`)——连续失败(dead/unknown)≥`PROXY_RETIRE_STREAK`(默认5)的代理**退役**、选IP时跳过(server-error 不计,那是卡velocity非代理)。
-- **AdsPower 兜底 GC**：`cleanup_envs.py`(独立)+ 开跑前自动 GC,回收孤儿 hyb-* 环境(PW失败没key/崩没记录/没删干净的),三护栏:留续跑要重开的、跳过正开着的、跳过建龄<`--gc-min-age`的。
+- **AdsPower 兜底 GC**：`tools/cleanup_envs.py`(独立)+ 开跑前自动 GC,回收孤儿 hyb-* 环境(PW失败没key/崩没记录/没删干净的),三护栏:留续跑要重开的、跳过正开着的、跳过建龄<`--gc-min-age`的。
 - **加卡已拟人化**：逐字符敲卡号(60-160ms随机)+进表单warmup滚动+点Save前停顿(对抗Radar行为遥测)。
 
 **运营工具**：
-- `python status.py [accounts.xxx.txt]` — **一屏仪表盘**：进度/冷却队列倒计时/被拒+永久放弃/卡池余量(够不够+几个BIN)/今日各BIN战绩(哪个被刷穿)。
-- `card_capacity.py` 看每卡容量；`flag_accounts.py` 标问题号；`disable_cards.py`/`import_cards.py` 增删卡。
+- `python tools/status.py [accounts.xxx.txt]` — **一屏仪表盘**：进度/冷却队列倒计时/被拒+永久放弃/卡池余量(够不够+几个BIN)/今日各BIN战绩(哪个被刷穿)。
+- `tools/card_capacity.py` 看每卡容量；`tools/flag_accounts.py` 标问题号；`tools/disable_cards.py`/`tools/import_cards.py` 增删卡。（运营工具都在 `tools/`，从 selenium-e2e/ 下 `python tools/<名>.py` 跑）
 - 结果里 `timings`(pre_card/card/total 秒)+日志行首 `HH:MM:SS` → 可直接量每步耗时。
 - 资源不泄漏：只成功删环境，但 needphone/hcaptcha/重开够多次/被拒 的环境都会**删掉回收**(state/bin-usage.json 记 per-BIN 当日战绩)。
 
