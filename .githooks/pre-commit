@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 提交前密钥/真卡号扫描 —— 启用一次: git config core.hooksPath .githooks
+# (本仓库 npm install 会经 package.json "prepare" 自动启用)
+# 紧急绕过: git commit --no-verify
+set -u
+# 挨个候选试,谁能【真正执行】用谁(Windows 的 python3 是 Store 占位 stub,command -v 找得到但跑不了→必须实测)
+PY=""
+for cand in python python3 py; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys" >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "⚠ 未找到可用的 python,跳过 secret-scan(装 Python 后即生效)"
+  exit 0
+fi
+"$PY" scripts/secret_scan.py

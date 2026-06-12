@@ -1,0 +1,9 @@
+# Python lint(ruff)—— 宽松起步。装: pip install ruff;跑: ruff check Openrouter/0.0.1/selenium-e2e
+line-length = 140
+target-version = "py38"
+exclude = ["**/__pycache__", "**/state", "**/_*.py"]
+
+[lint]
+select = ["E", "F", "W"]
+# 行长/import位置/lambda赋值/歧义名/裸except —— 存量多,先不强制
+ignore = ["E501", "E402", "E731", "E741", "E722"]

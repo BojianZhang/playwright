@@ -1,0 +1,9 @@
+# Python 依赖 —— selenium-e2e(纯 Selenium / 混合 流水线 + Fix C 原生CDP)
+# 装: python -m pip install -r selenium-e2e/requirements.txt
+#
+# 注:chromedriver 不在此 —— selenium 4.x 自带 Selenium Manager 会自动下载匹配内核的 driver。
+#     反检测用的 chromedriver_stealth.exe 是本地生成的二进制,不经 pip。
+
+selenium>=4.20            # WebDriver + Selenium Manager(自动取 chromedriver)
+websocket-client>=1.7     # 原生 CDP 连接(Fix C / cdp_raw.py / cdp_fetch.py)
+pyautogui>=0.9.54         # 个别 OS 级坐标点击兜底(osinput 等)

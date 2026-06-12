@@ -1,0 +1,48 @@
+name: CI
+
+# 每次 push / PR 自动跑【离线检查】(不需要 AdsPower/浏览器):密钥扫描 + Node语法 + Python编译/单测 + Lint(非阻断)。
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ① 密钥/真卡号扫描 —— 拦截敏感数据入库(全部已跟踪文件)
+      - name: Secret scan
+        run: python scripts/secret_scan.py --all
+
+      # ② Node 语法检查 —— 所有 .js(排除依赖/数据/日志/历史/scratch/扩展)。quotepath=false 防中文名被转义
+      - name: Node syntax (node --check)
+        run: |
+          git -c core.quotepath=false ls-files '*.js' \
+            | grep -vE 'node_modules/|/data/|/logs/|/batch-results/|Dreamina/history/|/state/|/_[^/]*\.js$|\.min\.js$|card-fill/extension/' \
+            | xargs -r -d '\n' -n1 node --check
+          echo "Node --check 全过"
+
+      # ③ Python 依赖 + 编译 + 单测(OpenRouter selenium-e2e 的 59 项离线回归)。quotepath=false 处理中文文件名(卡查询.py)
+      - name: Python deps + compile + tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r Openrouter/0.0.1/selenium-e2e/requirements.txt
+          git -c core.quotepath=false ls-files 'Openrouter/0.0.1/selenium-e2e/*.py' \
+            | grep -vE '/_[^/]*\.py$' | xargs -d '\n' python -m py_compile
+          cd Openrouter/0.0.1/selenium-e2e && python test_helpers.py
+
+      # ④ ESLint(宽松,非阻断 —— 存量 warning 渐进清理)
+      - name: ESLint (non-blocking)
+        continue-on-error: true
+        run: |
+          npm ci
+          npm run lint

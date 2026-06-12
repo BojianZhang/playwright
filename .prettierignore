@@ -1,0 +1,13 @@
+node_modules/
+**/data/
+**/logs/
+**/batch-results/
+**/state/
+Dreamina/history/
+**/__pycache__/
+**/_*.js
+**/*.min.js
+**/test-results/
+**/playwright-report/
+package-lock.json
+Openrouter/0.0.1/billing/card-fill/extension/

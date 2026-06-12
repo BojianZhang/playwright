@@ -19,15 +19,25 @@
         "recycle": "node Dreamina/0.0.3/account-state/recycle-retry.js",
         "test": "playwright test",
         "test:headed": "playwright test --headed",
-        "report": "playwright show-report"
+        "report": "playwright show-report",
+        "prepare": "git config core.hooksPath .githooks || true",
+        "secret-scan": "python scripts/secret_scan.py --all",
+        "lint": "eslint .",
+        "lint:fix": "eslint . --fix",
+        "format": "prettier --write .",
+        "format:check": "prettier --check ."
     },
     "keywords": [],
     "author": "",
     "license": "ISC",
     "type": "commonjs",
     "devDependencies": {
+        "@eslint/js": "^9.0.0",
         "@playwright/test": "^1.59.1",
-        "@types/node": "^25.5.2"
+        "@types/node": "^25.5.2",
+        "eslint": "^9.0.0",
+        "globals": "^15.0.0",
+        "prettier": "^3.3.0"
     },
     "dependencies": {
         "playwright": "^1.59.1"
