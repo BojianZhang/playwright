@@ -83,6 +83,12 @@ function getActivePeers() {
   const now = Date.now();
   return [...PEERS.values()].filter((p) => now - p.lastSeen < PEER_TTL_MS && p.nodeId !== NODE_ID);
 }
+// 【#2 修】周期驱逐过期 peer:原来 getActivePeers 只在【读】时过滤过期,PEERS 本体从无 delete →
+//   长跑大集群里离线节点条目永久累积 → heap 持续增长。每 2 分钟清一次过期项(.unref 不阻塞进程退出)。
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, p] of PEERS) { if (now - p.lastSeen >= PEER_TTL_MS) PEERS.delete(id); }
+}, 120000).unref();
 
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -546,8 +552,12 @@ async function handlePush(req, res) {
   const accounts = Array.isArray(body.accounts) ? body.accounts : [];
   try {
     fs.mkdirSync(PUSHED_DIR, { recursive: true });
-    fs.writeFileSync(path.join(PUSHED_DIR, `${nodeId}.json`), JSON.stringify({ nodeId, updatedAt: Date.now(), accounts }));
-  } catch (_e) { /* ignore */ }
+    // 【#3 修】原子写 tmp+rename:原来直接 writeFileSync,进程中途崩溃会留半截 JSON → readPushed 解析失败→该子机全部账号在聚合页无声消失。
+    const _pf = path.join(PUSHED_DIR, `${nodeId}.json`);
+    const _ptmp = _pf + '.tmp';
+    fs.writeFileSync(_ptmp, JSON.stringify({ nodeId, updatedAt: Date.now(), accounts }));
+    fs.renameSync(_ptmp, _pf);
+  } catch (e) { try { console.error('[push] 落盘失败 nodeId=%s: %s', nodeId, e && e.message); } catch (_e) { /* ignore */ } }
   // 同时标记为在线节点(即使没有可回连的 url)
   const prev = PEERS.get(nodeId) || {};
   PEERS.set(nodeId, { nodeId, url: prev.url || '', lastSeen: Date.now() });
@@ -557,7 +567,8 @@ function readPushed() {
   const out = [];
   try {
     for (const f of fs.readdirSync(PUSHED_DIR).filter((x) => x.endsWith('.json'))) {
-      try { const o = JSON.parse(fs.readFileSync(path.join(PUSHED_DIR, f), 'utf8')); out.push({ nodeId: o.nodeId, count: (o.accounts || []).length, accounts: o.accounts || [] }); } catch (_e) { /* skip */ }
+      try { const o = JSON.parse(fs.readFileSync(path.join(PUSHED_DIR, f), 'utf8')); out.push({ nodeId: o.nodeId, count: (o.accounts || []).length, accounts: o.accounts || [] }); }
+      catch (e) { try { console.warn('[readPushed] 解析 %s 失败,该子机本次聚合账号丢失: %s', f, e && e.message); } catch (_e) { /* ignore */ } }   // 【#3 修】不再静默丢号
     }
   } catch (_e) { /* none */ }
   return out;

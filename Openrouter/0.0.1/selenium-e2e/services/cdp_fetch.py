@@ -106,6 +106,24 @@ class TurnstileApiPatcher:
                 self.ws.close()
         except Exception:
             pass
+        self._drain_inflight()
+
+    def _drain_inflight(self):
+        """【#5 修】ws 断开/stop 时回收在途条目:先 set() 唤醒所有等待的 eval evt(免 eval_collect 傻等满超时),
+           再清空 _eval_evt/_eval_res/_pending —— 否则在途条目无界残留,且重连后旧 cid 仍在字典里干扰。"""
+        try:
+            with self._eval_lock:
+                for e in list(self._eval_evt.values()):
+                    try: e.set()
+                    except Exception: pass
+                self._eval_evt.clear()
+                self._eval_res.clear()
+        except Exception:
+            pass
+        try:
+            self._pending.clear()
+        except Exception:
+            pass
 
     # ── 跨 OOPIF 执行/取值(Selenium switch_to.frame 进不去 Stripe 跨域 iframe,CDP session 能)──
     def eval_all(self, expression):
@@ -135,14 +153,21 @@ class TurnstileApiPatcher:
                 with self._eval_lock:
                     self._eval_evt.pop(cid, None)
         out = []
+        timed_out = 0
         deadline = _t.time() + timeout
         for cid, evt in cids:
-            evt.wait(max(0.0, deadline - _t.time()))
+            # 【#6 修】看 wait 返回值区分"超时未回"vs"真返回 None":原来丢弃返回值,超时后 wait(0.0) 立即返回拿 None,
+            #   调用方分不清两者;现统计超时并日志,便于定位"sitekey 静默漏取→退化 Selenium 路径"。
+            got = evt.wait(max(0.0, deadline - _t.time()))
             with self._eval_lock:
                 v = self._eval_res.pop(cid, None)
                 self._eval_evt.pop(cid, None)
-            if v:
+            if not got:
+                timed_out += 1
+            elif v:
                 out.append(v)
+        if timed_out:
+            self.log("[apipatch] eval_collect %d/%d 个 target 超时(%.0fs)未回" % (timed_out, len(cids), timeout))
         return out
 
     # ── 事件循环 ──────────────────────────────────────────────────────
@@ -180,12 +205,17 @@ class TurnstileApiPatcher:
             except Exception as e:
                 self.log("[apipatch] CDP ws 断开,拦截线程退出(此后不再注入 api.js wrapper): %s" % str(e)[:60])
                 self._running = False   # 状态自洽:线程已死则 _running 同步置假
+                self._drain_inflight()  # 【#5】回收在途条目,唤醒等待者
                 break
             if not raw:
                 continue
             try:
                 msg = json.loads(raw)
-            except Exception:
+            except Exception as _je:
+                # 【#7 修】原来静默 continue:畸形/截断 CDP 报文导致 patched=0 时无从排障。限频日志(每 50 帧记一次)免刷屏。
+                self._json_err = getattr(self, "_json_err", 0) + 1
+                if self._json_err <= 3 or self._json_err % 50 == 0:
+                    self.log("[apipatch] CDP 帧 JSON 解析失败#%d: %s (首80: %s)" % (self._json_err, str(_je)[:40], repr(raw[:80])))
                 continue
             mid = msg.get("id")
             if mid is not None and mid in self._pending:

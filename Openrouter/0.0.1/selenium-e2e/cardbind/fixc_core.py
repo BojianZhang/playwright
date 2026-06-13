@@ -379,14 +379,25 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
             sv = sv2
     except Exception:
         pass
-    sx, sy = json.loads(sv)
-    cdp.mouse_click(sx, sy); time.sleep(2.8)
-    cap = None
+    # 【#8 修】Save 坐标解包加防护:慢代理/中途异常时 SAVE_JS 可能返回 null/""/单元素 → 原裸解包 json.loads(sv)
+    #   抛 JSONDecodeError/ValueError/IndexError 崩整个绑卡。这里安全解析,解不出就跳过点击交下游判未绑。
+    sx, sy = None, None
     try:
-        cap = bool(cdp.evaluate(CAPTCHA_JS))
-    except Exception:
+        _xy = json.loads(sv)
+        if isinstance(_xy, (list, tuple)) and len(_xy) >= 2:
+            sx, sy = _xy[0], _xy[1]
+    except (json.JSONDecodeError, TypeError, ValueError):
         pass
-    log("✓ 点Save @ (%.0f,%.0f);弹验证框=%s" % (sx, sy, cap))
+    cap = None
+    if sx is not None and sy is not None:
+        cdp.mouse_click(sx, sy); time.sleep(2.8)
+        try:
+            cap = bool(cdp.evaluate(CAPTCHA_JS))
+        except Exception:
+            pass
+        log("✓ 点Save @ (%.0f,%.0f);弹验证框=%s" % (sx, sy, cap))
+    else:
+        log("⚠ Save 坐标解析失败(sv=%s),跳过点击 → 交下游判未绑" % str(sv)[:40])
     # 弹框处理
     image_challenge = False
     if cap:
@@ -532,8 +543,13 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
     used_zip = zipc
     # ★ZIP 重试:declined 多半是 AVS(账单ZIP与卡不匹配)→ 不立刻禁卡,先用其它 ZIP 重试【同一张卡】
     #   (卡自带美国ZIP优先,后接免税州ZIP)。过了=卡是好的、只是ZIP问题 → 不烧卡 + 记下成功的 ZIP。
+    # 【#4 修】ZIP 重试加总墙钟死线:每个 ZIP 内层 ~18s,ZIP_RETRY 调大(如10)→ 单卡阻塞最坏 ~180s,
+    #   远超调用方节奏、把并发槽拖死。主循环有 deadline,这段原来独漏 → 补上(默认 60s,FIXC_ZIP_DEADLINE 可配)。
+    _zip_deadline = time.time() + float(os.environ.get("FIXC_ZIP_DEADLINE", "60") or 60)
     for z in (alt_zips or []):
-        if not declined:
+        if not declined or time.time() > _zip_deadline:
+            if declined and time.time() > _zip_deadline:
+                log("⏳ ZIP 重试超过 %ss 死线 → 停止重试,交上层" % os.environ.get("FIXC_ZIP_DEADLINE", "60"))
             break
         z = str(z)
         log("✗ declined → 切 ZIP=%s 重试同一张卡(疑 AVS,不烧卡)" % z)

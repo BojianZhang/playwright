@@ -12,8 +12,14 @@ from cardbind import fixc_core
 def _pick_clean_card():
     """从卡池挑一张干净卡(active 且 successCount==0 且 usedCount==0)。返回 num,MMYY,cvc,zip,last4。"""
     import json
-    with open(common.POOL_FILE, encoding="utf-8") as _f:
-        d = json.load(_f)
+    # 【#10 修】卡池损坏时给明确语义错误,别让裸 JSONDecodeError 冒泡到批量调用方(分不清"卡池坏"还是"真绑卡失败")。
+    try:
+        with open(common.POOL_FILE, encoding="utf-8") as _f:
+            d = json.load(_f)
+    except json.JSONDecodeError as e:
+        raise RuntimeError("卡池 JSON 格式错误(%s): %s" % (common.POOL_FILE, str(e)[:60]))
+    except OSError as e:
+        raise RuntimeError("卡池文件读取失败: %s" % str(e)[:60])
     if isinstance(d, list):
         cards = d
     elif isinstance(d, dict) and "cards" in d:
@@ -43,6 +49,10 @@ def bind_one(env, num, exp, cvc, zipc, wait=25, tag="", precheck=True):
     def lg(m):
         print(("[%s] " % tag if tag else "") + m, flush=True)
     res = {"env": env, "last4": last4, "bound": False, "captcha": None, "reason": ""}
+    # 【#1 修】资源在 finally 统一回收:原来只在正常路径 kill chromedriver,且【从不】adspower_stop →
+    #   任一步异常都会把 AdsPower 浏览器/端口僵尸残留;并行重复失败 → 进程/端口耗尽,后续 adspower_start 全挂。
+    driver = None
+    d2 = None
     try:
         port = common.adspower_start(env, force_stop=True)
         for _ in range(25):
@@ -61,8 +71,6 @@ def bind_one(env, num, exp, cvc, zipc, wait=25, tag="", precheck=True):
                 from steps import steps_billing as _sb
                 if _sb._card_attached(page):
                     res["reason"] = "已有卡(跳过)"; lg("⚠ 已有卡,跳过")
-                    try: driver.service.process.kill()
-                    except Exception: pass
                     return res
             except Exception:
                 pass
@@ -73,8 +81,6 @@ def bind_one(env, num, exp, cvc, zipc, wait=25, tag="", precheck=True):
             pass
         if not page.wait_field_present(NUM, 30, "卡号框"):
             res["reason"] = "卡表单没出来"; lg("✗ 卡表单没出来")
-            try: driver.service.process.kill()
-            except Exception: pass
             return res
 
         out = fixc_core.cdp_fill_and_save(driver, num, exp, cvc, zipc, log=lg)   # 内部已 kill driver
@@ -88,10 +94,15 @@ def bind_one(env, num, exp, cvc, zipc, wait=25, tag="", precheck=True):
         bound = steps_billing._card_attached(common.Page(d2))
         res["bound"] = bool(bound); res["reason"] = "已绑" if bound else "未绑"
         lg("★ 绑卡结果: 账户已挂卡 = %s" % bound)
-        try: d2.service.process.kill()
-        except Exception: pass
     except Exception as e:
         res["reason"] = "异常:" + str(e)[:60]; lg("异常: " + str(e)[:80])
+    finally:
+        for _d in (driver, d2):
+            if _d is not None:
+                try: _d.service.process.kill()
+                except Exception: pass
+        try: common.adspower_stop(env)   # ★ 关键:停掉本函数 start 的 AdsPower 浏览器,所有路径都回收,绝不残留
+        except Exception: pass
     return res
 
 

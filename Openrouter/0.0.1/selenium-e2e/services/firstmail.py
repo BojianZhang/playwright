@@ -16,7 +16,9 @@ from common import http_post_json, log
 DEFAULT_BASE = "https://firstmail.ltd"
 
 
-def get_latest_message(email, password, api_key, base_url=DEFAULT_BASE, folder="INBOX", timeout=30):
+def get_latest_message(email, password, api_key, base_url=DEFAULT_BASE, folder="INBOX", timeout=12):
+    # 【#9 修】单次超时 30→12s:住宅代理间歇飙延迟时,14 次轮询最坏 14×(30+3)≈462s,远超预期。
+    #   降到 12s 让卡顿的请求快速失败、由外层 14 次轮询继续重试(总墙钟回到几十秒量级)。change_mailbox_password 另有独立 timeout 不受影响。
     return http_post_json(
         base_url + "/api/v1/email/messages/latest",
         {"email": email, "password": password, "folder": folder},
