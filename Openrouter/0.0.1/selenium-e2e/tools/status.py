@@ -17,13 +17,14 @@ RES = os.path.join(HERE, "state", "hybrid_results.jsonl")
 def latest_by_email():
     out = {}
     if os.path.exists(RES):
-        for l in open(RES, encoding="utf-8"):
-            try:
-                r = json.loads(l)
-            except Exception:
-                continue
-            if r.get("email"):
-                out[r["email"]] = r
+        with open(RES, encoding="utf-8") as _f:
+            for l in _f:
+                try:
+                    r = json.loads(l)
+                except Exception:
+                    continue
+                if r.get("email"):
+                    out[r["email"]] = r
     return out
 
 
@@ -33,7 +34,8 @@ def _scope_set(path):
     p = path if os.path.isabs(path) else os.path.join(HERE, path)
     if not os.path.exists(p):
         return None
-    return set(l.split(":", 1)[0].strip() for l in open(p, encoding="utf-8") if ":" in l and not l.startswith("#"))
+    with open(p, encoding="utf-8") as _f:
+        return set(l.split(":", 1)[0].strip() for l in _f if ":" in l and not l.startswith("#"))
 
 
 def render(scope_path=None):
@@ -97,7 +99,8 @@ def render(scope_path=None):
 
     # 卡池
     try:
-        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))
+        with open(common.POOL_FILE, encoding="utf-8") as _f:
+            pool = json.load(_f)
         act = [c for c in pool if c.get("status") == "active" and c.get("usedCount", 0) < c.get("maxUses", 1)]
         capleft = sum(c.get("maxUses", 1) - c.get("usedCount", 0) for c in act)
         runnable = max(0, tot - bound - banned - perm)
@@ -141,7 +144,8 @@ def render(scope_path=None):
 
     # per-proxy 战绩(哪些IP退役/好用)
     try:
-        stats = json.load(open(common.PROXY_STATS_FILE, encoding="utf-8"))
+        with open(common.PROXY_STATS_FILE, encoding="utf-8") as _f:
+            stats = json.load(_f)
         if stats:
             retire = int(os.environ.get("PROXY_RETIRE_STREAK", "5"))
             rows = []

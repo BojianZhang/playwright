@@ -14,6 +14,10 @@ const LINE_EXTRACT: Record<'account' | 'proxy' | 'card', (line: string) => strin
   },
   proxy(line) {
     const t = unq(line.split(/\s+\|\s+/)[0]);
+    // scheme://[user:pass@]host:port —— 后端 _parseLine 原生支持且能保留 type,故校验后原样返回(别剥 scheme,否则丢 http/socks 类型)。
+    if (/^[a-zA-Z][\w+.\-]*:\/\//.test(t)) {
+      return /\/\/(?:[^@/]+@)?[A-Za-z0-9.\-]+:\d{1,5}/.test(t) ? t : null;
+    }
     let m = t.match(/^([^\s:@]+):([^\s:@]+)@([A-Za-z0-9.\-]+):(\d{1,5})$/);
     if (m) return `${m[3]}:${m[4]}:${m[1]}:${m[2]}`;
     m = t.match(/^([A-Za-z0-9.\-]+):(\d{1,5})(?::(.+))?$/);
@@ -21,8 +25,18 @@ const LINE_EXTRACT: Record<'account' | 'proxy' | 'card', (line: string) => strin
     return null;
   },
   card(line) {
-    const compact = line.replace(/[ \-]/g, '');
-    return /(?:^|\D)\d{13,19}(?:\D|$)/.test(compact) ? line.trim() : null;
+    // 与后端 billing/card-pool.parseCardLines 对齐:需 有效期(MM/YY)+ 13-19 位卡号 + CVC(3-4)。
+    // 否则上传预览"解析出 N 条"会与导入"N 行全部无法解析"打架(预览只验卡号就算数)。
+    const expM = line.match(/(\d{1,2})\s*[/\-]\s*(\d{2,4})/);
+    if (!expM) return null;
+    const rest = line.replace(expM[0], ' ');
+    const runs = rest.match(/(?:\d[ \t]?){13,19}/g) || [];
+    let number = '';
+    for (const run of runs) { const d = run.replace(/\D/g, ''); if (d.length >= 13 && d.length <= 19 && d.length > number.length) number = d; }
+    if (!number) return null;
+    const shorts = rest.replace(/(?:\d[ \t]?){13,19}/g, ' ').match(/\d+/g) || [];
+    if (!shorts.some((t) => t.length === 3 || t.length === 4)) return null;  // 需 CVC
+    return line.trim();
   },
 };
 
@@ -68,7 +82,8 @@ function splitUsAddress(addr: string): { line1: string; city: string; state: str
   return (line1 && city && state && zip) ? { line1, city, state, zip } : null;
 }
 function rowToAddress(cells: string[], nameIdx: number, addrIdx: number): string | null {
-  const name = (nameIdx >= 0 ? cells[nameIdx] : cells[0] || '').trim();
+  // 注意外层括号:nameIdx 越界(行比表头短)时 cells[nameIdx] 为 undefined,必须整体 || '' 再 trim,否则崩溃。
+  const name = ((nameIdx >= 0 ? cells[nameIdx] : cells[0]) || '').trim();
   let addr = addrIdx >= 0 ? (cells[addrIdx] || '').trim()
     : (cells.find((c) => /\d{5}(?:-\d{4})?\s*,\s*united states/i.test(c) || /,\s*[A-Za-z][A-Za-z .]+\s+\d{5}(?:-\d{4})?\b/.test(c)) || '').trim();
   if (!name || !addr) return null;
@@ -93,8 +108,13 @@ function parseAddressSmart(text: string): ParseResult {
     }
     const canon = rowToAddress(cells, nameIdx, addrIdx);
     if (canon) { kept.push(canon); continue; }
+    // 扁平兜底:去掉尾部"国家"列后,要求末列真含 5 位邮编,且恰好 4/5 列(避免多出前置列→字段右移塞错城市/州/邮编)。
     const flat = cells.map((x) => x.trim()).filter(Boolean);
-    if (flat.length >= 4 && /\d{5}/.test(flat[flat.length - 1] || flat[flat.length - 2])) { kept.push(flat.join('|')); continue; }
+    if (flat.length && /^(united states|usa|u\.?s\.?a?\.?)$/i.test(flat[flat.length - 1])) flat.pop();
+    if ((flat.length === 5 || flat.length === 4) && /\b\d{5}(?:-\d{4})?\b/.test(flat[flat.length - 1])) {
+      kept.push((flat.length === 5 ? flat : ['', ...flat]).join('|'));  // 4 列=无姓名 → 补空姓名,对齐 name|line1|city|state|zip
+      continue;
+    }
     ignored += 1;
   }
   return { kept, ignored };
@@ -118,3 +138,16 @@ export function shortTime(s?: string): string {
   try { return new Date(s).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return s; }
 }
 export function trunc(s: string | undefined, n: number): string { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
+
+export function fmtDuration(ms?: number | null): string {
+  if (ms == null) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60); const r = s % 60;
+  if (m < 60) return `${m}m${r ? r + 's' : ''}`;
+  const h = Math.floor(m / 60); return `${h}h${m % 60}m`;
+}
+export function fmtDateTime(ts?: number | null): string {
+  if (!ts) return '—';
+  try { return new Date(ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return '—'; }
+}

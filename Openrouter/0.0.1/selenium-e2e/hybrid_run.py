@@ -12,6 +12,11 @@
 import os, sys, json, time, argparse, subprocess, threading, re
 import concurrent.futures
 
+# 角色分包(commit d77aca2)后 cleanup_envs/flag_accounts/proxy_score 迁到 tools/;入口需把 tools/ 加入 sys.path,
+# 否则后文 `import cleanup_envs` 等会 ModuleNotFoundError 被广义 except 静默吞掉 →
+# 环境GC/账号打标/IP评分全不跑(孤儿 AdsPower 环境无限堆积、最终耗尽配额)。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+
 import common
 from services import adspower_env
 from steps import steps_billing
@@ -66,10 +71,15 @@ def save_progress(email, **fields):
         return
     with _PROGRESS_LOCK:
         try:
-            d = json.load(open(_PROGRESS_FILE, encoding="utf-8"))
+            with open(_PROGRESS_FILE, encoding="utf-8") as _f:
+                d = json.load(_f)
         except Exception:
             d = {}
         rec = d.setdefault(email, {})
+        # _stage=(name, obj):逐阶段状态机,与 run.py(纯Sel)同 schema → 续跑按阶段跳过/复用。
+        st = fields.pop("_stage", None)
+        if st:
+            rec.setdefault("stages", {})[st[0]] = st[1]
         for k, v in fields.items():
             if v not in (None, ""):
                 rec[k] = v
@@ -118,12 +128,13 @@ def _diversify_proxies(proxies, seg_octets=None):
 
 def read_accounts(path):
     out = []
-    for line in open(path, "r", encoding="utf-8"):
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        em, pw = line.split(":", 1)
-        out.append({"email": em.strip(), "mailbox_pw": pw.strip()})
+    with open(path, "r", encoding="utf-8") as _f:
+        for line in _f:
+            line = line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            em, pw = line.split(":", 1)
+            out.append({"email": em.strip(), "mailbox_pw": pw.strip()})
     return out
 
 
@@ -261,8 +272,11 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         """隔离架构:为加卡新建一个【全新 AdsPower 环境】(干净指纹,不带注册阶段的 Radar 历史)→ 登录。
            返回 (env_id, serial, proxy, port, driver, page, auth);auth=='ok' 才继续加卡。
            —— 实测:复用注册环境会让加卡阶段每张卡都弹账号级 hCaptcha;全新指纹环境绕开它。"""
+        nonlocal env_id   # 关键:env_B 创建成功后立刻写回外层 env_id,使后续 start/login 抛错时 finally 能清掉它
         pxy = _pick_live_proxy(proxies, start_idx)
         eid, serial = adspower_env.create_env_full("hyb-" + email.split("@")[0][:16], pxy, group_id)
+        env_id = eid            # 此刻起 finally 的 `if env_id:` 指向 env_B(原 env_A 已在调用前删,跳过重删无害)
+        res["env_id"] = eid     # 落盘也记 env_B(真正在用的环境),不再停留在已删的 env_A
         port = common.adspower_start(eid)
         drv = common.attach_chrome(port, common.resolve_chromedriver(port))
         common.place_window(drv, rect)
@@ -395,17 +409,27 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                     if res.get("api_key") or res.get("registered"):   # 一拿到 key/注册成功就【立刻 checkpoint】,中途被停也不丢→下次直接登录复用key
                         save_progress(email, api_key=res.get("api_key"), registered=res.get("registered"),
                                       env_id=env_id, billing_status=pw.get("billingStatus"))
+                        # 逐阶段状态机(与纯Sel同 schema,供续跑跳过 + web 阶段统计)
+                        _now = time.strftime("%Y-%m-%d %H:%M:%S")
+                        if res.get("registered"):
+                            save_progress(email, _stage=("register", {"status": "ok", "at": _now}))
+                        if res.get("api_key"):
+                            save_progress(email, _stage=("key", {"status": "ok", "at": _now, "api_key": res.get("api_key")}))
+                        if pw.get("billingStatus") in ("address-bound", "card-bound", "success"):
+                            save_progress(email, _stage=("address", {"status": "ok", "at": _now}))
                     if pw.get("ok"):
                         break
                     log("[混合] Playwright 第 %d/3 次未成(%s, key=%s 地址=%s)→重试" % (
                         tryi + 1, pw.get("reason"), "有" if pw.get("apiKey") else "无", pw.get("billingStatus")))
                     # 基础设施失败(CDP连不上/没产出JSON)= 环境/内核没起来 → 强制重启浏览器换新端口再试,
                     # 别对坏环境白白重试 3 次(每次 connectOverCDP 白等 30s)。已拿到 key 的不重启(避免打断续跑)。
-                    if pw.get("reason") in ("CDP_CONNECT_FAILED", "PW_NO_JSON") and not res.get("api_key") and tryi < 2:
+                    # PW_TIMEOUT 也并入(BUG-010):超时多半是浏览器/CDP 挂了,不 force_stop 就会对着同一个
+                    # 半挂浏览器再超时一次,且那个浏览器在重试窗口内成孤儿。force_stop=True 会先停旧浏览器再起新端口。
+                    if pw.get("reason") in ("CDP_CONNECT_FAILED", "PW_NO_JSON", "PW_TIMEOUT") and not res.get("api_key") and tryi < 2:
                         try:
                             port1 = common.adspower_start(env_id, force_stop=True)
                             ep = "http://127.0.0.1:%s" % port1
-                            log("[混合] CDP 连接失败 → 强制重启环境浏览器(新端口 %s)再试" % port1)
+                            log("[混合] PW 基础设施失败(%s) → 强制重启环境浏览器(新端口 %s)再试" % (pw.get("reason"), port1))
                         except Exception as _e:
                             log("[混合] 强制重启环境失败: %s" % str(_e)[:60])
                     time.sleep(4)
@@ -594,12 +618,25 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             if result == "card-bound":
                 res["ok"] = True
                 success = True
+                # 绑成 checkpoint(卡+地址)→ 续跑可判已绑、web 阶段统计可见。
+                _now = time.strftime("%Y-%m-%d %H:%M:%S")
+                save_progress(email, _stage=("card", {"status": "ok", "at": _now, "card_last4": card.get("last4"), "result": "card-bound"}))
+                save_progress(email, _stage=("address", {"status": "ok", "at": _now}))
                 # 充值($5):仅 --do-purchase 显式开启才【真扣费】(默认关,防误扣);卡刚绑成、page.d 活着、环境未删,直接复用。
-                if do_purchase:
+                _charged_before = (((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok"
+                if do_purchase and _charged_before:
+                    # ★止血#2:已充值(prior stages.charge=ok)→ 跳过,绝不重复扣款。
+                    res["purchase"] = "success"
+                    res["charged"] = 0
+                    res["skipped_charge"] = True
+                    log("[混合] %s 已充值过,跳过(防重复扣款)" % email)
+                elif do_purchase:
                     try:
                         pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
                         res["purchase"] = pr.get("result")
                         res["charged"] = amount if pr.get("result") == "success" else 0
+                        if pr.get("result") == "success":
+                            save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
                         log("[混合] %s 充值 $%s 结果=%s" % (email, amount, pr.get("result")))
                     except Exception as e:
                         res["purchase"] = "error"
@@ -807,6 +844,8 @@ def main():
     ap.add_argument("--keep-failed-env", action="store_true",
                     help="绑卡【没成功】的 AdsPower 环境【不删除】,保留供你手动测试;日志会打出 env_id/序号/名称。"
                          "(注意:会在 AdsPower 里堆积环境,测完记得手动清)")
+    ap.add_argument("--no-resume", action="store_true", help="忽略已绑/被拒/冷却/坏邮箱状态,强制整组重跑(控制台「断点续跑」取消勾选时传入)")
+    ap.add_argument("--job-id", default="", help="本次任务 jobId:写进结果行 job_id,供 web 按 job 隔离取结果(防同引擎并发串号)")
     args = ap.parse_args()
 
     cfg = common.load_config()
@@ -845,7 +884,9 @@ def main():
     latest = {}
     now = time.time()
     if os.path.exists(res_file):
-        for line in open(res_file, encoding="utf-8"):
+        with open(res_file, encoding="utf-8") as _rf:
+            _res_lines = list(_rf)
+        for line in _res_lines:
             try:
                 r = json.loads(line)
             except Exception:
@@ -870,17 +911,27 @@ def main():
     # 合并增量 checkpoint(account_progress.json):中途被停、还没写进 hybrid_results 的号,从这里补回
     # 【已注册/api_key/env_id】→ 下次直接【登录+复用key】,不再重注册重建key(修"第二次还创建KEY")。
     try:
-        _prog = json.load(open(_PROGRESS_FILE, encoding="utf-8"))
+        with open(_PROGRESS_FILE, encoding="utf-8") as _f:
+            _prog = json.load(_f)
         for em, rec in (_prog.items() if isinstance(_prog, dict) else []):
             cur = latest.setdefault(em, {})
             for k in ("registered", "api_key", "env_id", "env_serial", "billing_status"):
                 if rec.get(k) and not cur.get(k):
                     cur[k] = rec[k]
+            # 逐阶段状态机(charge 防重扣 gate / 续跑跳过都读它);checkpoint 比 results 更全,合并进来
+            if rec.get("stages"):
+                merged = dict(cur.get("stages") or {})
+                merged.update(rec["stages"])
+                cur["stages"] = merged
     except Exception:
         pass
 
     acct_emails = {a["email"] for a in accounts}
-    bad_mb = common.load_bad_mailboxes()          # 坏邮箱(404收不到验证邮件的号/域)→ 永久跳过
+    if args.no_resume:
+        # 强制整组重跑:清掉所有"跳过"判据(已绑/被拒/冷却/坏邮箱);prior(registered/api_key/env_id)仍保留 → 直接登录+复用key,不重注册。
+        done = set(); banned = set(); cooldown = {}
+        log("[混合] --no-resume:忽略已绑/被拒/冷却/坏邮箱状态,整组强制重跑")
+    bad_mb = {} if args.no_resume else common.load_bad_mailboxes()  # 坏邮箱→永久跳过;--no-resume 时也强制重试
     in_cooldown = {em: t for em, t in cooldown.items() if em in acct_emails and em not in done and em not in banned and t > now}
     pending = [(i, acct) for i, acct in enumerate(accounts)
                if acct["email"] not in done and acct["email"] not in banned and acct["email"] not in in_cooldown
@@ -900,7 +951,8 @@ def main():
             bf = os.path.join(state_dir, "banned_accounts.txt")
             allbanned = set()
             if os.path.exists(bf):
-                allbanned = set(l.strip() for l in open(bf, encoding="utf-8") if l.strip() and not l.startswith("#"))
+                with open(bf, encoding="utf-8") as _bf:
+                    allbanned = set(l.strip() for l in _bf if l.strip() and not l.startswith("#"))
             allbanned |= banned
             with open(bf, "w", encoding="utf-8") as f:
                 f.write("# OpenRouter 拒绝(not allowed to access)的账号——已永久跳过,勿再注册试错\n")
@@ -973,9 +1025,12 @@ def main():
                 log("🛑 %s 被拒→删环境回收" % nm)
             except Exception:
                 pass
+        if args.job_id:
+            r["job_id"] = args.job_id   # web 按 job 隔离取结果(同引擎并发不串号)
         with _WRITE_LOCK:
             with open(res_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                f.flush(); os.fsync(f.fileno())   # 进程被 SIGKILL 也不丢末尾结果行
         log("════ %s 结果 ok=%s pw=%s key=%s 地址=%s 卡=%s ════" % (
             acct["email"].split("@")[0], r.get("ok"), (r.get("steps") or {}).get("pw"),
             (r.get("api_key") or "")[:14], r.get("billing_status"), (r.get("steps") or {}).get("card")))

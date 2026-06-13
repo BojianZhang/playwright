@@ -21,7 +21,9 @@ def tally(fn, base):
             try:
                 r = json.loads(ln); st = r.get("steps") or {}; n += 1
                 c = st.get("card")
-                if c == "card-bound" or r.get("ok"):
+                # 绑成只认 card 步真为 card-bound;不能 `or r.get("ok")` —— card 模式下 ok 即便加卡被拒也可能为 True
+                # (见 pipeline.py:ok 不含 card 项),那样会把 declined 误计成绑成,绑成率虚高。
+                if c == "card-bound":
                     bound += 1
                 else:
                     rc[c or "?"] += 1
@@ -69,7 +71,7 @@ def deep(fn):
             n += 1
             st = r.get("steps") or {}
             c = st.get("card")
-            bound = (c == "card-bound") or bool(r.get("ok"))
+            bound = (c == "card-bound")  # 只认 card-bound;`or r.get("ok")` 会把加卡被拒(ok 仍可能 True)误计成绑成
             if not bound:
                 if c and c != "card-bound":
                     card_fail[str(c)] += 1

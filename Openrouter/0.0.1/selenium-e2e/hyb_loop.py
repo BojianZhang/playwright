@@ -4,9 +4,33 @@
 # 当没有可跑号、剩下的全在冷却时 →【等到最近一个冷却到点再继续】(不空转、不连刷)。
 # 加卡给不上(切IP无效=卡velocity)的号会被 hybrid_run 打 cooldown_until 时间戳,本循环据此排队。
 # 文件/参数走环境变量,便于换批: HYB_ACCOUNTS / HYB_PROXIES / HYB_OP_PW / HYB_CONCURRENCY / HYB_COOLDOWN_H
-import subprocess, sys, os, json, time
+import subprocess, sys, os, json, time, signal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common   # 复用 banned 判定,口径与 hybrid_run/cleanup_envs 一致
+
+
+def _res_sig():
+    """结果文件签名(mtime,size):用于判断一轮 hybrid_run 是否真写出了进展。"""
+    try:
+        s = os.stat(RES)
+        return (s.st_mtime, s.st_size)
+    except OSError:
+        return None
+
+
+def _kill_tree(proc):
+    """杀整棵进程树(hybrid_run 派生的 chromedriver/node 孙进程),否则它们成孤儿堆积。
+       subprocess 的 timeout 只杀直接子进程,不走树。"""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ACCTS = os.path.join(HERE, os.environ.get("HYB_ACCOUNTS", "accounts.batch19.txt"))
@@ -20,13 +44,16 @@ MAX_RUN_PASSES = int(os.environ.get("HYB_MAX_PASSES", "20"))      # 实际跑 hy
 
 
 def targets():
-    return [l.split(":", 1)[0].strip() for l in open(ACCTS, encoding="utf-8") if ":" in l and not l.startswith("#")]
+    with open(ACCTS, encoding="utf-8") as _f:
+        return [l.split(":", 1)[0].strip() for l in _f if ":" in l and not l.startswith("#")]
 
 
 def _latest():
     out = {}
     if os.path.exists(RES):
-        for l in open(RES, encoding="utf-8"):
+        with open(RES, encoding="utf-8") as _f:
+            _lines = list(_f)
+        for l in _lines:
             try:
                 r = json.loads(l)
             except Exception:
@@ -57,6 +84,7 @@ def cooling(latest, now):
 def run():
     T = targets()
     run_passes = 0
+    consec_crash = 0   # 连续"非零退出且无进展"的轮数:用于识别启动即崩(导入/参数错)→ 及时停,别空转重启
     while run_passes < MAX_RUN_PASSES:
         now = time.time()
         latest = _latest()
@@ -79,15 +107,36 @@ def run():
             pass_timeout = int(os.environ.get("HYB_PASS_TIMEOUT", str(min(4 * 3600, waves * 900 + 600))))
             print("── Pass %d：跑 %d 个可跑号(并发%d,冷却%.1fh,本轮上限%d分) ──" % (
                 run_passes, len(runnable), CONCURRENCY, COOLDOWN_H, pass_timeout // 60), flush=True)
+            sig_before = _res_sig()
+            proc = subprocess.Popen([PY, "-u", "hybrid_run.py", "--accounts", ACCTS, "--proxies", PROXIES,
+                                     "--op-pw", OP_PW, "--proxy-offset", str(run_passes), "--gap", "8",
+                                     "--concurrency", str(CONCURRENCY), "--cooldown-hours", str(COOLDOWN_H),
+                                     "--max-rotations", "3"], cwd=HERE,
+                                    start_new_session=(os.name != "nt"))  # POSIX:独立进程组,便于整树回收
+            rc = None
             try:
-                subprocess.run([PY, "-u", "hybrid_run.py", "--accounts", ACCTS, "--proxies", PROXIES,
-                                "--op-pw", OP_PW, "--proxy-offset", str(run_passes), "--gap", "8",
-                                "--concurrency", str(CONCURRENCY), "--cooldown-hours", str(COOLDOWN_H),
-                                "--max-rotations", "3"], cwd=HERE, timeout=pass_timeout)
+                rc = proc.wait(timeout=pass_timeout)
             except subprocess.TimeoutExpired:
-                # 杀本轮(疑 Selenium 卡死),下一轮重读 state 续跑:卡住号的环境已保留、可重开;
-                # 开跑前的 cleanup_envs.gc_envs 会回收孤儿环境。绝不让一轮卡死拖垮整个循环。
-                print("⚠️ 本轮超过 %d 分钟未结束(疑 Selenium 卡死)→ 杀本轮,下轮重读state续跑" % (pass_timeout // 60), flush=True)
+                # 杀本轮(疑 Selenium 卡死)——连同 chromedriver/node 孙进程整树杀,否则孤儿堆积;
+                # 下一轮重读 state 续跑:卡住号的环境已保留、可重开;开跑前 gc_envs 回收孤儿环境。
+                print("⚠️ 本轮超过 %d 分钟未结束(疑 Selenium 卡死)→ 杀本轮(含子孙进程),下轮重读state续跑" % (pass_timeout // 60), flush=True)
+                _kill_tree(proc)
+                try: proc.wait(timeout=15)
+                except Exception: pass
+                rc = None   # 视作"被杀",非崩溃
+            # busy-spin 防护:非零退出码原来被静默吞 → 启动即崩(导入/参数错)会空转重启耗尽整轮预算。
+            # 非零退出且 state 文件无变化(本轮没写出任何进展)才计为崩;连续两轮就停,避免 ~7 分钟空转。
+            if rc not in (0, None):
+                print("⚠️ hybrid_run 非零退出 rc=%s" % rc, flush=True)
+                if _res_sig() == sig_before:
+                    consec_crash += 1
+                else:
+                    consec_crash = 0
+                if consec_crash >= 2:
+                    print("✗ 连续 %d 轮 hybrid_run 非零退出且无进展(疑启动即崩:导入/参数错)→ 停止循环,请查上方 traceback" % consec_crash, flush=True)
+                    break
+            else:
+                consec_crash = 0
             time.sleep(20)   # 轮间小歇
         elif cooling_now:
             nearest = min(cd[e] for e in cooling_now)

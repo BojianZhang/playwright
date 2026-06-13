@@ -72,13 +72,14 @@ async function main() {
   // Turnstile 拦截(注册必需) + 收集 Cloudflare 请求 URL(sitekey 兜底)
   try { await installTurnstileIntercept(context); } catch (e) { elog('installTurnstileIntercept 失败(忽略): ' + e.message); }
   const cfRequestUrls = [];
-  try { page.on('request', (req) => { if (req.url().includes('challenges.cloudflare.com')) cfRequestUrls.push(req.url()); }); } catch (_e) {}
+  const onCfRequest = (req) => { try { if (req.url().includes('challenges.cloudflare.com')) cfRequestUrls.push(req.url()); } catch (_e) {} };
+  try { page.on('request', onCfRequest); _cfPage = page; _cfListener = onCfRequest; } catch (_e) {}  // 具名 → 退出前可 off(PW-004)
 
   // 周期性关掉 Clerk「Profile details / Account」弹窗——它会挡住账单(绑地址)流程导致 BILLING_ERROR。
   // 【关键安全】只关确属 Clerk Profile 弹窗的；任何含账单/地址/卡/付款字样的弹窗【绝不碰】，
   // 否则会在绑地址提交中途把地址弹窗关掉，导致地址没真存上。
   let _closing = false;
-  const modalCloser = setInterval(() => {
+  _modalCloser = setInterval(() => {   // 存模块级 → 两条退出路径都能 clearInterval(PW-001)
     if (_closing) return; _closing = true;
     page.evaluate(() => {
       var dlgs = document.querySelectorAll('[role="dialog"], .cl-modalContent, .cl-modal');
@@ -148,12 +149,22 @@ async function main() {
     registered: !!(sr.register && sr.register.success),
   };
   // 断开但不关浏览器(留给 Selenium)。disconnect 在本版本可能不存在 → 忽略，直接退出即可。
+  cleanupPwStage();   // 清 modalCloser 定时器 + cfRequest 监听器(page 留给 Selenium,残留会在 CDP 侧继续跑/累积)
   try { if (typeof browser.disconnect === 'function') await browser.disconnect(); } catch (_e) {}
   process.stdout.write(JSON.stringify(out) + '\n');
   process.exit(0);
 }
 
+// 留给 Selenium 接管的 page 上挂了 modalCloser 定时器 + cfRequest 监听器,退出前必须清(PW-001/PW-004):
+// 否则定时器在 CDP 侧每 1.2s 继续 page.evaluate、监听器在同环境重试复用 page 时逐次累积。
+let _modalCloser = null; let _cfPage = null; let _cfListener = null;
+function cleanupPwStage() {
+  try { if (_modalCloser) { clearInterval(_modalCloser); _modalCloser = null; } } catch (_e) { /* ignore */ }
+  try { if (_cfPage && _cfListener) { _cfPage.off('request', _cfListener); _cfListener = null; } } catch (_e) { /* ignore */ }
+}
+
 main().catch((e) => {
+  cleanupPwStage();
   console.error('FATAL ' + (e.message || e));
   // 任何未捕获路径也兜一行 JSON,杜绝 stdout 无 JSON → Python 笼统 PW_NO_JSON
   try {

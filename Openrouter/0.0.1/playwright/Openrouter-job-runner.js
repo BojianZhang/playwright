@@ -23,6 +23,9 @@ const { runOpenrouterRegisterFlow } = require('./Openrouter-register');
 const accountStore = require('../data/account-store');
 const failurePolicy = require('./failure-policy');
 const errorLog = require('./error-log');
+const usageStore = require('../web/usage-store');
+const proxyStore = require('../web/proxy-store');
+const serviceKeys = require('../web/service-keys');
 const exportTemplates = require('./export-templates');
 const { installTurnstileIntercept } = require('./openrouter-turnstile');
 const { installHCaptchaIntercept } = require('./openrouter-hcaptcha');
@@ -153,17 +156,33 @@ async function runJob(opts = {}) {
   // 结果导出：成功账号实时写入文件（关页面也不丢；可在 /download?jobId= 下载）。
   const resultsDir = path.join(__dirname, '..', CONFIG.output?.baseDir || 'data/batch-results');
   let successFile = '';
-  try { fs.mkdirSync(resultsDir, { recursive: true }); successFile = path.join(resultsDir, `${jobId}-success.txt`); } catch (_e) { successFile = ''; }
+  let dirOk = false; // 目录真建成才落盘;resultsDir 是路径串恒真,不能拿它当守卫(否则建目录失败时成败两路不对称)
+  try { fs.mkdirSync(resultsDir, { recursive: true }); dirOk = true; successFile = path.join(resultsDir, `${jobId}-success.txt`); } catch (_e) { successFile = ''; }
+  // 资源使用记录(诊断/排查用):host 反查 proxyId;Node 引擎 envId 来自 raw.adspowerEnvId。
+  const _pxByHost = new Map(proxyStore.list().map((p) => [p.host, p.id]));
+  const _usage = (raw, ok) => {
+    try {
+      const host = String(raw.proxy || '').split(':')[0];
+      usageStore.record({ jobId, engine: 'playwright', email: raw.email || '', host, exitIp: raw.exitIp || '', proxyId: _pxByHost.get(host) || '', cardLast4: raw.cardLast4 || '', envId: raw.adspowerEnvId || '', endpoint: '', stage: raw.stage || (ok ? 'done' : ''), ok, reason: raw.reason || '' });
+    } catch (_e) { /* 使用记录失败不致命 */ }
+  };
+  // 写盘失败不再静默(rel-5):磁盘满时成功账号会丢且 job 仍报"完成",/download 与聚合拿到残缺数据。
+  // 至少在运行日志告警一次(不刷屏),让操作员知道结果可能不全。
+  let _resultWriteWarned = false;
+  const _warnWrite = (e) => {
+    if (_resultWriteWarned) return; _resultWriteWarned = true;
+    publish(jobId, 'log', `⚠ 结果文件写入失败(成功/失败账号可能未落盘,下载与结果聚合会不全): ${e && e.message}`);
+  };
   const recordSuccess = (rendered, raw) => {
-    if (!successFile) return;
-    try { fs.appendFileSync(successFile, `${rendered}\n`); } catch (_e) { /* ignore */ }
-    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-success.jsonl`), `${JSON.stringify(raw)}\n`); } catch (_e) { /* ignore */ }
+    if (!dirOk) return;
+    try { fs.appendFileSync(successFile, `${rendered}\n`); fs.appendFileSync(path.join(resultsDir, `${jobId}-success.jsonl`), `${JSON.stringify(raw)}\n`); } catch (e) { _warnWrite(e); }
+    _usage(raw, true);
   };
   // 失败账号也落盘（email:password:reason 等），方便复盘/重跑。
   const recordFailed = (rendered, raw) => {
-    if (!resultsDir) return;
-    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.txt`), `${rendered}\n`); } catch (_e) { /* ignore */ }
-    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.jsonl`), `${JSON.stringify(raw)}\n`); } catch (_e) { /* ignore */ }
+    if (!dirOk) return;
+    try { fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.txt`), `${rendered}\n`); fs.appendFileSync(path.join(resultsDir, `${jobId}-failed.jsonl`), `${JSON.stringify(raw)}\n`); } catch (e) { _warnWrite(e); }
+    _usage(raw, false);
   };
 
   publish(jobId, 'log', `job ${jobId} 启动：账号 ${accounts.length} 个，并发 ${concurrency}`);
@@ -200,17 +219,29 @@ async function runJob(opts = {}) {
     envInUse: envPool ? envPool.inUseCount : 0,
     envBurned: envPool ? envPool.burnedCount : 0,
   });
-  const statsTimer = setInterval(emitStats, 1200);
-  emitStats();
+  let statsTimer;
 
   try {
+    statsTimer = setInterval(emitStats, 1200);   // 放进 try:setup 阶段抛错也能被 finally 的 clearInterval 兜底(be-6,无泄漏定时器)
+    emitStats();
     await runBatchOrchestration({
     tasks,
     concurrency,
-    runTask: ({ workerId, payload }) => processTask({
-      workerId, concurrency, account: payload.account, proxy: payload.proxy, proxies: payload.proxies, adspowerEnvId: payload.adspowerEnvId, envPool,
-      runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess, recordFailed,
-    }),
+    runTask: async ({ workerId, payload }) => {
+      try {
+        return await processTask({
+          workerId, concurrency, account: payload.account, proxy: payload.proxy, proxies: payload.proxies, adspowerEnvId: payload.adspowerEnvId, envPool,
+          runParams, taskParams, successTemplate, failureTemplate, failureStats, jobId, publish, live, emitStats, recordSuccess, recordFailed,
+        });
+      } catch (e) {
+        // processTask 设计上自报失败、不抛;万一意外抛出也记为失败,否则 summary.success=total-failed 会把它误算成成功。
+        const email = (payload.account && payload.account.email) || '';
+        try { recordFailure(failureStats, 'TASK_THREW', 'crash'); } catch (_e) { /* ignore */ }
+        try { recordFailed(`${email} | TASK_THREW`, { email, reason: 'TASK_THREW', detail: String((e && e.message) || e) }); } catch (_e) { /* ignore */ }
+        try { publish(jobId, 'log', `账号任务异常(已记失败): ${email} → ${(e && e.message) || e}`); } catch (_e) { /* ignore */ }
+        return { success: false };
+      }
+    },
     onWorkerUpdate: (workerState, snapshot) => {
       publish(jobId, 'worker-update', {
         worker: {
@@ -378,9 +409,12 @@ async function processTask(ctx) {
       if (leasedEnv) envPool.release(leasedEnv);
     }
     if (last.success) {
-      const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, last.payload || {});
-      recordSuccess(rendered, last.payload || {});
-      publish(jobId, 'account-success', { rendered, raw: last.payload, attempts: attempt });
+      const sp = last.payload || {};
+      if (!sp.proxy) sp.proxy = proxyKeyOf(curProxy) || '';
+      if (!sp.adspowerEnvId) sp.adspowerEnvId = curEnv || adspowerEnvId || '';
+      const rendered = exportTemplates.render(successTemplate || CONFIG?.export?.template, sp);
+      recordSuccess(rendered, sp);
+      publish(jobId, 'account-success', { rendered, raw: sp, attempts: attempt });
       return { success: true };
     }
     // 账单服务端/网关错 或 declined换卡用尽(本环境疑似被目标站点风控/IP脏) → 优先换一个【干净】环境重试(抢在 classify→abort 之前)。
@@ -405,7 +439,8 @@ async function processTask(ctx) {
     const { action, maxRetries } = failurePolicy.classify(rcode);
     errorLog.record({ email: account.email, stage: last.stage, reason: rcode, action, attempt, jobId }).catch(() => {});
     if (action === 'blacklist') {
-      try { await accountStore.update(account.email, { blacklisted: true, blacklistReason: rcode }); } catch (_e) { /* 不致命 */ }
+      try { await accountStore.update(account.email, { blacklisted: true, blacklistReason: rcode }); }
+      catch (e) { publish(jobId, 'log', `W${workerId} ⚠ 拉黑落盘失败 ${account.email}(下次可能重复跑该号): ${e && e.message}`); }   // rel-4:不再静默
       publish(jobId, 'log', `W${workerId} ${account.email} 判定拉黑(${rcode})，不再重试`);
       break;
     }
@@ -433,6 +468,7 @@ async function processTask(ctx) {
     attempts: made,
     detail: (rawMsg ? String(rawMsg).slice(0, 300) : ''),
     proxy: proxyKeyOf(curProxy) || '',
+    adspowerEnvId: curEnv || adspowerEnvId || '',
     createdAt: new Date().toISOString(),
   };
   const failRendered = exportTemplates.render(failureTemplate || '{{email}}:{{password}}:{{reason}}', failRaw);
@@ -574,7 +610,9 @@ async function runAttempt(actx) {
   const effectiveTaskParams = (overrideMode || (priorState && priorState.registered))
     ? { ...taskParams, mode: overrideMode || 'login' }
     : taskParams;
-  const runtime = { headed, taskParams: effectiveTaskParams, priorState, resume, ipCheck: runtimeBundle.ipCheck, config: CONFIG, adspower: runtimeBundle.adspower, providerMeta: runtimeBundle.providerMeta };
+  // 验证码/邮箱 key 池:用选用的 key 覆盖本次流程的 config(池空则等同原 CONFIG);不碰求解逻辑。
+  // 跨节点下发时 taskParams 里带了中心机复制来的 key → applyToConfig 优先用它(覆盖本机池/config)。
+  const runtime = { headed, taskParams: effectiveTaskParams, priorState, resume, ipCheck: runtimeBundle.ipCheck, config: serviceKeys.applyToConfig(CONFIG, taskParams), adspower: runtimeBundle.adspower, providerMeta: runtimeBundle.providerMeta };
 
   try {
     const result = await runOpenrouterRegisterFlow({
@@ -594,8 +632,9 @@ async function runAttempt(actx) {
         onCard: (pool, last) => publish(jobId, 'card-stats', { pool, last }),
         // 充值台账实时推送(billing 阶段每账号终态)。
         onBilling: (summary, last) => publish(jobId, 'billing-stats', { summary, last }),
-        // 账号进度落盘(支撑断点续跑；成功/失败都写部分进度)。
-        saveState: (snap) => { try { accountStore.update(snap.email, snap); } catch (_e) { /* 不致命 */ } },
+        // 账号进度落盘(支撑断点续跑；成功/失败都写部分进度)。update 是 async(mutex),
+        // 必须接住 Promise 拒绝(否则 unhandledRejection)+ 落盘失败要告警(sec-1/rel-4),别静默吞。
+        saveState: (snap) => { Promise.resolve(accountStore.update(snap.email, snap)).catch((e) => publish(jobId, 'log', `W${workerId} ⚠ 进度落盘失败 ${snap.email}: ${e && e.message}`)); },
       },
     });
 

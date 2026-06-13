@@ -6,12 +6,21 @@ import os
 from .base import log
 
 
+def _envint(name, default):
+    """环境变量转 int;未设/空/非数字 → 默认值。防操作员误填 GRID_*/SCREEN_* 把置窗整批崩
+       (grid_rect 在每账号置窗时调用,一个坏 env 会让全批每个账号都崩在这一步)。"""
+    try:
+        return int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+
+
 def screen_size():
     """屏幕分辨率(Windows 取真实值,失败回退 1920x1080;环境变量 SCREEN_W/SCREEN_H 可覆盖)。"""
-    w = os.environ.get("SCREEN_W")
-    h = os.environ.get("SCREEN_H")
-    if w and h:
-        return int(w), int(h)
+    w = _envint("SCREEN_W", 0)
+    h = _envint("SCREEN_H", 0)
+    if w > 0 and h > 0:
+        return w, h
     try:
         import ctypes
         u = ctypes.windll.user32
@@ -26,17 +35,17 @@ def grid_rect(slot, total, taskbar=48):
     列数=ceil(sqrt(total)),尺寸=屏幕/网格——并发越多每个窗口越小,正好铺满屏。
     【多引擎共屏】GRID_TOTAL 覆盖总格数、GRID_SLOT_OFFSET 平移本引擎槽位 → 多个进程共用同一张网格不重叠
     (例:总10格,Selenium GRID_SLOT_OFFSET=0 占0-6,hybrid GRID_SLOT_OFFSET=7 占7-9,尺寸统一)。"""
-    import math, os
-    total = int(os.environ.get("GRID_TOTAL") or total)
-    slot = int(slot) + int(os.environ.get("GRID_SLOT_OFFSET") or 0)
+    import math
+    total = _envint("GRID_TOTAL", 0) or total
+    slot = int(slot) + _envint("GRID_SLOT_OFFSET", 0)
     sw, sh = screen_size()
     sh = max(360, sh - taskbar)
     total = max(1, int(total))
     # 宽屏感知:列数按屏幕宽高比放大(宽屏多列→每个窗口更【高】,卡表单 Save 按钮装得下,免"没取到Save坐标")
     # ★最小可用尺寸:窗口太小→向导Continue按钮被折叠到下方点不到、FixC坐标点挤变形→卡死(实测688×696可用、491×464崩)。
     #   并发再高也不缩到这以下:超出每屏容量的窗口靠下面 modulo 叠在一起(各自仍是可用大小,自动化按各自viewport驱动,不受叠放影响)。
-    MIN_W = int(os.environ.get("GRID_MIN_W") or 600)
-    MIN_H = int(os.environ.get("GRID_MIN_H") or 500)
+    MIN_W = max(1, _envint("GRID_MIN_W", 600))   # clamp ≥1:GRID_MIN_W=0 会让下面 sw // MIN_W 除零崩
+    MIN_H = max(1, _envint("GRID_MIN_H", 500))
     aspect = max(1.0, sw / float(max(1, sh)))
     cols = min(total, max(1, int(math.ceil(math.sqrt(total * aspect)))))
     rows = int(math.ceil(total / float(cols)))

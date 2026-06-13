@@ -409,13 +409,28 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
                 try:
                     sv2 = cdp.evaluate(SAVE_JS)
                     if sv2:
-                        s2 = json.loads(sv2); cdp.mouse_click(s2[0], s2[1]); time.sleep(2.5)
+                        s2 = json.loads(sv2); cdp.mouse_click(s2[0], s2[1])
                 except Exception:
                     pass
-            try:
-                cap = bool(cdp.evaluate(CAPTCHA_JS))
-            except Exception:
-                pass
+                # 点框后给"放行"留时间:轮询复检,框一消失即视为过;最多等 FIXC_HC_RECHECK_WAIT 秒(默认5,控制台可配)。
+                # 旧版是睡死 2.5s 再单次判 → 慢放行的 checkbox 框会被误判换卡;改轮询:过了就提前退出,没过才等满。
+                _recheck = float(os.environ.get("FIXC_HC_RECHECK_WAIT", "5") or 5)
+                _rc_end = time.time() + max(0.0, _recheck)
+                cap = True
+                while True:
+                    time.sleep(1.0 if _recheck >= 1 else max(0.2, _recheck))
+                    try:
+                        cap = bool(cdp.evaluate(CAPTCHA_JS))
+                    except Exception:
+                        pass
+                    if not cap or time.time() >= _rc_end:
+                        break
+            else:
+                # 图片九宫格:点不掉、等也白等 → 单次复检,直接交下面 2captcha/换卡
+                try:
+                    cap = bool(cdp.evaluate(CAPTCHA_JS))
+                except Exception:
+                    pass
             # ② 验证框还在(checkbox点不掉=【Stripe 隐形/图片 hcaptcha】,这才是实际情况)→ 开关ON就 2captcha 求解+注token。
             #    【开关 solve_hcap】开=2captcha 走代理解+跨OOPIF注入(需 patcher 注了 hcaptcha hook;★可能破坏免检会话→502);关=直接交上层换卡。
             if cap and solve_hcap and patcher is not None:

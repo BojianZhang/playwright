@@ -19,6 +19,11 @@ except Exception:
 # 127.0.0.1（不是 local.adspower.net）：后者不在系统代理绕过名单，开了本地代理(VPN/clash)会被转走→502。
 API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 _NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 强制不走系统代理
+# AdsPower 鉴权令牌(本机网关一般无需 → 默认空,不加头;指向远程/带鉴权网关时,web 经 engine-runner
+# 注入 OPENROUTER_ADSPOWER_TOKEN)。头名/前缀可覆盖以适配不同网关(默认 Authorization: Bearer <token>)。
+ADS_TOKEN = (os.environ.get("OPENROUTER_ADSPOWER_TOKEN", "") or "").strip()
+ADS_AUTH_HEADER = os.environ.get("OPENROUTER_ADSPOWER_AUTH_HEADER", "Authorization") or "Authorization"
+ADS_AUTH_PREFIX = os.environ.get("OPENROUTER_ADSPOWER_AUTH_PREFIX", "Bearer ")  # 设空=发裸 token
 
 CREDITS_URL = "https://openrouter.ai/settings/credits"
 KEYS_URL = "https://openrouter.ai/settings/keys"
@@ -85,8 +90,15 @@ def _atomic_write_json(path, data):
         os.replace(tmp, path)   # Windows/POSIX 同盘原子替换
         return True
     except Exception:
+        # 兜底也必须原子:先把整个 JSON 序列化成字符串(序列化失败不会动到目标文件),
+        # 再写临时文件 + os.replace。绝不能 open(path,"w") 直接截断后再流式 dump
+        # ——那会在被杀/盘满/序列化中途失败时把状态文件留成半截,正是本函数要防的事。
         try:
-            json.dump(data, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+            s = json.dumps(data, ensure_ascii=False, indent=2)
+            tmp = "%s.tmp.%d.%d" % (path, os.getpid(), threading.get_ident())
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(s)
+            os.replace(tmp, path)
         except Exception:
             pass
         return False
@@ -107,7 +119,10 @@ class _FileLock:
                 self._fd = os.open(self._lf, os.O_CREAT | os.O_EXCL | os.O_RDWR)
                 self._held = True                   # 真抢到了:__exit__ 才有资格删 lockfile
                 return self
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # PermissionError:Windows 下持有者把 fd 开着,竞争者 O_EXCL 会撞共享冲突(errno13)而非 FileExistsError;
+                #   原来只 except FileExistsError → Windows 上每次争用都落到下面 except Exception 退化为无锁,跨进程锁形同虚设。
+                #   把它当"锁被持有"同等处理(下面靠 lockfile 是否存在/mtime 区分:真权限问题时 getmtime 失败→age=None→退化)。
                 if _t.time() > end:                 # 超时:不再无条件清锁(两进程会同时删→双双 O_EXCL 成功→双进临界区)
                     # 只有 lockfile 足够老(>STALE 秒、持有者大概率已死)才当陈旧锁清,且清完不立即 continue 抢——
                     # 让下一轮循环正常 O_EXCL,避免和别的等待者撞删;否则放弃锁退化为无锁(记 log,不阻塞主流程)。
@@ -122,12 +137,22 @@ class _FileLock:
                         end = _t.time() + min(self._to, 2)   # 给一点窗口重抢(可能被别的等待者抢走→那也只是退化无锁)
                         _t.sleep(0.03)
                         continue
-                    # 锁还新(别的进程正持有)或拿不到 mtime → 放弃,退化为无锁(不删活锁、不双进入)
-                    try: log("[lock] 等待 %s 超时(锁未过期),退化为无锁继续" % os.path.basename(self._lf))
+                    if age is not None:
+                        # 锁还新=活持有者:【不退化为无锁】(并发读改写会丢增量)。把 deadline 延到 lockfile 变陈旧那一刻
+                        # (+小余量)继续正常 O_EXCL 重试 → 要么等它释放、要么它真死后按陈旧锁清掉再抢。
+                        # lockfile 创建后 mtime 不变、age 只增 → 必在 stale 处收敛,不会无限等;正常 RMW 是毫秒级,
+                        # 走到这里几乎只发生在持有者卡死/超长持锁,等待(正确)远胜丢增量。
+                        end = _t.time() + max(0.5, stale - age) + 0.5
+                        _t.sleep(0.05)
+                        continue
+                    # 连 mtime 都取不到(lockfile 恰被别进程删等极少数)→ 放弃,退化为无锁(记 log)
+                    try: log("[lock] ⚠ 等待 %s 超时且无法判断锁龄,退化为无锁继续——并发读改写可能丢增量" % os.path.basename(self._lf))
                     except Exception: pass
                     return self
                 _t.sleep(0.03)
-            except Exception:
+            except Exception as _e:
+                try: log("[lock] ⚠ 取锁异常,退化为无锁继续(并发读改写可能丢增量): %s" % _e)  # 原来此路径静默退化,不可观测
+                except Exception: pass
                 return self                         # 取锁异常不阻塞主流程(退化为无锁)
 
     def __exit__(self, *a):

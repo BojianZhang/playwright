@@ -20,7 +20,12 @@ class Page:
         self.Select = Select
 
     def goto(self, url, wait=2.0):
-        self.d.get(url)
+        # set_page_load_timeout 生效后,慢页面会让 d.get() 抛 TimeoutException —— 这里吞掉:
+        # 页面通常已"够用"(readyState 可能仍是 interactive),交给 wait_loaded 兜底,绝不让一次慢加载崩掉整号。
+        try:
+            self.d.get(url)
+        except Exception as e:
+            log("  [goto] 加载超时/中断(继续): %s" % str(e)[:60])
         self.wait_loaded()
         if wait:
             time.sleep(wait)
@@ -64,7 +69,11 @@ class Page:
                 try:
                     if f is not None:
                         self.d.switch_to.frame(f)
-                    txt.append(self.d.find_element(By.TAG_NAME, "body").text or "")
+                    # 用 execute_script 读 innerText(受 set_script_timeout 约束,超时即抛被接住),
+                    # 而非 find_element(body).text —— 后者是不受脚本超时管的 WebDriver 命令,
+                    # 遇到不响应的跨域 iframe(Turnstile/Stripe)会无限挂住,整号卡死。
+                    txt.append(self.d.execute_script(
+                        "return (document.body&&document.body.innerText)||''") or "")
                 except Exception:
                     pass
                 finally:

@@ -11,13 +11,16 @@ except Exception:
 
 API = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# AdsPower 鉴权令牌(本机一般无需→空则不加头;远程/带鉴权网关时设 OPENROUTER_ADSPOWER_TOKEN)。
+_ADS_TOKEN = (os.environ.get("OPENROUTER_ADSPOWER_TOKEN", "") or "").strip()
+_ADS_HDR = {(os.environ.get("OPENROUTER_ADSPOWER_AUTH_HEADER", "Authorization") or "Authorization"): os.environ.get("OPENROUTER_ADSPOWER_AUTH_PREFIX", "Bearer ") + _ADS_TOKEN} if _ADS_TOKEN else {}
 
 
 def g(p, t=60, retries=5):
     last = None
     for i in range(retries):
         try:
-            return json.loads(NOPROXY.open(API + p, timeout=t).read())
+            return json.loads(NOPROXY.open(urllib.request.Request(API + p, headers=_ADS_HDR), timeout=t).read())
         except Exception as e:
             last = e; time.sleep(3)
     raise SystemExit("AdsPower 不通: %s" % last)

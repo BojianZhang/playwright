@@ -41,7 +41,7 @@ function flushNow() {
     const tmp = `${ACCOUNTS_FILE}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(STATE, null, 2), 'utf8');
     fs.renameSync(tmp, ACCOUNTS_FILE); // 原子替换，避免半写文件
-  } catch (_e) { /* 落盘失败不致命 */ }
+  } catch (e) { try { console.error('[account-store] 落盘失败(账号进度可能丢):', e && e.message); } catch (_e) { /* ignore */ } }
 }
 function scheduleFlush() {
   if (flushTimer) return;
@@ -117,5 +117,6 @@ function billingSatisfied(priorStatus, action) {
 module.exports = {
   get, update, reset, clear, list,
   attainedLevel, requestedLevel, billingSatisfied,
+  flushNow,   // 供 server.js 优雅退出时同步刷盘(否则 setTimeout(400) 窗口内的写在退出时丢失)
   _ACCOUNTS_FILE: ACCOUNTS_FILE,
 };

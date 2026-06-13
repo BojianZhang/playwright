@@ -405,7 +405,10 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
     if page.click_card_tab(6):
         log("[加卡] 支付方式选择器→已选 Card")
         time.sleep(1.5)
-    page.wait_field_present(ADDR_NAME + NUM, 30, "地址或卡表单")
+    # 检查返回(BUG-007:原来忽略返回值盲目继续)。30s 内地址/卡表单都没出 → 告警;
+    # 不在此硬失败,因为下面卡号框检测(NUM)带刷新重载 Stripe.js 的兜底恢复,硬失败会越过那段恢复。
+    if not page.wait_field_present(ADDR_NAME + NUM, 30, "地址或卡表单"):
+        log("[加卡] ⚠ 30s 内地址/卡表单都没出现 → 仍继续(下方卡号框检测会刷新重载 Stripe.js 兜底)")
 
     # 账单地址（新账号才有；地址已存则跳过）
     _fill_billing_address(page, address)

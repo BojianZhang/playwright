@@ -12,7 +12,8 @@ from cardbind import fixc_core
 def _pick_clean_card():
     """从卡池挑一张干净卡(active 且 successCount==0 且 usedCount==0)。返回 num,MMYY,cvc,zip,last4。"""
     import json
-    d = json.load(open(common.POOL_FILE, encoding="utf-8"))
+    with open(common.POOL_FILE, encoding="utf-8") as _f:
+        d = json.load(_f)
     if isinstance(d, list):
         cards = d
     elif isinstance(d, dict) and "cards" in d:

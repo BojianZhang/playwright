@@ -157,6 +157,9 @@ def _handle_onboarding_wizard(page):
     if not in_wizard:
         return None
     log("[取Key] 检测到新号 onboarding 向导 → 走向导抓 key")
+    # ★ 墙钟死线:即便每次 page.js 都卡满 script_timeout,20 轮也能拖到 ~10 分钟才退出(看着就是"卡死")。
+    #   给向导取 key 整体一个上限,到点直接快速失败 → 整号重试,绝不长时间干挂在向导页。
+    wiz_deadline = time.time() + float(os.environ.get("WIZARD_KEY_DEADLINE", "150"))
     # 抓完整明文 sk-or-(掩码 ••• 不匹配;明文在 "Your workspace is ready" 的 fetch 示例 code/pre 里)。
     # 提成局部 JS 复用:主循环、workspace-ready 多轮快查、WIZARD_NO_KEY 前补抓都用它。
     _GRAB_KEY_JS = (
@@ -170,6 +173,10 @@ def _handle_onboarding_wizard(page):
     # 1+2) 选 Individual(原生click,div卡片 DOM click 不触发 React)并等明文 key 出现
     key = None
     for _i in range(20):
+        if time.time() > wiz_deadline:
+            log("[取Key] 向导取 key 超过墙钟死线(%.0fs) → 放弃,快速失败走整号重试"
+                % float(os.environ.get("WIZARD_KEY_DEADLINE", "150")))
+            return WIZARD_NO_KEY
         t = page.all_frames_text() or ""
         # Welcome 首步(还没到角色选择)→ 点 Get started/Continue 推进,否则一直卡在欢迎页、抓不到 key。
         if re.search(r"Welcome to OpenRouter", t, re.I) and not re.search(r"How will you be using", t, re.I):

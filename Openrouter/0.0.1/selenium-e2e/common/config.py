@@ -46,12 +46,19 @@ def load_config():
             pass
     cap = cfg.get("captcha", {}) or {}
     mb = cfg.get("mailbox", {}) or {}
+    # apiTimeoutMs 可能被写成 null / 字符串 / 0:默认值只在"键缺失"时生效,present-but-bad 会让
+    # 原来的 `mb.get(...,30000)/1000.0` 抛 TypeError/ValueError,整个 load_config 连带流水线崩。防御式转型。
+    try:
+        mail_timeout = float(mb.get("apiTimeoutMs") or 30000) / 1000.0
+    except (TypeError, ValueError):
+        mail_timeout = 30.0
+    # 环境变量优先(web 控制台「验证码/邮箱 key 池」选用的 key 经 engine-runner 注入;无则用文件值)。
     return {
-        "captcha_key": cap.get("apiKey", ""),
-        "captcha_provider": cap.get("provider", "twocaptcha"),
-        "mail_key": mb.get("apiKey", ""),
-        "mail_base": mb.get("apiBaseUrl", "https://firstmail.ltd"),
-        "mail_timeout": mb.get("apiTimeoutMs", 30000) / 1000.0,
+        "captcha_key": os.environ.get("OPENROUTER_CAPTCHA_KEY") or cap.get("apiKey", ""),
+        "captcha_provider": os.environ.get("OPENROUTER_CAPTCHA_PROVIDER") or cap.get("provider", "twocaptcha"),
+        "mail_key": os.environ.get("OPENROUTER_FIRSTMAIL_KEY") or mb.get("apiKey", ""),
+        "mail_base": os.environ.get("OPENROUTER_FIRSTMAIL_BASE") or mb.get("apiBaseUrl", "https://firstmail.ltd"),
+        "mail_timeout": mail_timeout,
     }
 
 

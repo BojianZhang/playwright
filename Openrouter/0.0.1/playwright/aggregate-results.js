@@ -90,7 +90,10 @@ function dedupe(records, mode) {
   if (mode === 'none') return records;
   const seen = new Map();
   for (const r of records) {
-    const key = mode === 'email+apiKey' ? `${r.email}|${r.apiKey}` : (r.email || JSON.stringify(r));
+    // email/apiKey 都缺时不可塌缩成同一个键(会误删彼此不同的记录)→ 用唯一行键。与 web/server.js 去重口径一致。
+    const key = mode === 'email+apiKey'
+      ? ((r.email || r.apiKey) ? `${r.email || ''}|${r.apiKey || ''}` : `__row${seen.size}`)
+      : (r.email || `__row${seen.size}`);
     // 同 key 时优先保留带 apiKey 的那条
     if (!seen.has(key) || (!seen.get(key).apiKey && r.apiKey)) seen.set(key, r);
   }
@@ -101,7 +104,9 @@ function dedupe(records, mode) {
   const cfg = loadConfig();
   const includeLocal = hasFlag('--local') || cfg.local || (!arg('--hosts', '') && !(cfg.hosts && cfg.hosts.length));
   const hosts = (arg('--hosts', '') ? arg('--hosts', '').split(',') : (cfg.hosts || [])).map((s) => s.trim()).filter(Boolean);
-  const dedupeMode = arg('--dedupe', cfg.dedupe || 'email');
+  // 默认 email+apiKey:跨机/多批合并时同邮箱可能有不同 Key(各机无共享缓存),默认 email 会把多个 Key 塌缩成一条、丢 Key。
+  // 与 web/server.js 聚合端点默认口径一致(同邮箱多 key 不丢)。要严格按邮箱去重再显式传 --dedupe email。
+  const dedupeMode = arg('--dedupe', cfg.dedupe || 'email+apiKey');
   const outBase = arg('--out', cfg.out || 'aggregated');
 
   const all = [];
@@ -116,8 +121,15 @@ function dedupe(records, mode) {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonFile = path.join(RESULTS_DIR, `${outBase}-${ts}.json`);
   const txtFile = path.join(RESULTS_DIR, `${outBase}-${ts}.txt`);
-  fs.writeFileSync(jsonFile, JSON.stringify(merged, null, 2));
-  fs.writeFileSync(txtFile, merged.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'));
+  // 原子写(tmp+rename)+ 配对:txt 写失败就删掉已落的 json,避免留下半截/无配对的导出文件。
+  const _writeAtomic = (file, content) => { const tmp = file + '.tmp'; fs.writeFileSync(tmp, content); fs.renameSync(tmp, file); };
+  try {
+    _writeAtomic(jsonFile, JSON.stringify(merged, null, 2));
+    _writeAtomic(txtFile, merged.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'));
+  } catch (e) {
+    try { fs.unlinkSync(jsonFile); } catch (_e) { /* ignore */ }
+    console.error('写入导出文件失败:', e.message); process.exit(1);
+  }
 
   console.log(`\n合计 ${all.length} 条,去重(${dedupeMode})后 ${merged.length} 条`);
   console.log(`已输出:\n  ${jsonFile}\n  ${txtFile}`);

@@ -14,6 +14,23 @@ from .base import log, _atomic_write_json, _file_lock
 from . import paths
 
 
+# 环境变量数值转型(防御):未设/空/非数字 → 默认值。
+# 这些 CARD_*/PROXY_* 阈值在锁保护的临界区里读,操作员误填(如 ="" 或 ="abc")若直接 int()/float()
+# 会抛 ValueError 中断当次加卡/取卡操作;统一走这里兜底,绝不让一个环境变量打挂临界区。
+def _envint(name, default):
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _envfloat(name, default):
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # ── 代理质量:切代理前验通/测速 + per-proxy 成功率追踪/退役 ────────────────────
 _PROXY_LOCK = threading.Lock()
 
@@ -52,7 +69,8 @@ def mark_proxy_result(proxy, result):
     key = "%s:%s" % (proxy.get("host"), proxy.get("port"))
     with _PROXY_LOCK, _file_lock(paths.PROXY_STATS_FILE):   # ★跨进程锁:两引擎并发 read-modify-write 不丢更新
         try:
-            stats = json.load(open(paths.PROXY_STATS_FILE, encoding="utf-8"))
+            with open(paths.PROXY_STATS_FILE, encoding="utf-8") as _f:
+                stats = json.load(_f)
         except Exception:
             stats = {}
         s = stats.setdefault(key, {})
@@ -68,11 +86,14 @@ def mark_proxy_result(proxy, result):
 def proxy_retired(proxy):
     """连续失败(dead/unknown)≥阈值(PROXY_RETIRE_STREAK 默认5)的代理→退役,选IP时跳过。"""
     key = "%s:%s" % (proxy.get("host"), proxy.get("port"))
-    try:
-        stats = json.load(open(paths.PROXY_STATS_FILE, encoding="utf-8"))
-    except Exception:
-        return False
-    return stats.get(key, {}).get("fail_streak", 0) >= int(os.environ.get("PROXY_RETIRE_STREAK", "5"))
+    # ★与 mark_proxy_result 一致用同一把锁读:否则两进程并发时可能读到半写文件/陈旧值。
+    with _PROXY_LOCK, _file_lock(paths.PROXY_STATS_FILE):
+        try:
+            with open(paths.PROXY_STATS_FILE, encoding="utf-8") as _f:
+                stats = json.load(_f)
+        except Exception:
+            return False
+    return stats.get(key, {}).get("fail_streak", 0) >= _envint("PROXY_RETIRE_STREAK", 5)
 
 
 _ZIP_LOCK = threading.Lock()
@@ -85,7 +106,8 @@ def mark_zip_result(zipcode, result):
     z = str(zipcode)
     with _ZIP_LOCK, _file_lock(paths.ZIP_STATS_FILE):       # ★跨进程锁:两引擎并发 read-modify-write 不丢更新
         try:
-            stats = json.load(open(paths.ZIP_STATS_FILE, encoding="utf-8"))
+            with open(paths.ZIP_STATS_FILE, encoding="utf-8") as _f:
+                stats = json.load(_f)
         except Exception:
             stats = {}
         s = stats.setdefault(z, {})
@@ -105,7 +127,8 @@ _TAXFREE_ZIP_STATE = {"59601": "Montana", "59718": "Montana", "59101": "Montana"
 def zip_report(log=print):
     """打印各 ZIP 加卡成功率(card-bound/总),高→低,并标出是否免税州。返回 rows。"""
     try:
-        stats = json.load(open(paths.ZIP_STATS_FILE, encoding="utf-8"))
+        with open(paths.ZIP_STATS_FILE, encoding="utf-8") as _f:
+            stats = json.load(_f)
     except Exception:
         log("[ZIP] 暂无 ZIP 战绩(还没跑过带 ZIP 记录的加卡)"); return []
     rows = []
@@ -134,7 +157,8 @@ def _bin_of(c):
 def _read_bin_usage():
     """bin-usage.json = {日期:{BIN:{assigned,bound,declined,server-error,unknown,hcaptcha}}}。兼容旧 {BIN:int}。"""
     try:
-        d = json.load(open(paths.BIN_USAGE_FILE, encoding="utf-8"))
+        with open(paths.BIN_USAGE_FILE, encoding="utf-8") as _f:
+            d = json.load(_f)
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
@@ -172,10 +196,11 @@ def load_card(account=None, exclude=None, count_bin=True, exclude_bins=None):
     try:
         _blf = os.path.join(paths.HERE, "card-blacklist-bins.txt")
         if os.path.exists(_blf):
-            for _ln in open(_blf, encoding="utf-8"):
-                _ln = _ln.strip()
-                if _ln and not _ln.startswith("#"):
-                    exclude_bins.add(_ln[:6])
+            with open(_blf, encoding="utf-8") as _bf:
+                for _ln in _bf:
+                    _ln = _ln.strip()
+                    if _ln and not _ln.startswith("#"):
+                        exclude_bins.add(_ln[:6])
     except Exception:
         pass
     import datetime as _dt
@@ -219,7 +244,8 @@ def load_card(account=None, exclude=None, count_bin=True, exclude_bins=None):
         assign = {}
         if os.path.exists(paths.CARD_ASSIGN_FILE):
             try:
-                assign = json.load(open(paths.CARD_ASSIGN_FILE, encoding="utf-8"))
+                with open(paths.CARD_ASSIGN_FILE, encoding="utf-8") as _f:
+                    assign = json.load(_f)
             except Exception:
                 assign = {}
         # 已分配且该卡还可用且没被 exclude → 复用(重试同一号还用同一张卡;换卡时跳过已试的)
@@ -230,7 +256,9 @@ def load_card(account=None, exclude=None, count_bin=True, exclude_bins=None):
         bin_picked = None
         import collections, datetime, random as _rnd
         counts = collections.Counter(assign.values())              # 每张卡已分配给几个号(守 maxUses)
-        cap = int(os.environ.get("CARD_BIN_DAILY_CAP", "20"))       # 每个 BIN 当日加卡号数上限(防 velocity)
+        # 每个 BIN 当日加卡号数上限(防 velocity)。clamp ≥1:CARD_BIN_DAILY_CAP=0/负 原来会让 _assigned()<cap 恒假、
+        # 撞兜底=静默关闭速率上限;现钳到最严(至少 1),不让一个 0 把 velocity 防护悄悄关掉(要无限放宽就设大数)。
+        cap = max(1, _envint("CARD_BIN_DAILY_CAP", 20))
         today = datetime.date.today().isoformat()
         binusage = _read_bin_usage()
         today_use = _bin_today(binusage, today)                     # {BIN:{assigned,bound,declined,...}}  三策略共用
@@ -287,7 +315,8 @@ def _hcaptcha_file():
 def load_hcaptcha_hits():
     """读【撞过图片验证码(hCaptcha)】的号登记(email→{count,last_at,...})。hcaptcha 是环境因素可重试,这是计数追踪不跳过。"""
     try:
-        return json.load(open(_hcaptcha_file(), encoding="utf-8"))
+        with open(_hcaptcha_file(), encoding="utf-8") as _f:
+            return json.load(_f)
     except Exception:
         return {}
 
@@ -319,7 +348,8 @@ def _bad_mailbox_file():
 def load_bad_mailboxes():
     """读已登记的【坏邮箱】(Firstmail 404 不可访问/收不到 OpenRouter 验证邮件的号)→ run.py/hybrid 据此永久跳过。返回 dict email→info。"""
     try:
-        return json.load(open(_bad_mailbox_file(), encoding="utf-8"))
+        with open(_bad_mailbox_file(), encoding="utf-8") as _f:
+            return json.load(_f)
     except Exception:
         return {}
 
@@ -361,7 +391,8 @@ def mark_card_result(card, result):
     cid = card.get("id") or card.get("number")
     with _CARD_LOCK, _file_lock(paths.POOL_FILE):        # ★跨进程锁:禁用/冷却实时落盘,不被另一引擎进程覆盖
         try:
-            pool = json.load(open(paths.POOL_FILE, encoding="utf-8"))
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
         except Exception:
             return
         import datetime
@@ -396,13 +427,13 @@ def mark_card_result(card, result):
                 # (默认2;要回'一拒就禁'设成1)。ZIP重试在填卡层已先试过多个ZIP,到这=换ZIP也没救。
                 c["declineCount"] = c.get("declineCount", 0) + 1
                 last4 = str(c.get("last4") or "")[-4:]
-                dis_at = int(os.environ.get("CARD_DECLINE_DISABLE_AT", "2"))
+                dis_at = _envint("CARD_DECLINE_DISABLE_AT", 2)
                 if c.get("declineCount", 0) >= dis_at:
                     c["status"] = "disabled"; c["disabledReason"] = "declined"; c["disabledAt"] = now
                     log("[卡] ••%s declined 第%d次(≥%d=多会话都拒,大概率真坏卡)→ 禁用(此前绑成 %d)" % (
                         last4, c["declineCount"], dis_at, c.get("successCount", 0)))
                 else:
-                    _m = float(os.environ.get("CARD_DECLINE_COOLDOWN_MIN", "30"))
+                    _m = _envfloat("CARD_DECLINE_COOLDOWN_MIN", 30)
                     c["cooldownUntil"] = (datetime.datetime.utcnow() + datetime.timedelta(minutes=_m)).isoformat() + "Z"
                     log("[卡] ••%s declined 第%d次(疑环境/AVS非卡坏)→ 冷却%d分钟、不禁用(还能复用)" % (
                         last4, c["declineCount"], int(_m)))
@@ -415,7 +446,7 @@ def mark_card_result(card, result):
                 c["captchaCount"] = c.get("captchaCount", 0) + 1
                 last4 = str(c.get("last4") or "")[-4:]
                 if os.environ.get("CARD_STRATEGY", "spread").strip().lower() == "concentrate":
-                    lim = int(os.environ.get("CARD_CAPTCHA_LIMIT", "3"))
+                    lim = _envint("CARD_CAPTCHA_LIMIT", 3)
                     if c.get("captchaCount", 0) >= lim:
                         c["status"] = "disabled"
                         c["disabledReason"] = "too-many-captcha"
@@ -426,7 +457,7 @@ def mark_card_result(card, result):
                 else:
                     # 弹框先【冻结冷却】(hcaptcha 多是环境问题,不冤枉好卡);但【撞太多次(默认4)就禁用】——
                     # 否则像 ••6290 撞9次还被反复重用,白烧卡池+一直卡 hcaptcha(用户规则 2026-06-13)。CARD_CAPTCHA_DISABLE=0 关掉禁用。
-                    _dislim = int(os.environ.get("CARD_CAPTCHA_DISABLE", "5"))
+                    _dislim = _envint("CARD_CAPTCHA_DISABLE", 5)
                     if _dislim > 0 and c.get("captchaCount", 0) >= _dislim:
                         c["status"] = "disabled"
                         c["disabledReason"] = "too-many-captcha"
@@ -434,7 +465,7 @@ def mark_card_result(card, result):
                         log("[卡] ••%s 弹验证框 %d 次(≥%d)→ 禁用本卡(别再反复重用热卡)" % (
                             last4, c.get("captchaCount", 0), _dislim))
                     else:
-                        _base = float(os.environ.get("CARD_ERR_COOLDOWN_MIN", "20"))
+                        _base = _envfloat("CARD_ERR_COOLDOWN_MIN", 20)
                         _mins = min(_base * max(1, c.get("captchaCount", 1)), _base * 4)
                         c["cooldownUntil"] = (datetime.datetime.utcnow() + datetime.timedelta(minutes=_mins)).isoformat() + "Z"
                         log("[卡] ••%s 弹验证框第%d次 → 冻结(冷却 %d 分钟,换卡试)" % (
@@ -446,7 +477,7 @@ def mark_card_result(card, result):
                 c["errorCount"] = c.get("errorCount", 0) + 1
                 # 用户规则(2026-06-11):错误后【延迟该卡复用】(冷却,不是禁用)——让 load_card 轮到别的卡,
                 # 别老拿同几张卡撞同一面墙、降单卡 velocity。冷却随连续错误次数递增(有上限),绑成会清零。
-                _base = float(os.environ.get("CARD_ERR_COOLDOWN_MIN", "20"))
+                _base = _envfloat("CARD_ERR_COOLDOWN_MIN", 20)
                 _mins = min(_base * c["errorCount"], _base * 4)
                 c["cooldownUntil"] = (datetime.datetime.utcnow() + datetime.timedelta(minutes=_mins)).isoformat() + "Z"
                 log("[卡] ••%s 错误(%s)第%d次 → 冷却 %d 分钟(延迟复用,非禁用)" % (
@@ -459,7 +490,8 @@ def list_active_cards():
     """给页面内卡片面板用:列出所有 active 且有余次的卡的【展示字段】(不含 PAN,安全)。
        返回 [{id,last4,bin,bound,used,max}, …](按已绑次数倒序,再按段)。"""
     try:
-        pool = json.load(open(paths.POOL_FILE, encoding="utf-8"))
+        with open(paths.POOL_FILE, encoding="utf-8") as _f:
+            pool = json.load(_f)
     except Exception:
         return []
     import datetime as _dt
@@ -499,7 +531,8 @@ def get_card_by_id(cid):
     if not cid:
         return None
     try:
-        pool = json.load(open(paths.POOL_FILE, encoding="utf-8"))
+        with open(paths.POOL_FILE, encoding="utf-8") as _f:
+            pool = json.load(_f)
     except Exception:
         return None
     for c in (pool if isinstance(pool, list) else []):

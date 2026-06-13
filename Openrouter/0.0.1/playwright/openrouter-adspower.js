@@ -21,13 +21,19 @@
 const { chromium } = require('playwright');
 
 const DEFAULT_API = process.env.OPENROUTER_ADSPOWER_API || 'http://local.adspower.net:50325';
+// AdsPower 鉴权令牌(本机网关一般无需 → 默认空,不加头;web 经 engine-runner 注入 OPENROUTER_ADSPOWER_TOKEN)。
+// 头名/前缀可覆盖以适配不同远程网关(默认 Authorization: Bearer <token>;前缀设空=发裸 token)。
+const ADS_TOKEN = (process.env.OPENROUTER_ADSPOWER_TOKEN || '').trim();
+const ADS_AUTH_HEADER = process.env.OPENROUTER_ADSPOWER_AUTH_HEADER || 'Authorization';
+const ADS_AUTH_PREFIX = process.env.OPENROUTER_ADSPOWER_AUTH_PREFIX != null ? process.env.OPENROUTER_ADSPOWER_AUTH_PREFIX : 'Bearer ';
+const _adsHeaders = () => (ADS_TOKEN ? { [ADS_AUTH_HEADER]: ADS_AUTH_PREFIX + ADS_TOKEN } : undefined);
 let _lastStartAt = 0;
 
 async function apiGet(apiBase, pathQ, timeoutMs = 60000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${apiBase}${pathQ}`, { signal: ctrl.signal });
+    const resp = await fetch(`${apiBase}${pathQ}`, { signal: ctrl.signal, headers: _adsHeaders() });
     const json = await resp.json().catch(() => ({}));
     return json;
   } finally { clearTimeout(timer); }

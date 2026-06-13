@@ -12,6 +12,9 @@ data/card-pool.json
 data/accounts.json
 data/billing-ledger.json
 data/error-log.json
+data/runs.json
+data/run-details/
+data/_runs_tmp/
 
 # 临时 UI 测试产物
 _uitest*.png
@@ -44,7 +47,18 @@ data/*.bak.*
 data/*.backup*
 # 主配置密钥(2captcha/firstmail key 等)
 config/config.local.json
+# 首次部署引导状态(本机运行态,非密钥)
+config/setup-state.json
 data/failure-policy.json
+data/strategies.json
+data/engine-configs.json
+data/proxies.json
+data/addresses.json
+data/adspower.json
+data/adspower-endpoints.json
+data/captcha-keys.json
+data/mailbox-keys.json
+data/usage.jsonl
 selenium-e2e/config.local.json
 selenium-e2e/*.local.json
 

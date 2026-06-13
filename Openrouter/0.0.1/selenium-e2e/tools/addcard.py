@@ -39,6 +39,10 @@ except Exception:
 API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 # 再加一道保险：强制【不走任何系统代理】调 AdsPower(本地服务，经代理必 502)。
 _NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# AdsPower 鉴权令牌(本机网关一般无需→空则不加头;指向远程/带鉴权网关时设 OPENROUTER_ADSPOWER_TOKEN)。
+_ADS_TOKEN = (os.environ.get("OPENROUTER_ADSPOWER_TOKEN", "") or "").strip()
+_ADS_AUTH_HEADER = os.environ.get("OPENROUTER_ADSPOWER_AUTH_HEADER", "Authorization") or "Authorization"
+_ADS_AUTH_PREFIX = os.environ.get("OPENROUTER_ADSPOWER_AUTH_PREFIX", "Bearer ")
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tools/→父目录 selenium-e2e(移动后锚定,与移动前同值)
 POOL_FILE = os.path.join(HERE, "..", "data", "card-pool.json")
 CREDITS_URL = "https://openrouter.ai/settings/credits"
@@ -56,9 +60,10 @@ def log(*a):
 def api_get(path, timeout=60, retries=5):
     # AdsPower 本地网关在频繁 start/stop 后会回 502 / 连接重置(限频或浏览器管理层抖动)→ 退避重试。
     last = None
+    _hdr = {_ADS_AUTH_HEADER: _ADS_AUTH_PREFIX + _ADS_TOKEN} if _ADS_TOKEN else {}
     for i in range(retries):
         try:
-            with _NOPROXY.open(API_BASE + path, timeout=timeout) as r:
+            with _NOPROXY.open(urllib.request.Request(API_BASE + path, headers=_hdr), timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
             last = e

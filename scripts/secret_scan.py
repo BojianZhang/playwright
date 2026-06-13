@@ -26,6 +26,7 @@ ALLOW_SUBSTR = ("example.com", "example.", "host:port", "user:pass", "127.0.0.1"
 SKIP_EXT = (".png", ".jpg", ".jpeg", ".ico", ".zip", ".7z", ".rar", ".pdf",
             ".lock", ".min.js", ".map", ".woff", ".woff2", ".ttf")
 SKIP_PATH = ("node_modules/", ".git/", "secret_scan.py", "package-lock.json",
+             "web/public/assets/",  # Vite 构建产物(哈希命名 index-*.js/css):由已扫描的 src/ 生成,压缩代码会误报(如 "token="+encode…),服务端密钥不入客户端 bundle
              "Dreamina/history/")  # 历史运行数据归档(浏览器存储dump/结果,非源码;含早期已提交数据,另行清理)
 
 

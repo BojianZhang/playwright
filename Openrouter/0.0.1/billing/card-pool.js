@@ -21,43 +21,91 @@ const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 const { envInt, envFloat } = require('./env-tunables');
 
 const POOL_FILE = path.join(__dirname, '..', 'data', 'card-pool.json');
+const LOCK_FILE = POOL_FILE + '.lock';
 const mutex = createMutex();
 
 /** @type {Map<string, object>} id -> card */
 let POOL = null;
-let flushTimer = null;
+let loadedMtimeMs = -1; // 上次读到的磁盘 mtime;变化 = 被外部(Python 流水线)改过 → 需重读
 
-// ── 持久化 ──────────────────────────────────────────────────────────────
-function ensureLoaded() {
-  if (POOL) return;
-  POOL = new Map();
+// ── 持久化（卡池文件同时被 Python selenium 流水线直接写盘，故读按 mtime 失效重读、写在跨进程锁内）──
+function _diskMtime() {
+  try { return fs.statSync(POOL_FILE).mtimeMs; } catch (_e) { return -1; }
+}
+
+/** 从磁盘读入 POOL。保留进程内 inUse 占用标记（acquire 设置、report 清除，盘上不持久），避免重读冲掉在途占用。 */
+function _readFromDisk() {
+  const prevInUse = new Set();
+  if (POOL) for (const c of POOL.values()) if (c.inUse) prevInUse.add(c.id);
+  const next = new Map();
   try {
-    const raw = fs.readFileSync(POOL_FILE, 'utf8');
-    const arr = JSON.parse(raw);
+    const arr = JSON.parse(fs.readFileSync(POOL_FILE, 'utf8'));
     if (Array.isArray(arr)) {
       for (const c of arr) {
-        if (c && c.id) {
-          c.inUse = false; // 重启后清除占用标记（进程内才有意义）
-          POOL.set(c.id, c);
-        }
+        if (c && c.id) { c.inUse = prevInUse.has(c.id); next.set(c.id, c); }
       }
     }
   } catch (_e) { /* 文件不存在/损坏 → 空池 */ }
+  POOL = next;
+  loadedMtimeMs = _diskMtime();
 }
 
-function flushNow() {
-  flushTimer = null;
+/** 读路径用：首次或磁盘被外部改过 → 重读;否则用内存缓存（避免每次读盘）。 */
+function ensureLoaded() {
+  if (POOL === null) { _readFromDisk(); return; }
+  if (_diskMtime() !== loadedMtimeMs) _readFromDisk(); // Python 写过 → 实时刷新
+}
+
+/** 原子写回（tmp + rename），并记录我们写入后的 mtime（免得自己的写被下次 ensureLoaded 误判为外部改动）。 */
+function _writeNow() {
+  fs.mkdirSync(path.dirname(POOL_FILE), { recursive: true });
+  const arr = Array.from(POOL.values()).map(({ inUse, ...rest }) => rest); // 不落 inUse
+  const tmp = `${POOL_FILE}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), 'utf8');
+  fs.renameSync(tmp, POOL_FILE);
+  loadedMtimeMs = _diskMtime();
+}
+
+// ── 跨进程文件锁（与 Python common/base.py _FileLock 同款 <file>.lock / O_EXCL）────────────
+//    让 Node 的卡池读-改-写不覆盖 Python 并发写入。抢不到则按 mtime 清陈旧锁,超时退化为无锁(不阻塞,与 Python 一致)。
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function _acquireFileLock(timeoutMs = 20000) {
+  const staleMs = (Number(process.env.FILELOCK_STALE_SEC) || 30) * 1000;
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return fs.openSync(LOCK_FILE, 'wx'); // O_CREAT|O_EXCL|O_WRONLY:存在即失败
+    } catch (e) {
+      if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EACCES') return null; // 异常 → 退化无锁
+      if (Date.now() > end) {
+        let age = null;
+        try { age = Date.now() - fs.statSync(LOCK_FILE).mtimeMs; } catch (_e) { age = null; }
+        if (age !== null && age > staleMs) { try { fs.unlinkSync(LOCK_FILE); } catch (_e2) { /* 别人已删 */ } await _sleep(20); continue; }
+        return null; // 活锁未释放或无法判断锁龄 → 放弃锁、退化无锁继续(不阻塞主流程)
+      }
+      await _sleep(25);
+    }
+  }
+}
+function _releaseFileLock(fd) {
+  if (fd == null) return;
+  try { fs.closeSync(fd); } catch (_e) { /* */ }
+  try { fs.unlinkSync(LOCK_FILE); } catch (_e) { /* */ }
+}
+/** 写操作统一入口：跨进程锁内【重读最新盘 → 应用变更 fn() → 原子写回】，杜绝覆盖 Python 的并发写。 */
+async function lockedWrite(fn) {
+  const fd = await _acquireFileLock();
+  // REL-9:拿不到锁会退化【无锁】读-改-写(不阻塞主流程是有意的),但与 Python 并发时可能丢 usedCount/successCount 增量
+  // → 至少告警让运维可见(锁长期拿不到多半是有进程卡死占锁)。
+  if (fd == null) { try { console.warn('[card-pool] 文件锁获取失败 → 本次卡池写入【无锁】进行(与 Python 并发时有丢计数风险)'); } catch (_e) { /* ignore */ } }
   try {
-    fs.mkdirSync(path.dirname(POOL_FILE), { recursive: true });
-    const arr = Array.from(POOL.values()).map(({ inUse, ...rest }) => rest); // 不落 inUse
-    fs.writeFileSync(POOL_FILE, JSON.stringify(arr, null, 2), 'utf8');
-  } catch (_e) { /* 落盘失败不致命 */ }
-}
-
-function scheduleFlush() {
-  if (flushTimer) return;
-  flushTimer = setTimeout(flushNow, 400);
-  if (flushTimer.unref) flushTimer.unref();
+    _readFromDisk();      // 锁内拿到 Python 的最新状态(禁卡/冷却/用量)
+    const r = fn();       // 在最新数据上应用本次变更
+    _writeNow();          // 锁内立即原子落盘
+    return r;
+  } finally {
+    _releaseFileLock(fd);
+  }
 }
 
 // ── 解析 ────────────────────────────────────────────────────────────────
@@ -156,8 +204,7 @@ function freshCounters() {
  * @returns {Promise<{added:number, updated:number, errors:Array}>}
  */
 function upsertMany(cards) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     let added = 0; let updated = 0; const errors = [];
     for (const c of cards || []) {
       if (c._parseError) { errors.push({ raw: c.raw, error: c._parseError }); continue; }
@@ -178,9 +225,8 @@ function upsertMany(cards) {
         added += 1;
       }
     }
-    scheduleFlush();
     return { added, updated, errors };
-  });
+  }));
 }
 
 /**
@@ -225,8 +271,7 @@ function getFull(id) {
  * @param {{result:'success'|'declined'|'error', error?:string}} outcome
  */
 function report(id, outcome) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
     if (!c) return null;
     const now = new Date().toISOString();
@@ -259,9 +304,8 @@ function report(id, outcome) {
       // 不算一次用量、保持 active，下次还能用这张卡再试。
       // （只更新 lastResult/lastError——已在上面设置——计数与状态不变）
     }
-    scheduleFlush();
     return sanitize(c);
-  });
+  }));
 }
 
 function sanitize(c) {
@@ -293,75 +337,91 @@ function snapshot() {
 }
 
 function setStatus(id, status) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
     if (!c) return null;
     c.status = status;
-    scheduleFlush();
     return sanitize(c);
-  });
+  }));
 }
 
 /** 手动禁用（从可用池剔除）。 */
 function disable(id) { return setStatus(id, 'disabled'); }
 
+/** 跨节点派发：把卡下发给子机后,在中心机冻结为 'dispatched'（不被 acquire/availableCount 选中,
+ *  也不会下次再发);手动 enable() 可解冻回 active/exhausted。状态机里非 'active' 即视为不可用,
+ *  故无需改 acquire/availableCount。 */
+function markDispatched(id, toNode) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return null;
+    c.status = 'dispatched';
+    c.disabledReason = toNode ? `dispatched→${String(toNode).slice(0, 40)}` : 'dispatched';
+    c.dispatchedAt = new Date().toISOString();
+    c.inUse = false;
+    return sanitize(c);
+  }));
+}
+
 /** 手动启用（恢复 active；若已用满则恢复为 exhausted）。 */
 function enable(id) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
     if (!c) return null;
     c.status = c.usedCount >= c.maxUses ? 'exhausted' : 'active';
-    scheduleFlush();
     return sanitize(c);
-  });
+  }));
 }
 
 /** 调整某张卡的最大可用次数（按实际情况动态调，不写死）。 */
 function setMaxUses(id, n) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
     if (!c) return null;
     c.maxUses = Math.max(1, Number(n) || 1);
     if (c.status === 'exhausted' && c.usedCount < c.maxUses) c.status = 'active';
     else if (c.status === 'active' && c.usedCount >= c.maxUses) c.status = 'exhausted';
-    scheduleFlush();
     return sanitize(c);
-  });
+  }));
 }
 
 /** 重置某张卡的使用计数/状态（重新可用）。 */
 function resetCounters(id) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
     if (!c) return null;
     Object.assign(c, freshCounters(), { inUse: false });
-    scheduleFlush();
     return sanitize(c);
-  });
+  }));
 }
 
 /** 从卡池删除某张卡。 */
 function remove(id) {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     const existed = POOL.delete(id);
-    scheduleFlush();
     return existed;
-  });
+  }));
 }
 
 /** 清空整个卡池。 */
 function clear() {
-  return mutex(() => {
-    ensureLoaded();
+  return mutex(() => lockedWrite(() => {
     POOL.clear();
-    scheduleFlush();
     return true;
-  });
+  }));
+}
+
+/** 跨节点派发用:导出所有"可用"卡(active 且有剩余次数)的完整可导入行 + id。
+ *  只读,不改 inUse/状态(派发失败时不会把卡误锁;真正下发成功后由 markDispatched 冻结)。 */
+function exportActiveLines() {
+  ensureLoaded();
+  const out = [];
+  for (const c of POOL.values()) {
+    if (c.status === 'active' && c.usedCount < c.maxUses && !c.inUse) {
+      out.push({ id: c.id, line: `${c.number}|${c.expMonth}/${c.expYear}|${c.cvc}` + (c.zip ? `|${c.zip}` : '') });
+    }
+  }
+  return out;
 }
 
 /** 当前可用卡数（active 且有剩余次数）。 */
@@ -379,7 +439,9 @@ module.exports = {
   getFull,
   report,
   snapshot,
+  exportActiveLines,
   disable,
+  markDispatched,
   enable,
   setMaxUses,
   resetCounters,

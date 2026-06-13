@@ -84,7 +84,9 @@ class TurnstileApiPatcher:
             # （未带 --remote-allow-origins=* 时只接受无 Origin 的非浏览器客户端）
             self.ws = websocket.create_connection(ws_url, max_size=None, timeout=8,
                                                   suppress_origin=True)
-            self.ws.settimeout(None)
+            # 有限 recv 超时(不是 None=永久阻塞):静默卡死时后台线程仍能周期性回圈重判 _running 而退出,
+            # 不会泄漏挂死线程。超时本身在 _loop 里当"无事件"continue,不算断开。
+            self.ws.settimeout(30)
         except Exception as e:
             self.log("[apipatch] 连 CDP ws 失败: %s" % str(e)[:80])
             return False
@@ -173,6 +175,8 @@ class TurnstileApiPatcher:
         while self._running:
             try:
                 raw = self.ws.recv()
+            except websocket.WebSocketTimeoutException:
+                continue   # 30s 内无 CDP 事件:不是断开,回圈重判 _running(避免永久阻塞挂死线程)
             except Exception as e:
                 self.log("[apipatch] CDP ws 断开,拦截线程退出(此后不再注入 api.js wrapper): %s" % str(e)[:60])
                 self._running = False   # 状态自洽:线程已死则 _running 同步置假

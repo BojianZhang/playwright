@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenRouter 自动化控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=20260611e">
+</head>
+<body>
+
+<!-- ============ TOP BAR ============ -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </span>
+    <span class="brand-title">OpenRouter <span class="dim">自动化控制台</span></span>
+  </div>
+  <span class="node-badge" id="nodeBadge"><span class="dot"></span>node&nbsp;…</span>
+  <span class="node-badge" id="buildTag" title="前端构建版本">build 0610b</span>
+  <div class="topbar-spacer"></div>
+  <a class="link-btn" href="results.html">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+    成功账号 / 卡池 / 聚合
+  </a>
+</header>
+
+<main class="page" data-screen-label="主控制台">
+
+  <div class="zone">
+    <span class="z-no">A</span>
+    <h2>任务配置</h2>
+    <span class="z-hint">填好后开始执行</span>
+    <span class="z-line"></span>
+  </div>
+
+  <!-- ============ PIPELINE BAND ============ -->
+  <section class="card pipeline-band">
+    <div class="pb-head">
+      <span class="pb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5 7 5-14 2.5 7h4"/></svg></span>
+      <h3>执行流程</h3>
+      <span class="pb-sub">点阶段切换是否执行 · 仅 <b>充值</b> 扣钱 · 断点续跑自动跳过已完成阶段、不重复扣费</span>
+    </div>
+    <div class="pipeline">
+      <div class="stage locked on">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        注册 / 登录
+      </div>
+      <span class="p-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+      <div class="stage on" data-stage="key">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        取 Key
+      </div>
+      <span class="p-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+      <div class="stage" data-stage="addr">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        绑地址
+      </div>
+      <span class="p-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+      <div class="stage" data-stage="card">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        加卡
+      </div>
+      <span class="p-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+      <div class="stage charge" data-stage="charge">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        充值 <em>扣钱</em>
+      </div>
+      <span class="p-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+      <div class="stage" data-stage="pwd">
+        <span class="schk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        改密
+      </div>
+    </div>
+  </section>
+
+  <div class="section-gap"></div>
+
+  <!-- ============ FIELD GRID (4 columns) ============ -->
+  <!-- ============ SETTINGS CARD ============ -->
+  <section class="card">
+    <div class="eb-top">
+      <span class="idx c-info">1</span>
+      <h3>运行设置</h3>
+      <span class="head-hint">所有账号通用的选项</span>
+    </div>
+
+    <div class="set-hero" id="pwdHero">
+      <span class="set-hero-ic">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      </span>
+      <div class="set-hero-field">
+        <div class="label"><span class="l-name">统一密码</span><span class="req-badge">必填</span></div>
+        <input type="text" id="unifiedPwd" placeholder="如 MyNewPass#2026">
+      </div>
+      <p class="set-hero-help"><b>OpenRouter 注册就用它</b>，全流程跑完后再把邮箱密码从原密码改成它。<b class="warn">不能留空</b> —— 否则只能按「原邮箱:密码」保存，后续改密会很费劲。</p>
+    </div>
+
+    <div class="set-grid">
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">任务模式</span><span class="l-hint">已注册转登录续跑</span></div>
+        <select id="modeSel">
+          <option value="auto">自动（注册 / 已注册则登录）</option>
+          <option value="register">仅注册</option>
+          <option value="login">仅登录续跑</option>
+        </select>
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">并发数</span><span class="l-hint">受上限约束</span></div>
+        <input type="number" id="concInput" value="1" min="1">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">处理数量</span><span class="l-hint">0 = 全部</span></div>
+        <input type="number" id="countInput" value="0" min="0">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">API Key 名称</span><span class="l-hint">留空=随机</span></div>
+        <input type="text" id="keyName" placeholder="随机">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">Key 有效期</span></div>
+        <select id="keyExp">
+          <option value="No expiration">永不过期</option>
+          <option value="7 days">7 天</option>
+          <option value="30 days">30 天</option>
+          <option value="90 days">90 天</option>
+        </select>
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">每张卡最大次数</span><span class="l-hint">用尽换下一张</span></div>
+        <input type="number" id="cardMax" value="10" min="1">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">充值金额</span><span class="l-hint">勾「充值」才生效·最低 5</span></div>
+        <input type="number" id="topUp" value="5" min="5" step="1">
+      </div>
+      <div class="field" style="margin:0">
+        <div class="label"><span class="l-name">最多试卡数</span><span class="l-hint">被拒自动换下一张</span></div>
+        <input type="number" id="maxCardTries" value="3" min="1" max="10">
+      </div>
+    </div>
+
+    <div class="set-foot">
+      <label class="check">
+        <input type="checkbox" id="headedChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        有头模式 <span class="sub">显示浏览器</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="resumeChk" checked>
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        断点续跑 <span class="sub">跳过已完成阶段</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="manualCaptchaChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        验证码人工兜底 <span class="sub">解不动转手动·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="manualBillingChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        加卡人工兜底 <span class="sub">自动没成转手动·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="manualCardPickChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        手动选卡填入 <span class="sub">付款页弹卡池面板点选·需有头</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="humanLikeChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        拟人模式 <span class="sub">鼠标轨迹+提交前停顿+页面预热·压Radar行为分·更慢</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="skipDirtyIpChk">
+        <span class="box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        脏IP跳过加卡 <span class="sub">默认关·勾上才跳过 proxy/hosting</span>
+      </label>
+      <!-- 旧「AdsPower 接管」复选框已移除：改用下方「指纹浏览器」下拉(选 adspower 即原行为)，避免两个控件冲突。 -->
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost btn-sm" data-open="modal-errors">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+        错误策略 / 说明 <span style="color:var(--text-3);font-weight:400">每个错误怎么走</span>
+      </button>
+    </div>
+    <div class="field" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">指纹浏览器</span><span class="l-hint">不绑死 AdsPower·选一家·业务流程不变(都经 CDP 接管)</span></div>
+      <select id="browserProviderSel">
+        <option value="none" selected>原生 Playwright(无指纹浏览器)</option>
+        <option value="adspower">AdsPower</option>
+        <option value="bitbrowser">BitBrowser(比特)</option>
+        <option value="dolphin">Dolphin Anty</option>
+        <option value="gologin">GoLogin</option>
+        <option value="hubstudio">HubStudio(脚手架)</option>
+        <option value="morelogin">MoreLogin(脚手架)</option>
+        <option value="multilogin">Multilogin(脚手架)</option>
+        <option value="vmlogin">VMLogin(脚手架)</option>
+      </select>
+    </div>
+    <div class="field" id="adspowerRow" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">环境ID池</span><span class="l-hint">所选指纹浏览器的环境 id·一行/逗号一个·每账号分一个(自带代理)</span></div>
+      <textarea id="adspowerEnvIds" rows="2" placeholder="k1db9yk8&#10;k1db9yk7&#10;k1db9yk5"></textarea>
+    </div>
+    <div class="field" style="margin:12px 0 0">
+      <div class="label"><span class="l-name">填卡引擎</span><span class="l-hint">默认 playwright(已验证穿跨域 Stripe)·可选兜底链</span></div>
+      <select id="cardFillEngineSel">
+        <option value="playwright" selected>Playwright(默认·推荐)</option>
+        <option value="playwright,osinput">Playwright → OS输入(兜底链)</option>
+        <option value="osinput">OS 级键盘输入(实验·兜底)</option>
+        <option value="extension">浏览器扩展(需预装进环境)</option>
+        <option value="selenium">Selenium(Python·冗余)</option>
+        <option value="api">API 直连(实验)</option>
+      </select>
+    </div>
+  </section>
+
+  <div class="section-gap"></div>
+
+  <!-- ============ DATA IMPORT CARD ============ -->
+  <section class="card">
+    <div class="eb-top">
+      <span class="idx">2</span>
+      <h3>数据导入</h3>
+      <span class="head-hint">每类一行一条，或点「上传」从文件导入</span>
+    </div>
+    <div class="data-grid">
+
+      <div class="data-col">
+        <div class="field fill" style="margin:0" data-format="account">
+          <div class="label">
+            <span class="l-name">账号凭证</span><span class="l-hint"><code>email:password</code></span>
+            <label class="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>上传<input type="file" hidden></label>
+          </div>
+          <textarea spellcheck="false" style="min-height:128px" placeholder="user1@firstmail.com:原密码1&#10;user2@firstmail.com:原密码2"></textarea>
+          <span class="fname" data-fname></span>
+        </div>
+      </div>
+
+      <div class="data-col">
+        <div class="field fill" style="margin:0" data-format="proxy">
+          <div class="label">
+            <span class="l-name">代理</span><span class="l-hint"><code>host:port:user:pass</code>，可留空</span>
+            <label class="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>上传<input type="file" hidden></label>
+          </div>
+          <textarea spellcheck="false" style="min-height:128px" placeholder="1.2.3.4:8080:user:pass"></textarea>
+          <span class="fname" data-fname></span>
+        </div>
+      </div>
+
+      <div class="data-col">
+        <div class="field fill" style="margin:0" data-format="card">
+          <div class="label">
+            <span class="l-name">卡池</span><span class="l-hint">每行一卡，自动解析<span class="tag" style="margin-left:6px">S5</span></span>
+            <button type="button" class="btn btn-soft btn-sm" id="importCardsBtn" style="margin-left:6px">导入卡池</button>
+            <label class="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>上传<input type="file" hidden></label>
+          </div>
+          <textarea spellcheck="false" style="min-height:128px" placeholder="4111 1111 1111 1111  02/29  093&#10;4111111111111111|05/30|130"></textarea>
+          <span class="fname" data-fname></span>
+        </div>
+      </div>
+
+      <div class="data-col">
+        <div class="field fill" style="margin:0" data-format="address">
+          <div class="label">
+            <span class="l-name">账单地址</span><span class="l-hint"><code>street|city|state|zip</code></span>
+            <label class="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>上传<input type="file" hidden></label>
+          </div>
+          <textarea spellcheck="false" style="min-height:128px" placeholder="姓名|街道|城市|州|邮编，或直接传带表头的 CSV（Name/Address 列自动拆分）&#10;Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209"></textarea>
+          <span class="fname" data-fname></span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <div class="section-gap"></div>
+
+  <!-- ============ ECHO BAND ============ -->
+  <section class="card echo-band">
+    <div class="eb-top">
+      <span class="idx c-green">3</span>
+      <h3>回显模板</h3>
+      <span class="head-hint">运行结束后每个账号输出一行，点「编辑格式」可插变量、调分隔符并实时预览</span>
+    </div>
+    <div class="eb-grid">
+      <div class="eb-col">
+        <div class="io-head" style="margin-bottom:8px">
+          <span class="io-title ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>成功回显
+          </span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" data-open="modal-success">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+            编辑格式
+          </button>
+        </div>
+        <textarea id="inlineTplSuccess" spellcheck="false" style="min-height:100px">{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} | 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} | card:{{cardLast4}} | ip:{{exitIp}}</textarea>
+      </div>
+      <div class="eb-col">
+        <div class="io-head" style="margin-bottom:8px">
+          <span class="io-title fail">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>失败回显
+          </span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" data-open="modal-fail">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+            编辑格式
+          </button>
+        </div>
+        <textarea id="inlineTplFail" spellcheck="false" style="min-height:100px">{{email}}:{{password}} | X{{stage}} | {{reason}} | 试{{attempts}}次</textarea>
+      </div>
+    </div>
+  </section>
+
+  <div class="zone">
+    <span class="z-no">B</span>
+    <h2>执行 &amp; 监控</h2>
+    <span class="z-hint">运行状态实时回显</span>
+    <span class="z-line"></span>
+  </div>
+
+  <!-- ============ RUN BAR ============ -->
+  <section class="card">
+    <div class="runbar">
+      <button class="btn btn-primary btn-lg" id="runBtn">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
+        开始执行
+      </button>
+      <span class="run-hint" id="runHint">填好上方配置后点 <b>开始执行</b>。运行中可随时暂停，断点续跑保证不重复扣费。</span>
+    </div>
+  </section>
+
+  <div class="section-gap"></div>
+
+  <!-- ============ STATS ============ -->
+  <section class="card statbar">
+    <div class="stat-cell s-total"><div class="num" data-stat="total">0</div><div class="lbl">总数</div></div>
+    <div class="stat-cell s-ok"><div class="num" data-stat="ok">0</div><div class="lbl">成功</div></div>
+    <div class="stat-cell s-fail"><div class="num" data-stat="fail">0</div><div class="lbl">失败</div></div>
+    <div class="stat-cell s-br"><div class="num" data-stat="br">0/0</div><div class="lbl">浏览器 <span style="color:var(--text-3)">在用 / 上限</span></div></div>
+    <div class="stat-cell s-q"><div class="num" data-stat="q">0</div><div class="lbl">排队中</div></div>
+    <div class="stat-cell s-env"><div class="num" data-stat="env">0/0</div><div class="lbl">环境 <span style="color:var(--text-3)">烧 / 总</span></div></div>
+  </section>
+
+  <div class="section-gap"></div>
+
+  <!-- ============ UNIFIED MONITOR PANEL ============ -->
+  <section class="card">
+
+    <!-- worker status -->
+    <div class="panel-sec">
+      <div class="panel-sec-head">
+        <span class="ps-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+          工作线程实时状态
+        </span>
+        <span class="cnt-pill" id="workerCount" style="margin-left:8px">0 个线程</span>
+      </div>
+      <div id="workerList">
+        <div class="worker-empty">尚未开始 —— 在上方填好配置后点 <b style="color:var(--text)">「开始执行」</b>，每个浏览器线程的实时进度会显示在这里。</div>
+      </div>
+    </div>
+
+    <!-- success / fail -->
+    <div class="panel-sec">
+      <div class="io-grid">
+        <div>
+          <div class="panel-sec-head" style="margin-bottom:8px">
+            <span class="ps-title ok">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>成功账号
+            </span>
+            <span class="cnt-pill" data-okcount style="margin-left:6px">0</span>
+            <div class="right">
+              <button class="btn btn-ghost btn-sm" id="dlOkBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>下载</button>
+            </div>
+          </div>
+          <div class="io-box empty" data-okbox>等待中…</div>
+        </div>
+        <div>
+          <div class="panel-sec-head" style="margin-bottom:8px">
+            <span class="ps-title fail">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>失败账号
+            </span>
+            <span class="cnt-pill" data-failcount style="margin-left:6px">0</span>
+            <div class="right">
+              <button class="btn btn-ghost btn-sm" id="dlFailBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>下载</button>
+              <button class="btn btn-ghost btn-sm" id="requeueBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>重跑（登录）</button>
+            </div>
+          </div>
+          <div class="io-box empty" data-failbox>等待中…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tabs -->
+    <div class="tabs">
+      <button class="tab on" data-tab="pool">卡池统计 <span class="cnt" data-pooltabcnt>0</span></button>
+      <button class="tab" data-tab="ledger">充值台账</button>
+      <button class="tab" data-tab="status">账号状态 · 断点续跑 <span class="cnt" data-statuscnt>0</span></button>
+      <button class="tab" data-tab="errors">错误记录 <span class="cnt" data-errcnt>0</span></button>
+      <button class="tab" data-tab="logs">运行日志</button>
+    </div>
+
+    <!-- 卡池统计 -->
+    <div class="tabpane on" data-pane="pool">
+      <div class="sub-head">
+        <button class="btn btn-ghost btn-sm" data-refresh="pool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>刷新</button>
+        <button class="btn btn-danger-soft btn-sm" data-clear="pool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>清空卡池</button>
+        <span class="cnt-pill">可改 <code style="font-family:var(--mono)">可用次数</code> · 禁用 / 重置 / 删除</span>
+      </div>
+      <div class="empty-note" data-pooltab>尚无卡片，去上方 <b style="color:var(--text-2)">「卡池」</b> 粘贴或上传文件。</div>
+    </div>
+
+    <!-- 充值台账 -->
+    <div class="tabpane" data-pane="ledger">
+      <div class="sub-head">
+        <button class="btn btn-ghost btn-sm" data-refresh="ledger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>刷新</button>
+        <span class="cnt-pill">按邮箱记账，不做重复扣账</span>
+        <div class="right">
+          <span class="kbadge info" data-led-total>总充值 $0</span>
+          <span class="kbadge ok" data-led-ok>成功 0</span>
+          <span class="kbadge fail" data-led-fail>被拒 0</span>
+          <button class="btn btn-danger-soft btn-sm" data-clear="ledger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>清空台账</button>
+        </div>
+      </div>
+      <div class="empty-note" data-ledgertab>暂无充值记录。</div>
+    </div>
+
+    <!-- 账号状态 · 断点续跑 -->
+    <div class="tabpane" data-pane="status">
+      <div class="sub-head">
+        <button class="btn btn-ghost btn-sm" data-refresh="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>刷新</button>
+        <button class="btn btn-danger-soft btn-sm" data-clear="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>清空</button>
+        <span class="cnt-pill" data-statushint>本节点 · 共 <b style="color:var(--text)">0</b> 个账号</span>
+      </div>
+      <p class="help" style="margin:-2px 0 12px">记录每个账号跑到哪一步。重跑会自动跳过已完成阶段（已注册→直接登录、已有 Key→复用、账单达标→不复扣、已改密→跳过）。<strong>「重置」</strong>让某账号下次从头跑，<strong>「解黑」</strong>解除拉黑。</p>
+      <div class="empty-note" data-statustab>暂无账号状态。运行后自动记录。</div>
+    </div>
+
+    <!-- 错误记录 -->
+    <div class="tabpane" data-pane="errors">
+      <div class="sub-head">
+        <button class="btn btn-ghost btn-sm" data-refresh="errors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>刷新</button>
+        <button class="btn btn-danger-soft btn-sm" data-clear="errors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>清空</button>
+        <span class="cnt-pill" data-errhint>本节点 · 共 <b style="color:var(--text)">0</b> 条</span>
+      </div>
+      <p class="help" style="margin:-2px 0 10px">每次阶段失败都会记一条（含被路由成什么动作）。错误的「说明 / 策略配置」在 <button class="link-inline" data-open="modal-errors">📖 错误策略 / 说明</button> 里改。</p>
+      <div class="err-summary" data-errsummary></div>
+      <div class="empty-note" data-errtab>暂无错误记录。</div>
+    </div>
+
+    <!-- 运行日志 -->
+    <div class="tabpane" data-pane="logs">
+      <div class="io-box" id="logBox" style="min-height:200px;max-height:320px">等待开始…</div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ MODALS ============ -->
+
+<!-- ① 错误策略 / 说明 -->
+<div class="modal-overlay" id="modal-errors" hidden>
+  <div class="modal modal-lg" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>
+        <span class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></span>
+        错误策略 <span class="dim">/ 说明</span>
+      </h2>
+      <button class="modal-x" data-close><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-intro">每个错误对应一条恢复流程。可改 <b>「动作」</b> 和 <b>「重试次数」</b> 覆盖内置默认，改完点该行 <b>「保存」</b>。最下方 <b>「兜底桶」</b> 是未知报错文本按关键字归类的规则（不可单独配置）。错误的实际发生记录见 <span class="tk">成功账号 / 聚合</span> 页的「错误记录」面板。</p>
+      <div data-erows></div>
+      <div class="erow-grouphd">兜底桶 · 未知报错归类</div>
+      <div data-fbrows></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-resetall>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        全部重置为内置
+      </button>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" data-close>完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ② 成功回显 -->
+<div class="modal-overlay" id="modal-success" hidden>
+  <div class="modal modal-md" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>
+        <span class="mi ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+        成功回显 <span class="dim">— 可用变量 / 编辑格式</span>
+      </h2>
+      <button class="modal-x" data-close><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-intro">把变量写进下面的格式里，运行结束时会自动替换成真实值。点变量右侧 <b>「插入」</b> 可加到光标处；下方是示例数据的实时预览。</p>
+      <div class="m-field">
+        <div class="m-label">输出格式</div>
+        <textarea class="m-tpl" data-tpl spellcheck="false"></textarea>
+      </div>
+      <div class="m-field">
+        <div class="m-label">实时预览 <span class="dim">（示例数据）</span></div>
+        <div class="m-preview" data-preview></div>
+      </div>
+      <div class="m-field">
+        <div class="m-label">分隔符 <span class="dim">（点击插入到光标处）</span></div>
+        <div class="sep-row">
+          <button class="sep-btn" data-sep="space">空格</button>
+          <button class="sep-btn" data-sep="pipe">|</button>
+          <button class="sep-btn" data-sep="colon">:</button>
+          <button class="sep-btn" data-sep="comma">,</button>
+          <button class="sep-btn" data-sep="nl">换行</button>
+        </div>
+      </div>
+      <div class="m-field">
+        <div class="m-label">可用变量及含义 <span class="dim">（「插入」=只插变量；「带名」=简称变量）</span></div>
+        <div data-varlist></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-clear>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>
+        清空格式
+      </button>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" data-done>完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 失败回显 -->
+<div class="modal-overlay" id="modal-fail" hidden>
+  <div class="modal modal-md" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2>
+        <span class="mi fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+        失败回显 <span class="dim">— 可用变量 / 编辑格式</span>
+      </h2>
+      <button class="modal-x" data-close><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-intro">把变量写进下面的格式里，运行结束时会自动替换成真实值。点变量右侧 <b>「插入」</b> 可加到光标处；下方是示例数据的实时预览。</p>
+      <div class="m-field">
+        <div class="m-label">输出格式</div>
+        <textarea class="m-tpl" data-tpl spellcheck="false"></textarea>
+      </div>
+      <div class="m-field">
+        <div class="m-label">实时预览 <span class="dim">（示例数据）</span></div>
+        <div class="m-preview" data-preview></div>
+      </div>
+      <div class="m-field">
+        <div class="m-label">分隔符 <span class="dim">（点击插入到光标处）</span></div>
+        <div class="sep-row">
+          <button class="sep-btn" data-sep="space">空格</button>
+          <button class="sep-btn" data-sep="pipe">|</button>
+          <button class="sep-btn" data-sep="colon">:</button>
+          <button class="sep-btn" data-sep="comma">,</button>
+          <button class="sep-btn" data-sep="nl">换行</button>
+        </div>
+      </div>
+      <div class="m-field">
+        <div class="m-label">可用变量及含义 <span class="dim">（「插入」=只插变量；「带名」=简称变量）</span></div>
+        <div data-varlist></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-clear>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-1 0v14H9V6"/></svg>
+        清空格式
+      </button>
+      <div class="spacer"></div>
+      <button class="btn btn-primary" data-done>完成</button>
+    </div>
+  </div>
+</div>
+
+<script src="auth.js?v=20260611e"></script>
+<script src="controller.js?v=20260611e"></script>
+<script src="modals.js?v=20260611e"></script>
+</body>
+</html>

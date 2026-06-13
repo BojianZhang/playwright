@@ -39,7 +39,7 @@ function flushNow() {
     const tmp = `${POLICY_FILE}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(OVERRIDES, null, 2), 'utf8');
     fs.renameSync(tmp, POLICY_FILE);
-  } catch (_e) { /* 落盘失败不致命 */ }
+  } catch (e) { try { console.error('[policy-store] 落盘失败:', e && e.message); } catch (_e) { /* ignore */ } }
 }
 function scheduleFlush() {
   if (flushTimer) return;
@@ -80,4 +80,4 @@ function clear() {
   return mutex(() => { OVERRIDES = {}; scheduleFlush(); return true; });
 }
 
-module.exports = { getOverrides, setOverride, resetOverride, clear, _POLICY_FILE: POLICY_FILE };
+module.exports = { getOverrides, setOverride, resetOverride, clear, flushNow, _POLICY_FILE: POLICY_FILE };

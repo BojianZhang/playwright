@@ -37,7 +37,7 @@ function flushNow() {
   try {
     fs.mkdirSync(path.dirname(LEDGER_FILE), { recursive: true });
     fs.writeFileSync(LEDGER_FILE, JSON.stringify(ENTRIES, null, 2), 'utf8');
-  } catch (_e) { /* 落盘失败不致命 */ }
+  } catch (e) { try { console.error('[billing-ledger] 落盘失败(台账可能丢账):', e && e.message); } catch (_e) { /* ignore */ } }
 }
 function scheduleFlush() {
   if (flushTimer) return;
@@ -108,4 +108,4 @@ function clear() {
   });
 }
 
-module.exports = { record, summary, clear, _LEDGER_FILE: LEDGER_FILE };
+module.exports = { record, summary, clear, flushNow, _LEDGER_FILE: LEDGER_FILE };

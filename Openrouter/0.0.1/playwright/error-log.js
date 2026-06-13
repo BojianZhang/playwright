@@ -39,7 +39,7 @@ function flushNow() {
     const tmp = `${ERROR_LOG_FILE}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(ENTRIES, null, 2), 'utf8');
     fs.renameSync(tmp, ERROR_LOG_FILE);
-  } catch (_e) { /* 落盘失败不致命 */ }
+  } catch (e) { try { console.error('[error-log] 落盘失败:', e && e.message); } catch (_e) { /* ignore */ } }
 }
 function scheduleFlush() {
   if (flushTimer) return;
@@ -96,4 +96,4 @@ function clear() {
   return mutex(() => { ENTRIES = []; scheduleFlush(); return true; });
 }
 
-module.exports = { record, summary, clear, _ERROR_LOG_FILE: ERROR_LOG_FILE };
+module.exports = { record, summary, clear, flushNow, _ERROR_LOG_FILE: ERROR_LOG_FILE };

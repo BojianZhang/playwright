@@ -180,12 +180,15 @@ def test_proxy_streak():
 
 
 def test_proxy_ok_robust():
-    """Fix #2:坏代理返回 (False,None) 不抛;函数签名返回二元组。"""
-    r = common.proxy_ok({"host": "10.255.255.1", "port": "1", "user": "", "pass": ""}, timeout=2)
-    check("proxy_ok 坏代理返回二元组不抛", isinstance(r, tuple) and len(r) == 2)
-    # SOCKS 依赖缺失分支的字符串判定逻辑(函数内 except 用同样判断)
-    m = "Missing dependencies for SOCKS support".lower()
-    check("SOCKS缺失判定逻辑", "socks" in m and ("missing" in m or "dependenc" in m))
+    """Fix #2:坏代理/缺依赖时 proxy_ok 不抛,且稳定返回 (bool, None|数) 二元组。
+       地址用非可路由 TEST-NET(RFC5737 10.255.255.1):连接本地即失败,不触达任何真实服务;
+       缺 requests/socks 时 proxy_ok 会提前返回 (True,None)。两种路径都只验"契约稳定"。"""
+    r = common.proxy_ok({"host": "10.255.255.1", "port": "1", "user": "", "pass": ""}, timeout=1)
+    check("proxy_ok 返回二元组不抛", isinstance(r, tuple) and len(r) == 2)
+    # 真正校验返回契约(原断言是对字面量自证的恒真重言式,等于没测):首元素 bool,次元素 None 或数值
+    ok_flag, latency = r
+    check("proxy_ok 契约:首 bool、次 None/数值",
+          isinstance(ok_flag, bool) and (latency is None or isinstance(latency, (int, float))))
 
 
 def test_binusage_legacy():

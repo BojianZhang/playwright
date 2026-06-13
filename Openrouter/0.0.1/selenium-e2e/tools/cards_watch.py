@@ -55,7 +55,8 @@ def current_card_last4(logfile):
 def render(refresh, logfile):
     while True:
         try:
-            pool = json.load(open(POOL, encoding="utf-8"))
+            with open(POOL, encoding="utf-8") as _f:
+                pool = json.load(_f)
         except Exception:
             pool = []
         cur = current_card_last4(logfile)

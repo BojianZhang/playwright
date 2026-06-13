@@ -113,6 +113,14 @@ def attach_chrome(port, driver_path="", retries=8, delay=4):
         try:
             d = (webdriver.Chrome(service=Service(executable_path=driver_path), options=opts)
                  if driver_path else webdriver.Chrome(options=opts))
+            # ★ 全局超时:不设的话 d.get()/execute_script 遇到挂起导航或不响应的跨域 iframe 会【无限阻塞】
+            #   ——没日志、没进展、永远卡死(取 Key 向导循环全靠 execute_script,正是高发区)。
+            #   设了之后超时抛 TimeoutException,被各处 try/except 接住 → 循环继续推进/快速失败,绝不干挂。
+            try:
+                d.set_page_load_timeout(float(os.environ.get("SEL_PAGELOAD_TIMEOUT", "60")))
+                d.set_script_timeout(float(os.environ.get("SEL_SCRIPT_TIMEOUT", "30")))
+            except Exception as _te:
+                log("[timeout] 设置全局超时失败(忽略): %s" % str(_te)[:50])
             log("Selenium 已接管(debuggerAddress 127.0.0.1:%s)%s" % (port, " [stealth]" if stealth else ""))
             if stealth:
                 try:
