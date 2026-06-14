@@ -139,6 +139,14 @@ export function shortTime(s?: string): string {
 }
 export function trunc(s: string | undefined, n: number): string { return s && s.length > n ? s.slice(0, n) + '…' : (s || ''); }
 
+// 转义将拼进 dangerouslySetInnerHTML 的【动态】片段(jobId/节点名/错误文案多源自 URL query 或网络回包,
+// 不转义会变成反射型 HTML 注入)。模板里有意写的 <b>/<a>/<br> 是静态字面量,只需转义 ${...} 插值。
+export function escapeHtml(s: unknown): string {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 export function fmtDuration(ms?: number | null): string {
   if (ms == null) return '—';
   const s = Math.round(ms / 1000);

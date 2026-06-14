@@ -46,20 +46,26 @@ def _prior_done(acct, stage):
 
 def _acquire_browser(proxies, start_idx, group_id, name, max_try=5):
     """从 start_idx 起轮询代理池：建环境→启动。代理校验失败(Check Proxy Fail)就删环境换下一个。
-    成功返回 (env_id, port, proxy)；连续 max_try 个都失败则抛错。"""
+    成功返回 (env_id, port, proxy)；连续 max_try 个都失败则抛错。
+    ★代理评分接入(对齐 hybrid,纯Sel 批此前完全没接):① 优先跳过【已退役】代理(连败≥阈值,评分已死→跳过省时);
+      ② 启动失败回写 mark_proxy_result(dead) 让纯Sel 批的故障也累计进【共享 proxy 评分】(连败到阈值自动退役;
+         card-bound 会清零,故单次 AdsPower 打嗝不会误退好代理);③ 候选全退役(小池)→放宽忽略退役兜底,防"无代理可建"卡死整批。"""
     n = len(proxies)
-    tries = min(max_try, n)
-    last = ""
-    for k in range(tries):
-        proxy = proxies[(start_idx + k) % n]
+    last = [""]
+
+    def _try(proxy):
         env_id = None
         try:
             env_id = adspower_env.create_env(name, proxy, group_id)
             port = common.adspower_start(env_id)
-            return env_id, port, proxy
+            return (env_id, port, proxy)
         except Exception as e:
-            last = str(e)
-            log("代理 %s:%s 启动失败(%s)→换下一个代理" % (proxy.get("host"), proxy.get("port"), last[:60]))
+            last[0] = str(e)
+            try:
+                common.mark_proxy_result(proxy, "dead")   # 启动失败=该IP不可用,累计进共享 fail_streak(到阈值自动退役)
+            except Exception:
+                pass
+            log("代理 %s:%s 启动失败(%s)→换下一个代理" % (proxy.get("host"), proxy.get("port"), last[0][:60]))
             if env_id:                       # 删掉用坏代理建出来的环境，别留垃圾
                 try:
                     common.adspower_stop(env_id)
@@ -70,7 +76,33 @@ def _acquire_browser(proxies, start_idx, group_id, name, max_try=5):
                 except Exception:
                     pass
             time.sleep(1.2)
-    raise RuntimeError("连续 %d 个代理都启动失败，最后一个: %s" % (tries, last[:120]))
+            return None
+
+    # ① 优先在【未退役】代理里建环境(退役=评分已死,直接跳过省时);真尝试上限 max_try。
+    tried = 0
+    scanned = 0
+    k = 0
+    while tried < min(max_try, n) and scanned < n:
+        proxy = proxies[(start_idx + k) % n]
+        k += 1
+        scanned += 1
+        try:
+            if common.proxy_retired(proxy):
+                continue
+        except Exception:
+            pass
+        tried += 1
+        got = _try(proxy)
+        if got:
+            return got
+    # ② 兜底:一个未退役的都没真试过(小池全退役)→ 放宽忽略退役,再试 max_try 个,防整批因"无代理可建"卡死。
+    if tried == 0 and n:
+        log("[代理] 候选全部已退役 → 放宽忽略退役兜底选取(小池保命)")
+        for k in range(min(max_try, n)):
+            got = _try(proxies[(start_idx + k) % n])
+            if got:
+                return got
+    raise RuntimeError("连续尝试代理都失败(真试 %d,扫描 %d/%d)，最后一个: %s" % (tried, scanned, n, last[0][:120]))
 
 
 def _hcaptcha_solve_mode():
@@ -116,6 +148,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             driver.execute_cdp_cmd("Browser.grantPermissions", {"permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"]})
         except Exception:
             pass
+        steps_key.inject_key_capture(driver)   # 一劳永逸:goto 前注入 key 网络抓取钩子(后端返回明文 sk-or- 即存 sessionStorage,取key UI 无关)
         captcha.inject_hooks(driver)
         # 图片hcaptcha处理模式(每号一次性决定):FIXC_SOLVE_HCAPTCHA= on(必解)/off(换卡,原来)/random或不设(每号随机)。
         _solve_hcap = _hcaptcha_solve_mode()
@@ -134,6 +167,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         auth = steps_auth.register_or_login(page, email, op_pw, mailbox_pw, cfg,
                                             registered=bool(acct.get("registered")))   # 已注册号(历史auth=ok)→直接登录,不再点注册
         res["steps"]["auth"] = auth
+        if auth != "ok" and common.is_banned_reason(auth):
+            res["not_allowed"] = True   # ★显式拉黑标记(覆盖 NOT_ALLOWED/access denied/not permitted 等所有变体,口径同混合)
+            # → run.py 永久跳过(不再靠脆弱的 endswith)+ Node engine-runner 桥接据此进黑名单
         if auth == "ok" and checkpoint:
             # 注册/登录一成功就存盘:之后任何一步崩/被杀,重跑也知道这号已注册 → 直接登录,不再重注册(号已存在会卡 verify)。
             try:
@@ -157,11 +193,43 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 res["key_reused"] = True
                 log("[续跑] %s 复用已有 key(跳过取key,不重复建)" % email)
             else:
+                # ★防二次扣款(审计 RESUME-01/02):向导【抓到 key 那一刻】(收尾推进/充值之前)就落 checkpoint;
+                #   向导内 add-credits 真实扣款【那一刻】就登记 charge 去重。否则 key/charge 只在 get_api_key
+                #   return 后才落盘,而收尾循环在 return 前可能已扣款,被杀就丢信号→重跑整个向导→二次扣 + 再陷浮层。
+                def _on_key(_k):
+                    if checkpoint and _k:
+                        try:
+                            checkpoint(email, registered=True, api_key=_k)
+                        except Exception:
+                            pass
+                        _ck(checkpoint, email, "key", "ok", api_key=_k, key_name="onboarding")
+                def _on_charge():
+                    try:
+                        _ck(checkpoint, email, "charge", "ok", amount=10, via="wizard-credits")
+                    except Exception as _ce:
+                        # ★不可逆扣款的去重凭证落盘失败必须可观测(原静默 pass)→ 否则被杀/写盘失败时丢信号→续跑二次扣款
+                        try: log("[checkpoint] ⚠ 向导充值 charge 落盘失败,续跑可能重扣: %s" % str(_ce)[:80])
+                        except Exception: pass
+                    acct["charged"] = True   # 本轮 do_purchase 段据此跳过,防同号"向导充值+billing充值"双扣
+                    res["charged"] = 10      # ★第二个【独立】去重信号:写进结果行→results.jsonl→run.py 还原 acct["charged"](与 checkpoint 物理独立),并让账号页回显向导充值额
                 k = steps_key.get_api_key(page, name=opts.get("key_name"),
-                                          expiration=opts.get("key_expiration", "No expiration"))
+                                          expiration=opts.get("key_expiration", "No expiration"),
+                                          on_key=_on_key, on_charge=_on_charge)
                 res["steps"]["key"] = bool(k.get("ok"))
                 res["api_key"] = k.get("key")
-                if checkpoint and k.get("key"):
+                # ★可审计:取key路径(wizard=向导内抓到 / newkey=落工作台绕New Key建)→ 量化"绕路率"优化空间。
+                if k.get("key_path"):
+                    res["key_path"] = k.get("key_path")
+                # ★只读诊断:绕New Key 的号,网络钩子看到的 key-ish 传输/URL(定位 create-key 明文走哪条路、为啥没抓到)。
+                if k.get("key_capture_diag"):
+                    res["key_capture_diag"] = k.get("key_capture_diag")
+                # ★可审计:取key失败时落盘原因(WIZARD_KEY_NOT_CAPTURED=新版向导没抓到明文key→走split/混合;
+                #   NEWKEY_DIALOG_NOT_OPENED / NEWKEY_NOT_CREATED=老号New Key流程失败)。原来只记 key:false 不记因,
+                #   日志无法区分"新页面硬失败 vs 老路异常",修复方向无从判断。默认不影响成功路径。
+                if not k.get("ok"):
+                    res["key_reason"] = k.get("reason") or k.get("name")
+                    if k.get("key_diag"):
+                        res["key_diag"] = k.get("key_diag")   # 子诊断:向导停在哪屏/key是否掩码出现过(判修Sel vs转split)
                     try:
                         checkpoint(email, registered=True, api_key=k.get("key"))
                     except Exception:
@@ -172,14 +240,22 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         res["pay_method"] = getattr(page, "_pay_method", None)
         res["credit_method"] = getattr(page, "_credit_method", None)
 
-        if opts.get("do_card"):
+        # ★防资源浪费/数据丢失:取key 失败的号【绝不再加卡/充值/改密】——否则给【没有 API Key 的废号】白绑一张卡
+        #   (卡池的卡被消耗+计入BIN当日额度,聚合页就是"有卡末4/card-bound 但 API Key 空"的废行),卡和号全浪费。
+        #   留着卡和号下轮重试。只有【取key成功(含续跑复用)或 本就不取key(do_key 关,如纯加卡模式)】才往下做账单。
+        _key_ok = bool(res["steps"].get("key")) or bool(res.get("api_key"))
+        _bill_ok = _key_ok or (not opts.get("do_key", True))
+        if opts.get("do_key", True) and not _key_ok:
+            log("[流程] %s 取key失败 → 跳过加卡/充值/改密(不给无key废号浪费卡,留着重试)" % email)
+
+        if opts.get("do_card") and _bill_ok:
             log_stage(slot, email, "card")
-        if opts.get("do_card") and _prior_done(acct, "card"):
+        if opts.get("do_card") and _bill_ok and _prior_done(acct, "card"):
             # ★已绑卡(prior stages.card=ok)→ 跳过加卡,省一整段绑卡(还避免冷却/换卡冲突)。
             res["steps"]["card"] = "card-bound"
             res["card_skipped"] = True
             log("[续跑] %s 已绑卡,跳过加卡" % email)
-        elif opts.get("do_card"):
+        elif opts.get("do_card") and _bill_ok:
             addr = common.rand_address()
             # 【拒付→换卡(+自带新ZIP),不在同卡上换汤不换药】:declined 时禁该卡+排除其BIN,换【不同卡/不同BIN】重试;
             #   同卡换 ZIP 由 FixC 内部小幅兜底(ZIP_RETRY,默认调小),主力是这里换卡。最多换 CARD_SWAP_ON_DECLINE 张(默认3)。
@@ -220,27 +296,29 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         # ★止血#2 防重复扣款:两个独立信号判"已充过"——checkpoint 的 stages.charge(可能因写盘异常丢)
         #   + run.py 从 results.jsonl 还原的 acct["charged"](账号跑完才写,与 checkpoint 互补)。任一为真即跳过,
         #   绝不重复扣款(真金白银,不可回滚)。单靠 stages.charge 会假阴性 → 重复扣。
-        if opts.get("do_purchase"):
+        if opts.get("do_purchase") and _bill_ok:
             log_stage(slot, email, "charge")
-        if opts.get("do_purchase") and (_prior_done(acct, "charge") or acct.get("charged")):
+        if opts.get("do_purchase") and _bill_ok and (_prior_done(acct, "charge") or acct.get("charged")):
             res["steps"]["purchase"] = "success"
             res["skipped_charge"] = True
+            res["charged"] = opts.get("amount", 5)   # 已充过(续跑跳过):结果行仍带金额,账号页/聚合页回显(不重复扣款)
             log("[续跑] %s 已充值,跳过(防重复扣款)" % email)
-        elif opts.get("do_purchase"):
+        elif opts.get("do_purchase") and _bill_ok:
             r = steps_billing.purchase(page, opts.get("amount", 5), cfg, opts.get("manual_hcaptcha", True))
             res["steps"]["purchase"] = r.get("result")
             res["balance_after"] = r.get("balance_after")
             if r.get("result") == "success":
+                res["charged"] = opts.get("amount", 5)   # ★充值额进结果行(供 UI/台账回显;之前漏写=账号页显示 $0)
                 _ck(checkpoint, email, "charge", "ok", amount=opts.get("amount", 5), balance_after=r.get("balance_after"))
 
-        if opts.get("do_changepw") and opts.get("unified_pw"):
+        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok:
             log_stage(slot, email, "changepw")
-        if opts.get("do_changepw") and opts.get("unified_pw") and _prior_done(acct, "changepw"):
+        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _prior_done(acct, "changepw"):
             # ★止血#3:已改密(prior stages.changepw=ok)→ 跳过。旧邮箱密码已失效,再改必 fail。
             res["steps"]["changepw"] = True
             res["skipped_changepw"] = True
             log("[续跑] %s 已改密,跳过" % email)
-        elif opts.get("do_changepw") and opts.get("unified_pw"):
+        elif opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok:
             ok = firstmail.change_mailbox_password(email, mailbox_pw, opts["unified_pw"],
                                                    cfg["mail_key"], cfg["mail_base"])
             res["steps"]["changepw"] = bool(ok)

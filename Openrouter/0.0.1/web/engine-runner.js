@@ -23,6 +23,7 @@ const usageStore = require('./usage-store');
 const proxyStore = require('./proxy-store');
 const adspowerEndpointStore = require('./adspower-endpoint-store');
 const serviceKeys = require('./service-keys');
+const accountStore = require('../data/account-store');   // 把 Python 引擎结果(注册/key/充值/拉黑)桥接进账号台账,让账号页回显
 
 const SELENIUM_DIR = path.join(__dirname, '..', 'selenium-e2e');
 const STATE_DIR = path.join(SELENIUM_DIR, 'state');
@@ -53,6 +54,17 @@ function readTail(file, fromLine, stats) {
 // Python 结果行:ok=true 或 steps.card=='card-bound' 视为成功
 function isSuccessRow(r) { return !!(r && (r.ok === true || (r.steps && r.steps.card === 'card-bound'))); }
 
+// 统一「号被 OpenRouter 永久拒绝(拉黑)」判据 —— 覆盖两引擎:
+//   hybrid 写 res["not_allowed"]=True;纯Sel(run.py:131)靠 steps.auth 以 NOT_ALLOWED 结尾;另兼容 steps.banned 标记。
+function isNotAllowed(r) {
+  if (!r) return false;
+  if (r.not_allowed) return true;
+  const s = r.steps || {};
+  if (typeof s.auth === 'string' && /NOT_ALLOWED$/.test(s.auth)) return true;
+  if (s.banned === 'not-allowed') return true;
+  return false;
+}
+
 // Python 失败行 → 原因/阶段(供详情表展示)
 function pyFailReason(r) {
   const s = r.steps || {};
@@ -60,7 +72,7 @@ function pyFailReason(r) {
   if (s.card && s.card !== 'card-bound') return 'card:' + s.card;
   if (s.pw === false && s.pw_reason) return 'pw:' + s.pw_reason;
   if (r.giveup_permanent) return 'giveup' + (r.steps && r.steps.giveup ? ':' + r.steps.giveup : '');
-  if (r.not_allowed) return 'ACCOUNT_NOT_ALLOWED';
+  if (isNotAllowed(r)) return 'ACCOUNT_NOT_ALLOWED';
   if (r.error) return String(r.error).slice(0, 80);
   return s && Object.keys(s).length ? JSON.stringify(s).slice(0, 60) : 'unknown';
 }
@@ -86,13 +98,54 @@ function mapRow(r, accByEmail) {
   const exitIp = String(r.proxy || '').split(':')[0] || '';
   const orig = (accByEmail && accByEmail.get(r.email)) || '';
   if (isSuccessRow(r)) {
-    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: r.billing_status || (r.steps && r.steps.card) || '', charged: r.charge != null ? r.charge : 0, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
+    // ★充值额键名:hybrid 写 res["charged"]、纯Sel 也补写 charged;旧 r.charge 兜底。balance_after=充值后真实积分余额。
+    const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
+    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: r.billing_status || (r.steps && r.steps.card) || '', charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
   }
-  return ['failed', { email: r.email, password: orig, originalPassword: orig, reason: pyFailReason(r), stage: (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.card ? 'card' : (r.steps.pw === false ? 'register' : '')))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), proxy: r.proxy || '', createdAt: r.at || '' }];
+  return ['failed', { email: r.email, password: orig, originalPassword: orig, reason: pyFailReason(r), stage: (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.card ? 'card' : (r.steps.pw === false ? 'register' : '')))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
 const NODE_RESULTS_DIR = path.join(__dirname, '..', 'data', 'batch-results');
+
+// 把本次 job 的结果行桥接进【账号台账 accountStore】(账号页 /api/accounts + 续跑读它)。
+// 根因:Python 引擎(selenium/hybrid/split)结果只进 results.jsonl,从不更新台账 → 账号页对它们一片空白
+//   (充值不回显、拉黑不体现)。这里在每个 job 收口时,把结果(注册/key/billing/充值/卡/改密/拉黑)合并进台账。
+// 安全:只写【有意义的字段】(不拿空 key/卡/充值去覆盖既有数据);accountStore.update 是幂等 upsert+原子落盘。
+async function bridgeToAccountStore(rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  const byEmail = new Map();
+  for (const r of rows) { if (r && r.email) byEmail.set(r.email, r); }   // 同号多行 → 取最后一行(最新)
+  const ups = [];
+  for (const r of byEmail.values()) {
+    try {
+      const prior = accountStore.get(r.email) || {};
+      const success = isSuccessRow(r);
+      const patch = {};
+      if (r.api_key) { patch.apiKey = r.api_key; patch.registered = true; }
+      if (r.api_key_name) patch.apiKeyName = r.api_key_name;
+      if (r.registered || success) patch.registered = true;
+      // ★billingStatus 单调护栏(防二次扣款):只在新状态【账单等级 ≥ 旧状态】时才覆盖。否则失败行(declined/hcaptcha
+      //   写进 steps.card)会把已达标的 card-bound/success 降级 → Playwright 续跑读 billingSatisfied 误判未达标
+      //   → 对【已绑卡/已充值】号重新加卡/充值(真金白银,不可回滚)。
+      const billing = r.billing_status || (r.steps && r.steps.card) || '';
+      if (billing && accountStore.attainedLevel(billing) >= accountStore.attainedLevel(prior.billingStatus)) patch.billingStatus = billing;
+      // 充值额:只写【正数】真实充值。失败/跳过会写 charged=0(hybrid_run),若覆盖已有正充值额同样造成降级误判 → 只升不降。
+      const charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : null);
+      if (charged != null && charged > 0) patch.charged = charged;
+      // 成功元数据(充值后余额、绑成卡尾号)只在【成功行】写,避免失败行(declined 卡尾号/0 余额)污染已成功记录。
+      if (success && r.balance_after != null) patch.balanceAfter = r.balance_after;
+      if (success && r.card_last4) patch.cardLast4 = r.card_last4;
+      if (r.steps && r.steps.changepw) patch.passwordChanged = true;
+      const exitIp = String(r.proxy || '').split(':')[0];
+      if (exitIp) patch.exitIp = exitIp;   // 最近一次出口 IP(诊断用),失败行也更新无妨
+      if (isNotAllowed(r)) { patch.blacklisted = true; patch.blacklistReason = 'ACCOUNT_NOT_ALLOWED'; }
+      else if (success) { patch.blacklisted = false; patch.blacklistReason = ''; }   // ★成功(--no-resume 救回)→ 翻转拉黑,避免"既拉黑又有key"矛盾态
+      ups.push(Promise.resolve(accountStore.update(r.email, patch)).catch(() => { /* 单号失败不致命 */ }));
+    } catch (_e) { /* 单号桥接失败不影响其它号 */ }
+  }
+  if (ups.length) await Promise.allSettled(ups);
+}
 function writeDetail(jobId, engine, successRows, failedRows) {
   try {
     fs.mkdirSync(DETAILS_DIR, { recursive: true });
@@ -132,6 +185,21 @@ function parseResultLine(line) {
   m = line.match(/════\s+(\S+?)\s+结果\s+ok=(\w+)/);                // hybrid:  ════ NAME 结果 ok=B pw=...
   if (m) return { name: m[1], ok: /^true$/i.test(m[2]) || cardBound };
   return null;
+}
+
+// 从 stdout 结果行尽力提取失败真因(run.py 行内含 Python repr 的 steps)→ 让实时 account-failed 事件带真因,
+// 不再只显示占位 'see-log'(本会话痛点:跑批时看不到失败原因)。提取不到(如 hybrid 行格式不同)回退 'see-log',无回归。
+function reasonFromLine(line) {
+  try {
+    let m = line.match(/['"]auth['"]\s*:\s*['"](fail[^'"]*)['"]/i);   // 注册/登录失败:fail:FORM_NOT_FILLED 等
+    if (m) return m[1];
+    m = line.match(/['"]card['"]\s*:\s*['"]([^'"]+)['"]/i);            // 加卡态(card-bound 是成功,不进失败分支)
+    if (m && m[1] !== 'card-bound') return 'card:' + m[1];
+    if (/['"]key['"]\s*:\s*(False|false)\b/.test(line)) return 'key:false';
+    m = line.match(/['"]giveup['"]\s*:\s*['"]([^'"]+)['"]/i);
+    if (m) return 'giveup:' + m[1];
+  } catch (_e) { /* 行格式异常→回退 see-log */ }
+  return 'see-log';
 }
 
 // 有限数才用,否则回退默认;不要用 `Number(x) || d`(会把合法的 0 顶成默认)。
@@ -227,9 +295,20 @@ function buildEnv(p) {
   // 绑卡结果等待上限(秒):点 Save 后轮询绑成/被拒结果的上限,到点转去刷新核验(fixc_core 读 FIXC_RESULT_WAIT)。引擎配置可调。
   const _nResWait = Number(p.cardResultWait);
   if (p.cardResultWait !== undefined && p.cardResultWait !== '' && Number.isFinite(_nResWait) && _nResWait > 0) env.FIXC_RESULT_WAIT = String(_nResWait);
+  // Save card 存卡弹窗处理(fixc_core 读 FIXC_SAVECARD):默认 dismiss=秒关弹窗立即判绑成(不注 env);仅显式选 wait
+  //   才注入 → 还原"不关、等满 FIXC_RESULT_WAIT 再核验"旧行为(供用户对照测试,默认逐字节是 dismiss 快路径)。
+  if (p.cardSaveDialog === 'wait') env.FIXC_SAVECARD = 'wait';
   // 取key卡死自救阈值(秒):某一屏卡过这么久不前进 → 刷新逃逸(steps_key 读 WIZARD_STALL_REFRESH)。仅纯 Selenium 取key 用。
   const _nStall = Number(p.wizardStallRefresh);
   if (p.wizardStallRefresh !== undefined && p.wizardStallRefresh !== '' && Number.isFinite(_nStall) && _nStall > 0) env.WIZARD_STALL_REFRESH = String(_nStall);
+  // 每引擎「走法」变体(引擎配置预设里设;空=不注=Python 用内置默认 → 默认运行逐字节不变)。
+  // 放在 advanced-store(line 195)之后 → 每引擎设了就覆盖全局;各项枚举/数值白名单后才写,手改 JSON 也注不进任意 env。
+  if (['address', 'later', 'random'].includes(String(p.wizardPayMode))) env.WIZARD_PAY_MODE = String(p.wizardPayMode);
+  if (['skip', 'credits', 'random'].includes(String(p.wizardCreditMode))) env.WIZARD_CREDIT_MODE = String(p.wizardCreditMode);
+  if (['random', 'spread', 'concentrate'].includes(String(p.cardStrategy))) env.CARD_STRATEGY = String(p.cardStrategy);
+  const _nZip = Number(p.zipRetry);
+  if (p.zipRetry !== undefined && p.zipRetry !== '' && Number.isFinite(_nZip) && _nZip >= 0) env.ZIP_RETRY = String(_nZip);
+  if (String(p.cardFillMethod) === 'selenium') env.FIXC = '0';   // 旧 Selenium 填卡;Fix C(默认)绝不显式设 FIXC,保持与今天一致
   return env;
 }
 
@@ -274,7 +353,7 @@ function runSpec(jobId, spec, publish, shared) {
         shared.seenResults.add(r.name);
         if (r.ok) shared.counters.ok += 1; else shared.counters.fail += 1;
         const _orig = (shared.accByEmail && shared.accByEmail.get(r.name)) || '';
-        publish(jobId, r.ok ? 'account-success' : 'account-failed', { email: r.name, rendered: tagged, reason: r.ok ? '' : 'see-log', password: _orig, originalPassword: _orig });
+        publish(jobId, r.ok ? 'account-success' : 'account-failed', { email: r.name, rendered: tagged, reason: r.ok ? '' : reasonFromLine(tagged), password: _orig, originalPassword: _orig });
         publish(jobId, 'runtime-stats', { jobDone: shared.counters.ok + shared.counters.fail, jobTotal: shared.total, browsersActive: 0, browsersMax: 0 });
       }
     };
@@ -399,11 +478,37 @@ async function spawnEngine(jobId, engine, payload, publish) {
     const key = engine === 'hybrid' ? 'hybrid' : 'selenium';
     harvest(RESULTS[key], startLines[key]).forEach((r) => rows.push(r));
   }
+  // 续跑被跳过的号(已完成/被拒/冷却/坏邮箱)本 job 没有结果行 → 控制台「本次任务」详情/计数看不到「跑过的号」。
+  //   用它们【历史最近一行】回填进本 job 视图,让这些号可见。★只读回填、按 email 取历史 latest、ok/steps 原样(banned→failed、
+  //   已绑→success),【绝不伪造成功】;只进 per-job 快照(writeDetail/writeBatchResults),不写 append-only results.jsonl(不污染权威源)。
+  try {
+    const haveEmails = new Set(rows.map((r) => r && r.email).filter(Boolean));
+    const wantAccts = (payload.accounts || []).filter((a) => a && a.email && !haveEmails.has(a.email));
+    if (wantAccts.length) {
+      const files = engine === 'split' ? [RESULTS.selenium, RESULTS.hybrid] : [engine === 'hybrid' ? RESULTS.hybrid : RESULTS.selenium];
+      const latest = new Map();   // email → 历史最近一行(全文件扫,按 at 取更近者;跳过号的行在本 job startLine 之前)
+      for (const f of files) {
+        for (const r of readTail(f, 0, { dropped: 0 })) {
+          if (!r || !r.email) continue;
+          const prev = latest.get(r.email);
+          if (!prev || String(r.at || '') >= String(prev.at || '')) latest.set(r.email, r);
+        }
+      }
+      let _back = 0;
+      for (const a of wantAccts) {
+        const r = latest.get(a.email);
+        if (r) { rows.push({ ...r, job_id: jobId, _resumed_skip: true }); _back += 1; }
+      }
+      if (_back) publish(jobId, 'log', `续跑:${_back} 个已完成/跳过的号用历史结果回填进本次视图(不重跑、不改判定、不污染结果源)`);
+    }
+  } catch (_e) { /* 回填失败不致命,仅本 job 视图少几个跳过号 */ }
   // 把输入账号的原密码 join 回结果(结果文件不含密码)→ 导出/重跑能拿到 email:原密码
   const accByEmail = new Map((payload.accounts || []).map((a) => [a.email, a.password || '']));
   const successRows = [];
   const failedRows = [];
   for (const r of rows) { const [k, v] = mapRow(r, accByEmail); (k === 'success' ? successRows : failedRows).push(v); }
+  // 桥接进账号台账(账号页/续跑读它):注册/key/billing/充值/卡/拉黑都合并进去,修"账号页对 Python 引擎一片空白"。
+  try { await bridgeToAccountStore(rows); } catch (_e) { /* 桥接失败不影响 job 收口 */ }
   let success = successRows.length;
   let failed = failedRows.length;
   // 结果文件没拿到行(被中途 kill / 没写)→ 退回 stdout 解析计数
@@ -430,7 +535,13 @@ async function spawnEngine(jobId, engine, payload, publish) {
   // 写 Node 同款 batch-results(txt 按用户模板渲染 + jsonl 映射后形状)→ 下载/聚合/详情 对 Python 也生效
   const _wb = writeBatchResults(jobId, successRows, failedRows, payload.successTemplate, payload.failureTemplate);
   if ((_wd && !_wd.ok) || (_wb && !_wb.ok)) publish(jobId, 'log', `⚠ 结果落盘失败(下载/详情/聚合可能不全): ${(_wd && _wd.error) || ''} ${(_wb && _wb.error) || ''}`.trim());
-  const summary = { jobId, total: shared.total, success, failed, durationMs: Date.now() - startedAt, engine, resultFiles, ...(crashError ? { error: crashError } : {}) };
+  // 结果对账(split 尤其需要):有结果但【不足总数】= 某分流组/子进程疑似中途退出、丢了那批账号的结果。
+  //   不改判定(成败仍按真实结果),只【标记 + 告警】让运行日志/历史可见,提示可「续跑这批」补齐。
+  const resultCount = success + failed;
+  const completenessPct = Math.round((100 * resultCount) / Math.max(1, shared.total));
+  const partial = resultCount > 0 && resultCount < shared.total;   // >0 且 <total:部分结果(区别于 crashError 的零结果整崩)
+  const summary = { jobId, total: shared.total, success, failed, durationMs: Date.now() - startedAt, engine, resultFiles, completenessPct, ...(partial ? { partial: true } : {}), ...(crashError ? { error: crashError } : {}) };
+  if (partial) publish(jobId, 'log', `⚠ 结果可能未完整:${resultCount}/${shared.total}(${completenessPct}%)—— 某分流组/子进程疑似中途退出丢了部分账号结果,可用「续跑这批」补齐`);
   if (crashError) publish(jobId, 'log', crashError);
   publish(jobId, 'job-done', summary);
   return summary;
@@ -439,4 +550,4 @@ async function spawnEngine(jobId, engine, payload, publish) {
   }
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine };

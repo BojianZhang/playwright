@@ -47,6 +47,7 @@ function importRaw(raw) {
     const s = line.trim();
     if (!s || s.startsWith('#')) return;
     const parts = s.split(/\s*[|,\t]\s*/);
+    while (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();   // 容错:裸 key 带尾随分隔符 "key|" → 不再被当多字段而丢弃
     let provider, apiKey, apiBaseUrl, label;
     if (parts.length <= 1) { apiKey = parts[0]; }
     else { [provider, apiKey, apiBaseUrl, label] = parts; }

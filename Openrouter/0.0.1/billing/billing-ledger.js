@@ -90,6 +90,8 @@ function summary(recentN = 200) {
   const entries = ENTRIES.slice(-recentN).reverse(); // 最近的在前
   return {
     total: ENTRIES.length,
+    returned: entries.length,                    // 实际返回的明细条数;UI 据此诚实标注「最近 N / 共 total」,别让用户误以为只有这么多笔
+    truncated: ENTRIES.length > entries.length,  // true=列表被截断(KPI total/totalCharged/byResult/byCard 仍按【全量】算,不受截断影响)
     success: byResult.success || 0,
     declined: byResult.declined || 0,
     totalCharged,

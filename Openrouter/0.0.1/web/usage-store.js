@@ -17,11 +17,21 @@ const CAP = 20000;
 const ROTATE_EVERY = 500; // 惰性轮转:每追加 N 条才查一次是否超 CAP,避免每条 record 都全量读+重写文件(O(n)/条)
 let _sinceRotate = 0;
 
+// 解析后的行按【文件 mtime+size】memo 缓存:诊断页 5s 轮询每次对同一目标调 byEmail/byCard/byProxy/byEnv,
+// 各自一次 _readAll = readFileSync+逐行 JSON.parse 整个 usage.jsonl(封顶 2 万行≈5MB)→ 一个请求就 4 次全量扫,
+// ×5s 轮询持续烧。所有写路径(recordMany 的 appendFileSync / _rotate 的 writeFileSync+rename / clear)都改文件
+// size,故 mtime+size 没变即可安全复用(append 必涨 size,比低精度 mtime 更可靠)。返回的数组调用方只 filter/slice
+// 不就地改,可共享同一引用。
+let _cache = null; // { mtimeMs, size, rows }
 function _readAll() {
   try {
-    return fs.readFileSync(FILE, 'utf8').split('\n').filter(Boolean)
+    const st = fs.statSync(FILE);
+    if (_cache && _cache.mtimeMs === st.mtimeMs && _cache.size === st.size) return _cache.rows;
+    const rows = fs.readFileSync(FILE, 'utf8').split('\n').filter(Boolean)
       .map((l) => { try { return JSON.parse(l); } catch (_e) { return null; } }).filter(Boolean);
-  } catch (_e) { return []; }
+    _cache = { mtimeMs: st.mtimeMs, size: st.size, rows };
+    return rows;
+  } catch (_e) { return []; }  // 无文件/读失败 → 空(不缓存,下次重试)
 }
 function recordMany(entries) {
   if (!entries || !entries.length) return;

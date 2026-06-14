@@ -1,7 +1,8 @@
 // 运行历史共享件:状态徽章 + 计费动作标签。
 import type { RunSummary } from '../lib/types';
 
-export function RunStatus({ status }: { status: RunSummary['status'] }) {
+export function RunStatus({ status, partial, completenessPct }: { status: RunSummary['status']; partial?: boolean; completenessPct?: number }) {
+  if (status === 'finished' && partial) return <span className="kbadge warn" title="结果可能未完整:某分流组/子进程疑似中途退出丢了部分账号结果 —— 可「续跑这批」补齐">⚠ 未完整{completenessPct != null ? ` ${completenessPct}%` : ''}</span>;
   if (status === 'finished') return <span className="kbadge ok">✓ 完成</span>;
   if (status === 'running') return <span className="kbadge info">● 运行中</span>;
   if (status === 'error') return <span className="kbadge fail">✕ 异常</span>;

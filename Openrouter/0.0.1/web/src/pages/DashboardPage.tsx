@@ -69,7 +69,7 @@ export default function DashboardPage() {
                         <td className="mono">{run.total}</td>
                         <td className="mono" style={{ color: 'var(--success)' }}>{run.success}</td>
                         <td className="mono" style={{ color: 'var(--danger)' }}>{run.failed}</td>
-                        <td><RunStatus status={run.status} /></td>
+                        <td><RunStatus status={run.status} partial={run.partial} completenessPct={run.completenessPct} /></td>
                       </tr>
                     ))}
                   </tbody>

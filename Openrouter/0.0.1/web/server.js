@@ -35,6 +35,7 @@ const procRegistry = require('./proc-registry');
 const procCleanup = require('./proc-cleanup');
 const configRw = require('./config-rw');
 const strategiesStore = require('./strategies-store');
+const schemesStore = require('./schemes-store');
 const engineConfigStore = require('./engine-config-store');
 const advancedStore = require('./advanced-store');
 const selectorsStore = require('./selectors-store');
@@ -341,8 +342,16 @@ async function handleStartJob(req, res) {
   // 向后兼容：旧「AdsPower 接管」勾选 → 指纹浏览器选 adspower。
   if (taskParams.useAdsPower === true && taskParams.browserProvider === 'none') taskParams.browserProvider = 'adspower';
 
+  // 防重复提交(与 Python /api/run 的 _batchInflight 同机制,防重复扣费):两个并发 /jobs(双标签页/重试/或 dispatch
+  //   把同批 playwright 账号回环到本机 /jobs)会各起一个 job 同时跑同号 → 同账号被处理两次 → 重复加卡/充值(真扣款)。
+  //   按 引擎+排序后account集 指纹挡掉,job 结束(成败均)在 finally 释放。
+  const _pwBatchKey = _batchKey('playwright', slicedAccounts);
+  const _pwConflict = _batchInflight.get(_pwBatchKey);
+  if (_pwConflict) { sendJson(res, 409, { error: 'DUPLICATE_SUBMIT', message: `相同账号批次已在运行中(jobId …${String(_pwConflict).slice(-10)}),已挡掉重复提交防重复扣费;等它结束或用「续跑这批」。` }); return; }
+
   // jobId 含节点标识 → 文件名 <jobId>-success.txt 跨机器不会重复。
   const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  _batchInflight.set(_pwBatchKey, jobId);
 
   // 运行历史:登记一条 running(参数摘要,不含密钥/明文凭证)。job 跑完(runJob 返回 summary)更新为 finished。
   try {
@@ -373,7 +382,8 @@ async function handleStartJob(req, res) {
       try { runsStore.fail(jobId, err); } catch (_e) { /* ignore */ }
       eventBus.publish(jobId, 'log', `job 异常终止: ${err && err.message}`);
       eventBus.publish(jobId, 'job-done', { jobId, error: err && err.message });
-    });
+    })
+    .finally(() => { _batchInflight.delete(_pwBatchKey); });   // job 结束(成败均)释放防重互斥,之后可正常再提交同批
 
   sendJson(res, 200, { jobId, accepted: slicedAccounts.length });
 }
@@ -723,6 +733,10 @@ async function handleApiResultsClear(req, res) {
 // 复用各机已有的 /jobs(playwright)/ /api/run(python)作为执行端口(已 token 门);
 // 结果经已有 push/aggregate 回收(见结果聚合页)。本机作为目标=loopback 到自身 /jobs。
 const DISPATCHES = []; // 最近派发记录(内存,封顶 20),供集群页展示
+// 派发串行链:两次并发派发若同时挑资源,会把【同一批】代理/卡分给不同目标(代理重叠→多机同 IP 撞风控;
+// 卡虽已由 reserveForDispatch 原子冻结防重叠,但串行化让"挑资源→下发→收尾释放"整段不交错,语义最干净)。
+// 永不 reject 的 promise 链;派发是低频管理操作,串行等待可接受。
+let _dispatchChain = Promise.resolve();
 function _postJson(url, body, timeoutMs) {
   const headers = { 'Content-Type': 'application/json', ...(AUTH_TOKEN ? { 'X-Auth-Token': AUTH_TOKEN } : {}) };
   return fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs || 20000) })
@@ -761,54 +775,75 @@ async function handleDispatch(req, res) {
   // 不再被本机用或下次再发,杜绝同一张卡被两台机同时刷(重复扣款)。发给【本机自己(loopback)】的目标不覆盖资源
   // (本机直接用自己池),也不冻卡。资源解析失败则整体退回"不下发"(各目标用自己池)。
   const ship = payload.shipResources === true;
-  let proxSlices = []; let cardSlices = []; let shipAddrRaw = ''; const shipKeyPatch = {};
-  if (ship) {
-    try {
-      const proxLines = String(proxyStore.activeLines() || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-      proxSlices = proxLines.length ? _chunk(proxLines, targets.length) : [];
-      const cardExport = cardPool.exportActiveLines();                 // [{id,line}] 只读,不锁卡
-      cardSlices = cardExport.length ? _chunk(cardExport, targets.length) : [];
-      shipAddrRaw = String(addressStore.activeLines() || '');
-      const cap = serviceKeys.pickCaptcha() || {};
-      const mb = serviceKeys.pickMailbox() || {};
-      if (cap.apiKey) { shipKeyPatch.captchaApiKey = cap.apiKey; if (cap.provider) shipKeyPatch.captchaProvider = cap.provider; }
-      if (mb.apiKey) { shipKeyPatch.mailboxApiKey = mb.apiKey; if (mb.apiBaseUrl) shipKeyPatch.mailboxApiBaseUrl = mb.apiBaseUrl; }
-    } catch (_e) { proxSlices = []; cardSlices = []; shipAddrRaw = ''; }
-  }
-  const frozenCards = [];   // 成功下发后要冻结的卡 [{id,node}]
+  // ── 串行化整段「挑资源 → 逐目标下发 → 收尾」:两次并发派发不交错(代理不重叠 / 卡预留-释放不打架)。──
+  const _prevDispatch = _dispatchChain;
+  let _releaseDispatchLock;
+  _dispatchChain = new Promise((r) => { _releaseDispatchLock = r; });
+  try { await _prevDispatch; } catch (_e) { /* 链永不 reject;前一次的错与本次无关 */ }
 
   const slices = [];
-  for (let i = 0; i < targets.length; i++) {
-    const t = targets[i]; const grp = groups[i];
-    if (!grp.length) continue;
-    const isSelf = t.self || t.url === 'self';
-    const base = isSelf ? `http://127.0.0.1:${PORT}` : _normBase(t.url);
-    // 白名单外的目标:绝不向其发带令牌的请求(防 SSRF / 令牌泄露)。
-    if (!isSelf && !allowed.has(base)) {
-      slices.push({ target: t.nodeId || t.url, url: t.url, accepted: 0, count: grp.length, ok: false, error: 'TARGET_NOT_ALLOWED' });
-      continue;
+  const frozenCards = [];   // 成功下发的卡(打精确目标标签 + 计满) [{id,node}]
+  let reservedCardIds = []; // 本次原子冻结的全部卡 id(收尾把未成功下发的解冻还原)
+  const shippedCardIds = new Set();
+  try {
+    let proxSlices = []; let cardSlices = []; let shipAddrRaw = ''; const shipKeyPatch = {};
+    if (ship) {
+      try {
+        const proxLines = String(proxyStore.activeLines() || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        proxSlices = proxLines.length ? _chunk(proxLines, targets.length) : [];
+        // ★原子预留:单锁内挑出全部可用卡并就地冻结为 dispatched(挑+冻同一把锁)→ 下发窗口内本机 acquire/
+        //   另一次派发都选不到这些卡,根除"快照→下发→冻结"间隙的同卡多机重复扣款(HIGH#1)。
+        const reserved = await cardPool.reserveForDispatch();          // [{id,line}] 已就地冻结
+        reservedCardIds = reserved.map((x) => x.id);
+        cardSlices = reserved.length ? _chunk(reserved, targets.length) : [];
+        shipAddrRaw = String(addressStore.activeLines() || '');
+        const cap = serviceKeys.pickCaptcha() || {};
+        const mb = serviceKeys.pickMailbox() || {};
+        if (cap.apiKey) { shipKeyPatch.captchaApiKey = cap.apiKey; if (cap.provider) shipKeyPatch.captchaProvider = cap.provider; }
+        if (mb.apiKey) { shipKeyPatch.mailboxApiKey = mb.apiKey; if (mb.apiBaseUrl) shipKeyPatch.mailboxApiBaseUrl = mb.apiBaseUrl; }
+      } catch (_e) { proxSlices = []; cardSlices = []; shipAddrRaw = ''; }
     }
-    const url = base + ep;
-    // count 已在中心机按总量截断并分片(上面 accounts.slice + _chunk),转发给目标机时归零,避免目标机对已切好的子集再按 count 砍一刀。
-    const sendBody = { ...payload, engine, accountsRaw: grp.join('\n'), count: 0 };
-    let cardIdsForTarget = [];
-    if (ship && !isSelf) {
-      if (proxSlices[i] && proxSlices[i].length) { sendBody.proxiesRaw = proxSlices[i].join('\n'); sendBody.useProxyPool = false; }
-      if (shipAddrRaw) { sendBody.billingAddressesRaw = shipAddrRaw; sendBody.useAddressPool = false; }
-      if (cardSlices[i] && cardSlices[i].length) { sendBody.cardsRaw = cardSlices[i].map((x) => x.line).join('\n'); cardIdsForTarget = cardSlices[i].map((x) => x.id); }
-      Object.assign(sendBody, shipKeyPatch);
+
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i]; const grp = groups[i];
+      if (!grp.length) continue;
+      const isSelf = t.self || t.url === 'self';
+      const base = isSelf ? `http://127.0.0.1:${PORT}` : _normBase(t.url);
+      // 白名单外的目标:绝不向其发带令牌的请求(防 SSRF / 令牌泄露)。
+      if (!isSelf && !allowed.has(base)) {
+        slices.push({ target: t.nodeId || t.url, url: t.url, accepted: 0, count: grp.length, ok: false, error: 'TARGET_NOT_ALLOWED' });
+        continue;
+      }
+      const url = base + ep;
+      // count 已在中心机按总量截断并分片(上面 accounts.slice + _chunk),转发给目标机时归零,避免目标机对已切好的子集再按 count 砍一刀。
+      const sendBody = { ...payload, engine, accountsRaw: grp.join('\n'), count: 0 };
+      let cardIdsForTarget = [];
+      if (ship && !isSelf) {
+        if (proxSlices[i] && proxSlices[i].length) { sendBody.proxiesRaw = proxSlices[i].join('\n'); sendBody.useProxyPool = false; }
+        if (shipAddrRaw) { sendBody.billingAddressesRaw = shipAddrRaw; sendBody.useAddressPool = false; }
+        if (cardSlices[i] && cardSlices[i].length) { sendBody.cardsRaw = cardSlices[i].map((x) => x.line).join('\n'); cardIdsForTarget = cardSlices[i].map((x) => x.id); }
+        Object.assign(sendBody, shipKeyPatch);
+      }
+      try {
+        const j = await _postJson(url, sendBody);
+        const shipped = (ship && !isSelf) ? { proxies: (proxSlices[i] || []).length, cards: cardIdsForTarget.length, addresses: shipAddrRaw ? 'replicated' : 0, keys: Object.keys(shipKeyPatch).length ? 'replicated' : 0 } : undefined;
+        slices.push({ target: t.nodeId || t.url, url: t.url, jobId: j.jobId || '', accepted: j.accepted != null ? j.accepted : grp.length, count: grp.length, ok: true, shipped });
+        for (const id of cardIdsForTarget) { shippedCardIds.add(id); frozenCards.push({ id, node: t.nodeId || base }); }
+      } catch (e) {
+        slices.push({ target: t.nodeId || t.url, url: t.url, accepted: 0, count: grp.length, ok: false, error: String((e && e.message) || e) });
+      }
     }
-    try {
-      const j = await _postJson(url, sendBody);
-      const shipped = (ship && !isSelf) ? { proxies: (proxSlices[i] || []).length, cards: cardIdsForTarget.length, addresses: shipAddrRaw ? 'replicated' : 0, keys: Object.keys(shipKeyPatch).length ? 'replicated' : 0 } : undefined;
-      slices.push({ target: t.nodeId || t.url, url: t.url, jobId: j.jobId || '', accepted: j.accepted != null ? j.accepted : grp.length, count: grp.length, ok: true, shipped });
-      for (const id of cardIdsForTarget) frozenCards.push({ id, node: t.nodeId || base });
-    } catch (e) {
-      slices.push({ target: t.nodeId || t.url, url: t.url, accepted: 0, count: grp.length, ok: false, error: String((e && e.message) || e) });
+    // 成功下发的卡:打精确目标标签并按"额度交给子机"计满(markDispatched 现会把 usedCount=maxUses,
+    // 日后 enable() 只回 exhausted,防同卡多机重复扣款 M8)。单卡失败不致命。
+    for (const { id, node } of frozenCards) { try { await cardPool.markDispatched(id, node); } catch (_e) { /* ignore */ } }
+    // 收尾:把【已原子冻结但未成功下发】的卡(失败目标 / 没分到目标的余卡)解冻还原为 active,usedCount 不动 → 不丢卡不误计。
+    for (const id of reservedCardIds) {
+      if (shippedCardIds.has(id)) continue;
+      try { await cardPool.releaseDispatch(id); } catch (_e) { /* ignore */ }
     }
+  } finally {
+    _releaseDispatchLock();
   }
-  // 只冻结【成功下发】的卡(失败的不冻,留给下次/本机重试)。单卡冻结失败不致命。
-  for (const { id, node } of frozenCards) { try { await cardPool.markDispatched(id, node); } catch (_e) { /* ignore */ } }
 
   const rec = { parentJobId, at: Date.now(), engine, total: accounts.length, dispatched: slices.filter((s) => s.ok).length, targets: slices.length, slices, shipResources: ship, frozenCards: frozenCards.length };
   DISPATCHES.unshift(rec); if (DISPATCHES.length > 20) DISPATCHES.length = 20;
@@ -1142,6 +1177,30 @@ async function handleStrategiesActive(req, res) {
     const r = strategiesStore.setActive(String(body.stage || ''), String(body.id || ''));
     sendJson(res, 200, { ok: true, ...r });
   } catch (e) { sendJson(res, STRATEGY_ERR[e.code] || 500, { error: e.code || 'ACTIVE_FAILED' }); }
+}
+// ── 执行方案(整套"怎么跑"命名预设):读 / 存 / 删 / 设激活 ──────────────────
+const SCHEME_ERR = { NO_PRESET: 404, BUILTIN_LOCKED: 409 };
+function handleSchemesGet(res) {
+  try { sendJson(res, 200, schemesStore.getAll()); }
+  catch (e) { sendJson(res, 500, { error: 'SCHEMES_READ_FAILED', message: String(e && e.message) }); }
+}
+async function handleSchemesSave(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try { sendJson(res, 200, { ok: true, ...schemesStore.savePreset({ id: body.id, name: body.name, cfg: body.cfg }) }); }
+  catch (e) { sendJson(res, SCHEME_ERR[e.code] || 500, { error: e.code || 'SAVE_FAILED' }); }
+}
+async function handleSchemesDelete(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try { sendJson(res, 200, { ok: true, ...schemesStore.deletePreset(String(body.id || '')) }); }
+  catch (e) { sendJson(res, SCHEME_ERR[e.code] || 500, { error: e.code || 'DELETE_FAILED' }); }
+}
+async function handleSchemesActive(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try { sendJson(res, 200, { ok: true, ...schemesStore.setActive(String(body.id || '')) }); }
+  catch (e) { sendJson(res, SCHEME_ERR[e.code] || 500, { error: e.code || 'ACTIVE_FAILED' }); }
 }
 // ── 引擎配置(per-engine 命名预设):读 / 存 / 删 / 设激活 ──────────────────
 // 与环节策略同范式,顶层键是引擎(playwright/selenium/hybrid/split)。opts 已被 store 按 engine-schema 白名单过滤。
@@ -1579,9 +1638,12 @@ function doRestart() {
   if (_restarting) return; _restarting = true;
   try { console.log('[Openrouter Web] 一键重启 → 刷盘 → 拉起新实例 → 退出旧实例'); } catch (_e) { /* */ }
   try { flushAllStores(); } catch (_e) { /* */ }
+  // 先停止接收新连接,再【强制断开存量长连接(SSE /events 等)】—— 否则端口被 SSE 常连占着,直到 process.exit 才释放,
+  // 新实例可能在端口释放前耗尽重试。closeAllConnections 是 Node 18.2+;旧版本退回靠下面 process.exit 硬释放。
   try { server.close(); } catch (_e) { /* */ }
+  try { if (typeof server.closeAllConnections === 'function') server.closeAllConnections(); } catch (_e) { /* */ }
   try { respawnSelf(); } catch (e) { try { console.error('[restart] 拉起新实例失败:', e && e.message); } catch (_e2) { /* */ } }
-  setTimeout(() => process.exit(0), 600);   // 给响应送达 + 新实例起步留余量,然后退出释放端口
+  setTimeout(() => process.exit(0), 500);   // 响应送达 + 端口释放兜底,然后退出
 }
 async function handleServerRestart(req, res) {
   const b = await _body(req, res); if (!b) return;   // POST(经鉴权 + body 解析)
@@ -1650,6 +1712,10 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/strategies/save') return void handleStrategiesSave(req, res);
   if (req.method === 'POST' && pathname === '/api/strategies/delete') return void handleStrategiesDelete(req, res);
   if (req.method === 'POST' && pathname === '/api/strategies/active') return void handleStrategiesActive(req, res);
+  if (req.method === 'GET' && pathname === '/api/schemes') return void handleSchemesGet(res);
+  if (req.method === 'POST' && pathname === '/api/schemes/save') return void handleSchemesSave(req, res);
+  if (req.method === 'POST' && pathname === '/api/schemes/delete') return void handleSchemesDelete(req, res);
+  if (req.method === 'POST' && pathname === '/api/schemes/active') return void handleSchemesActive(req, res);
   if (req.method === 'GET' && pathname === '/api/engine-configs') return void handleEngineConfigsGet(res);
   if (req.method === 'POST' && pathname === '/api/engine-configs/save') return void handleEngineConfigsSave(req, res);
   if (req.method === 'POST' && pathname === '/api/engine-configs/delete') return void handleEngineConfigsDelete(req, res);
@@ -1755,9 +1821,10 @@ const onListening = () => {
 // 也修了"第二个实例直接崩"的旧行为。其它监听错误才退出。
 let _bindTries = 0;
 server.on('error', (e) => {
-  if (e && e.code === 'EADDRINUSE' && _bindTries < 24) {
+  if (e && e.code === 'EADDRINUSE' && _bindTries < 40) {   // 最多 ~20s 重试,覆盖旧实例 SSE 长连释放端口的窗口
     _bindTries += 1;
     if (_bindTries === 1) console.log(`[Openrouter Web] 端口 ${PORT} 被占用(旧实例退出中?)→ 重试绑定…`);
+    if (_bindTries === 40) console.error(`[Openrouter Web] ⚠ 端口 ${PORT} 重试 20s 仍被占用,最后一次尝试…`);
     setTimeout(() => server.listen(PORT, HOST, onListening), 500);
   } else {
     console.error('[Openrouter Web] 监听失败:', (e && e.message) || e);

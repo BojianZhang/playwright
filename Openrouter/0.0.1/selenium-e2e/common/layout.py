@@ -29,10 +29,10 @@ def screen_size():
             return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
         except Exception:
             return 1920, 1080
-    # macOS / 其它:走 osnative(AppleScript Finder 桌面 bounds);拿不到再回退 1920x1080。
+    # macOS / Linux:走 osnative 原生取屏(Mac=AppleScript Finder bounds;Linux=xrandr/xdpyinfo);拿不到再回退 1920x1080。
     try:
-        from .osnative import mac_screen_size
-        sz = mac_screen_size()
+        from .osnative import IS_MAC, IS_LINUX, mac_screen_size, linux_screen_size
+        sz = mac_screen_size() if IS_MAC else (linux_screen_size() if IS_LINUX else None)
         if sz:
             return sz
     except Exception:

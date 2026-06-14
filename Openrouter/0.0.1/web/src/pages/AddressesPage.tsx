@@ -104,7 +104,7 @@ export default function AddressesPage() {
         placeholder={'Katherine Lee|128 NW 11th Ave|Portland|Oregon|97209'}
         accept=".txt,.csv,text/csv,text/*"
         parse={(t) => parseKind('address', t)}
-        onImport={(raw) => importM.mutateAsync({ raw })}
+        onImport={(raw) => importM.mutateAsync({ raw: parseKind('address', raw).kept.join('\n') || raw })}
         formatResult={(r) => { const d = r as { added?: number; dup?: number }; return `新增 ${d.added || 0} · 重复 ${d.dup || 0}`; }} />
     </main>
   );

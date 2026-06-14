@@ -46,8 +46,14 @@ export default function SetupPage() {
   const pct = steps.length ? Math.round((doneCount / steps.length) * 100) : 0;
 
   const complete = useMutation({ mutationFn: (b: unknown) => apiPost('/api/setup/complete', b), onSuccess: inval });
-  async function finish() { await complete.mutateAsync({}); toast.push('引导已完成 · 可随时从侧栏「部署引导」回来', 'ok'); nav('/console'); }
-  async function later() { await complete.mutateAsync({ dismissed: true }); toast.push('已跳过 · 之后可从侧栏「部署引导」继续', 'info'); nav('/'); }
+  async function finish() {
+    try { await complete.mutateAsync({}); } catch (e) { toast.push('保存引导状态失败:' + ((e as Error).message || '网络错误'), 'err'); return; }
+    toast.push('引导已完成 · 可随时从侧栏「部署引导」回来', 'ok'); nav('/console');
+  }
+  async function later() {
+    try { await complete.mutateAsync({ dismissed: true }); } catch (e) { toast.push('保存引导状态失败:' + ((e as Error).message || '网络错误'), 'err'); return; }
+    toast.push('已跳过 · 之后可从侧栏「部署引导」继续', 'info'); nav('/');
+  }
 
   if (!data) return <main className="page"><div className="card card-pad"><div className="empty-note">加载引导状态中…</div></div></main>;
 

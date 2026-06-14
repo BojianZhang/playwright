@@ -149,7 +149,7 @@ export function StatusTab() {
     { key: 'registered', label: '注册', exportValue: (a) => a.registered ? '是' : '否', render: (a) => yn(a.registered) },
     { key: 'apiKey', label: 'Key', exportValue: (a) => a.apiKey ? '有' : '无', render: (a) => a.apiKey ? <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓</span> : <span className="mini-x">—</span> },
     { key: 'billingStatus', label: '账单', className: 'mono', cellStyle: { color: 'var(--text-2)' }, render: (a) => a.billingStatus || '—' },
-    { key: 'charged', label: '充值', exportValue: (a) => a.charged ? '$' + a.charged : '', render: (a) => yn(a.charged ? a.charged > 0 : false) },
+    { key: 'charged', label: '充值', className: 'mono', align: 'right', sortAccessor: (a) => a.charged || 0, exportValue: (a) => a.charged ? '$' + a.charged + (a.balanceAfter != null ? ` (余$${a.balanceAfter})` : '') : '', render: (a) => a.charged ? <span style={{ color: 'var(--success)', fontWeight: 600 }} title={a.balanceAfter != null ? `充值后真实余额 $${a.balanceAfter}` : '充值额'}>${a.charged}{a.balanceAfter != null ? <span className="dim" style={{ fontWeight: 400 }}>&nbsp;→余${a.balanceAfter}</span> : null}</span> : <span className="mini-x">—</span> },
     { key: 'cardLast4', label: '卡', exportValue: (a) => a.cardLast4 || '', render: (a) => a.cardLast4 ? <span className="mono">•••• {a.cardLast4}</span> : <span className="mini-x">—</span> },
     { key: 'passwordChanged', label: '改密', exportValue: (a) => a.passwordChanged ? '是' : '否', render: (a) => yn(a.passwordChanged) },
     { key: 'exitIp', label: '出口 IP', className: 'mono', cellStyle: { color: 'var(--text-2)' }, defaultHidden: true, render: (a) => a.exitIp || '—' },

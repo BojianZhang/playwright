@@ -13,7 +13,7 @@ import os
 import time
 
 import common
-from common import log, SIGNUP_URL, SIGNIN_URL, KEYS_URL
+from common import log, SIGNUP_URL, SIGNIN_URL, KEYS_URL, clear_input, fast_mode
 from common.selectors import sel, sel_csv   # 元素维护页可覆盖关键元素选择器(无覆盖=内置默认,老代码原样)
 from services import captcha
 from services import firstmail
@@ -27,7 +27,7 @@ def _set_value(page, css, value):
         for el in page.d.find_elements(By.CSS_SELECTOR, css):
             if el.is_displayed():
                 el.click()
-                el.send_keys(Keys.CONTROL, "a"); el.send_keys(Keys.DELETE)
+                clear_input(el, Keys)   # 跨平台全选清空(Mac Ctrl+A=移到行首≠全选 → 重填残值拼脏邮箱/密码)
                 el.send_keys(str(value))
                 return True
     except Exception:
@@ -72,10 +72,12 @@ def _diag(page, tag):
             (" ⚠错误[%s]" % d.get('err')) if d.get('err') else ""))
         if not (d.get('err')):
             log("[诊断:%s] 正文: %s" % (tag, d.get('body')))
-        try:
-            page.shot("_reg_%s.png" % tag)
-        except Exception:
-            pass
+        # 提速:开了 fast_mode 只在【失败标签】截图(成功路径省每号最多 8 张同步截图的 I/O);文字诊断始终保留。
+        if (not fast_mode()) or any(k in tag for k in ("fail", "noform", "unconfirmed")):
+            try:
+                page.shot("_reg_%s.png" % tag)
+            except Exception:
+                pass
     except Exception as e:
         log("[诊断:%s] 取状态失败 %s" % (tag, str(e)[:60]))
 
@@ -117,6 +119,18 @@ def _solve_turnstile_if_present(page, page_url, cfg, exit_url_substrs):
                 str(params.get('sitekey'))[:12], params.get('action'), "有" if params.get('cdata') else "无"))
             ok = captcha.solve_turnstile(page.d, page_url, cfg, timeout=cfg.get("captcha_timeout", 180))
             log("[Turnstile] 2captcha 解结果=%s" % ok)
+            if fast_mode():
+                # 提速:解出后轮询离场,一进 exit_url 立即返回(典型 <1s);仍停留才点一次 Continue 再轮询(慢时兜到 ~5.6s)
+                for _ in range(8):
+                    if any(s in page.url() for s in exit_url_substrs):
+                        return True
+                    time.sleep(0.4)
+                page.click_text(["Continue"], 3)
+                for _ in range(6):
+                    if any(s in page.url() for s in exit_url_substrs):
+                        return True
+                    time.sleep(0.4)
+                return True
             time.sleep(2.5)
             page.click_text(["Continue"], 3)
             time.sleep(2)
@@ -165,10 +179,11 @@ def _enter_otp(page, email, mailbox_pw, cfg, since_ts, op_password=""):
     return True
 
 
-def _verify_email_link(page, email, mailbox_pw, cfg, op_password=""):
+def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0):
     """注册邮箱验证 = Clerk 魔法链接（非验证码）：读链接 → 同浏览器打开 → 回 keys 确认。
     收不到链接时点页面上的 'Resend' 让 OpenRouter 重发再轮询(最多3轮),应对首封邮件丢失/晚到。
-    op_password:改过密的号(登录失败回退重注册时)邮箱真实密码已是统一密码 → 旧密码读不到链接就用统一密码读。"""
+    op_password:改过密的号(登录失败回退重注册时)邮箱真实密码已是统一密码 → 旧密码读不到链接就用统一密码读。
+    since_ts:本次注册提交时刻(毫秒)→ 透传给 wait_verify_link 过滤掉上一轮残留的旧验证链接。"""
     log("[验证] 到验证页，读邮箱 %s 的 Clerk 注册验证链接…" % email)
     link = None
     # 【可前端调:高级参数页 邮箱验证组】默认 3轮×12次×3s(+Resend)≈196s。收信慢/想快失败时把这几个调小;
@@ -176,9 +191,15 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password=""):
     _v_cycles = max(1, int(os.environ.get("MAIL_VERIFY_CYCLES", "3") or 3))         # 重发轮数(1 次初始 + 其余重发)
     _v_attempts = max(1, int(os.environ.get("MAIL_VERIFY_ATTEMPTS", "12") or 12))   # 每轮读链接轮询次数
     _v_interval = float(os.environ.get("MAIL_VERIFY_INTERVAL", "3") or 3)           # 每次轮询间隔(秒)
+    _mailbox_ok = False; _bad_mail_seen = False   # 坏邮箱判据:跨轮累计(任一轮读到信=邮箱可用;任一轮多次404=坏)
     for _cycle in range(_v_cycles):                  # 1 次初始 + (cycles-1) 次重发
+        _mst = {}
         link = firstmail.wait_verify_link(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"),
-                                          attempts=_v_attempts, interval=_v_interval, alt_password=op_password)
+                                          attempts=_v_attempts, interval=_v_interval, alt_password=op_password, status=_mst, since_ts=since_ts)
+        if _mst.get("bad_mailbox") is False:
+            _mailbox_ok = True
+        elif _mst.get("bad_mailbox"):
+            _bad_mail_seen = True
         if link:
             break
         if _cycle < _v_cycles - 1:
@@ -192,12 +213,11 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password=""):
             time.sleep(2)
     if not link:
         log("[验证] ✗ 重发后仍没读到验证链接")
-        # 判定坏邮箱:Firstmail 对该邮箱返回 404=不可访问/根本收不到信 → 登记,后续永久跳过(别再浪费注册)
-        try:
-            firstmail.get_latest_message(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"))
-        except Exception as e:
-            if "404" in str(e):
-                common.mark_bad_mailbox(email, "mailbox-404(收不到验证邮件)")
+        # 坏邮箱判定:轮询【过程中】确认多次 404(邮箱不存在/不可访问)且全程读不到任何信 → 登记永久跳过。
+        # 不再靠"事后补一次请求恰好复现 404"(住宅代理抖动那一次易 timeout/连不上→漏登记→重复浪费整轮注册)。
+        if _bad_mail_seen and not _mailbox_ok:
+            common.mark_bad_mailbox(email, "mailbox-404(收不到验证邮件)")
+            log("[验证] 该邮箱多次 404 → 登记坏邮箱,后续永久跳过")
         return False
     log("[验证] 打开验证链接(同浏览器,使邮箱验证生效)…")
     page.goto(link, wait=4)
@@ -221,35 +241,62 @@ def register(page, email, op_password, mailbox_pw, cfg):
     #   (stanleysanchez 现象:_set_value 全 True,但紧接着 #field.value 全空 → 空表单提交触发 required 校验,
     #    再 3 次重提 + 解 Turnstile 干耗 = 看着「卡死」)。_set_value 只确认 send_keys 跑了,没确认值【粘住】。
     #   → 填完【回读真实 #field.value 校验】,email/password(≥8)/legal 没粘住就整体重填,最多 3 轮;粘住才提交。
-    def _fill_form():
+    # 【时序竞态 + 跨平台 + 观感修复】先把【四个字段】填好并【回读确认粘住】,字段没粘住绝不勾选/提交;
+    #   字段确认后【再】勾"同意条款"。根治:① Clerk hydrate 重渲染清值的竞态;② 用户在 Mac 看到的
+    #   "字段空着却先勾上了复选框"(原来 _check 与填字段在同一轮 _fill_form,字段填失败/被清时复选框却已勾)。
+    # ★【已回滚 native-setter 实验】:native value setter 虽消了 FORM_NOT_FILLED,但 Clerk 拿不到真实交互 →
+    #   下游"同意条款"复选框步骤 74% 失败(LEGAL_NOT_CHECKED,实测 06:10 批 14/19)。退回【经验证的 send_keys 路】
+    #   (FORM_NOT_FILLED ~10% 但可续跑,远好于 74% 死);FORM_NOT_FILLED 待真机验证过的更稳填法再治,绝不再上未验证改动。
+    def _fill_fields():
         _set_value(page, "#firstName-field", (local[:6] or "John").capitalize())
         _set_value(page, "#lastName-field", "M")
         _set_value(page, "#emailAddress-field", email)
         _set_value(page, "#password-field", op_password)
-        _check(page, "#legalAccepted-field")
 
-    def _form_stuck():
+    def _fields_stuck():
         d = page.js("return {em:((document.querySelector('#emailAddress-field')||{}).value||''),"
-                    "pw:(((document.querySelector('#password-field')||{}).value||'').length),"
-                    "legal:!!((document.querySelector('#legalAccepted-field')||{}).checked)};") or {}
-        return bool(d.get("em")) and (d.get("pw") or 0) >= 8 and bool(d.get("legal"))
+                    "pw:(((document.querySelector('#password-field')||{}).value||'').length)};") or {}
+        return bool(d.get("em")) and (d.get("pw") or 0) >= 8
 
+    def _legal_on():
+        return bool(page.js("return !!((document.querySelector('#legalAccepted-field')||{}).checked);"))
+
+    # ① 填四个字段 → 回读确认粘住(【时间预算内】多轮重填;字段没粘住快速失败,绝不空提交)。
+    #   ★根因(高并发 FORM_NOT_FILLED):AdsPower 同时多开(如并发20)→ Clerk hydrate/重渲染慢,原【固定3轮≈5s】
+    #     预算跑不赢"刚填就被清值"→ 字段始终没粘住 → FORM_NOT_FILLED(实测 13/16 注册成功、仅慢 hydrate 的 3 个中招)。
+    #   改时间预算(默认15s,REGISTER_FILL_BUDGET 可调):快页面第1轮就 stuck 立即 break(不拖慢成功路径);
+    #     慢 hydrate 给足重填机会到预算用尽才放弃。hydrate 一旦渲染完成值就粘住、立即 break,不会多等。
     stuck = False
-    for _fa in range(3):
-        _fill_form()
+    # 默认 20s(原15s):实测大批/高并发下 Clerk hydrate 更慢,15s 预算对少数号仍跑不赢清值(24号批 3 个 FORM_NOT_FILLED)。
+    #   20s 给慢 hydrate 更多机会;成功路径 stuck 即 break 不受影响。仍可 REGISTER_FILL_BUDGET 调大 / 或下调并发兜底。
+    _fill_budget = time.time() + float(os.environ.get("REGISTER_FILL_BUDGET", "20") or 20)
+    _fa = 0
+    while time.time() < _fill_budget:
+        _fa += 1
+        _fill_fields()
         time.sleep(0.8)   # 留窗口给 React:要清值就在这 0.8s 内清掉,之后回读才反映真实状态
-        if _form_stuck():
+        if _fields_stuck():
             stuck = True
             break
-        log("[注册] 填表值没粘住(第%d次,表单疑似刚 hydrate 重渲染)→ 整体重填" % (_fa + 1))
+        log("[注册] 字段没粘住(第%d次,表单疑似刚 hydrate 重渲染)→ 整体重填" % _fa)
         time.sleep(1.0)
-    log("[注册] 填表 stuck=%s(email/password/legal 已回读确认)" % stuck)
-    _diag(page, "filled")
     if not stuck:
-        # 3 次重填仍没粘住 → 别空提交(会 3 次重提 + 白解 Turnstile 干耗成"卡死"),快速失败走整号重试(下轮换新环境/重渲染时机不同)。
-        log("[注册] 3 次重填后表单值仍没粘住 → 快速失败,不空提交(省 2captcha + 不卡死)")
+        log("[注册] 填表预算(%ss)内字段(email/password)仍没粘住 → 快速失败,不空提交(省 2captcha + 不卡死)"
+            % os.environ.get("REGISTER_FILL_BUDGET", "20"))
         _diag(page, "fill_stuck_fail")
         return "fail:FORM_NOT_FILLED"
+    # ② 字段粘住后【才】勾"同意条款"并回读确认(没勾上再点,最多3次)
+    for _lc in range(3):
+        if _legal_on():
+            break
+        _check(page, "#legalAccepted-field")
+        time.sleep(0.4)
+    if not _legal_on():
+        log("[注册] 同意条款没勾上(回读确认失败)→ 快速失败,不空提交")
+        _diag(page, "legal_fail")
+        return "fail:LEGAL_NOT_CHECKED"
+    log("[注册] 填表完成(顺序:先填字段回读确认 → 再勾同意条款回读确认)")
+    _diag(page, "filled")
     since = time.time() * 1000
     # 提交 + 解 Turnstile + 等到验证页;若提交后仍停在 /sign-up(Turnstile widget 在但没提交成功),
     # 再点一次 Sign Up 并必要时重解 Turnstile,最多重试 2 次(共 3 次提交)再判 UNCONFIRMED。
@@ -288,12 +335,24 @@ def register(page, email, op_password, mailbox_pw, cfg):
             break
     log("[注册] 提交后停在 …%s (到验证页=%s)" % (page.url()[-40:], "/verify-email" in page.url()))
     if "/verify-email" in page.url():
-        if not _verify_email_link(page, email, mailbox_pw, cfg, op_password=op_password):
+        if not _verify_email_link(page, email, mailbox_pw, cfg, op_password=op_password, since_ts=since):
             _diag(page, "verify_fail")
             return "fail:VERIFY_LINK"
-    # 确认登录
+    # 确认登录。★验证链接已成功打开(否则上面已 VERIFY_LINK 返回),但 Clerk 会话有时要几秒 + 一次导航才落地
+    #   (高并发下尤甚)→ 一次 detect_session 没查到就判 REGISTER_UNCONFIRMED 是误杀。多试几次(goto 刷新让 Clerk 重读会话)。
+    # ★对抗核验补:必须校验 em==目标email,绝不"查到任意登录会话就判 ok"——否则环境残留【别号会话】会被误判成功,
+    #   pipeline 据此推进给【错号】取key/加卡(与 register_or_login:404 口径对齐)。当前每号全新 env 暂不触发,补此防御纵深。
+    def _is_target(_e):
+        return bool(_e) and str(_e).lower() == email.lower()
     em = detect_session(page)
-    if em:
+    for _rc in range(2):
+        if _is_target(em):
+            break
+        log("[注册] 验证已开但目标会话未落地(em=%s,第%d次)→ 刷新 keys 重查(给 Clerk 会话时间)" % (em, _rc + 1))
+        time.sleep(2)
+        page.goto(KEYS_URL, wait=2)
+        em = detect_session(page)
+    if _is_target(em):
         log("[注册] 成功，已登录 %s" % em)
         return "ok"
     _diag(page, "unconfirmed")
@@ -308,19 +367,26 @@ def login(page, email, op_password, mailbox_pw, cfg):
         return "fail:SIGNIN_NO_FORM"
     _set_value(page, sel_csv('signin_identifier', '#identifier-field'), email)
     page.click_text(["Continue"], 6)
-    time.sleep(2)
+    if fast_mode():
+        page.wait_field_present(["#password-field"], 8, "登录密码框")   # 提速:密码框一出现就继续(慢网才等满)
+    else:
+        time.sleep(2)
     _set_value(page, "#password-field", op_password)
     page.click_text(["Continue"], 6)
-    time.sleep(2.5)
+    time.sleep(1.2 if fast_mode() else 2.5)
     t = (page.all_frames_text() or "").lower()
     if "not allowed to access" in t or "is not allowed" in t:
         # OpenRouter 直接封禁/拒绝该邮箱 → 上报 NOT_ALLOWED,编排层会登记并永久跳过
         log("[登录] %s 被 OpenRouter 拒绝(not allowed to access this application)" % email)
         return "fail:NOT_ALLOWED"
     if any(s in t for s in ["couldn't find", "no account", "not found", "isn't right", "incorrect", "password is incorrect"]):
-        # 密码不对/无账号
-        if "incorrect" in t:
+        # 密码不对/无账号 → 【就地返回】,不再白解 Turnstile + 等 OTP(那是纯浪费 2captcha 余额 + 干耗墙钟,
+        #   账号根本进不去)。模糊文案("isn't right")保守归为密码错(不致永久跳过);明确"找不到账号"归 NO_ACCOUNT。
+        if "incorrect" in t or "isn't right" in t:
+            log("[登录] %s 密码不正确 → 就地返回" % email)
             return "fail:SIGNIN_BAD_PASSWORD"
+        log("[登录] %s 账号不存在(couldn't find/no account)→ 就地返回" % email)
+        return "fail:SIGNIN_NO_ACCOUNT"
     since = time.time() * 1000
     _solve_turnstile_if_present(page, SIGNIN_URL, cfg, ["/factor-two", "/verify", "/settings"])
     u = page.url()
@@ -328,11 +394,13 @@ def login(page, email, op_password, mailbox_pw, cfg):
         # 传 op_password 作备用密码:改过密的号邮箱真实密码=统一密码,旧 mailbox_pw 读不到 OTP(fail:OTP 根因)。
         if not _enter_otp(page, email, mailbox_pw, cfg, since, op_password=op_password):
             return "fail:OTP"
-    # 确认
+    # 确认(同 register:校验登录的就是目标号,防残留别号会话误判 ok → 给错号取key/加卡)
     em = detect_session(page)
-    if em:
+    if em and str(em).lower() == email.lower():
         log("[登录] 成功，已登录 %s" % em)
         return "ok"
+    if em:
+        log("[登录] 会话邮箱(%s)≠目标(%s)→ 不算成功" % (em, email))
     return "fail:SIGNIN_UNCONFIRMED"
 
 

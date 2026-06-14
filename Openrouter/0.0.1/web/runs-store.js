@@ -83,6 +83,9 @@ function finish(jobId, summary) {
   row.success = s.success || 0;
   row.failed = s.failed || 0;
   row.failureStats = s.failureStats || null;
+  // 结果对账(split 尤其):有结果但不足总数→标 partial,历史页显「⚠ 未完整 N%」,提示可续跑补齐。
+  if (s.completenessPct != null) row.completenessPct = s.completenessPct;
+  if (s.partial) row.partial = true;
   _persist();
   return row;
 }

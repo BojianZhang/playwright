@@ -33,8 +33,8 @@ def main(argv):
         print("没给有效卡号。用法: python disable_cards.py <卡号...> 或 --file nums.txt")
         return
 
-    with common._CARD_LOCK:
-        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))
+    with common._CARD_LOCK, common._file_lock(common.POOL_FILE):   # ★加跨进程文件锁:与引擎 load_card/mark_card_result 串行,防并发 RMW 互丢卡(数量对不上)
+        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))   # 重读放锁内,拿最新盘
         now = datetime.datetime.utcnow().isoformat() + "Z"
         hit, remaining = [], set(nums)
         for c in pool:

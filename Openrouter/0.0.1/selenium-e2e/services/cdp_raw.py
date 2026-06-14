@@ -9,6 +9,7 @@
 # 坐标用【视口 CSS 像素】(getBoundingClientRect 的返回值),不需要 DPR / 屏幕边框换算。
 import json, time, random, itertools, urllib.request
 from websocket import create_connection
+from common.osnative import IS_MAC   # 跨平台全选修饰键(CDP modifiers:Ctrl=2 / Meta=Cmd=4)
 
 
 class RawCDP:
@@ -153,7 +154,7 @@ class RawCDP:
         """可靠清空当前聚焦输入框:Ctrl+A选中删 + End定位末尾 + 连退格(Stripe iframe 可能不支持选中全部
            →退格兜底)。清不干净就会把残留+新值拼成乱码(实测出现 invalid card)→ 这里多管齐下确保清空。"""
         try:
-            self._key("a", "KeyA", 65, session_id, mods=2)          # Ctrl+A
+            self._key("a", "KeyA", 65, session_id, mods=(4 if IS_MAC else 2))   # 全选(Mac=Cmd+A/Meta=4,Win·Linux=Ctrl+A/Ctrl=2)
             self._key("Backspace", "Backspace", 8, session_id)
             self._key("Delete", "Delete", 46, session_id)
             self._key("End", "End", 35, session_id)                 # 光标到末尾,逐个退格兜底

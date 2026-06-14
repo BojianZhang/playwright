@@ -22,7 +22,7 @@ export interface LedgerSummary {
 export interface AccountRow {
   email: string; createdAt?: string; updatedAt?: string;
   registered?: boolean; apiKey?: string; apiKeyName?: string;
-  passwordChanged?: boolean; billingStatus?: string; charged?: number;
+  passwordChanged?: boolean; billingStatus?: string; charged?: number; balanceAfter?: number | null;
   cardLast4?: string; exitIp?: string; blacklisted?: boolean; blacklistReason?: string;
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;
 }
@@ -71,6 +71,7 @@ export interface RunSummary {
   total: number; success: number; failed: number; params: RunParams;
   failureStats?: { total: number; byClass: Record<string, number>; byReason: Record<string, number> } | null;
   error?: string | null;
+  partial?: boolean; completenessPct?: number; // 结果对账:有结果但 <total(疑某分流组/子进程中途退出丢结果)
   resumedFrom?: string | null; // 续跑来源 jobId(普通提交为 null)
 }
 export interface RunsResp { nodeId: string; runs: RunSummary[]; }

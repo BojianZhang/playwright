@@ -6,6 +6,7 @@ import time
 import random
 
 from .base import log, digits
+from .uikeys import clear_input   # 跨平台清空输入框(Mac 用 Cmd+A,Win/Linux 用 Ctrl+A)
 
 
 # ── Page：跨 iframe 钻取（Stripe 跨域 iframe 必需） ─────────────────────
@@ -153,7 +154,7 @@ class Page:
                 for el in self.d.find_elements(By.CSS_SELECTOR, s):
                     if el.is_displayed():
                         el.click()
-                        el.send_keys(Keys.CONTROL, "a"); el.send_keys(Keys.DELETE)
+                        clear_input(el, Keys)   # 跨平台全选清空(Mac Ctrl+A≠全选 → 必须 Cmd+A,否则残值拼脏=invalid card)
                         # 逐字符敲 + 随机间隔(拟人化):整串 0ms 粘贴是机器特征,Stripe Radar 的行为遥测
                         # 会看填卡节奏(填卡耗时<人类下限=高风险)。卡号16位约 ~1.3s,代价小、压风险分。
                         for ch in str(value):

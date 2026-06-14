@@ -34,6 +34,8 @@ try:
 except Exception:
     pass
 
+_IS_MAC = (sys.platform == "darwin")   # 跨平台全选:Mac=Cmd+A,Win/Linux=Ctrl+A(Mac Ctrl+A≠全选)
+
 # 默认用 127.0.0.1（不是 local.adspower.net）：后者不在系统代理绕过名单里，若开了本地代理(VPN/clash)
 # Python urllib 会把请求经代理 → 代理转不到本地 AdsPower → 回 502。127.0.0.1 默认绕过代理，直连。
 API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
@@ -451,7 +453,7 @@ def _try_fill(driver, By, Keys, sels, value, want):
             for el in driver.find_elements(By.CSS_SELECTOR, s):
                 if el.is_displayed():
                     el.click()
-                    el.send_keys(Keys.CONTROL, "a"); el.send_keys(Keys.DELETE)
+                    el.send_keys((Keys.COMMAND if _IS_MAC else Keys.CONTROL), "a"); el.send_keys(Keys.DELETE)
                     el.send_keys(str(value))
                     time.sleep(0.2)
                     got = digits(el.get_attribute("value"))

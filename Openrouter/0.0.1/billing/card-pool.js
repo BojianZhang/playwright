@@ -42,7 +42,16 @@ function _readFromDisk() {
     const arr = JSON.parse(fs.readFileSync(POOL_FILE, 'utf8'));
     if (Array.isArray(arr)) {
       for (const c of arr) {
-        if (c && c.id) { c.inUse = prevInUse.has(c.id); next.set(c.id, c); }
+        if (!c) continue;
+        const k = c.id || c.number;          // 缺 id 用卡号兜底当 key(否则该卡被静默丢弃 → 卡池数量莫名变少)
+        if (!k) continue;                    // 既无 id 又无 number 才真的没法存
+        if (!c.id) c.id = c.number;          // 就地补 id(随下次 _writeNow 落盘自愈)
+        if (next.has(k)) {                   // 重复 key:不静默覆盖(否则两张折叠成一张),保留两张 + 告警
+          try { console.warn(`[card-pool] 重复卡 key=${k}(••${String(c.last4 || c.number || '').slice(-4)})→ 用卡号区分,不折叠`); } catch (_e) { /* ignore */ }
+          const alt = (c.number && c.number !== k) ? c.number : `${k}#dup`;
+          c.inUse = prevInUse.has(alt); next.set(alt, c); continue;
+        }
+        c.inUse = prevInUse.has(c.id); next.set(k, c);
       }
     }
   } catch (_e) { /* 文件不存在/损坏 → 空池 */ }
@@ -67,11 +76,12 @@ function _writeNow() {
 }
 
 // ── 跨进程文件锁（与 Python common/base.py _FileLock 同款 <file>.lock / O_EXCL）────────────
-//    让 Node 的卡池读-改-写不覆盖 Python 并发写入。抢不到则按 mtime 清陈旧锁,超时退化为无锁(不阻塞,与 Python 一致)。
+//    让 Node 的卡池读-改-写不覆盖 Python 并发写入。退化策略【对齐 Python】:锁还新(活持有者)=继续等到它变陈旧
+//    (绝不退化无锁,否则会丢 Python 刚写的禁卡/计数增量);锁陈旧才清掉重抢;连锁龄都判不了才退化无锁(不阻塞)。
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function _acquireFileLock(timeoutMs = 20000) {
   const staleMs = (Number(process.env.FILELOCK_STALE_SEC) || 30) * 1000;
-  const end = Date.now() + timeoutMs;
+  let end = Date.now() + timeoutMs;
   for (;;) {
     try {
       return fs.openSync(LOCK_FILE, 'wx'); // O_CREAT|O_EXCL|O_WRONLY:存在即失败
@@ -80,8 +90,16 @@ async function _acquireFileLock(timeoutMs = 20000) {
       if (Date.now() > end) {
         let age = null;
         try { age = Date.now() - fs.statSync(LOCK_FILE).mtimeMs; } catch (_e) { age = null; }
-        if (age !== null && age > staleMs) { try { fs.unlinkSync(LOCK_FILE); } catch (_e2) { /* 别人已删 */ } await _sleep(20); continue; }
-        return null; // 活锁未释放或无法判断锁龄 → 放弃锁、退化无锁继续(不阻塞主流程)
+        if (age !== null && age > staleMs) {
+          try { fs.unlinkSync(LOCK_FILE); } catch (_e2) { /* 别人已删 */ }   // 真·陈旧锁(mtime 校验过)→ 清掉
+          end = Date.now() + Math.min(timeoutMs, 2000); await _sleep(20); continue;   // 给窗口重抢
+        }
+        if (age !== null) {
+          // 锁还新=活持有者:不退化无锁(会丢禁卡/计数增量),把 deadline 延到它变陈旧那刻继续等(对齐 Python base.py)。
+          // lockfile mtime 不变、age 只增 → 必在 stale 处收敛,不会无限等;正常 RMW 是毫秒级。
+          end = Date.now() + Math.max(500, staleMs - age) + 500; await _sleep(50); continue;
+        }
+        return null; // 连 mtime 都取不到(lockfile 恰被别进程删)→ 退化无锁(不阻塞主流程)
       }
       await _sleep(25);
     }
@@ -273,7 +291,8 @@ function getFull(id) {
 function report(id, outcome) {
   return mutex(() => lockedWrite(() => {
     const c = POOL.get(id);
-    if (!c) return null;
+    // 锁内重读后卡不在池(被另一进程删/换 id)→ 本次 success/declined 计数会丢(卡可能被超额复用、坏卡不被禁)→ 必须可观测
+    if (!c) { try { console.error(`[card-pool] report: 卡 ${id} 锁内重读后已不在池中 → 本次结果(${(outcome && outcome.result) || 'error'})未计入`); } catch (_e) { /* */ } return null; }
     const now = new Date().toISOString();
     c.inUse = false;
     c.lastUsedAt = now;
@@ -356,9 +375,49 @@ function markDispatched(id, toNode) {
     const c = POOL.get(id);
     if (!c) return null;
     c.status = 'dispatched';
+    // ★下发成功=把这张卡的剩余额度整笔交给子机刷,本机视作"已用满":日后手动 enable() 只会回到
+    //   'exhausted'(非 active),杜绝"中心机 enable 回来又本机重刷同一张已在子机刷的卡"=同卡多机重复扣款。
+    //   失败下发的卡走 releaseDispatch() 解冻、usedCount 原样不动(没在任何机器上刷过 → 全额可用)。
+    c.usedCount = c.maxUses;
     c.disabledReason = toNode ? `dispatched→${String(toNode).slice(0, 40)}` : 'dispatched';
     c.dispatchedAt = new Date().toISOString();
     c.inUse = false;
+    return sanitize(c);
+  }));
+}
+
+/** 跨节点派发【原子预留】:在单次文件锁内挑出最多 n 张可用卡并【就地冻结为 dispatched】,返回 [{id,line}]。
+ *  挑选与冻结原子完成(同一把锁)→ 杜绝旧"exportActiveLines 快照 → 网络下发 → markDispatched 冻结"之间的窗口里
+ *  被本机 acquire()/另一次并发派发重复选中(同卡多机刷 = 重复扣款)。usedCount 此刻【不动】(还没真正下发成功);
+ *  下发成功由 markDispatched() 计满,下发失败由 releaseDispatch() 解冻还原。n<=0 视为不限(取全部可用)。 */
+function reserveForDispatch(n) {
+  const lim = n > 0 ? n : Infinity;
+  return mutex(() => lockedWrite(() => {
+    const out = [];
+    for (const c of POOL.values()) {
+      if (out.length >= lim) break;
+      if (c.status === 'active' && c.usedCount < c.maxUses && !c.inUse) {
+        c.status = 'dispatched';
+        c.disabledReason = 'dispatched(reserved)';
+        c.dispatchedAt = new Date().toISOString();
+        c.inUse = false;
+        out.push({ id: c.id, line: `${c.number}|${c.expMonth}/${c.expYear}|${c.cvc}` + (c.zip ? `|${c.zip}` : '') });
+      }
+    }
+    return out;
+  }));
+}
+
+/** 解冻一张【预留但未成功下发】的卡:仅当它仍是 'dispatched'(没被别处禁用/重置)才还原为 active/exhausted。
+ *  usedCount 不动 → 没在任何机器刷过的卡全额回到可用池,不丢卡也不误计。 */
+function releaseDispatch(id) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return null;
+    if (c.status !== 'dispatched') return sanitize(c);   // 已被别处改了状态 → 不擅自动它
+    c.status = c.usedCount >= c.maxUses ? 'exhausted' : 'active';
+    c.disabledReason = '';
+    delete c.dispatchedAt;
     return sanitize(c);
   }));
 }
@@ -440,6 +499,8 @@ module.exports = {
   report,
   snapshot,
   exportActiveLines,
+  reserveForDispatch,
+  releaseDispatch,
   disable,
   markDispatched,
   enable,

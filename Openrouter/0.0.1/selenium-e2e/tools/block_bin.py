@@ -40,32 +40,35 @@ def main():
                 f.write("# %s block_bin 标记坏段。\n%s\n" % (today, b))
                 existing.add(b); added.append(b)
 
-    # 2) 禁用该段所有卡(任何状态→disabled)
-    pool = json.load(open(common.POOL_FILE, encoding="utf-8"))
-    now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-    bset = set(bins)
-    per = collections.Counter()
-    n = 0
-    for c in pool:
-        if (c.get("number") or "")[:6] in bset:
-            per[(c.get("number") or "")[:6]] += 1
-            if c.get("status") != "disabled":
-                c["status"] = "disabled"; c["disabledReason"] = "blacklist-bin"; c["disabledAt"] = now; n += 1
+    # 2)+3) 禁用该段卡 + 清账号分配:整段放【跨进程文件锁】内(与引擎 load_card/mark_card_result 串行,
+    #   防并发 RMW 互丢卡/分配错位)。pool/asg 都在锁内重读,ASSIGN 写也并入同一 POOL 锁(引擎写 ASSIGN 时也持 POOL 锁)。
+    with common._CARD_LOCK, common._file_lock(common.POOL_FILE):
+        # 2) 禁用该段所有卡(任何状态→disabled)
+        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))   # 锁内重读,拿最新盘
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        bset = set(bins)
+        per = collections.Counter()
+        n = 0
+        for c in pool:
+            if (c.get("number") or "")[:6] in bset:
+                per[(c.get("number") or "")[:6]] += 1
+                if c.get("status") != "disabled":
+                    c["status"] = "disabled"; c["disabledReason"] = "blacklist-bin"; c["disabledAt"] = now; n += 1
 
-    # 3) 清掉账号分配里指向这些段卡的(免得续跑还按老分配取)
-    af = getattr(common, "CARD_ASSIGN_FILE", None); ac = 0
-    if af and os.path.exists(af):
-        try:
-            asg = json.load(open(af, encoding="utf-8"))
-            byid = {(c.get("id") or c.get("number")): c for c in pool}
-            for k in list(asg.keys()):
-                c = byid.get(asg[k])
-                if c and (c.get("number") or "")[:6] in bset:
-                    del asg[k]; ac += 1
-            common._atomic_write_json(af, asg)
-        except Exception:
-            pass
-    common._atomic_write_json(common.POOL_FILE, pool)
+        # 3) 清掉账号分配里指向这些段卡的(免得续跑还按老分配取)
+        af = getattr(common, "CARD_ASSIGN_FILE", None); ac = 0
+        if af and os.path.exists(af):
+            try:
+                asg = json.load(open(af, encoding="utf-8"))
+                byid = {(c.get("id") or c.get("number")): c for c in pool}
+                for k in list(asg.keys()):
+                    c = byid.get(asg[k])
+                    if c and (c.get("number") or "")[:6] in bset:
+                        del asg[k]; ac += 1
+                common._atomic_write_json(af, asg)
+            except Exception:
+                pass
+        common._atomic_write_json(common.POOL_FILE, pool)
 
     print("拉黑段: %s%s" % (",".join(bins), ("(新加黑名单: %s)" % ",".join(added) if added else "(都已在黑名单)")))
     print("禁用: 涉及 %d 张卡(%s),本次新禁 %d 张,清账号分配 %d 个" % (

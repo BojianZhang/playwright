@@ -19,6 +19,24 @@ let runsStore = null; try { runsStore = require('./runs-store'); } catch (_e) { 
 const DATA = path.join(__dirname, '..', 'data');
 function _readJsonArr(f) { try { const o = JSON.parse(fs.readFileSync(f, 'utf8')); return Array.isArray(o) ? o : []; } catch (_e) { return []; } }
 
+// 解析后的 jsonl 行按【文件 mtime+size】memo 缓存:results.jsonl/hybrid_results.jsonl 是 append-only 大文件,
+// 分析页 15s 轮询每次都 readTail(file,0) 全量读+逐行 JSON.parse(随文件涨成 O(file) 的重活,正是"分析页加载慢")。
+// 解析结果是文件字节的纯函数 → mtime+size 没变就直接复用(append 必改 size,故 size 比低精度 mtime 更可靠)。
+// 注:只缓存"解析行",时间窗 cutoff 过滤仍每次现算 → sinceDays>0 的时间窗结果照样新鲜、不被缓存冻住。
+const _rowsCache = new Map(); // file -> { mtimeMs, size, rows }
+function _readRowsCached(file) {
+  try {
+    const st = fs.statSync(file);
+    const c = _rowsCache.get(file);
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.rows;
+    const rows = readTail(file, 0);
+    _rowsCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, rows });
+    return rows;
+  } catch (_e) {
+    return readTail(file, 0); // 文件缺失/stat 失败 → 退回直接读(readTail 自身容错返回 [])
+  }
+}
+
 // 行时间 → epoch ms:jsonl 是本地 "YYYY-MM-DD HH:MM:SS",error-log/billing 是 ISO;解析失败回 0(不被时间窗过滤掉)。
 function _ts(at) { if (!at) return 0; const t = Date.parse(String(at).replace(' ', 'T')); return Number.isFinite(t) ? t : 0; }
 function _dayKey(ms) { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }  // YYYY-MM-DD(含年,跨年不合并)
@@ -77,7 +95,7 @@ function filesFor(engine) {
 }
 
 function _engineReport(label, file, cutoff) {
-  const all = readTail(file, 0).filter((r) => !cutoff || _ts(r.at) >= cutoff || _ts(r.at) === 0);
+  const all = _readRowsCached(file).filter((r) => !cutoff || _ts(r.at) >= cutoff || _ts(r.at) === 0);
   const total = all.length;
   const ok = all.filter(isSuccessRow).length;
   const reachedKey = all.filter((r) => r.api_key && String(r.api_key).length > 10).length;

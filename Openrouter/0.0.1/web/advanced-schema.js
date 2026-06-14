@@ -14,6 +14,8 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const FIELDS = [
+  // ── 提速总开关(默认空=关=与现状逐字节一致;on=注册/登录提速:省成功截图 + 固定等待改轮询提前退出)──
+  { key: 'fastMode', env: 'OPENROUTER_FAST', type: 'select', scope: 'both', group: '提速', def: '', options: ['', 'on'] },
   // ── 取key(仅纯 Selenium;混合取key走 Playwright,这些用不到)──────────────
   { key: 'wizardKeyDeadline', env: 'WIZARD_KEY_DEADLINE', type: 'number', scope: 'selenium', group: '取key', def: '150' },
   { key: 'wizardPayMode', env: 'WIZARD_PAY_MODE', type: 'select', scope: 'selenium', group: '取key', def: 'random',

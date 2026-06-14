@@ -50,11 +50,12 @@ def main():
     bak = common.POOL_FILE + ".bak.%d" % int(time.time())
     shutil.copyfile(common.POOL_FILE, bak)
     print("已备份 →", bak)
-    try:
-        common._atomic_write_json(common.POOL_FILE, d)
-    except Exception:
-        json.dump(d, open(common.POOL_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    print("已写回 card-pool.json,救活 %d 张。" % revived)
+    # 只用原子写(它内部已 tmp+fsync+os.replace、失败也原子兜底、绝不抛);★绝不再 open(POOL_FILE,"w") 直写——
+    #   那会在被杀/盘满时把卡池留成半截损坏文件(正是要防的)。失败仅提示走 .bak 恢复,不二次截断。
+    if common._atomic_write_json(common.POOL_FILE, d):
+        print("已写回 card-pool.json,救活 %d 张。" % revived)
+    else:
+        print("写回失败(原子写未成功),卡池未改动,可从备份恢复 → %s" % bak)
 
 
 if __name__ == "__main__":

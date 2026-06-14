@@ -24,18 +24,20 @@ const DEFAULTS = {
   // Selenium:AdsPower 全流程;只暴露纯 selenium(pipeline.py)真正读的:求解模式 + 点框后复检等待 + 跑完保留环境。
   // (cardDeadline/solveFutileCap/maxHcaptchaCardSwaps 仅 hybrid 读,不放进 selenium 默认,避免"设了不生效"。)
   selenium: {
-    solveHcaptcha: 'random', hcRecheckWait: '5', cardResultWait: '24', wizardStallRefresh: '30', noDeleteEnv: false,
+    solveHcaptcha: 'random', hcRecheckWait: '5', cardResultWait: '24', cardSaveDialog: 'dismiss', wizardStallRefresh: '30', noDeleteEnv: false,
+    // 走法变体(默认 '' = 跟随 Python 内置默认 → 不注 env、行为逐字节不变)
+    wizardPayMode: '', wizardCreditMode: '', cardStrategy: '', zipRetry: '', cardFillMethod: '',
   },
   // 混合:Selenium 那套 + 换IP/冷却/重开/手动选卡 + 每账号新环境/保留环境/开始前不清理。
   hybrid: {
     solveHcaptcha: 'random', cardDeadline: '480', solveFutileCap: '3', maxHcaptchaCardSwaps: '1',
-    hcRecheckWait: '5', cardResultWait: '24', maxRotations: '3', cooldownHours: '3', maxReopen: '3', manualCard: false,
+    hcRecheckWait: '5', cardResultWait: '24', cardSaveDialog: 'dismiss', maxRotations: '3', cooldownHours: '3', maxReopen: '3', manualCard: false,
     isolate: false, noDeleteEnv: false, noGc: false,
   },
   // 分流:混合那套 + 分流比例(一半 Selenium、一半混合)。
   split: {
     solveHcaptcha: 'random', cardDeadline: '480', solveFutileCap: '3', maxHcaptchaCardSwaps: '1',
-    hcRecheckWait: '5', cardResultWait: '24', wizardStallRefresh: '30', maxRotations: '3', cooldownHours: '3', maxReopen: '3', manualCard: false,
+    hcRecheckWait: '5', cardResultWait: '24', cardSaveDialog: 'dismiss', wizardStallRefresh: '30', maxRotations: '3', cooldownHours: '3', maxReopen: '3', manualCard: false,
     isolate: false, noDeleteEnv: false, noGc: false, splitRatio: '0.5', crossHandoff: true,
   },
 };

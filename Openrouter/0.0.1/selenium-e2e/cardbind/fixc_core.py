@@ -4,7 +4,7 @@
 # 只依赖 cdp_raw / selenium / common,【不 import steps_billing】(避免循环依赖)。
 # 关键:cdp_fill_and_save 会读坐标→杀掉传入 driver 的 chromedriver(脱离)→原生CDP Input 可信注入填卡+取消Link+点Save。
 import time, json, os, re
-from common import NUM, EXP, CVC, ZIP
+from common import NUM, EXP, CVC, ZIP, fast_mode
 from services.cdp_raw import RawCDP
 from selenium.webdriver.common.by import By
 
@@ -354,14 +354,15 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
         % (len(nv), "" if ok_num and len(nv) >= len(re.sub(r'\D','',str(num))) else " ⚠卡号疑似没填全"))
     # ① 先等表单稳定(Save 按钮渲染出来)——【先查后睡】,查到就走,别盲等;高并发渲染慢→最多 ~16s
     sv = None
-    for _ in range(20):
+    _save_tries, _save_iv = (46, 0.35) if fast_mode() else (20, 0.8)   # 提速:同 ~16s 死线,只缩轮询间隔(查到即走);默认关=20×0.8 逐字节不变
+    for _ in range(_save_tries):
         try:
             sv = cdp.evaluate(SAVE_JS)
         except Exception:
             sv = None
         if sv:
             break
-        time.sleep(0.8)
+        time.sleep(_save_iv)
     if not sv:
         cdp.close()
         raise RuntimeError("没取到Save坐标(表单未渲染出Save按钮,疑窗口太小/高并发渲染慢)")
@@ -545,6 +546,15 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
             if st == "closed":
                 log("✓ 弹框已关闭(Save按钮消失)→ 交去快速核验是否绑成")
                 break
+            if st == "pending" and os.environ.get("FIXC_SAVECARD", "dismiss") != "wait":
+                # ★点 Save 后 Stripe 弹"Save card?"存卡弹窗(它【自带 Save 按钮】→ 被绑成轮询误读成 pending)。
+                #   该弹窗【只在 Stripe 已收卡成功后才出现】(declined 不弹;图片验证更早一环就早返回了,根本到不了这)→
+                #   关掉它(只点 No thanks/Skip,绝不点 Save,点 Save 会要手机号 Error 400)→ 露出 Auto Top-Up,下一轮立即判绑成。
+                #   【默认 dismiss(原 fast_mode 门控,已提为默认)】:用户实测 /credits "逗留好久 + 反复刷新" 根因就是默认不关它 →
+                #   干等满 FIXC_RESULT_WAIT(24s)→ 超时 reload 核验。关它不改变绑卡结果(实测 card-bound 仍 100%)。
+                #   【控制台可配 FIXC_SAVECARD】引擎配置「Save card 存卡弹窗处理」:dismiss=秒关(默认/推荐);
+                #   wait=不关、等满 FIXC_RESULT_WAIT 再核验(对照测试用——用于自行验证"等待 vs 图片验证"无关)。
+                _dismiss_link_dialog(cdp, log)
         except Exception:
             pass
         time.sleep(1.5)

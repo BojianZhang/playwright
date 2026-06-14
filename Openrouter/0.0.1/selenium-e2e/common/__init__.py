@@ -21,6 +21,7 @@
 from .paths import *       # noqa: F401,F403
 from .base import *        # noqa: F401,F403
 from .osnative import *    # noqa: F401,F403   (仅 stdlib;layout/fixb 的跨平台屏幕尺寸+提前台靠它)
+from .uikeys import *      # noqa: F401,F403   (跨平台填表全选/清空原语;依赖 osnative.IS_MAC)
 from .driver import *      # noqa: F401,F403
 from .adspower import *    # noqa: F401,F403
 from .ledger import *      # noqa: F401,F403

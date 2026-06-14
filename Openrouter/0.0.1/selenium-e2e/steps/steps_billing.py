@@ -114,10 +114,19 @@ def _card_attached(page):
             or bool(re.search(r"ending\s*(?:in)?\s*\d{4}", t, re.I))
             or bool(re.search(r"(visa|mastercard|amex|discover)\b[^\n]{0,14}\d{4}\b", t, re.I))
         )
-        # 检测到已存卡 → 直接算已绑(与 need_pm 无关);较弱的 auto_topup 信号仍需无加卡入口且无 need_pm 才算
-        attached = saved_card or (auto_topup and not has_addpm and not need_pm)
-        log("[加卡] 绑卡核验: saved_card=%s auto_topup=%s has_addpm=%s need_pm=%s → %s" % (
-            saved_card, auto_topup, has_addpm, need_pm, "已绑✓" if attached else "未绑"))
+        # ★onboarding 前置门(收紧,严守 card-bound 铁律):页面仍有任一 onboarding 向导文案(Welcome/角色选择/问卷/
+        #   积分空态)时,has_addpm=False 很可能只是【向导浮层盖住了 Add-PM 按钮、按钮没渲染】,而非账户真挂了卡。
+        #   此时绝不靠 auto_topup 弱信号判已绑(否则把"其实没卡的 onboarding 态"误判 card-bound → 删环境+扣 BIN 用量,
+        #   不可逆)。强信号(已存卡掩码尾号)不受此门影响——真挂了卡才认。
+        # ★校正:onboarding_up 只认【真向导文案】——绝不含 "Add credits to get started"/"How much would you like to add",
+        #   后两句在【合法已绑老号】的 /credits 购买区也常驻,计入会把"尾号未渲染的已绑老号"误判未绑 → precheck 重绑 + 二次扣 BIN。
+        onboarding_up = bool(re.search(
+            r"How will you be using OpenRouter|Welcome to OpenRouter|first hear about OpenRouter|You.?re all set",
+            t, re.I))
+        # 检测到已存卡 → 直接算已绑(与 need_pm 无关);较弱的 auto_topup 信号仍需无加卡入口且无 need_pm 且【无 onboarding 残留】才算
+        attached = saved_card or (auto_topup and not has_addpm and not need_pm and not onboarding_up)
+        log("[加卡] 绑卡核验: saved_card=%s auto_topup=%s has_addpm=%s need_pm=%s onboarding=%s → %s" % (
+            saved_card, auto_topup, has_addpm, need_pm, onboarding_up, "已绑✓" if attached else "未绑"))
         return attached
     except Exception as _e:
         log("[加卡] 绑卡核验异常(保守按未绑处理): %s" % str(_e)[:70])
@@ -288,10 +297,17 @@ def _fill_save_cdp(page, card, address, save_timeout=60, cfg=None, patcher=None,
         except Exception: pass
         return {"result": "declined", "detail": "FixC卡被拒(刷新前抓到)", "hcaptcha": bool(cap), "used_zip": used_zip}
     bound = False
-    try:
-        bound = _card_attached(page)
-    except Exception:
-        pass
+    if bound_seen:
+        # CDP 内部轮询已见 Auto Top-Up 强信号=绑成(fixc_core 注释:此信号"调用方不必再重连核验")→
+        #   跳过 _card_attached 的整页 goto(/credits) 刷新,省那次"页面刷新"(用户报的另一半症状)。
+        #   配合 fixc_core 默认关 Save card? 弹窗:弹窗一关→露出 Auto Top-Up→bound_seen=True→此处不再 reload。
+        #   declined/弱态(bound_seen=False)仍走 _card_attached 权威核验,不动。
+        log("[加卡FixC] ✓ CDP 内部已确认绑成(Auto Top-Up 强信号)→ 跳过刷新核验(省一次 /credits 重载)")
+    else:
+        try:
+            bound = _card_attached(page)
+        except Exception:
+            pass
     if bound or bound_seen:                         # 核验已挂卡 / 内部轮询已见 Auto Top-Up 绑成
         log("[加卡FixC] ✓ 账户已挂卡(核验=%s 轮询=%s,ZIP=%s)" % (bound, bound_seen, used_zip))
         try: common.mark_zip_result(used_zip, "card-bound")
@@ -344,6 +360,14 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
     """加卡。返回 {result: card-bound|server-error|declined|needphone|fill-fail|unknown}。
        save_timeout: 点 Save 后等 Radar 出终态的秒数(默认60;切IP重试时调用方传更短如45——
        换了新IP还不放行基本就是不行了,早返回省时间)。"""
+    # ★R1/R2 根治:进 /credits 之【前】先把残留 onboarding 向导就地推完(单选/问卷/支付步清干净)→
+    #   落 /credits 时无浮层盖加卡入口 → 不触发 OpenRouter 前端持续轮询积分(根治"一直刷积分/跳来跳去/阻塞")。
+    #   覆盖续跑复用 key(从没走过取key阶段)与取key收尾撞死线留残留两种情形。幂等:已完成则瞬时返回。
+    try:
+        from steps import steps_key
+        steps_key.complete_onboarding(page)
+    except Exception:
+        pass
     page.goto(CREDITS_URL, wait=3)
     # 拟人化预热:进页面后先滚两下+停一下(对标人类进表单前的浏览,Stripe 行为遥测看 warmup)
     try:
@@ -353,15 +377,16 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
         time.sleep(random.uniform(0.3, 0.8))
     except Exception:
         pass
-    # 关掉 onboarding 问卷浮层(否则盖住账单弹窗,点 Add a Payment Method 没反应)
-    try:
-        from steps import steps_key
-        steps_key.dismiss_onboarding(page)
-        # ★onboarding 没走完时 Welcome 角色选择浮层会盖住 /credits 加卡入口 → 退点 Add Credits 空转 + 前端一直刷积分接口。
-        #   把 Individual+Continue 推过去,露出真正的加卡入口(详见 steps_key._advance_role_select)。
-        steps_key._advance_role_select(page)
-    except Exception:
-        pass
+    # 反应式兜底:complete_onboarding 已在进页【前】清完则此处 no-op(_onboarding_done 置位);
+    #   仅当前置清理没成功(撞死线/推不动等)才在 /credits 落地后再清一次,避免重复推浮层放大轮询。
+    if not getattr(page, "_onboarding_done", False):
+        try:
+            from steps import steps_key
+            steps_key.dismiss_onboarding(page)
+            # Welcome 角色选择/支付步浮层会盖住 /credits 加卡入口 → in-place 推过去露出入口(详见 _advance_role_select)。
+            steps_key._advance_role_select(page)
+        except Exception:
+            pass
     # 已有支付方式时,OpenRouter 把「Add a Payment Method」换成「Auto Top-Up / Enable」。
     # 这时没有加卡入口——说明卡已绑,直接判成功,别傻等卡表单。
     # ★#1 入口门加固:React/Stripe 没渲染完时按钮还没出 → has_addpm=False + 'Auto Top-Up' 常驻文案
@@ -402,12 +427,12 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
         # 入口找不到、又不是已有卡 → 退而点「Add Credits」走购买流加卡,别原地不动
         log("[加卡] 没找到 Add a Payment Method 入口 → 点 Add Credits(增加积分)进购买流加卡")
         page.click_text(["Add Credits", "Buy Credits"], 8)
-    time.sleep(1.5)
+    time.sleep(0.6 if common.fast_mode() else 1.5)   # 提速:等支付方式选择器弹出;点早了由下游 click_card_tab(6) 轮询接住
     # OpenRouter 有时弹支付方式选择器(Cash App Pay/Card/Bank/Klarna)且默认选了 Cash App Pay,
     # 不点 Card 卡表单永不出现(→ unknown)。先把支付方式切到 Card。
     if page.click_card_tab(6):
         log("[加卡] 支付方式选择器→已选 Card")
-        time.sleep(1.5)
+        time.sleep(0.6 if common.fast_mode() else 1.5)   # 提速:等切到 Card 后表单刷新;下游 wait_field_present(30s) 接住
     # 检查返回(BUG-007:原来忽略返回值盲目继续)。30s 内地址/卡表单都没出 → 告警;
     # 不在此硬失败,因为下面卡号框检测(NUM)带刷新重载 Stripe.js 的兜底恢复,硬失败会越过那段恢复。
     if not page.wait_field_present(ADDR_NAME + NUM, 30, "地址或卡表单"):
@@ -420,32 +445,57 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
     # 卡号框等不出 = Stripe.js/Payment Element 没初始化出来(累代理上加载慢/半挂)→ 比起重点按钮,
     # 【刷新页面让 Stripe.js 重载】最有效;两次刷新重开都没出才放弃,且单次等待砍短(死等没用)。
     if not page.wait_field_present(NUM, 20, "卡号框"):
-        _reloads = max(2, int(os.environ.get("STRIPE_RELOAD_RETRIES", "3")))   # Stripe.js 半挂多发→多刷几次(默认3,可调)
-        for attempt in range(_reloads):
-            log("[加卡] 卡表单没出 → 兜底第%d/%d次:刷新页面重载 Stripe.js 再开" % (attempt + 1, _reloads))
-            page.goto(CREDITS_URL, wait=3)            # 刷新:对 Stripe.js 半加载最对症
+        # ★根因修复(对齐 Playwright 金标准:PW 从不刷 /credits,靠"先把 onboarding 走完 + 地址 complete→卡表单自然挂载"的
+        #   状态机因果)。本批 7 个 card:unknown = 卡表单不出的真因是【残留 onboarding 浮层盖住入口】,而原来的兜底是
+        #   STRIPE_RELOAD_RETRIES 盲目 goto(/credits) 重载——刷新【不清 onboarding 态、反而可能把向导弹回 Welcome】→ 越刷越在
+        #   onboarding 态、卡表单永不渲染 = 死循环空转(本批刷 21 次)。物理刷新只对【纯 Stripe.js 半挂】有效。
+        #   改:主路径先【in-place 清 onboarding(推角色选择/Welcome/支付步,不整页 goto)+ 重开入口 + 填地址】等卡表单;
+        #   只有【确认非 onboarding 态】(无任何向导文案残留)才认定是 Stripe.js 半挂、才用物理 goto 重载——避免弹回起点 thrash。
+        from steps import steps_key
+        _ONB_RE = re.compile(r"How will you be using OpenRouter|Welcome to OpenRouter|workspace is ready|first hear about OpenRouter|You.?re all set|Add credits to get started|How much would you like to add", re.I)
+
+        def _reopen_form(reloaded):
+            """重开加卡入口 + 选 Card + (地址表单又在则重填),再等卡号框。reloaded=本轮是否做过物理刷新。"""
             try:
-                from steps import steps_key
                 steps_key.dismiss_onboarding(page)
-                steps_key._advance_role_select(page)   # 刷新后 Welcome 浮层可能又在 → 同样推过去,别再撞积分空转
+                steps_key._advance_role_select(page)   # in-place 推 onboarding 浮层(角色选择/Welcome首屏/支付步→later),露出加卡入口
             except Exception:
                 pass
             page.click_text(["Add a Payment Method", "Add Payment Method", "Add card"], 10)
-            time.sleep(1.5)
+            time.sleep(0.6 if common.fast_mode() else 1.5)
             page.click_card_tab(5)                    # 支付方式选择器→选 Card
-            # ★#16:卡表单要先填好账单地址才出。刷新重开后若地址表单又在,重新走填地址那段(复用同一逻辑),
-            #   否则地址空着卡表单永不出 → 纯空耗多刷几次也没用。
+            # ★#16:卡表单要先填好账单地址才出。地址表单又在 → 重新走填地址那段(复用同一逻辑),否则卡表单永不出。
             if page.field_present(ADDR_NAME):
-                log("[加卡] 刷新后地址表单又在 → 重新填账单地址(否则卡表单不出)")
+                log("[加卡] %s地址表单又在 → 重新填账单地址(否则卡表单不出)" % ("刷新后" if reloaded else "清浮层后"))
                 _fill_billing_address(page, address)
-            if page.wait_field_present(NUM, 18, "卡号框(刷新后)"):
-                break
-        else:
+            return page.wait_field_present(NUM, 18, "卡号框")
+
+        _reloads = max(2, int(os.environ.get("STRIPE_RELOAD_RETRIES", "3")))
+        _form_ok = False
+        for attempt in range(_reloads):
+            t_now = page.all_frames_text() or ""
+            onb = bool(_ONB_RE.search(t_now))
+            if onb:
+                # 残留 onboarding 态 → 【in-place 清浮层】不刷页(刷页会把向导弹回 Welcome 来回跳 = 原死循环根因)。
+                log("[加卡] 卡表单没出 → 第%d/%d次:检出残留 onboarding 态(向导浮层盖住入口)→ in-place 清浮层再开(不刷页,避免弹回 Welcome)" % (attempt + 1, _reloads))
+                if _reopen_form(reloaded=False):
+                    _form_ok = True
+                    break
+            else:
+                # 非 onboarding 态(无向导文案)→ 确属 Stripe.js 半挂/累代理加载慢 → 此时物理刷新才对症。
+                log("[加卡] 卡表单没出 → 第%d/%d次:非 onboarding 态、疑 Stripe.js 半挂 → 刷新重载 Stripe.js 再开" % (attempt + 1, _reloads))
+                page.goto(CREDITS_URL, wait=3)
+                time.sleep(0.6 if common.fast_mode() else 1.5)
+                if _reopen_form(reloaded=True):
+                    _form_ok = True
+                    break
+        if not _form_ok:
             try:
                 page.shot("_card_noform.png")
             except Exception:
                 pass
-            log("[加卡] 刷新重开两次仍没等到卡表单(Stripe.js 加载不出)"); return {"result": "unknown", "detail": "no card form"}
+            log("[加卡] 清浮层/刷新重开 %d 次仍没等到卡表单(疑 onboarding 未清干净 或 Stripe.js 加载不出)" % _reloads)
+            return {"result": "unknown", "detail": "no card form"}
 
     # 页面内卡片面板:展示所有可用卡+已绑次数,留几秒窗口让用户点别的卡改用(不点走自动)。仅 --manual-card 开。
     if manual_card:
@@ -591,6 +641,12 @@ def _accept_alert(page):
 
 def purchase(page, amount, cfg, manual_hcaptcha=True):
     """充值 amount(美元)。返回 {result: success|server-error|declined|amount-fail|unknown, balance_before, balance_after}。"""
+    # 进 /credits 前同样先确保 onboarding 已走完(幂等;正常已绑卡号此处瞬时返回),避免充值页落 /credits 触发前端积分轮询。
+    try:
+        from steps import steps_key
+        steps_key.complete_onboarding(page)
+    except Exception:
+        pass
     page.goto(CREDITS_URL, wait=3)
     bal0 = _balance(page)
     log("[充值] 充值前余额 ~ $%s" % (bal0 or "?"))
@@ -607,7 +663,7 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
             v = (inp.get_attribute("value") or "").strip()
             if re.fullmatch(r"\d+(\.\d+)?", v):
                 inp.click()
-                inp.send_keys(page.Keys.CONTROL, "a"); inp.send_keys(page.Keys.DELETE)
+                common.clear_input(inp, page.Keys)   # 跨平台全选清空(Mac Ctrl+A≠全选 → 金额残值拼脏如 1010)
                 inp.send_keys(str(amount))
                 time.sleep(0.5)
                 nv = (inp.get_attribute("value") or "").strip()

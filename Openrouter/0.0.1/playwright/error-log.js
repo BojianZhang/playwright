@@ -83,11 +83,14 @@ function summary(recentN = 200) {
     byReason[k] = (byReason[k] || 0) + 1;
     if (e.action) byAction[e.action] = (byAction[e.action] || 0) + 1;
   }
+  const entries = ENTRIES.slice(-recentN).reverse();
   return {
     total: ENTRIES.length,
+    returned: entries.length,                    // 实际返回条数;UI 据此诚实标注「最近 N / 共 total」
+    truncated: ENTRIES.length > entries.length,  // true=列表被截断(total/byReason/byAction 仍按【全量】算)
     byReason,
     byAction,
-    entries: ENTRIES.slice(-recentN).reverse(),
+    entries,
   };
 }
 

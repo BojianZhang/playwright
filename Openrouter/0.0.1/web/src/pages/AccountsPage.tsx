@@ -45,7 +45,7 @@ export default function AccountsPage() {
     { label: '邮箱', className: 'mono', render: (a) => a.email },
     { label: 'API Key', className: 'mono', render: (a) => a.apiKey ? <span title={a.apiKey}>{trunc(a.apiKey, 18)}</span> : '—' },
     { label: '卡末4', className: 'mono', render: (a) => a.cardLast4 ? '•••• ' + a.cardLast4 : '—' },
-    { label: '充值', className: 'mono', align: 'right', render: (a) => a.charged ? '$' + a.charged : '—' },
+    { label: '充值', className: 'mono', align: 'right', render: (a) => a.charged ? <span title={a.balanceAfter != null ? `充值后余额 $${a.balanceAfter}` : ''}>${a.charged}{a.balanceAfter != null ? ` →余$${a.balanceAfter}` : ''}</span> : '—' },
     { label: '状态', render: (a) => a.blacklisted ? <span className="kbadge fail" title={a.blacklistReason}>拉黑</span> : <span className="kbadge ok">正常</span> },
   ];
 

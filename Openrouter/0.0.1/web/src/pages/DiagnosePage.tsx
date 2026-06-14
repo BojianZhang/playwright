@@ -1,6 +1,6 @@
 // 诊断 / 排查(只读整合):按 邮箱/卡末4/代理/环境 搜 → 一页看完整链路。
 // 边界:只读关联展示,不改任何资源数据。
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../lib/api';
@@ -56,6 +56,8 @@ export default function DiagnosePage() {
   const value = sp.get('value') || '';
   const [byInput, setByInput] = useState<By>(by);
   const [valInput, setValInput] = useState(value);
+  // URL 参数外部变化(如从图表下钻跳过来 /diagnose?by=card&value=...)时同步回输入框,否则表格已按新值查、输入框还显旧值。
+  useEffect(() => { setByInput(by); setValInput(value); }, [by, value]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['diagnose', by, value],

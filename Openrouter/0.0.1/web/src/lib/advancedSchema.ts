@@ -12,6 +12,8 @@ export const SCOPE_LABEL: Record<AdvScope, string> = { selenium: '纯Selenium', 
 export const SCOPE_COLOR: Record<AdvScope, string> = { selenium: '#2563eb', hybrid: '#7c3aed', both: '#0d9488' };
 
 export const ADV_FIELDS: AdvField[] = [
+  // ── 提速总开关(默认关=与现状逐字节一致)──
+  { key: 'fastMode', env: 'OPENROUTER_FAST', label: '提速模式 ★', hint: '空=关(默认,与现状完全一致);on=开:注册/登录省成功路径截图 + 把固定等待改成轮询提前退出(更快,不改成功判定/反检测)', type: 'select', scope: 'both', group: '提速', def: '', options: ['', 'on'] },
   // ── 取key(仅纯 Selenium;混合取key走 Playwright)──
   { key: 'wizardKeyDeadline', env: 'WIZARD_KEY_DEADLINE', label: '取key总死线(秒)', hint: '取key整体上限,到点放弃走整号重试(配合「取key卡死自救」)', type: 'number', scope: 'selenium', group: '取key', def: '150' },
   { key: 'wizardPayMode', env: 'WIZARD_PAY_MODE', label: '向导支付方式', hint: '向导"Add a payment method"步:填地址露卡表单 / 跳过 / 每号随机', type: 'select', scope: 'selenium', group: '取key', def: 'random', options: ['random', 'address', 'later'] },
@@ -41,4 +43,4 @@ export const ADV_FIELDS: AdvField[] = [
   { key: 'proxyDiversify', env: 'PROXY_DIVERSIFY', label: '代理多样化', hint: '混合:换 IP 时尽量跨段;留空=代码默认', type: 'text', scope: 'hybrid', group: '混合', def: '' },
 ];
 
-export const ADV_GROUPS = ['取key', '邮箱验证', '加卡', '驱动环境', '卡池', '混合'];
+export const ADV_GROUPS = ['提速', '取key', '邮箱验证', '加卡', '驱动环境', '卡池', '混合'];

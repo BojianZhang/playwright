@@ -6,7 +6,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../lib/toast';
 import { apiPost } from '../lib/api';
 import { useJobStream } from '../lib/useJobStream';
-import { parseKind, KIND_LABEL, type Kind } from '../lib/parse';
+import { usePersistedState } from '../lib/usePersistedState';
+import { parseKind, KIND_LABEL, escapeHtml, type Kind } from '../lib/parse';
 import type { StartJobResp } from '../lib/types';
 import { EchoModal } from '../features/EchoModal';
 import { PolicyModal } from '../features/PolicyModal';
@@ -15,9 +16,55 @@ import Wizard from '../features/console/Wizard';
 import MonitorPanel from '../features/console/MonitorPanel';
 import { useStrategies } from '../features/console/useStrategies';
 import { useEngineConfigs } from '../features/console/useEngineConfigs';
+import { useSchemes, type SchemeCfg } from '../features/console/useSchemes';
 import { activeOpts } from '../lib/strategySchema';
 import { engineActiveOpts } from '../lib/engineSchema';
-import { BILL_CHAIN, DEF_TPL_OK, DEF_TPL_FAIL, ENGINE_LABEL, type Stage, type Engine } from '../features/console/shared';
+import { BILL_CHAIN, DEF_TPL_OK, DEF_TPL_FAIL, ENGINE_LABEL, Chip, Arrow, type Stage, type Engine } from '../features/console/shared';
+
+// 方案详情(只读):把选中方案的"怎么跑"摊开给用户看 —— 引擎 + 执行顺序(引擎感知) + 并发/数量/模式/浏览器/资源池。
+// 解决"选了方案看不到它到底跑哪些步、下一步是哪步,没法判断正不正常";Chip/Arrow 与向导第3步「执行流程」同款,只读不可点。
+function SchemeDetail({ cfg }: { cfg: SchemeCfg }) {
+  if (!cfg) return null;
+  const isPy = cfg.engine !== 'playwright';                       // Python 引擎(selenium/hybrid/split)无独立「绑地址」步(随加卡进行)→ 不展示
+  const lockKeyCard = cfg.engine === 'hybrid' || cfg.engine === 'split';  // 混合/分流:取Key+加卡为打包流程,必跑
+  const st = cfg.stages || ({} as Record<string, boolean>);
+  const pools = [
+    cfg.useAdspowerPool && 'AdsPower环境池',
+    cfg.useProxyPool && '代理池',
+    cfg.useAddressPool && '地址池',
+    cfg.useDispatch && '跨节点派发',
+    cfg.shipResources && '资源下发',
+  ].filter(Boolean) as string[];
+  return (
+    <div style={{ width: '100%', borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 10 }}>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 13, marginBottom: 8 }}>
+        <span>引擎 <b>{ENGINE_LABEL[cfg.engine] || cfg.engine}</b></span>
+        <span>并发 <b>{cfg.conc || '—'}</b></span>
+        <span>数量 <b>{!cfg.count || String(cfg.count) === '0' ? '全部' : cfg.count}</b></span>
+        <span>模式 <b>{cfg.mode === 'login' ? '仅登录续跑' : '全流程'}</b></span>
+        {cfg.chk?.resume !== false && <span style={{ color: 'var(--text-3)' }}>断点续跑</span>}
+        {cfg.chk?.headed && <span style={{ color: 'var(--text-3)' }}>有头窗口</span>}
+      </div>
+      <div className="pipeline" style={{ marginBottom: 8 }}>
+        <Chip on locked title="每个账号都会跑">注册 / 登录</Chip>
+        <Arrow />
+        <Chip on={lockKeyCard || !!st.key} locked>取 API 密钥</Chip>
+        <Arrow />
+        {!isPy && (<><Chip on={!!st.addr} locked>绑地址</Chip><Arrow /></>)}
+        <Chip on={lockKeyCard || !!st.card} locked>加卡{isPy && <em>含绑地址</em>}</Chip>
+        <Arrow />
+        <Chip on={!!st.charge} charge locked>充值 <em>扣钱</em></Chip>
+        <Arrow />
+        <Chip on={!!st.pwd} locked>改密</Chip>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+        浏览器:{cfg.browserProvider && cfg.browserProvider !== 'none' ? cfg.browserProvider : '由引擎 / AdsPower 接管'}
+        {' · '}资源:{pools.length ? pools.join(' / ') : '不使用池'}
+        {' · '}✓=会跑 灰删除线=跳过;真正扣钱只有<b>充值</b>
+      </div>
+    </div>
+  );
+}
 
 export default function ConsolePage() {
   const qc = useQueryClient();
@@ -26,26 +73,29 @@ export default function ConsolePage() {
   // —— 配置状态 ——
   const [unifiedPwd, setUnifiedPwd] = useState('');
   const [pwdInvalid, setPwdInvalid] = useState(false);
-  const [mode, setMode] = useState('auto');
-  const [conc, setConc] = useState('1');
-  const [count, setCount] = useState('0');
-  const [chk, setChk] = useState<Chk>({ headed: false, resume: true, humanLike: false });
-  const [browserProvider, setBrowserProvider] = useState('none');
-  const [envIds, setEnvIds] = useState('');
-  const [useProxyPool, setUseProxyPool] = useState(false);
-  const [useAddressPool, setUseAddressPool] = useState(false);
-  const [useAdspowerPool, setUseAdspowerPool] = useState(false);
-  const [useDispatch, setUseDispatch] = useState(false);
-  const [dispatchTargets, setDispatchTargets] = useState<{ nodeId: string; url: string; self?: boolean }[]>([]);
-  const [shipResources, setShipResources] = useState(true);  // 派发时把本机资源(代理分片/卡分片冻结/地址·密钥复制)下发给子机
+  // 非凭证配置项持久化到 localStorage(刷新不丢);凭证(unifiedPwd / 粘贴账号)保持 useState、刷新即清。
+  const [mode, setMode] = usePersistedState('or_console_mode', 'auto');
+  const [conc, setConc] = usePersistedState('or_console_conc', '1');
+  const [count, setCount] = usePersistedState('or_console_count', '0');
+  const [chk, setChk] = usePersistedState<Chk>('or_console_chk', { headed: false, resume: true, humanLike: false });
+  const [browserProvider, setBrowserProvider] = usePersistedState('or_console_browserProvider', 'none');
+  const [envIds, setEnvIds] = usePersistedState('or_console_envIds', '');
+  const [useProxyPool, setUseProxyPool] = usePersistedState('or_console_useProxyPool', false);
+  const [useAddressPool, setUseAddressPool] = usePersistedState('or_console_useAddressPool', false);
+  const [useAdspowerPool, setUseAdspowerPool] = usePersistedState('or_console_useAdspowerPool', false);
+  const [useDispatch, setUseDispatch] = usePersistedState('or_console_useDispatch', false);
+  const [dispatchTargets, setDispatchTargets] = useState<{ nodeId: string; url: string; self?: boolean }[]>([]);  // 动态发现,不持久化
+  const [shipResources, setShipResources] = usePersistedState('or_console_shipResources', true);  // 派发时把本机资源(代理分片/卡分片冻结/地址·密钥复制)下发给子机
 
   // 环节命名策略预设:各环节"业务参数"(Key名/卡次数/金额)从这里取。
   const { data: strategies } = useStrategies();
   // 引擎配置:该引擎"怎么跑"的技术行为(填卡/求解/换IP/环境/分流)从激活预设取。
   const { data: engineConfigs } = useEngineConfigs();
+  // 执行方案:整套"怎么跑"的命名预设(引擎+流程+并发+浏览器+资源池),一键选填。
+  const { data: schemes, save: schemeSave, del: schemeDel, active: schemeActive } = useSchemes();
 
   // —— 阶段链 ——
-  const [stages, setStages] = useState<Record<Stage, boolean>>({ key: true, addr: false, card: false, charge: false, pwd: false });
+  const [stages, setStages] = usePersistedState<Record<Stage, boolean>>('or_console_stages', { key: true, addr: false, card: false, charge: false, pwd: false });
   // pwdGateOk 定义下移到 engine 之后(见下方),这里只留阶段链逻辑。
   function clickChip(s: Stage) {
     const py = engine !== 'playwright';   // Python(selenium/hybrid/split):改密与充值无关,只需 取Key + 统一密码
@@ -160,7 +210,7 @@ export default function ConsolePage() {
     const eng = (searchParams.get('engine') || 'selenium') as Engine;
     setJobId(attach); setRunEngine(eng); runningRef.current = true;
     stream.start(attach, total);
-    setRunHint({ html: `已接管续跑任务 <b>${attach.slice(-14)}</b>(引擎 <b>${ENGINE_LABEL[eng] || eng}</b>)· 运行中 —— 实时进度见下方。断点续跑会自动跳过已完成的号。` });
+    setRunHint({ html: `已接管续跑任务 <b>${escapeHtml(attach.slice(-14))}</b>(引擎 <b>${escapeHtml(ENGINE_LABEL[eng] || eng)}</b>)· 运行中 —— 实时进度见下方。断点续跑会自动跳过已完成的号。` });
     setSearchParams({}, { replace: true });
     window.scrollTo({ top: 0, behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -213,6 +263,9 @@ export default function ConsolePage() {
       hcRecheckWait: num(eng.hcRecheckWait, 5),
       isolate: !!eng.isolate, manualCard: !!eng.manualCard, noDeleteEnv: !!eng.noDeleteEnv, noGc: !!eng.noGc,
       splitRatio: num(eng.splitRatio, 0.5), crossHandoff: eng.crossHandoff !== false,
+      // 走法变体(原样透传,允许 ''):空值由 engine-runner.buildEnv 的守卫跳过 → 不注 env → Python 用内置默认。
+      wizardPayMode: eng.wizardPayMode ?? '', wizardCreditMode: eng.wizardCreditMode ?? '',
+      cardStrategy: eng.cardStrategy ?? '', zipRetry: eng.zipRetry ?? '', cardFillMethod: eng.cardFillMethod ?? '',
       useProxyPool, useAddressPool, useAdspowerPool,
       successTemplate: tplOk, failureTemplate: tplFail,
     };
@@ -238,9 +291,9 @@ export default function ConsolePage() {
         try {
           const body = { engine, payload: { ...(engine === 'playwright' ? buildPayload() : buildRunPayload()), shipResources }, targets };
           const d = await apiPost<{ dispatched: number; targets: number; total: number; slices: { target: string; accepted: number; ok: boolean; error?: string }[] }>('/api/dispatch', body);
-          const detail = d.slices.map((s) => `${s.target}:${s.ok ? s.accepted + '✓' : '失败(' + (s.error || '') + ')'}`).join(' · ');
-          setRunHint({ html: `已派发 <b>${d.total}</b> 账号 → <b>${d.dispatched}/${d.targets}</b> 台机接受。各机独立跑,结果见<a href="/results" style="color:var(--primary-text)">结果聚合</a>。<br>${detail}`, danger: d.dispatched === 0 });
-        } catch (e) { setRunHint({ html: '派发错误:' + (e as Error).message, danger: true }); }
+          const detail = d.slices.map((s) => `${escapeHtml(s.target)}:${s.ok ? Number(s.accepted) + '✓' : '失败(' + escapeHtml(s.error || '') + ')'}`).join(' · ');
+          setRunHint({ html: `已派发 <b>${Number(d.total)}</b> 账号 → <b>${Number(d.dispatched)}/${Number(d.targets)}</b> 台机接受。各机独立跑,结果见<a href="/results" style="color:var(--primary-text)">结果聚合</a>。<br>${detail}`, danger: d.dispatched === 0 });
+        } catch (e) { setRunHint({ html: '派发错误:' + escapeHtml((e as Error).message), danger: true }); }
         return;
       }
       setRunHint({ html: '提交中…' });
@@ -250,8 +303,8 @@ export default function ConsolePage() {
         const d = await apiPost<StartJobResp>(endpoint, body);
         setJobId(d.jobId); setRunEngine(engine); runningRef.current = true;
         stream.start(d.jobId, d.accepted || 0);
-        setRunHint({ html: `已接受 <b>${d.accepted}</b> 个账号 · 引擎 <b>${ENGINE_LABEL[engine]}</b> · 运行中 —— 实时进度见下方。` });
-      } catch (e) { setRunHint({ html: '错误:' + (e as Error).message, danger: true }); }
+        setRunHint({ html: `已接受 <b>${Number(d.accepted)}</b> 个账号 · 引擎 <b>${escapeHtml(ENGINE_LABEL[engine])}</b> · 运行中 —— 实时进度见下方。` });
+      } catch (e) { setRunHint({ html: '错误:' + escapeHtml((e as Error).message), danger: true }); }
     } finally { submittingRef.current = false; setSubmitting(false); }
   }
 
@@ -262,6 +315,43 @@ export default function ConsolePage() {
     setMode('login');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     setRunHint({ html: `已把 ${failed.length} 个失败账号回填(已切「仅登录续跑」),核对后点开始执行。` });
+  }
+
+  // —— 执行方案:选=一键填好"怎么跑";存=把当前设置存成命名方案。不动凭证/统一密码/粘贴数据 ——
+  function currentCfg(): SchemeCfg {
+    return { engine, mode, conc, count, chk, stages, browserProvider, envIds, useAdspowerPool, useProxyPool, useAddressPool, useDispatch, shipResources };
+  }
+  function applyScheme(cfg: SchemeCfg) {
+    if (!cfg) return;
+    if (cfg.engine) setEngine(cfg.engine as Engine);   // 用 raw setEngine(非 selectEngine):随后按方案精确设 stages,避免被切引擎归一逻辑改写
+    if (cfg.mode != null) setMode(cfg.mode);
+    if (cfg.conc != null) setConc(String(cfg.conc));
+    if (cfg.count != null) setCount(String(cfg.count));
+    if (cfg.chk) setChk({ headed: !!cfg.chk.headed, resume: cfg.chk.resume !== false, humanLike: !!cfg.chk.humanLike });
+    if (cfg.stages) setStages({ key: !!cfg.stages.key, addr: !!cfg.stages.addr, card: !!cfg.stages.card, charge: !!cfg.stages.charge, pwd: !!cfg.stages.pwd });
+    if (cfg.browserProvider != null) setBrowserProvider(cfg.browserProvider);
+    if (cfg.envIds != null) setEnvIds(cfg.envIds);
+    setUseAdspowerPool(!!cfg.useAdspowerPool);
+    setUseProxyPool(!!cfg.useProxyPool);
+    setUseAddressPool(!!cfg.useAddressPool);
+    setUseDispatch(!!cfg.useDispatch);
+    setShipResources(cfg.shipResources !== false);
+  }
+  function onPickScheme(id: string) {
+    const p = schemes?.schemes?.presets?.find((x) => x.id === id);
+    if (!p) return;
+    schemeActive.mutate({ id });
+    applyScheme(p.cfg);
+    toast.push(`已应用方案「${p.name}」· 凭证/统一密码/粘贴数据请确认`, 'ok');
+  }
+  function onSaveScheme() {
+    const name = window.prompt('方案名称(把当前 引擎/流程/并发/浏览器/资源池 存成可复用方案;不含凭证/密码/数据)');
+    if (name == null || !name.trim()) return;
+    schemeSave.mutate({ name: name.trim(), cfg: currentCfg() }, { onSuccess: () => toast.push('已保存执行方案', 'ok'), onError: (e) => toast.push('保存失败:' + (e as Error).message, 'err') });
+  }
+  function onDeleteScheme(id: string) {
+    if (!window.confirm('删除这个执行方案?')) return;
+    schemeDel.mutate({ id }, { onSuccess: () => toast.push('已删除', 'ok') });
   }
 
   const ctx: ConsoleCtx = {
@@ -279,6 +369,17 @@ export default function ConsolePage() {
   return (
     <main className="page">
       <div className="zone"><span className="z-no">A</span><h2>任务配置</h2><span className="z-hint">分步填写,可随时回上一步改</span><span className="z-line" /></div>
+
+      <section className="card" style={{ padding: '10px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 600 }}>执行方案</span>
+        <select className="dt-filter" style={{ minWidth: 220 }} value={schemes?.schemes?.activeId || ''} onChange={(e) => onPickScheme(e.target.value)}>
+          {(schemes?.schemes?.presets || []).map((p) => <option key={p.id} value={p.id}>{p.name}{p.builtin ? ' · 内置' : ''}</option>)}
+        </select>
+        <button className="btn btn-soft btn-sm" onClick={onSaveScheme}>存为方案</button>
+        {(() => { const a = schemes?.schemes?.presets?.find((x) => x.id === schemes?.schemes?.activeId); return a && !a.builtin ? <button className="btn btn-danger-soft btn-sm" onClick={() => onDeleteScheme(a.id)}>删除</button> : null; })()}
+        <span style={{ fontSize: 12, color: 'var(--text-3)' }}>选方案 = 一键填好 引擎/流程/并发/浏览器/资源池;凭证、统一密码、粘贴数据仍每次手填</span>
+        {(() => { const a = schemes?.schemes?.presets?.find((x) => x.id === schemes?.schemes?.activeId); return a ? <SchemeDetail cfg={a.cfg} /> : null; })()}
+      </section>
 
       <ConsoleProvider value={ctx}><Wizard /></ConsoleProvider>
 

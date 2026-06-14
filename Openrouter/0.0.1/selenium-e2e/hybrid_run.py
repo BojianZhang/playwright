@@ -494,6 +494,37 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         SE_GIVEUP = 3   # 连续这么多次 server-error → 判定换IP无效(疑卡velocity非IP),早停别白切
         res["timings"]["pre_card"] = round(time.perf_counter() - t_start, 1)   # 到加卡前(建环境+PW/登录)耗时
         t_card = time.perf_counter()
+        # ★对齐 pipeline.py:186-190:已绑卡(prior stages.card=ok)→ 绝不 load_card 重绑
+        #   (防 --no-resume 对已绑号重绑新卡=消耗卡池/占BIN/触发重复扣款)。充值/改密各走防重 gate 后即返回。
+        _card_done = (((prior or {}).get("stages") or {}).get("card") or {}).get("status") == "ok"
+        if _card_done:
+            res["steps"]["card"] = "card-bound"; res["card_last4"] = (prior or {}).get("card_last4")
+            res["ok"] = True; success = True; res["card_skipped"] = True
+            log("[混合] %s 已绑卡(prior stages.card=ok)→ 跳过加卡(防重绑/重扣)" % email)
+            _charged_before = ((((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok") or ((prior or {}).get("purchase") == "success")
+            if do_purchase and not _charged_before:
+                log_stage(slot, email, "charge")
+                try:
+                    pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
+                    res["purchase"] = pr.get("result"); res["charged"] = amount if pr.get("result") == "success" else 0
+                    if pr.get("result") == "success":
+                        save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
+                except Exception as _pe:
+                    res["purchase"] = "error"; log("[混合] %s 补充值异常: %s" % (email, str(_pe)[:80]))
+            elif do_purchase:
+                res["purchase"] = "success"; res["charged"] = 0; res["skipped_charge"] = True
+            if do_changepw and op_pw and not ((((prior or {}).get("stages") or {}).get("changepw") or {}).get("status") == "ok"):
+                log_stage(slot, email, "changepw")
+                try:
+                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"))
+                    res["steps"]["changepw"] = bool(cp_ok)
+                    if cp_ok:
+                        save_progress(email, _stage=("changepw", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S")}))
+                except Exception as _ce:
+                    res["steps"]["changepw"] = False
+            elif do_changepw and op_pw:
+                res["steps"]["changepw"] = True
+            return res
         card = common.load_card(email)
         addr = common.rand_address()
         max_rot = max(0, min(max_rotations, len(proxies) - 1))
@@ -630,7 +661,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 save_progress(email, _stage=("card", {"status": "ok", "at": _now, "card_last4": card.get("last4"), "result": "card-bound"}))
                 save_progress(email, _stage=("address", {"status": "ok", "at": _now}))
                 # 充值($5):仅 --do-purchase 显式开启才【真扣费】(默认关,防误扣);卡刚绑成、page.d 活着、环境未删,直接复用。
-                _charged_before = (((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok"
+                _charged_before = ((((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok") or ((prior or {}).get("purchase") == "success")   # 双信号:checkpoint 或 上次 results 充值成功 → 防重复扣款
                 if do_purchase and _charged_before:
                     # ★止血#2:已充值(prior stages.charge=ok)→ 跳过,绝不重复扣款。
                     res["purchase"] = "success"
@@ -826,7 +857,12 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         except Exception:
             pass
         if env_id:
-            common.adspower_stop(env_id)
+            # ★清理异常【不能】冒泡:这是 finally 块,裸调 adspower_stop/delete_env 抛错会顶替已算好的 res 返回值→丢整号结果
+            #   (与 pipeline.py:302-329 同款修法)。各自 try 包住,清理失败只记日志、不影响 res 返回。
+            try:
+                common.adspower_stop(env_id)
+            except Exception:
+                pass
             time.sleep(1.2)
             # 用户测试模式:--keep-failed-env → 绑卡【没成功】的环境【不删】,留着让你在 AdsPower 手动测加卡。
             if keep_failed_env and not success:
@@ -836,7 +872,10 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             # 复用模式:只成功才删,失败保留留续跑重开(省重登)。
             # 隔离模式:env_B 成败都删 —— 隔离的全部意义就是每次加卡都用全新干净指纹,绝不复用。
             elif delete_env and (success or isolate):
-                adspower_env.delete_env(env_id)
+                try:
+                    adspower_env.delete_env(env_id)
+                except Exception as _e:
+                    log("[混合] 删环境失败(忽略): %s" % str(_e)[:60])
                 if isolate and not success:
                     log("[混合] 隔离:env_B %s 失败也删(下次重试换全新环境)" % env_id)
             else:

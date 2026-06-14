@@ -55,10 +55,18 @@ def extract_clerk_verify_link(msg):
     return m.group(0).replace("\\/", "/").replace("&amp;", "&")
 
 
-def wait_verify_link(email, password, api_key, base_url=DEFAULT_BASE, attempts=14, interval=3, alt_password=""):
+def wait_verify_link(email, password, api_key, base_url=DEFAULT_BASE, attempts=14, interval=3, alt_password="", status=None, since_ts=0, skew_ms=60000):
     """轮询邮箱拿 Clerk 注册验证链接（注册邮件可能晚到几秒）。
-       alt_password:改密后邮箱真实密码已变成统一密码 → 旧密码读不动就用统一密码再试(同 wait_verify_code)。"""
+       alt_password:改密后邮箱真实密码已变成统一密码 → 旧密码读不动就用统一密码再试(同 wait_verify_code)。
+       since_ts(可选,毫秒):本次注册【提交时刻】。设了之后,只接受发件日期 >= since_ts-skew 的链接 —— 续跑同一邮箱时
+         不会误用上一轮残留的【旧】验证邮件链接(那链接多已失效→打开后会话起不来→白判 VERIFY_LINK)。
+         ★非对称:日期【解析不到】时仍【接受】(验证链接通常是邮箱里唯一的验证邮件,过度拒绝反而把有效链接挡掉→真注册卡死);
+           默认 since_ts=0 = 不过滤 = 逐字节同原行为。与 wait_verify_code 的"日期不明=疑旧继续等"故意取反:OTP 错码会锁号代价高,链接打不开代价小。
+       status(可选 dict 出参):全程读不到信时回填坏邮箱判据 —— {bad_mailbox, n_404, n_err}。
+         ★坏邮箱判定改在【轮询过程中】统计 404(邮箱不存在/不可访问,确定性返回 404),不再靠上层事后【补一次请求恰好复现 404】
+           (住宅代理抖动时那一次可能 timeout/连不上→不含 404→漏登记→下次重复浪费整轮注册)。"""
     _pws = list(dict.fromkeys([p for p in (password, alt_password) if p]))   # 主+备用密码,去重去空,保序
+    _n_404 = 0; _n_err = 0; _got_msg = False
     for i in range(attempts):
         msg = None
         _err = None
@@ -69,15 +77,31 @@ def wait_verify_link(email, password, api_key, base_url=DEFAULT_BASE, attempts=1
             except Exception as e:
                 _err = e
         if msg is not None:
+            _got_msg = True   # 能读到信箱(哪怕暂无验证邮件)→ 邮箱可用,不是坏邮箱
             link = extract_clerk_verify_link(msg)
             if link:
-                log("Firstmail 第 %d 次轮询：找到验证链接" % (i + 1))
-                return link
-            log("Firstmail 第 %d 次轮询：暂无验证链接" % (i + 1))
+                ts = _msg_date_ms(msg)
+                stale = bool(since_ts) and (ts is not None) and (ts < since_ts - skew_ms)   # 日期可解析且明显早于本次提交 → 旧链接
+                if stale:
+                    log("Firstmail 第 %d 次轮询：读到链接但发件早于本次注册(疑旧残留),继续等新邮件" % (i + 1))
+                else:
+                    log("Firstmail 第 %d 次轮询：找到验证链接" % (i + 1))
+                    if status is not None:
+                        status["bad_mailbox"] = False
+                    return link
+            else:
+                log("Firstmail 第 %d 次轮询：暂无验证链接" % (i + 1))
         else:
+            _n_err += 1
+            if _err is not None and "404" in str(_err):
+                _n_404 += 1
             log("Firstmail 轮询出错：%s" % str(_err)[:80])
         if i < attempts - 1:
             time.sleep(interval)
+    if status is not None:
+        # 全程没读到任何信 + 至少 2 次确认 404(404 是确定性"邮箱不存在",抖动只会 timeout 不会 404)→ 坏邮箱
+        status["n_404"] = _n_404; status["n_err"] = _n_err
+        status["bad_mailbox"] = (not _got_msg) and _n_404 >= 2
     return None
 
 

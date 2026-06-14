@@ -59,7 +59,7 @@ export default function RunDetailPage() {
           <div className="stat-cell s-ok"><div className="num">{s.success}</div><div className="lbl">成功</div></div>
           <div className="stat-cell s-fail"><div className="num">{s.failed}</div><div className="lbl">失败</div></div>
           <div className="stat-cell s-br"><div className="num" style={{ fontSize: 18 }}>{fmtDuration(s.durationMs)}</div><div className="lbl">用时</div></div>
-          <div className="stat-cell s-q"><div className="num" style={{ fontSize: 18 }}><RunStatus status={s.status} /></div><div className="lbl">{fmtDateTime(s.startedAt)} 起</div></div>
+          <div className="stat-cell s-q"><div className="num" style={{ fontSize: 18 }}><RunStatus status={s.status} partial={s.partial} completenessPct={s.completenessPct} /></div><div className="lbl">{fmtDateTime(s.startedAt)} 起</div></div>
         </section>
       )}
 

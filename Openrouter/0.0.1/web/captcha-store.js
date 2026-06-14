@@ -35,7 +35,7 @@ function pickActive() { return _load().find(_usable) || null; }
 function add({ label, provider, apiKey } = {}) {
   const key = String(apiKey || '').trim();
   if (!key) { const e = new Error('NO_KEY'); e.code = 'NO_KEY'; throw e; }
-  const prov = provider === '2captcha' ? '2captcha' : 'capsolver';
+  const prov = provider === 'capsolver' ? 'capsolver' : '2captcha';   // 缺省 2captcha(与 importRaw 一致;Python 引擎走 2captcha)
   const lst = _load();
   const e = { id: _genId(), label: String(label || '').slice(0, 60) || prov, provider: prov, apiKey: key, status: 'active', balance: null, balanceAt: null, lastError: '', addedAt: Date.now() };
   lst.push(e); _persist();
@@ -51,6 +51,7 @@ function importRaw(raw) {
     const s = line.trim();
     if (!s || s.startsWith('#')) return;
     const parts = s.split(/\s*[|,\t]\s*/);
+    while (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();   // 容错:裸 key 带尾随分隔符 "key|" → 不再被当多字段而丢弃
     let provider, apiKey, label;
     if (parts.length <= 1) { apiKey = parts[0]; }
     else { [provider, apiKey, label] = parts; }
@@ -67,7 +68,7 @@ function importRaw(raw) {
 function update(id, patch = {}) {
   const e = _load().find((x) => x.id === id); if (!e) return null;
   if ('label' in patch) e.label = String(patch.label || '').slice(0, 60);
-  if ('provider' in patch) e.provider = patch.provider === '2captcha' ? '2captcha' : 'capsolver';
+  if ('provider' in patch) e.provider = patch.provider === 'capsolver' ? 'capsolver' : '2captcha';  // 默认 2captcha,与 importRaw/add 一致(原来反向默认 capsolver→改卡商误翻)
   if ('status' in patch) e.status = patch.status === 'disabled' ? 'disabled' : 'active';
   if ('apiKey' in patch && String(patch.apiKey || '').trim()) e.apiKey = String(patch.apiKey).trim(); // 空值不覆盖
   _persist(); return e;

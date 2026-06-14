@@ -73,6 +73,11 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
   const [colOpen, setColOpen] = useState(false);
   const colRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Set<string | number>>(() => new Set());
+  // —— 行虚拟化状态(仅大表生效)——
+  const wrapRef = useRef<HTMLDivElement>(null);   // 滚动容器(.tbl-wrap)
+  const [scrollTop, setScrollTop] = useState(0);  // 当前滚动位置
+  const [vpH, setVpH] = useState(maxHeight);       // 可视区高度
+  const [rowH, setRowH] = useState(36);            // 实测行高(首行测量后校准)
 
   useEffect(() => {
     if (!colOpen) return;
@@ -80,6 +85,17 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [colOpen]);
+
+  // 虚拟化:监听滚动容器,rAF 节流更新 scrollTop / 可视区高度。scrollTop 不参与 onSelectionChange 依赖,故滚动不会误触发父刷新。
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; setScrollTop(el.scrollTop); }); };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    setVpH(el.clientHeight || maxHeight);
+    return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf); };
+  }, [maxHeight]);
 
   function toggleHidden(key: string) {
     setHidden((prev) => {
@@ -175,6 +191,27 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
 
   const hasToolbar = toolbarLeft || toolbarRight || search || (filters && filters.length) || columnSettings || exportName;
 
+  // —— 行虚拟化(零依赖窗口化)——
+  // 只把滚动可视区附近的行渲进 DOM,其余用上下占位 <tr> 撑出滚动高度。排序/筛选/搜索/选中/导出全在 view/rows
+  // 数组上做,与 DOM 无关 → 窗口化对它们完全透明。行高统一(.tbl 单行)→ 定高窗口化安全,首行测量校准真实行高。
+  // 小表(≤VIRT_MIN)不虚拟化 → 渲染与改动前【逐字节一致】,零回归面;真正受益的是数千~数万行的聚合/账号表。
+  const VIRT_MIN = 80;
+  const OVERSCAN = 10;
+  const colCount = visCols.length + (selectable ? 1 : 0);
+  const virtualize = view.length > VIRT_MIN;
+  const measureRow = (el: HTMLTableRowElement | null) => { if (el) { const h = el.offsetHeight; if (h > 0 && Math.abs(h - rowH) > 1) setRowH(h); } };
+  let startIdx = 0, endIdx = view.length;
+  if (virtualize) {
+    const per = rowH || 36;
+    const vis = Math.ceil(vpH / per) + OVERSCAN * 2;
+    const maxStart = Math.max(0, view.length - vis);
+    startIdx = Math.min(maxStart, Math.max(0, Math.floor(scrollTop / per) - OVERSCAN));
+    endIdx = Math.min(view.length, startIdx + vis);
+  }
+  const padTop = startIdx * (rowH || 36);
+  const padBottom = Math.max(0, (view.length - endIdx) * (rowH || 36));
+  const windowRows = virtualize ? view.slice(startIdx, endIdx) : view;
+
   return (
     <>
       {selectable && selected.size > 0 && (
@@ -218,7 +255,7 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
           )}
         </div>
       )}
-      <div className="tbl-wrap" style={{ maxHeight }}>
+      <div className="tbl-wrap" style={{ maxHeight }} ref={wrapRef}>
         <table className="tbl">
           <thead>
             <tr>
@@ -248,23 +285,32 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
               <tr><td colSpan={visCols.length + (selectable ? 1 : 0)} className="tbl-empty" style={{ color: 'var(--danger)' }}>加载失败:{error}</td></tr>
             ) : loading && !rows.length ? (
               <tr><td colSpan={visCols.length + (selectable ? 1 : 0)} className="tbl-empty">加载中…</td></tr>
-            ) : view.length ? view.map((row, i) => (
-              <tr key={keyOf(row, i)} className={[getRowClass?.(row), onRowClick ? 'clickable' : '', selectable && selected.has(keyOf(row, i)) ? 'is-selected' : ''].filter(Boolean).join(' ') || undefined} onClick={onRowClick ? () => onRowClick(row) : undefined}>
-                {selectable && (
-                  <td className="dt-check-col" onClick={(e) => e.stopPropagation()}>
-                    <label className="check">
-                      <input type="checkbox" checked={selected.has(keyOf(row, i))} onChange={() => toggleRow(keyOf(row, i))} aria-label="选择该行" />
-                      <span className="box"><Icon name="check" size={11} /></span>
-                    </label>
-                  </td>
-                )}
-                {visCols.map((c) => (
-                  <td key={c.key} className={c.className} style={{ textAlign: c.align, ...c.cellStyle }}>
-                    {c.render ? c.render(row, i) : String((row as Record<string, unknown>)[c.key] ?? '')}
-                  </td>
-                ))}
-              </tr>
-            )) : <tr><td colSpan={visCols.length + (selectable ? 1 : 0)} className="tbl-empty">{emptyText}</td></tr>}
+            ) : view.length ? (
+              <>
+                {padTop > 0 && <tr aria-hidden="true"><td colSpan={colCount} style={{ height: padTop, padding: 0, border: 0 }} /></tr>}
+                {windowRows.map((row, wi) => {
+                  const i = startIdx + wi;   // 真实 view 下标:keyOf/render/选中都用它,绝不能用切片下标 wi
+                  return (
+                    <tr key={keyOf(row, i)} ref={wi === 0 ? measureRow : undefined} className={[getRowClass?.(row), onRowClick ? 'clickable' : '', selectable && selected.has(keyOf(row, i)) ? 'is-selected' : ''].filter(Boolean).join(' ') || undefined} onClick={onRowClick ? () => onRowClick(row) : undefined}>
+                      {selectable && (
+                        <td className="dt-check-col" onClick={(e) => e.stopPropagation()}>
+                          <label className="check">
+                            <input type="checkbox" checked={selected.has(keyOf(row, i))} onChange={() => toggleRow(keyOf(row, i))} aria-label="选择该行" />
+                            <span className="box"><Icon name="check" size={11} /></span>
+                          </label>
+                        </td>
+                      )}
+                      {visCols.map((c) => (
+                        <td key={c.key} className={c.className} style={{ textAlign: c.align, ...c.cellStyle }}>
+                          {c.render ? c.render(row, i) : String((row as Record<string, unknown>)[c.key] ?? '')}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                {padBottom > 0 && <tr aria-hidden="true"><td colSpan={colCount} style={{ height: padBottom, padding: 0, border: 0 }} /></tr>}
+              </>
+            ) : <tr><td colSpan={colCount} className="tbl-empty">{emptyText}</td></tr>}
           </tbody>
         </table>
         {footer}

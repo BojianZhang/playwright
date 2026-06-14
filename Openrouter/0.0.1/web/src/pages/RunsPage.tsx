@@ -21,7 +21,7 @@ const COLUMNS: Column<RunSummary>[] = [
   { key: 'success', label: '成功', className: 'mono', align: 'right', sortAccessor: (r) => r.success, cellStyle: { color: 'var(--success)' }, render: (r) => r.success },
   { key: 'failed', label: '失败', className: 'mono', align: 'right', sortAccessor: (r) => r.failed, cellStyle: { color: 'var(--danger)' }, render: (r) => r.failed },
   { key: 'durationMs', label: '用时', className: 'mono', align: 'right', sortAccessor: (r) => r.durationMs || 0, exportValue: (r) => fmtDuration(r.durationMs), cellStyle: { color: 'var(--text-2)' }, render: (r) => fmtDuration(r.durationMs) },
-  { key: 'status', label: '状态', sortAccessor: (r) => r.status, exportValue: (r) => RUN_STATUS_LABEL[r.status] || r.status, render: (r) => <RunStatus status={r.status} /> },
+  { key: 'status', label: '状态', sortAccessor: (r) => r.status, exportValue: (r) => RUN_STATUS_LABEL[r.status] || r.status, render: (r) => <RunStatus status={r.status} partial={r.partial} completenessPct={r.completenessPct} /> },
   { key: 'jobId', label: 'jobId', className: 'mono', cellStyle: { color: 'var(--text-4)' }, render: (r) => <span title={r.jobId}>{r.jobId.slice(-10)}</span> },
 ];
 const FILTERS: FilterDef<RunSummary>[] = [

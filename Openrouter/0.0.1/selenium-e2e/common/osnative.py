@@ -75,4 +75,29 @@ def mac_activate(title_substr="OpenRouter"):
     return _osascript(script) == "ok"
 
 
-__all__ = ["IS_WIN", "IS_MAC", "IS_LINUX", "mac_screen_size", "mac_activate"]
+def linux_screen_size():
+    """Linux 桌面分辨率:优先 xrandr 主屏,退而 xdpyinfo dimensions;无 X11/失败返回 None
+       (上层回退 1920x1080;多屏/headless 建议显式设 SCREEN_W/SCREEN_H)。只用 stdlib + 系统命令,绝不抛。"""
+    import re as _re
+    try:
+        r = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=6)
+        if r.returncode == 0 and r.stdout:
+            # 优先 'connected primary 1920x1080',否则任一 'connected 1920x1080'
+            m = (_re.search(r"\bconnected\s+primary\s+(\d+)x(\d+)", r.stdout)
+                 or _re.search(r"\bconnected\s+(\d+)x(\d+)", r.stdout))
+            if m:
+                return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["xdpyinfo"], capture_output=True, text=True, timeout=6)
+        if r.returncode == 0 and r.stdout:
+            m = _re.search(r"dimensions:\s+(\d+)x(\d+)", r.stdout)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return None
+
+
+__all__ = ["IS_WIN", "IS_MAC", "IS_LINUX", "mac_screen_size", "linux_screen_size", "mac_activate"]

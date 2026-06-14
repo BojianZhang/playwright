@@ -10,6 +10,7 @@ import { Icon } from './lib/icons';
 import type { NodeInfo, HealthInfo, SetupStatus } from './lib/types';
 import Sidebar, { type NavGroup } from './components/Sidebar';
 import ConsolePage from './pages/ConsolePage';
+import FlowPage from './pages/FlowPage';
 import ResultsPage from './pages/ResultsPage';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -38,6 +39,7 @@ const NAV: NavGroup[] = [
   { group: '运行', items: [
     { to: '/', label: '总览', icon: 'home', end: true },
     { to: '/console', label: '控制台', icon: 'play' },
+    { to: '/flow', label: '执行流程', icon: 'arrow' },
     { to: '/engine-config', label: '引擎配置', icon: 'sliders' },
     { to: '/strategies', label: '环节策略', icon: 'activity' },
     { to: '/advanced', label: '高级参数', icon: 'sliders' },
@@ -157,6 +159,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/console" element={<ConsolePage />} />
+          <Route path="/flow" element={<FlowPage />} />
           <Route path="/engine-config" element={<EngineConfigPage />} />
           <Route path="/strategies" element={<StrategiesPage />} />
           <Route path="/advanced" element={<AdvancedPage />} />

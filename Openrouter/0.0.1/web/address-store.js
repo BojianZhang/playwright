@@ -33,10 +33,22 @@ function _persist() {
   try { fs.mkdirSync(path.dirname(FILE), { recursive: true }); const tmp = FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(_list, null, 2)); fs.renameSync(tmp, FILE); } catch (_e) { /* 落盘失败不致命 */ }
 }
 // 一行 "name|line1|city|state|zip[|line2]"(分隔符 | 制表 或逗号),与 server.js parseAddressLines 同。
+// ★容错(be 修):逗号分隔的美式地址常把 "OR 97209" 并在 state 字段、并尾随 "United States" → 旧版直接
+//   state="OR 97209"、zip="United States" 脏值入库,发给 Stripe 必 AVS 失败/拒付。这里:去尾随国家、
+//   从 "州 邮编" 拆出真邮编、并【强制 zip 为合法美国邮编】,否则拒收(计 ignored,绝不存脏)。前端已 smart 解析为
+//   canonical "name|line1|city|state|zip",此函数对 | 分隔也是这条干净路径;本兜底只为防裸 CSV 直达后端。
+const _ZIP = /^\d{5}(-\d{4})?$/;
 function _parseLine(line) {
-  const parts = String(line).split(/\s*[|\t]\s*|\s*,\s*/).map((s) => s.trim());
-  const [name, line1, city, state, zip, line2] = parts;
-  if (!line1 || !zip) return null;
+  const parts = String(line).split(/\s*[|\t]\s*|\s*,\s*/).map((s) => s.trim()).filter((s) => s.length);
+  // 去掉尾随国家字段(把 zip 顶错位的元凶)
+  if (parts.length && /^(united states|usa|u\.?s\.?a?\.?)$/i.test(parts[parts.length - 1])) parts.pop();
+  let [name, line1, city, state, zip, line2] = parts;
+  // "州 邮编" 并在一格(如 "OR 97209" / "Oregon 97209-1234")→ 拆开,真邮编归位
+  if ((!zip || !_ZIP.test(zip)) && state) {
+    const m = state.match(/^(.+?)\s+(\d{5}(?:-\d{4})?)$/);
+    if (m) { line2 = (zip && !_ZIP.test(zip)) ? line2 : (line2 || ''); state = m[1].trim(); zip = m[2]; }
+  }
+  if (!line1 || !zip || !_ZIP.test(zip)) return null;   // 无合法美国邮编 → 拒收(不存脏地址)
   return { name: name || '', line1, city: city || '', state: state || '', zip, line2: line2 || '', country: 'United States' };
 }
 // 去重 key 含 state(be-8):同一邮编可跨州/市,只用 line1+zip 会把不同州的同名街道误判重复跳过。

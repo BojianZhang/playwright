@@ -9,6 +9,8 @@ try:
 except Exception:
     pass
 
+_IS_MAC = (sys.platform == "darwin")   # 跨平台全选:Mac=Cmd+A,Win/Linux=Ctrl+A(Mac Ctrl+A≠全选)
+
 API = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # AdsPower 鉴权令牌(本机一般无需→空则不加头;远程/带鉴权网关时设 OPENROUTER_ADSPOWER_TOKEN)。
@@ -147,7 +149,7 @@ try:
             v = (inp.get_attribute("value") or "").strip()
             if re.fullmatch(r"\d+(\.\d+)?", v):  # 当前值是纯数字(如 10)= 金额框
                 inp.click()
-                inp.send_keys(Keys.CONTROL, "a"); inp.send_keys(Keys.DELETE)
+                inp.send_keys((Keys.COMMAND if _IS_MAC else Keys.CONTROL), "a"); inp.send_keys(Keys.DELETE)
                 inp.send_keys(str(amount))
                 time.sleep(0.6)
                 nv = (inp.get_attribute("value") or "").strip()

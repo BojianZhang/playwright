@@ -46,6 +46,9 @@ RE_NEEDPHONE = re.compile(r"provide a mobile phone|provide a phone number", re.I
 RE_HCAPTCHA = re.compile(r"I am human|Select the checkbox below|One more step before you'?re done", re.I)
 
 _LOG_PREFIX = "[sel]"
+# 并发 worker(线程)同时写 stdout 时,print 会把内容/分隔符/换行分多次 write → 两条日志被拼成一行
+# (日志里看到的"两个时间戳挤一行")。改:加锁 + 把整行(含换行)一次性写出,多线程也不交错。
+_LOG_LOCK = threading.Lock()
 
 
 def set_log_prefix(p):
@@ -53,19 +56,33 @@ def set_log_prefix(p):
     _LOG_PREFIX = p
 
 
+def _emit(line):
+    """整行(含换行)在锁内【单次】写 stdout + flush —— 并发也不会把两条日志拼成一行;失败绝不抛。"""
+    try:
+        with _LOG_LOCK:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
 def log(*a):
     # 行首带 HH:MM:SS —— 没时间戳就量不出每步耗时(注册/取key/绑地址/Save/切IP各几秒)
-    print("%s %s" % (time.strftime("%H:%M:%S"), _LOG_PREFIX), *a, flush=True)
+    body = " ".join(str(x) for x in a)
+    _emit("%s %s%s" % (time.strftime("%H:%M:%S"), _LOG_PREFIX, (" " + body) if body else ""))
 
 
 def log_stage(slot, email, stage, status="running"):
     """逐号阶段进度标记(结构化,供 web/engine-runner.js 解析成 worker-update 画线程进度条)。
     slot=并发槽位(0..N-1,当 workerId)；stage∈env/auth/key/card/charge/changepw；status=running|done。
     email 放末尾,Node 侧正则贪婪取到行尾。发射失败绝不影响主流程。"""
-    try:
-        print("@@STAGE@@ slot=%s stage=%s status=%s email=%s" % (slot, stage, status, email), flush=True)
-    except Exception:
-        pass
+    _emit("@@STAGE@@ slot=%s stage=%s status=%s email=%s" % (slot, stage, status, email))
+
+
+def fast_mode():
+    """提速总开关:环境变量 OPENROUTER_FAST 为真 → 注册/登录跳过成功路径截图 + 把固定 sleep 改成轮询提前退出。
+    ★默认关(未设/空)= 与现状【逐字节相同】,绝不影响老业务逻辑;web 高级参数页一键开。"""
+    return (os.environ.get("OPENROUTER_FAST", "") or "").strip().lower() in ("1", "true", "on", "yes")
 
 
 def digits(s):
@@ -138,12 +155,17 @@ class _FileLock:
                     # 让下一轮循环正常 O_EXCL,避免和别的等待者撞删;否则放弃锁退化为无锁(记 log,不阻塞主流程)。
                     stale = float(os.environ.get("FILELOCK_STALE_SEC", "30"))
                     try:
-                        age = _t.time() - os.path.getmtime(self._lf)
+                        mt = os.path.getmtime(self._lf)
+                        age = _t.time() - mt
                     except Exception:
-                        age = None
+                        mt = None; age = None
                     if age is not None and age > stale:
-                        try: os.remove(self._lf)      # 删的是真·陈旧锁(mtime 校验过),不是活锁
-                        except Exception: pass
+                        # ★防 TOCTOU(S5/S6):删之前再 stat 一次,确认 lockfile 仍是【刚才那把陈旧锁】(mtime 未变)。
+                        #   否则可能在 getmtime→remove 之间持有者已释放+另一等待者重建了【新活锁】,os.remove 误删活锁→双进临界区丢增量。
+                        try:
+                            if abs(os.path.getmtime(self._lf) - mt) < 1e-6:   # mtime 未变=仍是同一把陈旧锁 → 才删
+                                os.remove(self._lf)
+                        except Exception: pass                                  # 已被别人删/重建 → 不强删,回去正常 O_EXCL 重抢
                         end = _t.time() + min(self._to, 2)   # 给一点窗口重抢(可能被别的等待者抢走→那也只是退化无锁)
                         _t.sleep(0.03)
                         continue
@@ -187,6 +209,6 @@ __all__ = [
     "CREDITS_URL", "KEYS_URL", "SIGNUP_URL", "SIGNIN_URL",
     "NUM", "EXP", "CVC", "ZIP",
     "RE_502", "RE_DECL", "RE_OK", "RE_NEEDPHONE", "RE_HCAPTCHA",
-    "set_log_prefix", "log", "log_stage", "digits", "http_post_json",
+    "set_log_prefix", "log", "log_stage", "fast_mode", "digits", "http_post_json",
     "_atomic_write_json", "_FileLock", "_file_lock",
 ]

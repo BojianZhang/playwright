@@ -127,6 +127,9 @@ def main():
                         registered.add(r.get("email"))
                     if (r.get("steps") or {}).get("purchase") == "success":
                         charged.add(r.get("email"))   # 充值成功落过 results → 即便 checkpoint 没记上,也绝不再扣
+                    # 被 OpenRouter 永久拒绝(NOT_ALLOWED)→ 标完成永久跳过,别每轮重试白烧 env/IP(--no-resume 仍可强制重试)
+                    if r.get("not_allowed") or common.is_banned_reason((r.get("steps") or {}).get("auth")):
+                        done.add(r.get("email"))   # 口径与混合统一(is_banned_reason),不再用脆弱的 endswith("NOT_ALLOWED")
                     if args.do_card:
                         # 只有【已绑】才永久跳过；弹过验证的号下一轮换 IP+指纹再试(本轮内是快速跳过不卡住)
                         if (r.get("steps") or {}).get("card") == "card-bound":
@@ -155,6 +158,8 @@ def main():
     for _a in accounts:                              # 给已注册过的号打标记 → pipeline 据此直接登录
         if _a["email"] in registered:
             _a["registered"] = True
+        if _a["email"] in charged:                   # ★第二独立信号:充值成功落过 results → 接到 acct(原来漏挂=死代码),pipeline 防重复扣款才真生效
+            _a["charged"] = True
         _rec = (_prog or {}).get(_a["email"]) or {}
         if _rec:
             _a["prior"] = _rec

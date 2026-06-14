@@ -76,8 +76,8 @@ def main():
     if not rows:
         print("没解析到卡(检查格式)"); return
 
-    with common._CARD_LOCK:
-        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))
+    with common._CARD_LOCK, common._file_lock(common.POOL_FILE):   # ★加跨进程文件锁:与引擎并发写卡池串行,防 RMW 互丢卡(数量对不上)
+        pool = json.load(open(common.POOL_FILE, encoding="utf-8"))   # 重读放锁内,拿最新盘
         existing = {c.get("number"): c for c in pool}
         added, reactivated, dup = 0, 0, 0
         for number, holder, mm, yy, cvc, addr in rows:

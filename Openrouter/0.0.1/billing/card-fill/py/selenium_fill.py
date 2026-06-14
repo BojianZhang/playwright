@@ -10,6 +10,8 @@ import time
 import os
 import urllib.request
 
+_IS_MAC = (sys.platform == "darwin")   # 跨平台全选:Mac=Cmd+A,Win/Linux=Ctrl+A(Mac Ctrl+A≠全选→卡号残值拼脏 invalid card)
+
 NUM = ['input[name="number"]', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]', 'input[id*="numberInput"]']
 EXP = ['input[name="expiry"]', 'input[name="exp-date"]', 'input[autocomplete="cc-exp"]', 'input[id*="expiryInput"]']
 CVC = ['input[name="cvc"]', 'input[autocomplete="cc-csc"]', 'input[id*="cvcInput"]']
@@ -88,7 +90,7 @@ def main():
                 for el in driver.find_elements(By.CSS_SELECTOR, s):
                     if el.is_displayed():
                         el.click()
-                        el.send_keys(Keys.CONTROL, 'a')
+                        el.send_keys((Keys.COMMAND if _IS_MAC else Keys.CONTROL), 'a')
                         el.send_keys(Keys.DELETE)
                         el.send_keys(str(value))
                         time.sleep(0.2)

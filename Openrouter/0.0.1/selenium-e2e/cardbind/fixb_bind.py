@@ -16,8 +16,11 @@ import time, random, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # cardbind/ 下直接跑时让 import common 可解析
 import common
 from common import NUM, EXP, CVC, ZIP, CREDITS_URL
-from common.osnative import IS_MAC, mac_activate   # 跨平台:macOS 用 AppleScript 提前台/逻辑点坐标
-import pyautogui
+from common.osnative import IS_MAC, IS_WIN, mac_activate   # 跨平台:macOS 用 AppleScript 提前台/逻辑点坐标
+try:
+    import pyautogui   # 无 GUI 的 Linux/CI(缺 X11/scrot)import 即抛 → 包成可选;Fix B 是兜底工具、非生产路径
+except Exception:
+    pyautogui = None
 from selenium.webdriver.common.by import By
 try:
     import pygetwindow as gw
@@ -156,11 +159,10 @@ def _detach(driver):
     time.sleep(1)
 
 
-def main():
-    if len(sys.argv) < 6:
-        print("用法: python fixb_bind.py <env_id> <卡号> <MMYY> <CVC> <ZIP>"); return
+def _do_bind():
     env, num, exp, cvc, zipc = sys.argv[1:6]
-    pyautogui.PAUSE = 0.12
+    if pyautogui is not None:
+        pyautogui.PAUSE = 0.12   # pyautogui 可能 import 失败为 None(无头 Linux/CI)→ 先判空,别在这崩,留到下面优雅中止
 
     # ===== 0) 启动 + 隐身接管 + 打开卡表单 + 最大化 =====
     print("0) 启动 + Fix A 隐身接管 %s ..." % env, flush=True)
@@ -213,10 +215,11 @@ def main():
 
     print("   脱离 chromedriver(零CDP)→ OS 真键鼠逐字段填...", flush=True)
     _detach(driver)
-    # ★macOS 防泄漏:提前台失败(辅助功能未授权/没找到窗口)就【中止】,绝不盲发键——否则卡号/CVC 会被
-    #   打进当时的前台窗口(终端/IDE)。Windows 维持原行为(最大化后浏览器通常已在前台,失败也继续)。
-    if not force_foreground() and IS_MAC:
-        print("   ✗ macOS 未能把浏览器提到前台(请在 系统设置→隐私与安全性→辅助功能 授权)→ 中止填卡防卡号泄漏", flush=True)
+    # ★防泄漏:非 Windows 平台(Mac/Linux)提前台失败 / 无 pyautogui 就【中止】,绝不盲发键——否则卡号/CVC
+    #   会被打进当时的前台窗口(终端/IDE)。Windows 维持原行为(最大化后浏览器通常已在前台,失败也继续)。
+    #   Linux 原来落 `and IS_MAC` 为假 → 不中止 → 盲发键泄漏卡号;改 `not IS_WIN` 把 Mac+Linux 都护住。
+    if pyautogui is None or (not force_foreground() and not IS_WIN):
+        print("   ✗ 未能安全发 OS 级键鼠(未提前台/无 pyautogui;Mac 需在 系统设置→隐私与安全性→辅助功能 授权)→ 中止填卡防卡号泄漏", flush=True)
         return
     pyautogui.moveTo(card_xy[0], card_xy[1], duration=0.6); pyautogui.click(); time.sleep(0.4)
     humantype(num); time.sleep(0.7)
@@ -261,6 +264,7 @@ def main():
     print("4) 👉👉 现在【请手动解验证框 I am human / 图片挑战】。我等 130 秒后重连查结果。", flush=True)
     time.sleep(130)
     print("5) 重连查账户是否真挂上卡...", flush=True)
+    d4 = None
     try:
         d4 = _reattach(env)
         from steps import steps_billing
@@ -268,6 +272,24 @@ def main():
         print("★★ 绑卡结果: 账户已挂卡 = %s" % bound, flush=True)
     except Exception as e:
         print("重连查结果异常:", str(e)[:80], flush=True)
+    finally:
+        if d4 is not None:
+            _detach(d4)   # 最后一个重连 driver 也要杀 chromedriver 服务进程,否则留孤儿
+
+
+def main():
+    if len(sys.argv) < 6:
+        print("用法: python fixb_bind.py <env_id> <卡号> <MMYY> <CVC> <ZIP>"); return
+    env = sys.argv[1]
+    try:
+        _do_bind()
+    finally:
+        # ★防泄漏:无论成功/早退/异常,跑完都回收 AdsPower 浏览器环境(此手测工具一次一用,
+        #   不回收则反复手测会堆一堆孤儿 chrome/AdsPower 实例,最终压垮本机/撞并发上限)。
+        try:
+            common.adspower_stop(env)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
