@@ -29,7 +29,9 @@ function countProc(image) {
       const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true });
       return (out.match(new RegExp(image.replace('.', '\\.'), 'gi')) || []).length;   // 每行一个实例;无匹配时输出"信息:…"不含镜像名
     }
-    const out = execSync(`pgrep -fc ${image.replace(/[^\w.-]/g, '')} 2>/dev/null || true`, { encoding: 'utf8' });
+    // -xc 精确进程名计数(对齐下面 `pkill -9 -x` 的精确名杀):-fc 会按整条命令行子串匹配,
+    // 'chromedriver' 会把每个 'chromedriver_stealth' 也算进去 → 与 stealth 项重复计数,清理弹窗数字虚高。
+    const out = execSync(`pgrep -xc ${image.replace(/[^\w.-]/g, '')} 2>/dev/null || true`, { encoding: 'utf8' });
     return Number(String(out).trim()) || 0;
   } catch (_e) { return 0; }
 }

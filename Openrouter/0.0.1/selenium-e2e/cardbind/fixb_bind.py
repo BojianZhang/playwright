@@ -7,12 +7,16 @@
 #   3) 取消后 → 重连读 'Save payment method' 坐标 → 脱离 → OS点保存
 #   4) 你只需手动解验证框(I am human/图片)→ 重连核验是否绑成
 # 每个 OS 动作(填/取消/保存)都在【零 CDP】下做;只在"读坐标"瞬间短暂重连(读完立刻脱离)。
+# 跨平台:Windows / macOS 皆可。macOS 提前台走 AppleScript、坐标用逻辑点(见 _to_screen/force_foreground),
+#   且需在「系统设置 → 隐私与安全性 → 辅助功能」给终端/Python 授权(pyautogui 真键鼠 + osascript 都依赖)。
+#   注:Fix B 是【OS 级真键鼠·单窗口前台】兜底,生产并行加卡请用 Fix C(原生 CDP,跨平台且真并行)。
 # 用法: python cardbind/fixb_bind.py <env_id> <卡号> <MMYY> <CVC> <ZIP>
 #   例: python cardbind/fixb_bind.py k1dfjybg 4111111111111111 1229 786 59601
 import time, random, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # cardbind/ 下直接跑时让 import common 可解析
 import common
 from common import NUM, EXP, CVC, ZIP, CREDITS_URL
+from common.osnative import IS_MAC, mac_activate   # 跨平台:macOS 用 AppleScript 提前台/逻辑点坐标
 import pyautogui
 from selenium.webdriver.common.by import By
 try:
@@ -28,6 +32,12 @@ def humantype(s):
 
 
 def force_foreground(title_substr="OpenRouter"):
+    # macOS:走 AppleScript 提前台(System Events,需辅助功能权限);pygetwindow/user32 在 Mac 不可用。
+    if IS_MAC:
+        ok = mac_activate(title_substr)
+        if ok:
+            time.sleep(0.4)
+        return ok
     try:
         import ctypes
         u = ctypes.windll.user32
@@ -56,7 +66,9 @@ def _metrics(driver):
 def _to_screen(m, vx, vy):
     border = (m["ow"] - m["iw"]) / 2.0
     topbar = (m["oh"] - m["ih"]) - border
-    return int((m["sx"] + border + vx) * m["dpr"]), int((m["sy"] + topbar + vy) * m["dpr"])
+    # pyautogui 坐标系差异:Windows=物理像素(需 ×devicePixelRatio);macOS Retina=逻辑点(pyautogui 用 points,不乘 dpr)。
+    scale = 1.0 if IS_MAC else m["dpr"]
+    return int((m["sx"] + border + vx) * scale), int((m["sy"] + topbar + vy) * scale)
 
 
 def _vc(driver, el):
@@ -172,6 +184,12 @@ def main():
     if not page.wait_field_present(NUM, 30, "卡号框"):
         print("✗ 卡表单没出来,放弃", flush=True); return
 
+    # 先把窗口拉回【主显示器原点】再最大化:AdsPower 可能把浏览器恢复到副屏,而 pyautogui 只可靠驱动主屏
+    # → screenX/screenY 带副屏偏移会把点击送到错误显示器/落空(多屏 Mac 常见,Windows 多屏同理)。
+    try:
+        driver.set_window_rect(x=0, y=0, width=1200, height=900); time.sleep(0.4)
+    except Exception:
+        pass
     try:
         driver.maximize_window(); time.sleep(1.2)
         print("   ✓ 窗口已最大化", flush=True)
@@ -195,7 +213,11 @@ def main():
 
     print("   脱离 chromedriver(零CDP)→ OS 真键鼠逐字段填...", flush=True)
     _detach(driver)
-    force_foreground()
+    # ★macOS 防泄漏:提前台失败(辅助功能未授权/没找到窗口)就【中止】,绝不盲发键——否则卡号/CVC 会被
+    #   打进当时的前台窗口(终端/IDE)。Windows 维持原行为(最大化后浏览器通常已在前台,失败也继续)。
+    if not force_foreground() and IS_MAC:
+        print("   ✗ macOS 未能把浏览器提到前台(请在 系统设置→隐私与安全性→辅助功能 授权)→ 中止填卡防卡号泄漏", flush=True)
+        return
     pyautogui.moveTo(card_xy[0], card_xy[1], duration=0.6); pyautogui.click(); time.sleep(0.4)
     humantype(num); time.sleep(0.7)
     if exp_xy:

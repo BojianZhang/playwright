@@ -20,6 +20,7 @@
 # 按依赖顺序 re-export(paths/base 无包内依赖 → driver → adspower → 其余)。
 from .paths import *       # noqa: F401,F403
 from .base import *        # noqa: F401,F403
+from .osnative import *    # noqa: F401,F403   (仅 stdlib;layout/fixb 的跨平台屏幕尺寸+提前台靠它)
 from .driver import *      # noqa: F401,F403
 from .adspower import *    # noqa: F401,F403
 from .ledger import *      # noqa: F401,F403

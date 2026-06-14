@@ -7,6 +7,7 @@ import time
 import urllib.request
 
 from .base import log
+from .osnative import IS_MAC   # macOS 上 byte-patch 后须 ad-hoc 重签名,否则 Apple Silicon 拒绝执行
 
 # 隐身脚本(Page.addScriptToEvaluateOnNewDocument 在页面脚本前注入,每次导航生效):
 # 删 navigator.webdriver 属性(让 'webdriver' in navigator 为 False)+ 删残留 cdc_ 变量(二进制改名的双保险)。
@@ -22,6 +23,20 @@ STEALTH_JS = r"""
 """
 
 _PATCHED_DRIVER = {}   # {原路径: 改好路径} 缓存,避免每次接管都改
+
+
+def _macos_adhoc_sign(path):
+    """macOS:对【byte-patch 过】的 chromedriver 副本做 ad-hoc 重签名。
+       原 chromedriver 带 Google 有效签名,改写字节后签名即失效 → Apple Silicon 内核 exec 时直接 SIGKILL
+       ("code signature invalid")→ attach_chrome 必崩(chmod 0o755 救不了)。先移除失效签名,再
+       `codesign --force --sign -`(ad-hoc 签名,内容匹配新字节 → 内核放行)。成功 True;codesign 缺失/失败 False。"""
+    import subprocess
+    try:
+        subprocess.run(["codesign", "--remove-signature", path], capture_output=True, timeout=30)  # 可能本无签名段,失败无妨
+        r = subprocess.run(["codesign", "--force", "--sign", "-", path], capture_output=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def resolve_chromedriver(port):
@@ -77,14 +92,40 @@ def _patch_chromedriver(orig_path):
         import random as _r, string as _s
         repl = ("".join(_r.choice(_s.ascii_lowercase) for _ in range(len(sig) - 1)) + b"_".decode()).encode()
         out = data.replace(sig, repl)
+        import threading as _th
         base = orig_path[:-4] if orig_path.lower().endswith(".exe") else orig_path
-        patched = base + "_stealth" + (".exe" if orig_path.lower().endswith(".exe") else "")
-        with open(patched, "wb") as f:
+        suffix = ".exe" if orig_path.lower().endswith(".exe") else ""
+        patched = base + "_stealth" + suffix
+        # 写【pid+线程唯一】临时文件 → chmod →(mac)对临时文件重签名 → os.replace 原子替换到 patched。
+        # 不就地覆盖 patched 的两个原因:① 并发(maxConcurrency/split 多进程各自空缓存)会同时截断同一个 _stealth →
+        #   撕裂的半成品被另一个进程拿去启动;② macOS arm64 的 cs_invalid_page 内核缓存按 inode 记“签名失效”,
+        #   就地覆盖复用同 inode 即便重签也可能仍被 SIGKILL(Apple FB8914243/FB8735191)。给 patched 换【新 inode】
+        #   (temp→replace)同时解决这两点;os.replace 不改文件内容,签名随之保留有效。
+        tmp = "%s_stealth.tmp.%d.%d%s" % (base, os.getpid(), _th.get_ident(), suffix)
+        with open(tmp, "wb") as f:
             f.write(out)
         try:
-            os.chmod(patched, 0o755)
+            os.chmod(tmp, 0o755)
         except Exception:
             pass
+        # ★macOS:改写字节使原签名失效,Apple Silicon 会拒绝执行未签/签名失效的可执行档 → 对【临时文件】ad-hoc 重签名;
+        #   重签失败则【删临时文件、放弃 patch 退回原版驱动】保命(原版 Google 签名有效能跑;接管后的 STEALTH_JS 运行时
+        #   注入仍删 webdriver/cdc_,隐身不全丢)。Intel Mac 不强校验,重签也无害。
+        if IS_MAC and not _macos_adhoc_sign(tmp):
+            log("[stealth] macOS ad-hoc 重签名失败 → 退回原版驱动(运行时 STEALTH_JS 仍生效)")
+            try: os.remove(tmp)
+            except Exception: pass
+            _PATCHED_DRIVER[orig_path] = orig_path
+            return orig_path
+        try:
+            os.replace(tmp, patched)   # 原子替换:patched 指向全新 inode,并发下各 worker 各写各 temp 不互撕
+        except Exception:
+            # 替换失败(如 Windows 上 patched 正被某个在跑的 driver 占用)→ 清理 temp,退回原版保命
+            try: os.remove(tmp)
+            except Exception: pass
+            log("[stealth] 替换 _stealth 失败(可能被占用)→ 退回原版驱动")
+            _PATCHED_DRIVER[orig_path] = orig_path
+            return orig_path
         _PATCHED_DRIVER[orig_path] = patched
         log("[stealth] chromedriver cdc_ 招牌名已替换 → %s" % os.path.basename(patched))
         return patched

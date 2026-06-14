@@ -50,6 +50,15 @@ function detectWorkspace() {
         { encoding: 'utf8', timeout: 8000, windowsHide: true },
       ).trim();
       _SCREEN_CACHE = parse(out); if (_SCREEN_CACHE) return _SCREEN_CACHE;
+    } else if (process.platform === 'darwin') {
+      // macOS：osascript 读 Finder 桌面 bounds（形如 "0, 0, 1920, 1080" → 末两位为 W,H；非 WxH 格式,单独解析）。
+      // 须在 DISPLAY 分支【之前】判 darwin：装了 XQuartz 的 Mac 也可能设了 DISPLAY,会误走 Linux 分支。
+      const out = execSync(
+        `osascript -e 'tell application "Finder" to get bounds of window of desktop'`,
+        { encoding: 'utf8', timeout: 6000 },
+      ).trim();
+      const n = out.split(/[,\s]+/).map(Number).filter((v) => !Number.isNaN(v));
+      if (n.length === 4 && n[2] > 0 && n[3] > 0) { _SCREEN_CACHE = { width: n[2], height: n[3] }; return _SCREEN_CACHE; }
     } else if (process.env.DISPLAY) {
       // Linux：优先 xdpyinfo，回退 xrandr
       try {
@@ -352,9 +361,11 @@ async function processTask(ctx) {
     }
   }
 
-  // 有头需要显示器：Linux 上若无 DISPLAY(没装/没起 Xvfb)则自动降级无头，避免启动崩溃。
+  // 有头需要显示器：【仅 Linux】上若无 DISPLAY(没装/没起 Xvfb)才自动降级无头，避免启动崩溃。
+  // macOS 有原生 Quartz 显示、不靠 X11 DISPLAY → 绝不能在此把 Mac 降级(否则有头永远失效、detectWorkspace 的
+  // darwin 屏幕探测分支永不触发);Windows 同理有原生 GUI。原条件 `!== 'win32'` 误把 macOS 也降级了。
   let headed = !!runParams.headed;
-  if (headed && process.platform !== 'win32' && !process.env.DISPLAY) {
+  if (headed && process.platform === 'linux' && !process.env.DISPLAY) {
     headed = false;
     if (workerId === 1) publish(jobId, 'log', '⚠ 无 DISPLAY(未启动 Xvfb),有头模式自动降级为无头');
   }

@@ -16,18 +16,28 @@ def _envint(name, default):
 
 
 def screen_size():
-    """屏幕分辨率(Windows 取真实值,失败回退 1920x1080;环境变量 SCREEN_W/SCREEN_H 可覆盖)。"""
+    """屏幕分辨率(Windows 取真实值,macOS 经 osascript 取,失败回退 1920x1080;环境变量 SCREEN_W/SCREEN_H 可覆盖)。"""
     w = _envint("SCREEN_W", 0)
     h = _envint("SCREEN_H", 0)
     if w > 0 and h > 0:
         return w, h
+    if os.name == "nt":
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            u.SetProcessDPIAware()
+            return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+        except Exception:
+            return 1920, 1080
+    # macOS / 其它:走 osnative(AppleScript Finder 桌面 bounds);拿不到再回退 1920x1080。
     try:
-        import ctypes
-        u = ctypes.windll.user32
-        u.SetProcessDPIAware()
-        return int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+        from .osnative import mac_screen_size
+        sz = mac_screen_size()
+        if sz:
+            return sz
     except Exception:
-        return 1920, 1080
+        pass
+    return 1920, 1080
 
 
 def grid_rect(slot, total, taskbar=48):
