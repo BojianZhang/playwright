@@ -52,9 +52,8 @@ function NoteCard({ idx, title, hint, children }: { idx: string; title: string; 
 export default function StepStages() {
   const c = useConsole();
   const { stages } = c;
-  // 混合/分流流水线打包跑「注册→取Key→绑地址→加卡」,取Key/加卡不可单独关 → 锁定显示;混合不支持改密 → 禁用。
+  // 混合/分流流水线打包跑「注册→取Key→绑地址→加卡」,取Key/加卡不可单独关 → 锁定显示;改密现已支持(绑成后改邮箱密码)。
   const lockKeyCard = c.engine === 'hybrid' || c.engine === 'split';
-  const pwdLocked = c.engine === 'hybrid';
   return (
     <>
       {/* 执行流程 */}
@@ -84,9 +83,7 @@ export default function StepStages() {
           <Arrow />
           <Chip on={stages.charge} charge onClick={() => c.clickChip('charge')}>充值 <em>扣钱</em></Chip>
           <Arrow />
-          {pwdLocked
-            ? <Chip on={false} dim locked title="混合引擎流水线不支持改密,本步不可用">改密</Chip>
-            : <Chip on={stages.pwd} onClick={() => c.clickChip('pwd')} dim={!c.unifiedPwd.trim()} title={c.unifiedPwd.trim() ? '改密(点一下会自动点亮 取Key+充值 等前置)' : '改密需先填上方「统一密码」'}>改密</Chip>}
+          <Chip on={stages.pwd} onClick={() => c.clickChip('pwd')} dim={!c.unifiedPwd.trim()} title={c.unifiedPwd.trim() ? '改密(点一下会自动点亮所需前置)' : '改密需先填上方「统一密码」'}>改密</Chip>
         </div>
       </section>
 
@@ -115,8 +112,7 @@ export default function StepStages() {
       {stages.pwd && (
         <NoteCard idx="⑥" title="改密" hint="把邮箱密码改成统一密码">
           本环节无独立参数。新密码用「全局设置」里的<b>统一密码</b>(<code>{c.unifiedPwd.trim() || '未填'}</code>)。{c.pwdGateOk ? '' : (c.isPython ? ' 需启用 取Key 且统一密码非空,否则本步不会执行。' : ' 需同时启用 取Key + 充值 且统一密码非空,否则本步不会执行。')}
-          {c.engine === 'hybrid' && <><br /><b style={{ color: 'var(--warn-text, var(--warn))' }}>注意:混合引擎流水线暂不支持改密,本步对混合不生效。</b></>}
-          {c.engine === 'split' && <><br /><b style={{ color: 'var(--warn-text, var(--warn))' }}>注意:分流引擎仅 Selenium 组会改密,混合组不改。</b></>}
+          {(c.engine === 'hybrid' || c.engine === 'split') && <><br /><span style={{ color: 'var(--text-3)' }}>混合 / 分流:绑卡成功后改邮箱密码为统一密码(改密是最后一步,失败号不改、留续跑)。</span></>}
         </NoteCard>
       )}
     </>

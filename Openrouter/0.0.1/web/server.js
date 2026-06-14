@@ -32,9 +32,13 @@ const runsStore = require('./runs-store');
 const engineRunner = require('./engine-runner');
 const tempInputs = require('./temp-inputs');
 const procRegistry = require('./proc-registry');
+const procCleanup = require('./proc-cleanup');
 const configRw = require('./config-rw');
 const strategiesStore = require('./strategies-store');
 const engineConfigStore = require('./engine-config-store');
+const advancedStore = require('./advanced-store');
+const selectorsStore = require('./selectors-store');
+const selectorsSchema = require('./selectors-schema');
 const proxyStore = require('./proxy-store');
 const addressStore = require('./address-store');
 const adspowerStore = require('./adspower-store');
@@ -1171,6 +1175,30 @@ async function handleEngineConfigsActive(req, res) {
   } catch (e) { sendJson(res, ENGINE_CFG_ERR[e.code] || 500, { error: e.code || 'ACTIVE_FAILED' }); }
 }
 
+// ── 高级参数(全局/共用调优旋钮,advanced-store):读 / 存。只存用户显式覆盖值,空=清除回落代码默认。──
+function handleAdvancedGet(res) {
+  try { sendJson(res, 200, advancedStore.get()); }
+  catch (e) { sendJson(res, 500, { error: 'ADVANCED_READ_FAILED', message: String(e && e.message) }); }
+}
+async function handleAdvancedSave(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try { sendJson(res, 200, { ok: true, values: advancedStore.save(body || {}) }); }
+  catch (e) { sendJson(res, 500, { error: 'ADVANCED_SAVE_FAILED', message: String(e && e.message) }); }
+}
+
+// ── 元素选择器维护(selectors-store):读注册表+覆盖值 / 存覆盖。空=回落 builtin 内置默认。──
+function handleSelectorsGet(res) {
+  try { sendJson(res, 200, { steps: selectorsSchema.STEPS, values: selectorsStore.get() }); }
+  catch (e) { sendJson(res, 500, { error: 'SELECTORS_READ_FAILED', message: String(e && e.message) }); }
+}
+async function handleSelectorsSave(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try { sendJson(res, 200, { ok: true, values: selectorsStore.save(body || {}) }); }
+  catch (e) { sendJson(res, 500, { error: 'SELECTORS_SAVE_FAILED', message: String(e && e.message) }); }
+}
+
 // ── 资源池:代理 / 账单地址 / AdsPower 环境(持久化 CRUD)─────────────────
 async function _body(req, res) { try { return await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return null; } }
 
@@ -1397,6 +1425,14 @@ async function handleSetupComplete(req, res) {
   sendJson(res, 200, { ok: true, ...st });
 }
 
+// POST /api/system/kill-orphans —— 一键清理本机孤儿 chromedriver(强杀残留的自动化驱动)。
+// 有任务在跑默认拒绝(body.force=true 强清)。只杀 chromedriver(_stealth),不碰 chrome / AdsPower。
+async function handleKillOrphans(req, res) {
+  const body = await readJsonBody(req).catch(() => ({}));
+  const r = procCleanup.killOrphanDrivers({ force: !!(body && body.force) });
+  sendJson(res, r.refused ? 409 : 200, r);
+}
+
 // GET /api/overview —— 仪表盘 KPI:聚合现有 summary(runs / 卡池 / 台账 / 错误 + 7 天趋势)
 // 失败分析:漏斗 / 环节失败排名 / 智能分类+建议 / IP战绩 / 卡战绩 / 错误分布 / 趋势(只读现算)。
 function handleApiAnalytics(res, query) {
@@ -1526,6 +1562,33 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('beforeExit', () => { if (!_shuttingDown) flushAllStores(); });   // 自然退出兜底:只刷盘,不强杀
 
+// ── 一键重启(供页面「重启服务」按钮)────────────────────────────────────────
+// 因为控制台多是手动 `node server.js` 直起(无 pm2/nodemon 守护),光退出不会自动拉起 →
+// 这里【自重启】:拉起一个分离的新实例(同 node/argv/cwd/env)→ 刷盘 → 关旧 server → 退旧进程。
+// 新实例遇端口未释放会自动重试绑定(见底部 server.on('error'))。
+// 【不强杀子进程】:在跑的 Python 任务继续(避免一键重启误断批);仅重启 Node 控制台本身。
+function respawnSelf() {
+  const { spawn } = require('child_process');
+  const child = spawn(process.execPath, [__filename, ...process.argv.slice(2)], {
+    cwd: process.cwd(), env: process.env, detached: true, stdio: 'inherit',
+  });
+  child.unref();
+}
+let _restarting = false;
+function doRestart() {
+  if (_restarting) return; _restarting = true;
+  try { console.log('[Openrouter Web] 一键重启 → 刷盘 → 拉起新实例 → 退出旧实例'); } catch (_e) { /* */ }
+  try { flushAllStores(); } catch (_e) { /* */ }
+  try { server.close(); } catch (_e) { /* */ }
+  try { respawnSelf(); } catch (e) { try { console.error('[restart] 拉起新实例失败:', e && e.message); } catch (_e2) { /* */ } }
+  setTimeout(() => process.exit(0), 600);   // 给响应送达 + 新实例起步留余量,然后退出释放端口
+}
+async function handleServerRestart(req, res) {
+  const b = await _body(req, res); if (!b) return;   // POST(经鉴权 + body 解析)
+  sendJson(res, 200, { ok: true, msg: '正在重启控制台服务…约 2-3 秒后刷新页面' });
+  setTimeout(doRestart, 300);   // 先把响应发出去再重启
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { pathname } = url;
@@ -1591,6 +1654,10 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/engine-configs/save') return void handleEngineConfigsSave(req, res);
   if (req.method === 'POST' && pathname === '/api/engine-configs/delete') return void handleEngineConfigsDelete(req, res);
   if (req.method === 'POST' && pathname === '/api/engine-configs/active') return void handleEngineConfigsActive(req, res);
+  if (req.method === 'GET' && pathname === '/api/advanced') return void handleAdvancedGet(res);
+  if (req.method === 'POST' && pathname === '/api/advanced/save') return void handleAdvancedSave(req, res);
+  if (req.method === 'GET' && pathname === '/api/selectors') return void handleSelectorsGet(res);
+  if (req.method === 'POST' && pathname === '/api/selectors/save') return void handleSelectorsSave(req, res);
   if (req.method === 'GET' && pathname === '/api/proxies') return void handleProxiesGet(res);
   if (req.method === 'POST' && pathname === '/api/proxies/add') return void handleProxiesAdd(req, res);
   if (req.method === 'POST' && pathname === '/api/proxies/update') return void handleProxiesUpdate(req, res);
@@ -1632,14 +1699,16 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/mailbox/keys/clear') return void handleMailboxClear(res);
   if (req.method === 'POST' && pathname === '/api/mailbox/keys/import') return void handleMailboxImport(req, res);
   if (req.method === 'GET' && pathname === '/api/health') return void handleApiHealth(res);
+  if (req.method === 'POST' && pathname === '/api/restart') return void handleServerRestart(req, res);
   if (req.method === 'GET' && pathname === '/api/setup/status') return void handleSetupStatus(res);
   if (req.method === 'POST' && pathname === '/api/setup/complete') return void handleSetupComplete(req, res);
+  if (req.method === 'POST' && pathname === '/api/system/kill-orphans') return void handleKillOrphans(req, res);
   if (req.method === 'GET') return void serveStatic(req, res, pathname);
 
   res.writeHead(405); res.end('Method Not Allowed');
 });
 
-server.listen(PORT, HOST, () => {
+const onListening = () => {
   // eslint-disable-next-line no-console
   console.log(`[Openrouter Web] 控制台已启动: http://${HOST}:${PORT}  (本机: http://localhost:${PORT})`);
   // 回收上次进程崩溃/重启遗留的僵尸「运行中」(子进程随 server 一起死,不可能还在跑)。
@@ -1681,6 +1750,20 @@ server.listen(PORT, HOST, () => {
     console.log('⚠ 安全提醒: 监听所有网卡且无鉴权!任何能访问本端口的人都能拉取你的成功账号/API Key。');
     console.log('   请任选其一加固: 设 OPENROUTER_AUTH_TOKEN=一个随机串(推荐) / 绑定内网+防火墙 / OPENROUTER_WEB_HOST=127.0.0.1 + SSH 隧道。');
   }
+};
+// 一键重启平滑交接:新实例启动时旧实例可能还没释放端口 → EADDRINUSE 自动重试绑定(最多 ~12s)再接管;
+// 也修了"第二个实例直接崩"的旧行为。其它监听错误才退出。
+let _bindTries = 0;
+server.on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE' && _bindTries < 24) {
+    _bindTries += 1;
+    if (_bindTries === 1) console.log(`[Openrouter Web] 端口 ${PORT} 被占用(旧实例退出中?)→ 重试绑定…`);
+    setTimeout(() => server.listen(PORT, HOST, onListening), 500);
+  } else {
+    console.error('[Openrouter Web] 监听失败:', (e && e.message) || e);
+    process.exit(1);
+  }
 });
+server.listen(PORT, HOST, onListening);
 
 module.exports = { server, parseAccounts, parseProxies };

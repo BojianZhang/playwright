@@ -23,7 +23,8 @@ from steps import steps_billing
 from steps import steps_auth
 from services import captcha
 from services import cdp_fetch
-from common import log
+from services import firstmail
+from common import log, log_stage
 
 _WRITE_LOCK = threading.Lock()   # 并发写 results.jsonl 用
 
@@ -236,9 +237,10 @@ def _rank_rotation_candidates(proxies, start_idx):
 
 def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 prior=None, slot=0, slots_total=1, max_rotations=6, isolate=False, manual_card=False,
-                keep_failed_env=False, do_purchase=False, amount=5):
+                keep_failed_env=False, do_purchase=False, amount=5, do_changepw=False):
     email, mailbox_pw = acct["email"], acct["mailbox_pw"]
-    res = {"email": email, "ok": False, "steps": {}, "timings": {}}
+    # password=当前 OpenRouter 登录密码:设了统一密码就＝统一密码,否则＝原邮箱密码(与纯 Selenium / Playwright 对齐)。
+    res = {"email": email, "ok": False, "steps": {}, "timings": {}, "password": op_pw}
     # 隔离模式:每次 Selenium 加卡都是【全新环境】一次尝试,按尝试次数封顶(替代 reopen_count)
     res["attempt_count"] = (prior or {}).get("attempt_count", 0) + 1
     t_start = time.perf_counter()                # per-stage 计时:量出 PW/加卡/总 各几秒(配合日志时间戳)
@@ -295,6 +297,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         return eid, serial, pxy, port, drv, pg, a
 
     try:
+        log_stage(slot, email, "env")
         res["proxy"] = "%s:%s" % (proxy.get("host"), proxy.get("port"))
 
         res["reopen_count"] = (prior or {}).get("reopen_count", 0)   # 重开同环境累计次数(给永久放弃判定用)
@@ -316,6 +319,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 driver = common.attach_chrome(port, common.resolve_chromedriver(port))
                 common.place_window(driver, rect)
                 page = common.Page(driver)
+                log_stage(slot, email, "auth")
                 auth = _ensure_login(page, port)
                 res["steps"]["auth"] = auth
                 if auth != "ok":
@@ -370,6 +374,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 patcher.start()
                 page = common.Page(driver)
                 page.goto(common.KEYS_URL, wait=2)
+                log_stage(slot, email, "auth")
                 auth = steps_auth.login(page, email, op_pw, mailbox_pw, cfg)
                 res["steps"]["auth"] = auth
                 try:
@@ -397,6 +402,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                         if base_mode == "register" else "本地已有注册/key记录→直接【登录】")
                 log("┏━━━━━ 引擎① 【Playwright / Node】 模式=%s ━━━━━ %s" % (base_mode.upper(), email))
                 log("┃  %s  (此段所有日志带 [pw] 前缀)" % _why)
+                log_stage(slot, email, "auth")
                 pw = {}
                 for tryi in range(3):
                     have_key = res.get("api_key") or ""
@@ -555,6 +561,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         # ★求解模式(_solve_hcap)传 force=True:即便 HC_PATCHER=0 也强制起,保证 2Captcha 有 patcher 进 OOPIF 注 token。
         hc_patcher = _start_hc_patcher(force=_solve_hcap) if (_solve_hcap or not FIXC) else None
         CARD_DEADLINE = int(os.environ.get("FIXC_CARD_DEADLINE", "480"))   # 单号加卡总耗时硬闸(秒),0=不限
+        log_stage(slot, email, "card")
         while True:
             # 止损硬闸:加卡阶段总耗时超阈值就放弃,别像之前 hcaptcha 空耗 13-16min 死占并发槽(保留环境进冷却,换全新环境/IP再试)
             if CARD_DEADLINE > 0 and (time.perf_counter() - t_card) > CARD_DEADLINE:
@@ -631,6 +638,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                     res["skipped_charge"] = True
                     log("[混合] %s 已充值过,跳过(防重复扣款)" % email)
                 elif do_purchase:
+                    log_stage(slot, email, "charge")
                     try:
                         pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
                         res["purchase"] = pr.get("result")
@@ -772,12 +780,32 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
 
             break   # needphone/hcaptcha/fill-fail / 轮换用尽 → 终止(保留环境留续跑)
         res["timings"]["card"] = round(time.perf_counter() - t_card, 1)   # 加卡(含切IP轮换)总耗时
+        # 改密(最后一步):卡绑成后把 Firstmail 邮箱密码改成统一密码(op_pw)。纯 HTTP 调用,不依赖浏览器/环境。
+        #   · 只在【绑成 success】后做:账号已完成、不再需要邮箱 OTP;未绑成的号会续跑,改了密会破坏后续 OTP。
+        #   · prior 已改过 → 跳过(旧密码已失效,再改必 fail)。复用 pipeline.py 同一函数与 changepw stage 语义。
+        if success and do_changepw and op_pw:
+            _cp_done = (((prior or {}).get("stages") or {}).get("changepw") or {}).get("status") == "ok"
+            if _cp_done:
+                res["steps"]["changepw"] = True
+                log("[混合] %s 已改密,跳过(防重复改密失败)" % email)
+            else:
+                log_stage(slot, email, "changepw")
+                try:
+                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"))
+                    res["steps"]["changepw"] = bool(cp_ok)
+                    if cp_ok:
+                        save_progress(email, _stage=("changepw", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S")}))
+                    log("[混合] %s 改邮箱密码 → %s" % (email, "成功" if cp_ok else "失败"))
+                except Exception as e:
+                    res["steps"]["changepw"] = False
+                    log("[混合] %s 改密异常(不影响绑卡成功): %s" % (email, str(e)[:80]))
         return res
     except Exception as e:
         res["error"] = str(e)[:200]
         log("[混合] %s 异常: %s" % (email, str(e)[:160]))
         return res
     finally:
+        log_stage(slot, email, "done", "done")
         try:
             res["timings"]["total"] = round(time.perf_counter() - t_start, 1)   # 整号端到端耗时(秒)
         except Exception:
@@ -821,6 +849,7 @@ def main():
     ap.add_argument("--accounts", required=True)
     ap.add_argument("--proxies", required=True)
     ap.add_argument("--op-pw", default="", help="OpenRouter 登录密码(统一密码);留空=用各账号邮箱密码当登录密码(per-账号,与 Selenium 注册一致)")
+    ap.add_argument("--do-changepw", action="store_true", help="绑卡成功后把 Firstmail 邮箱密码改成统一密码(--op-pw);需 --op-pw 非空")
     ap.add_argument("--gap", type=int, default=20)
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个(0=全部)")
     ap.add_argument("--proxy-offset", type=int, default=0)
@@ -982,7 +1011,7 @@ def main():
                             delete_env=not args.no_delete_env, prior=prior, slot=slot,
                             slots_total=conc, max_rotations=args.max_rotations, isolate=args.isolate,
                             manual_card=args.manual_card, keep_failed_env=args.keep_failed_env,
-                            do_purchase=args.do_purchase, amount=args.amount)
+                            do_purchase=args.do_purchase, amount=args.amount, do_changepw=args.do_changepw)
         finally:
             _slots.put(slot)
         r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")

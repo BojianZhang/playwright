@@ -35,6 +35,7 @@ export interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   selectable?: boolean;        // 开启行多选(复选框列 + 批量栏)
   batchActions?: (selectedRows: T[], clear: () => void) => ReactNode;  // 选中≥1时批量栏里的按钮(各页传)
+  onSelectionChange?: (selectedRows: T[]) => void;  // 选中变化时上报给父(父据此让 masthead 的复制/导出按钮"选中优先")
   search?: { keys: ((row: T) => string)[]; placeholder?: string };
   filters?: FilterDef<T>[];
   columnSettings?: { tableId: string };
@@ -64,7 +65,7 @@ function loadHidden<T>(tableId: string | undefined, columns: Column<T>[]): Set<s
   return h;
 }
 
-export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, selectable, batchActions, search, filters, columnSettings, toolbarLeft, toolbarRight, initialSort, maxHeight = 560, emptyText = '暂无数据', footer, exportName, loading, error }: DataTableProps<T>) {
+export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, selectable, batchActions, onSelectionChange, search, filters, columnSettings, toolbarLeft, toolbarRight, initialSort, maxHeight = 560, emptyText = '暂无数据', footer, exportName, loading, error }: DataTableProps<T>) {
   const [sort, setSort] = useState<SortState>(initialSort || null);
   const [q, setQ] = useState('');
   const [fvals, setFvals] = useState<Record<string, string>>({});
@@ -118,32 +119,49 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
   }, [rows, q, fvals, sort, columns, search, filters]);
 
   // —— 多选(selectable 时) ——
-  const viewSel = selectable ? view.filter((r, i) => selected.has(rowKey(r, i))) : [];
+  // 行身份键:按【行对象】缓存「用原始 rows 下标算出的 key」。排序/筛选只改 view 顺序,同一行 key 不变。
+  // 关键:页面 rowKey 若含位置下标(…|${i}),view 下标≠rows 下标 —— 勾选(走 view 下标)存的 key 与
+  // 「清理幽灵选中」/ selectedRows(走 rows 下标)算的 key 对不上 → 排序后一勾就被当幽灵清掉(表现"勾不上"),
+  // 批量操作也选错行。统一改用按行对象缓存的 key,消除两套下标的分歧。
+  const keyByRow = useMemo(() => {
+    const m = new Map<T, string | number>();
+    rows.forEach((r, i) => m.set(r, rowKey(r, i)));
+    return m;
+  }, [rows, rowKey]);
+  const keyOf = (r: T, fallbackIdx: number) => { const k = keyByRow.get(r); return k !== undefined ? k : rowKey(r, fallbackIdx); };
+  const viewSel = selectable ? view.filter((r, i) => selected.has(keyOf(r, i))) : [];
   const allSel = view.length > 0 && viewSel.length === view.length;
   const someSel = viewSel.length > 0 && !allSel;
-  const selectedRows = selectable ? rows.filter((r, i) => selected.has(rowKey(r, i))) : [];
+  const selectedRows = selectable ? rows.filter((r, i) => selected.has(keyOf(r, i))) : [];
   const clearSel = () => setSelected(new Set());
   const toggleRow = (k: string | number) => setSelected((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
-  const toggleAll = () => setSelected((p) => { const n = new Set(p); if (allSel) view.forEach((r, i) => n.delete(rowKey(r, i))); else view.forEach((r, i) => n.add(rowKey(r, i))); return n; });
+  const toggleAll = () => setSelected((p) => { const n = new Set(p); if (allSel) view.forEach((r, i) => n.delete(keyOf(r, i))); else view.forEach((r, i) => n.add(keyOf(r, i))); return n; });
   // 行数据变化(删除/刷新)→ 剔除已不存在的选中项,避免幽灵选中
   useEffect(() => {
     setSelected((prev) => {
       if (!prev.size) return prev;
-      const ks = new Set(rows.map((r, i) => rowKey(r, i)));
+      const ks = new Set(keyByRow.values());   // 与勾选用的 keyOf 同源(按行对象缓存的 key),排序后不会误删
       let changed = false; const next = new Set<string | number>();
       prev.forEach((k) => { if (ks.has(k)) next.add(k); else changed = true; });
       return changed ? next : prev;
     });
   }, [rows, rowKey]);
+  // 上报选中给父(masthead 的复制/自定义导出据此"选中优先")。只依赖 selected:
+  // 行被删/刷新会先由上面的清理 effect 改 selected → 这里随之触发,无需再依赖 rows。
+  // 若把 rows 放进依赖:父在 onSelectionChange 里 setState 后,只要它传的 rows 不是稳定引用就会
+  // 「setState→重渲染→新 rows→再触发」死循环,整页卡死、复选框也点不动。
+  useEffect(() => { onSelectionChange?.(selectedRows); }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 导出当前视图为 CSV:只取"可见列 × 当前(搜索/筛选/排序后)的 view",所见即所导。
   // 每列取值优先级:exportValue → sortAccessor → row[key](原始值);纯 JSX/操作列(无取值器且值非原始)自动跳过。
+  // 有勾选 → 只导选中的(所选即所导);否则导当前筛选/排序后的全部视图(所见即所导)。
+  const exportRows = (selectable && viewSel.length) ? viewSel : view;
   function doExport() {
-    if (!exportName || !view.length) return;
-    const cols = visCols.filter((c) => !c.noExport && (c.exportValue || c.sortAccessor || view.some((r) => isPrim((r as Record<string, unknown>)[c.key]))));
+    if (!exportName || !exportRows.length) return;
+    const cols = visCols.filter((c) => !c.noExport && (c.exportValue || c.sortAccessor || exportRows.some((r) => isPrim((r as Record<string, unknown>)[c.key]))));
     if (!cols.length) return;
     const headers = cols.map((c) => c.exportLabel ?? (typeof c.label === 'string' ? c.label : c.key));
-    const data = view.map((row, i) => cols.map((c) => {
+    const data = exportRows.map((row, i) => cols.map((c) => {
       try {
         if (c.exportValue) return c.exportValue(row, i);
         if (c.sortAccessor) return c.sortAccessor(row);
@@ -180,7 +198,7 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
           <span style={{ flex: 1 }} />
           {toolbarRight}
           {exportName && (
-            <button className="btn btn-ghost btn-sm" disabled={!view.length} onClick={doExport} title="导出当前(筛选/排序后)的全部列为 CSV"><Icon name="download" size={13} />导出</button>
+            <button className="btn btn-ghost btn-sm" disabled={!exportRows.length} onClick={doExport} title={(selectable && viewSel.length) ? `只导出选中的 ${viewSel.length} 行为 CSV` : '导出当前(筛选/排序后)的全部列为 CSV'}><Icon name="download" size={13} />{(selectable && viewSel.length) ? `导出选中 ${viewSel.length}` : '导出'}</button>
           )}
           {columnSettings && (
             <div className="col-pop-wrap" ref={colRef}>
@@ -231,11 +249,11 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
             ) : loading && !rows.length ? (
               <tr><td colSpan={visCols.length + (selectable ? 1 : 0)} className="tbl-empty">加载中…</td></tr>
             ) : view.length ? view.map((row, i) => (
-              <tr key={rowKey(row, i)} className={[getRowClass?.(row), onRowClick ? 'clickable' : '', selectable && selected.has(rowKey(row, i)) ? 'is-selected' : ''].filter(Boolean).join(' ') || undefined} onClick={onRowClick ? () => onRowClick(row) : undefined}>
+              <tr key={keyOf(row, i)} className={[getRowClass?.(row), onRowClick ? 'clickable' : '', selectable && selected.has(keyOf(row, i)) ? 'is-selected' : ''].filter(Boolean).join(' ') || undefined} onClick={onRowClick ? () => onRowClick(row) : undefined}>
                 {selectable && (
                   <td className="dt-check-col" onClick={(e) => e.stopPropagation()}>
                     <label className="check">
-                      <input type="checkbox" checked={selected.has(rowKey(row, i))} onChange={() => toggleRow(rowKey(row, i))} aria-label="选择该行" />
+                      <input type="checkbox" checked={selected.has(keyOf(row, i))} onChange={() => toggleRow(keyOf(row, i))} aria-label="选择该行" />
                       <span className="box"><Icon name="check" size={11} /></span>
                     </label>
                   </td>

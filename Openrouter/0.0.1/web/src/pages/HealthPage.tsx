@@ -1,9 +1,11 @@
 // 系统健康:配置健康分(非 SLA)+ 存储占比 + 节点 KPI + 配置自检 + 集群节点。
 // 只用我们真采集的数据(配置自检/告警/uptime/存储/peers);QPS/延迟/CPU 等未采集,不画占位假图。
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiGet } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 import { Icon } from '../lib/icons';
+import { useToast } from '../lib/toast';
 import type { HealthInfo } from '../lib/types';
 import { Gauge, Donut, type Seg } from '../components/charts';
 import { DataTable, type Column } from '../components/DataTable';
@@ -20,7 +22,25 @@ const PEER_COLS: Column<Peer>[] = [
 
 export default function HealthPage() {
   const navigate = useNavigate();
+  const toast = useToast();
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['health'], queryFn: () => apiGet<HealthInfo>('/api/health', true), refetchInterval: 10000 });
+  const [killing, setKilling] = useState(false);
+
+  // 一键清理孤儿驱动:强杀本机残留 chromedriver(_stealth)。有任务在跑后端会拒绝(409 refused),
+  // 询问后可强清。只杀自动化驱动,不碰 Chrome / AdsPower 客户端。
+  async function cleanOrphans(force = false) {
+    setKilling(true);
+    try {
+      const r = await apiPost<{ refused?: boolean; reason?: string; total?: number; activeJobs?: number }>('/api/system/kill-orphans', { force });
+      if (r.refused) {
+        if (window.confirm(`${r.reason || '有任务在跑'}\n\n仍要强制清理吗?可能打断正在跑的任务(杀掉在用的驱动)。`)) { setKilling(false); return cleanOrphans(true); }
+        toast.push('已取消(有任务在跑,未清理)', 'info');
+      } else {
+        toast.push(r.total ? `已清理 ${r.total} 个孤儿驱动` : '没有需要清理的孤儿驱动', 'ok');
+      }
+    } catch (e) { toast.push('清理失败:' + (e as Error).message, 'err'); }
+    finally { setKilling(false); }
+  }
 
   const score = data ? Math.max(0, Math.min(100, 100 - data.warnings.length * 15 - (data.uptimeSec < 60 ? 10 : 0))) : 0;
   const scoreColor = score >= 80 ? '--success' : score >= 60 ? '--warn' : '--danger';
@@ -33,6 +53,17 @@ export default function HealthPage() {
   return (
     <main className="page">
       <div className="page-head"><h1>系统健康</h1><p>节点 / 存储 / 配置自检 —— 每 10s 刷新</p></div>
+
+      <section className="card card-pad" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <span className="idx c-amber" style={{ flex: 'none' }}><Icon name="trash" size={13} /></span>
+        <div style={{ flex: 1 }}>
+          <b>清理孤儿驱动</b>
+          <div className="head-hint" style={{ marginTop: 2 }}>强杀本机残留的 chromedriver(被强杀的任务留下的自动化驱动,非你的 Chrome、非 AdsPower 客户端)。有任务在跑时会先拒绝。</div>
+        </div>
+        <button className="btn btn-soft btn-sm" style={{ flex: 'none' }} disabled={killing} onClick={() => cleanOrphans(false)}><Icon name="trash" size={13} />{killing ? '清理中…' : '一键清理'}</button>
+      </section>
+
+      <div className="section-gap" />
 
       {isLoading && !data && <div className="card card-pad"><div className="empty-note">检测中…</div></div>}
       {isError && <div className="card card-pad" style={{ background: 'var(--danger-weak)', borderColor: 'var(--danger-bd)' }}><div className="empty-note" style={{ color: 'var(--danger)' }}>健康检测失败:{(error as Error)?.message || '后端无响应'}。请确认服务在线后自动重试(每 10s)。</div></div>}

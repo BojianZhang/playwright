@@ -8,7 +8,7 @@ const SEP: Record<string, string> = { space: ' ', pipe: ' | ', colon: ':', comma
 interface VarDef { k: string; label: string; desc: string; sample: string; }
 const SUCCESS_VARS: VarDef[] = [
   { k: 'email', label: '邮箱', desc: '账号邮箱', sample: 'user1@firstmail.com' },
-  { k: 'password', label: '密码', desc: '当前密码:设了统一密码并改密成功后＝新密码,否则＝原密码', sample: 'MyNewPass#2026' },
+  { k: 'password', label: '密码', desc: '当前密码(OpenRouter 登录密码):设了统一密码就＝统一密码,否则＝原密码(与改密成功与否无关)', sample: 'MyNewPass#2026' },
   { k: 'originalPassword', label: '原密码', desc: '邮箱原始密码(注册时用的)', sample: 'oldpw123' },
   { k: 'apiKey', label: 'key', desc: 'OpenRouter API Key', sample: 'sk-or-v1-abcd…ef01' },
   { k: 'billingStatus', label: 'billing', desc: 'skipped 未操作 / address-bound 已绑地址 / card-bound 已加卡 / success 已充值 / declined 被拒', sample: 'success' },

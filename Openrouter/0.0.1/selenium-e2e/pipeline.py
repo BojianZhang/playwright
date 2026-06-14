@@ -19,7 +19,7 @@ from steps import steps_auth
 from steps import steps_key
 from steps import steps_billing
 from services import firstmail
-from common import log
+from common import log, log_stage
 
 # Fix C:加卡默认走【原生CDP Input】(脱 chromedriver 躲 Stripe 检测,实测能绑成);FIXC=0 回退旧 Selenium 填卡路。对齐 hybrid_run.py。
 FIXC = os.environ.get("FIXC", "1") != "0"
@@ -94,11 +94,14 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
     mailbox_pw = acct["mailbox_pw"]
     op_pw = opts.get("unified_pw") or mailbox_pw    # OpenRouter 密码：统一密码优先，否则=邮箱密码
     cfg = opts["cfg"]
-    res = {"email": email, "ok": False, "steps": {}}
+    # password=当前 OpenRouter 登录密码:设了统一密码就＝统一密码,否则＝原邮箱密码(与 Playwright loginPassword=unified||original 对齐)。
+    # 不写这个字段 → web 回退成原密码,导致「设了统一密码/改密成功后 当前密码仍显示原密码」。
+    res = {"email": email, "ok": False, "steps": {}, "password": op_pw}
     env_id = None
     driver = None
     patcher = None
     try:
+        log_stage(slot, email, "env")
         env_id, port, proxy = _acquire_browser(proxies, start_idx, group_id,
                                                "sel-" + email.split("@")[0][:18])
         res["env_id"] = env_id
@@ -127,6 +130,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         page = common.Page(driver)
         page.goto(common.KEYS_URL, wait=2)
 
+        log_stage(slot, email, "auth")
         auth = steps_auth.register_or_login(page, email, op_pw, mailbox_pw, cfg,
                                             registered=bool(acct.get("registered")))   # 已注册号(历史auth=ok)→直接登录,不再点注册
         res["steps"]["auth"] = auth
@@ -142,6 +146,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
 
         prior_key = acct.get("prior_key") or (acct.get("prior") or {}).get("api_key")
         if opts.get("do_key", True):
+            log_stage(slot, email, "key")
             # ★止血#1:已取到过 key(prior 有 api_key)→ 直接复用,绝不重新建 key。
             #   原来无条件 get_api_key() → 同邮箱在新版向导重复建 key(白跑+留孤儿key)。这是"第二次还创建KEY"的根因。
             #   【只看 prior_key 存在,不再 AND stages.key】:老 checkpoint 只有 api_key 没 stages 子树时,
@@ -167,6 +172,8 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         res["pay_method"] = getattr(page, "_pay_method", None)
         res["credit_method"] = getattr(page, "_credit_method", None)
 
+        if opts.get("do_card"):
+            log_stage(slot, email, "card")
         if opts.get("do_card") and _prior_done(acct, "card"):
             # ★已绑卡(prior stages.card=ok)→ 跳过加卡,省一整段绑卡(还避免冷却/换卡冲突)。
             res["steps"]["card"] = "card-bound"
@@ -213,6 +220,8 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         # ★止血#2 防重复扣款:两个独立信号判"已充过"——checkpoint 的 stages.charge(可能因写盘异常丢)
         #   + run.py 从 results.jsonl 还原的 acct["charged"](账号跑完才写,与 checkpoint 互补)。任一为真即跳过,
         #   绝不重复扣款(真金白银,不可回滚)。单靠 stages.charge 会假阴性 → 重复扣。
+        if opts.get("do_purchase"):
+            log_stage(slot, email, "charge")
         if opts.get("do_purchase") and (_prior_done(acct, "charge") or acct.get("charged")):
             res["steps"]["purchase"] = "success"
             res["skipped_charge"] = True
@@ -224,6 +233,8 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             if r.get("result") == "success":
                 _ck(checkpoint, email, "charge", "ok", amount=opts.get("amount", 5), balance_after=r.get("balance_after"))
 
+        if opts.get("do_changepw") and opts.get("unified_pw"):
+            log_stage(slot, email, "changepw")
         if opts.get("do_changepw") and opts.get("unified_pw") and _prior_done(acct, "changepw"):
             # ★止血#3:已改密(prior stages.changepw=ok)→ 跳过。旧邮箱密码已失效,再改必 fail。
             res["steps"]["changepw"] = True
@@ -243,6 +254,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         log("账号 %s 异常: %s" % (email, str(e)[:140]))
         return res
     finally:
+        log_stage(slot, email, "done", "done")
         try:
             if patcher:
                 patcher.stop()

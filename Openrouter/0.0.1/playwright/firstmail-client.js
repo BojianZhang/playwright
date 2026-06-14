@@ -81,27 +81,40 @@ function messageDateMs(json) {
  * 轮询邮箱直到拿到「本次登录的新」验证码。
  * 关键：用 sinceTs(本次登录开始时间) 过滤旧邮件——只接受发件时间 ≥ sinceTs-skew 的验证码，
  * 避免抓到上一次/上一轮残留的旧验证码（OpenRouter 每次会发新码，旧码会过期）。
- * @param {object} opts getLatestMessage 参数 + { attempts?, intervalMs?, log?, sinceTs?, staleCode?, skewMs? }
+ * ★altPassword：改密后邮箱真实密码已变成统一密码，但账号文件里还是原密码 → 每轮先用 password 读，
+ *   认证失败(非 2xx)再用 altPassword 读 → 修复「改过密的号登录读不到 OTP、验证码框一直空等」。
+ *   对齐 Selenium services/firstmail.py wait_verify_code 的 alt_password 兜底。altPassword 缺省时行为与原来完全一致。
+ * @param {object} opts getLatestMessage 参数 + { attempts?, intervalMs?, log?, sinceTs?, staleCode?, skewMs?, altPassword? }
  * @returns {Promise<{ code: string|null, attempts: number }>}
  */
 async function waitForVerifyCode(opts = {}) {
-  const { attempts = 12, intervalMs = 3000, log = () => {}, sinceTs = 0, staleCode = '', skewMs = 60000 } = opts;
+  const { attempts = 12, intervalMs = 3000, log = () => {}, sinceTs = 0, staleCode = '', skewMs = 60000, password, altPassword = '' } = opts;
+  const pws = [...new Set([password, altPassword].filter(Boolean))]; // 主+备用(改密后统一密码)密码，去空去重，保序
   let lastCode = null; // 读到过的最近一个码（兜底用）
   for (let i = 0; i < attempts; i += 1) {
-    try {
-      const { json } = await getLatestMessage(opts);
-      const code = extractVerifyCode(json);
-      if (code) {
-        lastCode = code;
-        const ts = messageDateMs(json);
-        const tooOld = sinceTs && Number.isFinite(ts) && ts < sinceTs - skewMs; // 发件早于本次登录 → 可能旧码
-        const dup = staleCode && code === staleCode;                            // 与上次用过的码相同 → 旧码
-        if (!tooOld && !dup) { log(`Firstmail 第 ${i + 1} 次轮询：找到新验证码 ${code}`); return { code, attempts: i + 1 }; }
-        log(`Firstmail 第 ${i + 1} 次轮询：${code} 疑似旧码(${dup ? '与上次相同' : '发件早于本次登录'})，继续等新邮件`);
-      } else {
-        log(`Firstmail 第 ${i + 1} 次轮询：暂无验证码`);
-      }
-    } catch (e) { log(`Firstmail 轮询出错：${e.message}`); }
+    let found = null;   // { code, ts }
+    let readOk = false; // 本轮至少有一个密码认证成功(读到了信)
+    let lastErr = '';
+    for (const pw of pws) {                 // 每轮：原密码读不到就换统一密码读(改密后邮箱密码已变)
+      try {
+        const r = await getLatestMessage({ ...opts, password: pw });
+        if (!r || !r.ok) { lastErr = `HTTP ${r && r.status}`; continue; } // 这个密码登不进邮箱 → 换下一个
+        readOk = true;
+        const c = extractVerifyCode(r.json);
+        if (c) { found = { code: c, ts: messageDateMs(r.json) }; break; } // 登进去且读到了码
+      } catch (e) { lastErr = e.message; }
+    }
+    if (found) {
+      lastCode = found.code;
+      const tooOld = sinceTs && Number.isFinite(found.ts) && found.ts < sinceTs - skewMs; // 发件早于本次登录 → 可能旧码
+      const dup = staleCode && found.code === staleCode;                                  // 与上次用过的码相同 → 旧码
+      if (!tooOld && !dup) { log(`Firstmail 第 ${i + 1} 次轮询：找到新验证码 ${found.code}`); return { code: found.code, attempts: i + 1 }; }
+      log(`Firstmail 第 ${i + 1} 次轮询：${found.code} 疑似旧码(${dup ? '与上次相同' : '发件早于本次登录'})，继续等新邮件`);
+    } else if (!readOk) {
+      log(`Firstmail 第 ${i + 1} 次轮询：读信失败(原+统一密码都登不进?) ${lastErr}`);
+    } else {
+      log(`Firstmail 第 ${i + 1} 次轮询：暂无验证码`);
+    }
     if (i < attempts - 1) await new Promise(r => setTimeout(r, intervalMs));
   }
   // 兜底：等到最后都没"确认更新"的码，但确实读到过码 → 仍返回最近一个，

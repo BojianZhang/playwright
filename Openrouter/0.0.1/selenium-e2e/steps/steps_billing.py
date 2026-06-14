@@ -357,6 +357,9 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
     try:
         from steps import steps_key
         steps_key.dismiss_onboarding(page)
+        # ★onboarding 没走完时 Welcome 角色选择浮层会盖住 /credits 加卡入口 → 退点 Add Credits 空转 + 前端一直刷积分接口。
+        #   把 Individual+Continue 推过去,露出真正的加卡入口(详见 steps_key._advance_role_select)。
+        steps_key._advance_role_select(page)
     except Exception:
         pass
     # 已有支付方式时,OpenRouter 把「Add a Payment Method」换成「Auto Top-Up / Enable」。
@@ -424,6 +427,7 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
             try:
                 from steps import steps_key
                 steps_key.dismiss_onboarding(page)
+                steps_key._advance_role_select(page)   # 刷新后 Welcome 浮层可能又在 → 同样推过去,别再撞积分空转
             except Exception:
                 pass
             page.click_text(["Add a Payment Method", "Add Payment Method", "Add card"], 10)

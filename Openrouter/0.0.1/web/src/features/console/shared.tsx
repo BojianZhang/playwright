@@ -9,6 +9,9 @@ export type TabKey = 'pool' | 'ledger' | 'status' | 'errors' | 'logs';
 export const BILL_CHAIN: Stage[] = ['addr', 'card', 'charge'];
 export const STAGE_LABELS: Record<string, string> = { 'waiting-slot': '排队等待', 'proxy-precheck': '代理预检', 'email-password-change': '邮箱改密', 'openrouter-register': '注册', 'magic-link-login': '邮箱验证', 'api-key': '创建Key', 'billing-card-topup': '充值', export: '导出' };
 export const STAGE_ORDER = ['proxy-precheck', 'email-password-change', 'openrouter-register', 'magic-link-login', 'api-key', 'billing-card-topup', 'export'];
+// Selenium / 混合 引擎的逐号阶段词表(对齐 Python common.log_stage 发的 stage 名:env/auth/key/card/charge/changepw/done)。
+export const SEL_STAGE_ORDER = ['env', 'auth', 'key', 'card', 'charge', 'changepw'];
+export const SEL_STAGE_LABELS: Record<string, string> = { env: '建环境/接管', auth: '注册/登录', key: '取Key', card: '加卡', charge: '充值', changepw: '改密', done: '完成' };
 
 export const DEF_TPL_OK = '{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} | 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} | card:{{cardLast4}} | ip:{{exitIp}}';
 export const DEF_TPL_FAIL = '{{email}}:{{password}} | X{{stage}} | {{reason}} | 试{{attempts}}次';

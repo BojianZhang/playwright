@@ -410,7 +410,8 @@ async function signInExisting(page, account, runtime, context) {
     // 二次校验:邮箱验证码
     if (/factor-two|verify/.test(page.url())) {
       log('需要邮箱验证码,读取中…');
-      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account), baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, sinceTs, log: (m) => log(`[mail] ${m}`) });
+      // password=原邮箱密码;altPassword=统一密码(改密后邮箱真实密码已变成它)→ 原密码读不到自动换统一密码读,修复"改过密的号登录读不到 OTP"。
+      const { code } = await waitForVerifyCode({ apiKey: mb.apiKey, email: account.email, password: mailboxPassword(runtime, account), altPassword: openrouterPassword(runtime, account), baseUrl: mb.apiBaseUrl, attempts: 14, intervalMs: 3000, sinceTs, log: (m) => log(`[mail] ${m}`) });
       if (!code) { log('未取到验证码'); return { ok: false, reason: 'SIGNIN_CODE_NOT_FOUND' }; }
       const otp = page.locator('input[inputmode="numeric"], input[name="code"], input[id*="code"], input[autocomplete="one-time-code"]').first();
       await otp.click({ timeout: 5000 }).catch(() => {});
@@ -563,6 +564,34 @@ async function apiKey(ctx) {
       let clicked = await newKeyBtn.click({ timeout: 6000 }).then(() => true).catch(() => false);
       if (!clicked) clicked = await newKeyBtn.click({ timeout: 5000, force: true }).then(() => true).catch((e) => { log(`new-key click attempt ${attempt + 1}: ${e.message}`); return false; });
       modalOpen = await page.waitForSelector('#name', { state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+      // 加固:改版后命名框可能不叫 #name(placeholder 变 "Untitled key"、浮动 label 致 placeholder 空、Radix portal 无 name 元数据)→
+      //   #name 等不到时,只要【确实打开的 dialog/modal 内】有可见非search文本输入就算弹窗已开(严格超集:排账单弹窗+search+combobox)。
+      //   带 #name 的老号上面已 true,不进此分支,行为逐字不变。与 selenium steps_key.py 同一套判据。
+      if (!modalOpen) {
+        modalOpen = await page.evaluate(() => {
+          try {
+            const mods = [].slice.call(document.querySelectorAll('[role=dialog],[aria-modal="true"],[data-state="open"][class*=ontent],[class*=modal i],[class*=overlay i],[class*=Dialog i]'));
+            for (const m of mods) {
+              if (m.offsetParent === null && getComputedStyle(m).position !== 'fixed') continue;
+              const r = m.getBoundingClientRect(); if (r.width < 40 || r.height < 40) continue;
+              const tx = (m.innerText || '').toLowerCase();
+              if (/payment|card number|add a payment|billing address|update address|verify your identity|cardholder|expiry|cvc|postal code|zip/.test(tx)) continue;
+              for (const e of m.querySelectorAll('input,textarea')) {
+                if (e.offsetParent === null) continue;
+                const t = (e.type || 'text').toLowerCase();
+                if (['search', 'hidden', 'checkbox', 'radio', 'submit', 'button', 'file'].includes(t)) continue;
+                const em = ((e.id || '') + ' ' + (e.getAttribute('name') || '') + ' ' + (e.getAttribute('placeholder') || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('role') || '')).toLowerCase();
+                if (/search|combobox|listbox/.test(em)) continue;
+                const ec = getComputedStyle(e); if (ec.visibility === 'hidden' || ec.display === 'none') continue;
+                const br = e.getBoundingClientRect(); if (br.width < 30 || br.height < 8) continue;
+                return true;
+              }
+            }
+          } catch (_e) { /* 异常静默回落原行为 */ }
+          return false;
+        }).catch(() => false);
+        if (modalOpen) log('new-key 命名框非 #name(改版)→ 按弹窗内文本框判定弹窗已开');
+      }
       if (!modalOpen && attempt >= 1) {   // 点两轮还没弹窗 → 刷新 keys 页重载再来
         log(`new-key 弹窗没出(第${attempt + 1}次)→ 刷新 keys 页重载`);
         await page.goto(keysUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
@@ -571,8 +600,15 @@ async function apiKey(ctx) {
     }
     if (!modalOpen) { await dumpDom('newkey-modal-not-open'); return fail('API_KEY_MODAL_NOT_OPEN', 'API_KEY_MODAL_NOT_OPEN'); }
 
-    // 名称（#name）—— Create 按钮在填名后才启用
-    await page.fill('#name', keyName);
+    // 名称（#name）—— Create 按钮在填名后才启用。#name 不在(改版)时退【弹窗内首个非search文本框】填名,
+    //   配合上面 modalOpen 的 dialog-open 兜底,保证「弹窗已开但命名框不叫 #name」也能填上。老号 #name 5s 内必成,不进退路。
+    const _nameFilled = await page.fill('#name', keyName, { timeout: 5000 }).then(() => true).catch(() => false);
+    if (!_nameFilled) {
+      const _dlgName = page.locator('[role=dialog] input[type=text]:not([role=combobox]), [aria-modal="true"] input[type=text]:not([role=combobox]), [role=dialog] input:not([type]):not([role=combobox]):not([type=search]), [aria-modal="true"] input:not([type]):not([role=combobox]):not([type=search]), [role=dialog] textarea, [aria-modal="true"] textarea').first();
+      const _ok2 = await _dlgName.fill(keyName, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!_ok2) { await _dlgName.click({ timeout: 3000 }).catch(() => {}); await page.keyboard.type(keyName).catch(() => {}); }
+      log('new-key 命名框非 #name → 退弹窗内文本框填名');
+    }
     await page.waitForTimeout(400);
 
     // 有效期（base-ui Select）—— 总是显式选择，确保所选即所得（含「永不过期」）。

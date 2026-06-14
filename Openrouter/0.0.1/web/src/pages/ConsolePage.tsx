@@ -108,20 +108,20 @@ export default function ConsolePage() {
   const pwdGateOk = stages.key && (isPython || stages.charge) && !!unifiedPwd.trim();
 
   // 切引擎时按"该引擎实际能跑什么"归一阶段链,让「选什么 = 跑什么」在每个引擎下都成立:
-  //  - 混合/分流:流水线打包跑 注册→取Key→绑地址→加卡 → 强制点亮 key/addr/card(UI 里这两步锁定);混合不支持改密 → 关掉。
+  //  - 混合/分流:流水线打包跑 注册→取Key→绑地址→加卡 → 强制点亮 key/addr/card(UI 里这两步锁定);改密可选(绑成后改邮箱密码)。
   //  - Selenium:无独立绑地址步(绑地址内含于加卡),孤立的 addr(未开加卡)取消,避免"勾了绑地址却空跑"。
   //  - Playwright:全部可单独控制,不强改。
   function selectEngine(e: Engine) {
-    const forced = (e === 'hybrid' || e === 'split') && (!stages.key || !stages.addr || !stages.card || (e === 'hybrid' && stages.pwd));
+    const forced = (e === 'hybrid' || e === 'split') && (!stages.key || !stages.addr || !stages.card);
     const dropAddr = e === 'selenium' && stages.addr && !stages.card;
     setEngine(e);
     setStages((prev) => {
       const next = { ...prev };
-      if (e === 'hybrid' || e === 'split') { next.key = true; next.addr = true; next.card = true; if (e === 'hybrid') next.pwd = false; }
+      if (e === 'hybrid' || e === 'split') { next.key = true; next.addr = true; next.card = true; }   // 改密(pwd)不强改:混合/分流现支持改密,保留用户选择
       else if (e === 'selenium') { if (next.addr && !next.card) next.addr = false; }
       return next;
     });
-    if (forced) toast.push(`已切到${e === 'hybrid' ? '混合' : '分流'}引擎:打包全流程,已自动开启 取Key+绑地址+加卡${e === 'hybrid' ? '(混合不支持改密,已关闭)' : ''}`, 'ok');
+    if (forced) toast.push(`已切到${e === 'hybrid' ? '混合' : '分流'}引擎:打包全流程,已自动开启 取Key+绑地址+加卡`, 'ok');
     else if (dropAddr) toast.push('已切到 Selenium:无独立绑地址步,已取消单独的「绑地址」', 'ok');
   }
 
@@ -212,7 +212,7 @@ export default function ConsolePage() {
       cardDeadline: num(eng.cardDeadline, 0), solveFutileCap: eng.solveFutileCap, maxHcaptchaCardSwaps: eng.maxHcaptchaCardSwaps,
       hcRecheckWait: num(eng.hcRecheckWait, 5),
       isolate: !!eng.isolate, manualCard: !!eng.manualCard, noDeleteEnv: !!eng.noDeleteEnv, noGc: !!eng.noGc,
-      splitRatio: num(eng.splitRatio, 0.5),
+      splitRatio: num(eng.splitRatio, 0.5), crossHandoff: eng.crossHandoff !== false,
       useProxyPool, useAddressPool, useAdspowerPool,
       successTemplate: tplOk, failureTemplate: tplFail,
     };

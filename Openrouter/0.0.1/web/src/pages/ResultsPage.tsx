@@ -8,6 +8,7 @@ import { trunc } from '../lib/parse';
 import { downloadCsv } from '../lib/export';
 import type { AccountRow, AggregateResp, CardsResp } from '../lib/types';
 import { DataTable, type Column } from '../components/DataTable';
+import { ResultsExportModal } from '../features/ResultsExportModal';
 
 const CARD_STATUS: Record<string, string> = { active: '可用', exhausted: '已用尽', declined: '被拒', disabled: '已禁用', dispatched: '已下发' };
 
@@ -35,6 +36,8 @@ export default function ResultsPage() {
   const [includeLocal, setIncludeLocal] = useState(true);
   const [hosts, setHosts] = useState('');
   const [auto, setAuto] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [selRows, setSelRows] = useState<AccountRow[]>([]);   // 表格里勾选的行 → 复制/导出"选中优先"
   const loadingRef = useRef(false);
 
   const { data: cards } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: auto ? 5000 : false });
@@ -84,6 +87,9 @@ export default function ResultsPage() {
   }
 
   const poolCards = cards?.cards || [];
+  // 有勾选 → 复制/导出只针对选中的;否则全部。masthead 按钮的文案也随之标明。
+  const exportRows = selRows.length ? selRows : all;
+  const selSuffix = selRows.length ? `选中 ${selRows.length}` : `全部 ${all.length}`;
 
   return (
     <main className="page">
@@ -122,10 +128,9 @@ export default function ResultsPage() {
             return <span className="node-chip" key={i}><span className={'dot' + (s.ok ? '' : ' bad')} />{name} <em>{s.ok ? s.count + ' 条' : s.error}</em></span>;
           })}
           <span className="mh-spacer" />
-          <button className="btn btn-ghost btn-sm" onClick={() => copy(all.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'))}>复制 邮箱:Key</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => copy(all.map((r) => `${r.email || ''}:${r.password || ''}`).join('\n'))}>复制 邮箱:密码</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => download('accounts.txt', all.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'), 'text/plain')}><Icon name="download" size={12} />.txt</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => download('accounts.json', JSON.stringify(all, null, 2), 'application/json')}><Icon name="download" size={12} />.json</button>
+          <button className="btn btn-ghost btn-sm" disabled={!exportRows.length} title="复制选中的;未勾选则复制全部" onClick={() => copy(exportRows.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'))}>复制 邮箱:Key <span className="dim">({selSuffix})</span></button>
+          <button className="btn btn-ghost btn-sm" disabled={!exportRows.length} title="复制选中的;未勾选则复制全部" onClick={() => copy(exportRows.map((r) => `${r.email || ''}:${r.password || ''}`).join('\n'))}>复制 邮箱:密码</button>
+          <button className="btn btn-soft btn-sm" disabled={!exportRows.length} title="自定义格式导出(选中优先,未勾选则全部):模板变量 + 自增序号,可导 .txt / .json" onClick={() => setExportOpen(true)}><Icon name="download" size={12} />自定义导出 <span className="dim">({selSuffix})</span></button>
           <button className="btn btn-danger-soft btn-sm" disabled={!all.length} title="删除本机所有成功结果(含子机推送缓存),不影响其它节点" onClick={clearLocal}><Icon name="trash" size={12} />清空本机</button>
         </div>
       </section>
@@ -146,6 +151,7 @@ export default function ResultsPage() {
           exportName="results-accounts"
           maxHeight={560}
           selectable
+          onSelectionChange={setSelRows}
           batchActions={(sel, clearSel) => (
             <button className="btn btn-danger-soft btn-sm" onClick={() => deleteRows(sel, clearSel)}><Icon name="trash" size={12} />删除选中</button>
           )}
@@ -173,6 +179,8 @@ export default function ResultsPage() {
           </div>
         </div>
       </section>
+
+      <ResultsExportModal open={exportOpen} onClose={() => setExportOpen(false)} rows={exportRows} onDownload={download} onCopy={copy} />
     </main>
   );
 }

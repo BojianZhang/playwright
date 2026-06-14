@@ -400,6 +400,7 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
         log("⚠ Save 坐标解析失败(sv=%s),跳过点击 → 交下游判未绑" % str(sv)[:40])
     # 弹框处理
     image_challenge = False
+    _fast_card_bail = False   # 两套分流秒关:图片九宫格 + OPENROUTER_FAST_HANDOFF_CARD → 立即弃(跳过2captcha/换卡/等待),交纯Sel
     if cap:
         if os.environ.get("FIXC_MANUAL_CAPTCHA") == "1":
             # 手动解框模式(验证用):停下等人手动点 I am human / 解图片
@@ -438,13 +439,19 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
                         break
             else:
                 # 图片九宫格:点不掉、等也白等 → 单次复检,直接交下面 2captcha/换卡
-                try:
-                    cap = bool(cdp.evaluate(CAPTCHA_JS))
-                except Exception:
-                    pass
+                if os.environ.get("OPENROUTER_FAST_HANDOFF_CARD"):
+                    # 两套分流『秒关/快速失败』:弹图片九宫格即放弃加卡,交纯 Selenium 引擎(不解码/不换卡/不等)。
+                    log("   ⚡ 快速衔接(两套分流):图片九宫格 → 立即放弃加卡,交纯 Selenium(不解码/不换卡)")
+                    cap = True
+                    _fast_card_bail = True
+                else:
+                    try:
+                        cap = bool(cdp.evaluate(CAPTCHA_JS))
+                    except Exception:
+                        pass
             # ② 验证框还在(checkbox点不掉=【Stripe 隐形/图片 hcaptcha】,这才是实际情况)→ 开关ON就 2captcha 求解+注token。
             #    【开关 solve_hcap】开=2captcha 走代理解+跨OOPIF注入(需 patcher 注了 hcaptcha hook;★可能破坏免检会话→502);关=直接交上层换卡。
-            if cap and solve_hcap and patcher is not None:
+            if cap and solve_hcap and patcher is not None and not _fast_card_bail:
                 try:
                     from services import captcha as _cap
                     log("   → 验证框解不掉(隐形/图片 hcaptcha)→ 2captcha 走代理求解+跨OOPIF注入…")
@@ -505,7 +512,10 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
     #   · pending/captcha = 继续等
     bound_seen = False
     declined = False
-    for _ in range(16):     # 最多 ~24s,通常 3-6s
+    # 绑卡结果等待上限:点 Save 后轮询绑成/被拒信号的上限,到点转去刷新核验(权威)。
+    # 【控制台可配】FIXC_RESULT_WAIT(秒,默认24)→ 引擎配置「绑卡结果等待上限」。调小=遇 Stripe「Save card?」存卡弹窗更快收尾。
+    _rw_end = time.time() + max(1.0, float(os.environ.get("FIXC_RESULT_WAIT", "24") or 24))
+    while time.time() < _rw_end:     # 原 range(16)≈24s;出结果即 break,通常 3-6s
         try:
             if csid and cdp.evaluate(
                     "/declined|card was declined|do not honou?r|insufficient|card number is incorrect|expired/i"

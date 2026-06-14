@@ -10,8 +10,10 @@ import re
 import os
 import time
 import random
+import json
 
 from common import log, KEYS_URL, rand_name, rand_address
+from common.selectors import sel   # 元素维护页可覆盖关键元素选择器(无覆盖=用各处内置默认,老代码原样不变)
 
 
 def _wizard_pay_mode():
@@ -55,18 +57,32 @@ def _fill_wizard_address(page):
         "      el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;}}"
         "  return false;}"
         "var ins=[].slice.call(document.querySelectorAll('input,textarea,select'));"
-        "ins.forEach(function(el){var lab=((el.getAttribute('placeholder')||'')+' '+(el.getAttribute('name')||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.id||'')).toLowerCase();"
+        "ins.forEach(function(el){var lab=((el.getAttribute('placeholder')||'')+' '+(el.getAttribute('name')||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('autocomplete')||'')+' '+(el.id||'')).toLowerCase();"
         "  var pl=(el.closest('label')&&el.closest('label').innerText||'').toLowerCase();var L=lab+' '+pl;"
         "  var isSel=el.tagName=='SELECT';"
-        "  if(/address line 1|address1|line1|street|^address/.test(L)&&!isSel&&!el.value){setv(el,a.line1);n++;}"
-        "  else if(/city|town/.test(L)&&!isSel&&!el.value){setv(el,a.city);n++;}"
+        "  if(/address line 1|address1|line1|address-line1|street|^address/.test(L)&&!isSel&&!el.value){setv(el,a.line1);n++;}"
+        "  else if(/city|town|address-level2/.test(L)&&!isSel&&!el.value){setv(el,a.city);n++;}"
         "  else if(/country/.test(L)){if(isSel){if(setsel(el,a.country)||setsel(el,'US'))n++;}else if(!el.value){setv(el,a.country);n++;}}"
-        "  else if(/state|province|region/.test(L)){if(isSel){if(setsel(el,a.state))n++;}else if(!el.value){setv(el,a.state);n++;}}"
-        "  else if(/zip|postal/.test(L)&&!isSel&&!el.value){setv(el,a.zip);n++;}"
+        "  else if(/state|province|region|address-level1/.test(L)){if(isSel){if(setsel(el,a.state))n++;}else if(!el.value){setv(el,a.state);n++;}}"
+        "  else if(/zip|postal|postal-code/.test(L)&&!isSel&&!el.value){setv(el,a.zip);n++;}"
         "});return n;", {"line1": addr.get("line1") or addr.get("address") or "123 Main St",
                           "city": addr.get("city"), "state": addr.get("state"), "zip": addr.get("zip"),
                           "country": addr.get("country") or "United States"})
     time.sleep(0.8)
+    # 回读校验:地址行1 真填上没?(选择器没匹配上 / 字段在子 iframe → 填不上)。填不上就别卡在灰着的
+    #   "Complete address details to continue",改点 "I'll do this later" 跳过 —— 真绑卡由后面 steps_billing(Fix C,跨iframe填址)做,不受此步限。
+    try:
+        line1_ok = bool(page.js(
+            "var a=Array.from(document.querySelectorAll('input,textarea')).find(function(e){"
+            "var L=((e.getAttribute('placeholder')||'')+' '+(e.getAttribute('name')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('autocomplete')||'')+' '+(e.id||'')+' '+((e.closest('label')&&e.closest('label').innerText)||'')).toLowerCase();"
+            "return /address line 1|address1|line1|address-line1|^address/.test(L);});"
+            "return !!(a&&a.value&&String(a.value).trim());"))
+    except Exception:
+        line1_ok = False
+    if not line1_ok:
+        log("[向导支付] 地址行1 没填上(选择器没匹配/在子iframe)→ 改点 I'll do this later 跳过,交后面真绑卡步")
+        _click_later(page)
+        return False
     _native_click_el(page, _TEXTBTN_JS, r"Complete address details|Continue|Save")
     log("[向导支付] 方式=填地址(填了%s个字段,zip=%s)→ 推进露出卡表单" % (filled, addr.get("zip")))
     return True
@@ -127,6 +143,90 @@ _TEXTBTN_JS = r"""
   return t || null;
 """
 
+# 「I'll do this later / Skip for now」定位(只取【可见】按钮;撇号兼容直/弯/反引号)。
+# 「I'll do this later」匹配 —— 元素维护页 pay_later 可覆盖(留空=内置默认;撇号直/弯/反引号兼容)。运行时构建→覆盖即时生效。
+def _later_re_src():
+    _ov = sel('pay_later')                                 # [] = 无元素维护覆盖
+    if _ov:
+        return "|".join(re.escape(s) for s in _ov)
+    return "I[\\u2019\\u2018'`]?ll do this later|do this later|Skip for now|Maybe later"
+
+
+def _later_js(action):
+    """定位「I'll do this later」按钮的 JS。action:'el'返回元素 / 'click'点击+bool / 'coords'返回[x,y] / 'has'布尔。
+    正则用 new RegExp(json) 兼容覆盖里的特殊字符。"""
+    _src = json.dumps(_later_re_src())
+    _find = ("var re=new RegExp(" + _src + ",'i');"
+             "var els=[].slice.call(document.querySelectorAll('button,[role=button],a'));"
+             "var t=els.find(function(b){return b.offsetParent!==null && re.test((b.innerText||'').trim());});")
+    if action == 'has':
+        return ("var re=new RegExp(" + _src + ",'i');return [].slice.call(document.querySelectorAll('button,[role=button],a'))"
+                ".some(function(b){return b.offsetParent!==null && re.test((b.innerText||'').trim());});")
+    if action == 'el':
+        return _find + "if(t){try{t.scrollIntoView({block:'center'});}catch(e){}}return t||null;"
+    if action == 'click':
+        return _find + "if(t){try{t.scrollIntoView({block:'center'});}catch(e){}t.click();return true;}return false;"
+    return (_find + "if(!t)return null;try{t.scrollIntoView({block:'center'});}catch(e){}"
+            "var r=t.getBoundingClientRect();if(r.width<2||r.height<2)return null;return [r.left+r.width/2, r.top+r.height/2];")
+
+
+def _has_later_btn(page):
+    """页面上是否【有可见的 I'll do this later 类按钮】(直接探按钮,不靠 all_frames_text 文案;pay_later 可覆盖)。"""
+    try:
+        return bool(page.js(_later_js('has')))
+    except Exception:
+        return False
+
+
+def _cdp_trusted_click(page, coords_js):
+    """CDP 可信鼠标点击(isTrusted=true,和真人手点一模一样地触发 React)——【不杀 chromedriver】
+    (取key 阶段 driver 本就挂着,execute_cdp_cmd 复用既有 CDP 通道,见 pipeline.py grantPermissions/cdp_raw)。
+    比 Selenium el.click() 可靠:不受"click intercepted/not interactable"影响,直接在坐标上发可信鼠标事件。
+    coords_js 须 return [x,y](视口 CSS 像素)或 null。返回是否点了。"""
+    try:
+        xy = page.js(coords_js)
+    except Exception:
+        xy = None
+    if not (isinstance(xy, (list, tuple)) and len(xy) == 2):
+        return False
+    try:
+        x, y = float(xy[0]), float(xy[1])
+        d = page.d
+        d.execute_cdp_cmd("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        time.sleep(0.04)
+        d.execute_cdp_cmd("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+        time.sleep(0.05)
+        d.execute_cdp_cmd("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+        return True
+    except Exception:
+        return False
+
+
+def _click_later(page):
+    """稳健点「I'll do this later / Skip for now」跳过向导支付/积分步 —— 纯 Selenium 多法兜底,最强在前,
+    且【每法点完回读按钮是否消失才算真成】(防 CDP dispatch/坐标过期"假成功"挡住后续兜底):
+    ① CDP 可信鼠标点击(isTrusted=true,和手点一样、不杀 driver) ② Selenium 原生 click
+    ③ JS .click()(button 冒泡) ④ click_text(不含撇号 label,避开 XPath 撇号坑)。
+    判定"真点上"=按钮消失(各法都先重新定位可见按钮,按钮没了就 no-op,故不会重复误点)。返回是否点掉。"""
+    if not _has_later_btn(page):
+        return False                                   # 没这按钮 → 没可点的
+    _methods = (
+        lambda: _cdp_trusted_click(page, _later_js('coords')),
+        lambda: _native_click_el(page, _later_js('el')),
+        lambda: page.js(_later_js('click')),
+        lambda: page.click_text(["do this later", "Skip for now", "Maybe later"], 3),
+    )
+    for _m in _methods:
+        try:
+            _m()
+        except Exception:
+            pass
+        time.sleep(0.7)
+        if not _has_later_btn(page):                    # 按钮消失 = 真点上了
+            return True
+    log("[取Key] ⚠ I'll do this later 四法都没点掉(按钮仍在)→ 交外层重试/刷新")
+    return False
+
 
 # 注:曾有 _copy_key_from_clipboard()(点Copy读剪贴板兜底)已删除 —— navigator.clipboard.readText() 会弹 Chrome
 #   权限框把向导页卡死(MEMORY 明令禁止)。明文 key 直接从 workspace-ready 的 fetch 示例 code/pre 抓即可,绝不读剪贴板。
@@ -134,6 +234,84 @@ _TEXTBTN_JS = r"""
 # 进了新向导但没抓到明文 key 的哨兵:caller 据此【快速失败走整号重试】,绝不回落到新页面根本不存在的 New Key 路径
 # (老号才有 New Key 按钮;在新向导页上点不存在的按钮→空耗+把新老两套页面动作混在一起)。
 WIZARD_NO_KEY = "__WIZARD_NO_KEY__"
+
+
+def _advance_role_select(page):
+    """推进 Welcome「How will you be using OpenRouter?」角色选择步:点 Individual 卡片 → Continue。
+    【为什么要单独抽出来给加卡步用】onboarding 没走完时这个浮层会盖住 /settings/credits 的加卡入口
+    → 加卡步 dismiss_onboarding 只关问卷/all-set、清不掉它 → 找不到 Add a Payment Method → 退点 Add Credits 空转
+    + OpenRouter 前端一直轮询积分余额接口(=用户看到的"一直请求积分/跳链接")。在加卡步也把它推过去,露出加卡入口。
+    取key 向导主循环本就处理它;此处复用同一套定位(含 sel('wizard_individual') 覆盖),不改向导逻辑。返回是否点了 Individual。"""
+    try:
+        t = page.all_frames_text() or ""
+    except Exception:
+        return False
+    if not re.search(r"How will you be using OpenRouter", t, re.I):
+        return False
+    # 【护栏①防误打断加卡】卡表单/Stripe 账单 iframe 已经开着 → 绝不去点 Individual/Continue 做页面导航
+    #   (否则可能卸载正在填的卡表单)。只在「确实卡在 Welcome 角色选择、且卡表单还没开」时才推。
+    try:
+        busy = bool(page.js(
+            "if(document.querySelector('iframe[src*=\"js.stripe.com\"],iframe[name*=\"stripe\" i]'))return true;"
+            "var ins=document.querySelectorAll('input');for(var i=0;i<ins.length;i++){var e=ins[i];if(e.offsetParent===null)continue;"
+            "var m=((e.getAttribute('name')||'')+' '+(e.getAttribute('placeholder')||'')+' '+(e.getAttribute('aria-label')||'')).toLowerCase();"
+            "if(/card number|cardnumber|cc-number|postal|cvc/.test(m))return true;}return false;"))
+    except Exception:
+        busy = False
+    if busy:
+        return False
+    _ind_ov = sel('wizard_individual')                       # [] = 无元素维护覆盖
+    _ind_re = (("new RegExp(" + json.dumps("|".join(re.escape(s) for s in _ind_ov)) + ",'i')") if _ind_ov
+               else "/Build side projects|explore models|prototype ideas/i")
+    # 【护栏②防 stale 文案误触发】只在【可见】(offsetParent!==null)的 Individual 卡片上动作。
+    clicked = _native_click_el(page, (
+        "var btns=[].slice.call(document.querySelectorAll('button,[role=button],a')).filter(function(b){return b.offsetParent!==null;});"
+        "var re=" + _ind_re + ";"
+        "var t=btns.find(function(b){return re.test(b.innerText||'');});"
+        "if(!t) t=btns.find(function(b){var x=(b.innerText||'');return /\\bIndividual\\b/i.test(x) && !/\\bOrganization\\b/i.test(x);});"
+        "return t || null;"))
+    if clicked:
+        time.sleep(1.2)
+        _native_click_el(page, _TEXTBTN_JS, r"^Continue$|^Get started$|^Next$")
+        time.sleep(1.0)
+        log("[加卡] 检测到 Welcome 角色选择浮层盖住加卡页 → 点 Individual+Continue 推过去(露出加卡入口,止 Add Credits 空转)")
+    return clicked
+
+
+def _dismiss_survey(page):
+    """问卷 "Where did you first hear about OpenRouter?":选一个 radio(优先 Other/Not sure)→ 回读确认【真选中】→ 等 Continue 可点再点。
+    关键:点【真正的 radio input / [role=radio]】并回读 :checked 确认——只点文本/外层 div 不会触发选中 → Continue 一直灰、
+    空点 Continue 无效 → 外层循环只能反复重来(用户看到的"得刷新好几次")。返回是否点到了可用的 Continue。"""
+    picked = False
+    for _q in range(4):
+        # 【元素维护可覆盖 wizard_survey_radio】:有覆盖→按覆盖文本选行;无覆盖→原样老逻辑(Other/Not sure→Google→第一行),老代码不变。
+        _sv_ov = sel('wizard_survey_radio')
+        _sv_find = (("var re=new RegExp(" + json.dumps("|".join(re.escape(s) for s in _sv_ov)) + ",'i');var row=rows.find(function(b){return re.test(b.innerText||'');})||rows[0];")
+                    if _sv_ov else
+                    "var row=rows.find(function(b){return /Other \\/ Not sure|Not sure/i.test(b.innerText||'');})||rows.find(function(b){return /\\bGoogle\\b/i.test(b.innerText||'');})||rows[0];")
+        _native_click_el(page, (
+            "var rows=[].slice.call(document.querySelectorAll('label,[role=radio]'));"
+            + _sv_find +
+            "if(!row) return null;"
+            "return row.querySelector('input[type=radio],[role=radio]') || row;"))
+        time.sleep(0.4)
+        try:
+            picked = bool(page.js("return !!document.querySelector('input[type=radio]:checked,[role=radio][aria-checked=true],[role=radio][data-state=checked]');"))
+        except Exception:
+            picked = False
+        if picked:
+            break
+        time.sleep(0.5)
+    for _c in range(6):   # radio 选中后 Continue 才 enable → 等它可点再点,别点到 disabled 的空按钮
+        if _native_click_el(page, r"""
+            var b=[].slice.call(document.querySelectorAll('button,[role=button]')).find(function(x){
+              return /^Continue$/i.test((x.innerText||'').trim()) && !x.disabled && x.getAttribute('aria-disabled')!=='true';});
+            return b||null;"""):
+            log("[向导问卷] radio 选中=%s → 点 Continue 推进" % picked)
+            return True
+        time.sleep(0.5)
+    log("[向导问卷] radio 选中=%s 但 Continue 仍不可点(交外层兜底)" % picked)
+    return False
 
 
 def _handle_onboarding_wizard(page):
@@ -157,6 +335,11 @@ def _handle_onboarding_wizard(page):
     if not in_wizard:
         return None
     log("[取Key] 检测到新号 onboarding 向导 → 走向导抓 key")
+    # 两套分流『秒关/快速失败』:检测到新版向导即立即放弃(交混合引擎跑,Playwright 能过新页面),不在此磨 150s 死线。
+    #   仅 engine-runner 在 split+crossHandoff 第一轮给纯 Selenium 组注 OPENROUTER_FAST_HANDOFF_KEY=1;第二轮/单引擎不注 → 不受影响。
+    if os.environ.get("OPENROUTER_FAST_HANDOFF_KEY"):
+        log("[取Key] ⚡ 快速衔接(两套分流):新版向导 → 立即放弃,交混合引擎(不在此磨向导)")
+        return WIZARD_NO_KEY
     # ★ 墙钟死线:即便每次 page.js 都卡满 script_timeout,20 轮也能拖到 ~10 分钟才退出(看着就是"卡死")。
     #   给向导取 key 整体一个上限,到点直接快速失败 → 整号重试,绝不长时间干挂在向导页。
     wiz_deadline = time.time() + float(os.environ.get("WIZARD_KEY_DEADLINE", "150"))
@@ -172,12 +355,56 @@ def _handle_onboarding_wizard(page):
             return None
     # 1+2) 选 Individual(原生click,div卡片 DOM click 不触发 React)并等明文 key 出现
     key = None
+    # 卡死自救:记录"当前在哪屏",同一屏卡过阈值不前进 → 刷新 keys 页逃逸(刷新关 onboarding 浮层 → 落 dashboard → New Key 建 key)。
+    _stall_sig = None
+    _stall_since = time.time()
+    _stall_refreshed = 0
+    _STALL_SECS = float(os.environ.get("WIZARD_STALL_REFRESH", "30") or 30)
     for _i in range(20):
         if time.time() > wiz_deadline:
             log("[取Key] 向导取 key 超过墙钟死线(%.0fs) → 放弃,快速失败走整号重试"
                 % float(os.environ.get("WIZARD_KEY_DEADLINE", "150")))
             return WIZARD_NO_KEY
         t = page.all_frames_text() or ""
+        # 卡死自救:同一屏(Welcome/ready/问卷)卡过阈值且没前进 → 刷新逃逸(最多2次),别在一屏上反复跳到 150s 死线。
+        _sig = ("welcome" if re.search(r"How will you be using OpenRouter|Welcome to OpenRouter", t, re.I)
+                else "ready" if re.search(r"workspace is ready", t, re.I)
+                else "survey" if re.search(r"first hear about OpenRouter", t, re.I) else "other")
+        if _sig != _stall_sig:
+            _stall_sig = _sig; _stall_since = time.time()
+        elif _sig in ("welcome", "ready", "survey") and (time.time() - _stall_since) > _STALL_SECS and _stall_refreshed < 2:
+            _stall_refreshed += 1
+            log("[取Key] 同一屏(%s)卡 >%.0fs 不前进 → 刷新 keys 页自救(第%d/2次)" % (_sig, _STALL_SECS, _stall_refreshed))
+            page.goto(KEYS_URL, wait=3)
+            _stall_sig = None; _stall_since = time.time()
+            continue
+        # 【止血:别干等到 150s】onboarding 已走完、落到带 +New Key 的空 dashboard(无任何向导文案)→ 立刻交回 New Key 流程建 key。
+        if not re.search(r"How will you be using OpenRouter|Welcome to OpenRouter|workspace is ready|first hear about OpenRouter|You.?re all set", t, re.I) \
+           and re.search(r"No API keys yet|Create and manage your API keys|manage your API keys", t, re.I) \
+           and page.js("return !!Array.from(document.querySelectorAll('button,[role=button],a')).find(function(b){return /New Key|Create Key|Create API Key/i.test(b.innerText||'');});"):
+            log("[取Key] 向导走完落到空 dashboard → 交回 New Key 流程建 key(不再干等到 150s 死线)")
+            return None
+        # 问卷 "Where did you first hear..." 可能挡在 workspace-ready 之后(掩码 key 抓不到时尤其卡这)→ grab 循环也处理它,别等人工刷新
+        if re.search(r"first hear about OpenRouter", t, re.I):
+            _dismiss_survey(page)
+            time.sleep(1.2)
+            continue
+        # 【关键修复:卡在「Add a payment method」要人工点 I'll do this later 的根因】
+        #   支付/积分步会挡在 workspace-ready【之后】;本主循环原本【没有这俩 handler】,且它们的 _sig=other 又不在
+        #   stall-refresh 名单(只 welcome/ready/survey 会刷)→ 整步无人处理、干等到 150s 死线 = 用户看到的
+        #   「卡在 Add a payment method 不动、要手动点 I'll do this later」。这里点跳过 → 落到带 +New Key 的
+        #   dashboard → 下面 dashboard-break 接管走 New Key 建 key(真绑卡由后续 card 步做,不靠这步)。
+        if re.search(r"Add a payment method|billing address is required|Complete address details|Add credits to get started|How much would you like to add", t, re.I) or _has_later_btn(page):
+            _sk = _click_later(page)
+            log("[取Key] 命中支付/积分步 → I'll do this later 点击=%s,点后按钮仍在=%s" % (_sk, _has_later_btn(page)))
+            time.sleep(1.6)
+            continue
+        # 「You're all set!」收尾屏也挡在 ready 之后(主循环原本不处理它,同样会干等死线)→ 点 Go to Dashboard 落 dashboard。
+        if re.search(r"You.?re all set|Go to Dashboard", t, re.I):
+            if _native_click_el(page, _TEXTBTN_JS, r"Go to Dashboard"):
+                log("[取Key] 向导收尾「You're all set」→ 点 Go to Dashboard 落 dashboard 走 New Key")
+            time.sleep(1.5)
+            continue
         # Welcome 首步(还没到角色选择)→ 点 Get started/Continue 推进,否则一直卡在欢迎页、抓不到 key。
         if re.search(r"Welcome to OpenRouter", t, re.I) and not re.search(r"How will you be using", t, re.I):
             if _native_click_el(page, _TEXTBTN_JS, r"Get started|Get Started|Get going|Continue|Next|Let.?s go"):
@@ -185,14 +412,20 @@ def _handle_onboarding_wizard(page):
             time.sleep(1.8)
             continue
         if re.search(r"How will you be using OpenRouter", t, re.I):
-            # 还停在选择步 → (反复重)点 Individual。多候选:卡片描述 "Build side projects" 优先(点它冒泡到卡片 onClick),再退 Individual 文本。
-            _native_click_el(page, r"""
-              var els=[].slice.call(document.querySelectorAll('button,[role=button],div,a,span'));
-              var t=els.find(function(b){return /Build side projects|side projects|prototype/i.test(b.innerText||'');});
-              if(!t) t=els.find(function(b){var x=(b.innerText||'');return /\bIndividual\b/i.test(x) && /side projects|prototype|Build/i.test(x);});
-              if(!t) t=els.find(function(b){return (b.innerText||'').trim()==='Individual';});
-              return t ? (t.closest('button,[role=button],a')||t) : null;
-            """)
+            # 还停在选择步 → 点 Individual 卡片(它是 <button>,innerText 含 "Individual Build side projects…")。
+            # 【全卡 Welcome 根因修复】原来 querySelectorAll 含 div/span → els.find 文档序里先命中【包住两张卡的外层容器 div】,
+            #   closest('button') 在容器上=null → 退回点了容器 div(无 onClick)→ 页面不前进 → 4 窗全卡 Welcome。
+            #   改:【只在可点元素 button/[role=button]/a 里找】→ find 直接返回那个 <button>,不再点到祖先容器。
+            # 【元素维护可覆盖 wizard_individual】:有覆盖→用覆盖文本(转义成正则);无覆盖→原样老正则,保证老代码不变。
+            _ind_ov = sel('wizard_individual')           # [] = 无覆盖
+            _ind_re = (("new RegExp(" + json.dumps("|".join(re.escape(s) for s in _ind_ov)) + ",'i')") if _ind_ov
+                       else "/Build side projects|explore models|prototype ideas/i")
+            _native_click_el(page, (
+                "var btns=[].slice.call(document.querySelectorAll('button,[role=button],a'));"
+                "var re=" + _ind_re + ";"
+                "var t=btns.find(function(b){return re.test(b.innerText||'');});"
+                "if(!t) t=btns.find(function(b){var x=(b.innerText||'');return /\\bIndividual\\b/i.test(x) && !/\\bOrganization\\b/i.test(x);});"
+                "return t || null;"))
             time.sleep(1.4)
             # 【关键】选了 Individual 后必须点 "Continue" 才进 workspace-ready 出 key —— 否则一直卡在"Welcome+角色选择"页。
             if _native_click_el(page, _TEXTBTN_JS, r"^Continue$|^Get started$|^Next$"):
@@ -202,7 +435,7 @@ def _handle_onboarding_wizard(page):
         # 【#7】on_ready 必须用【最新】文本判:上面点完 Individual+Continue 页面已切到 workspace-ready,
         #   循环顶部那次 t 是【过期】的(还停在角色选择步)→ 用旧 t 判会漏掉刚出现的 key。此处重新抓一次。
         t_now = page.all_frames_text() or ""
-        on_ready = bool(re.search(r"Your workspace is ready|workspace is ready|Your API Key", t_now, re.I))
+        on_ready = bool(re.search(r"Your workspace is ready|workspace is ready", t_now, re.I))  # 【去 'Your API Key'】它会误命中空 dashboard(MEMORY 老坑)→ 把 dashboard 当 ready 步、抓不存在的 key 空耗到 150s
         if on_ready:
             for _r in range(6):
                 key = _grab_key()
@@ -247,17 +480,8 @@ def _handle_onboarding_wizard(page):
             time.sleep(1)
             break
         if re.search(r"first hear about OpenRouter", t, re.I):
-            # 问卷:必须【原生点】一个 radio 选项(否则 Continue 灰),Other/Not sure 优先,再 Continue
-            _native_click_el(page, r"""
-              var els=[].slice.call(document.querySelectorAll('label,[role=radio],input[type=radio],div,span,button'));
-              var t=els.find(function(b){return /Other \/ Not sure/i.test(b.innerText||'');});
-              if(!t) t=els.find(function(b){return (b.innerText||'').trim()==='Google';});
-              if(!t) t=document.querySelector('[role=radio],input[type=radio]');
-              return t ? (t.closest('label,[role=radio]')||t) : null;
-            """)
-            time.sleep(0.5)
-            _native_click_el(page, _TEXTBTN_JS, r"^Continue$")
-            time.sleep(1.3)
+            _dismiss_survey(page)
+            time.sleep(1.0)
             continue
         # 支付/地址步:两种方式(填地址 / I'll do this later),记录到 page._pay_method
         if re.search(r"Add a payment method|billing address is required|Complete address details", t, re.I):
@@ -266,7 +490,7 @@ def _handle_onboarding_wizard(page):
                 try: page._pay_method = "wizard-address"
                 except Exception: pass
             else:
-                _native_click_el(page, _TEXTBTN_JS, r"I.?ll do this later|do this later|Skip for now|Maybe later")
+                _click_later(page)
                 try: page._pay_method = "later-skip"
                 except Exception: pass
                 log("[向导支付] 方式=I'll do this later(跳过,卡走后续 billing)")
@@ -284,13 +508,13 @@ def _handle_onboarding_wizard(page):
                 except Exception: pass
                 log("[向导积分] 方式=充值 $10(★真实扣款)")
             else:
-                _native_click_el(page, _TEXTBTN_JS, r"I.?ll do this later|do this later|Skip for now|Maybe later")
+                _click_later(page)
                 try: page._credit_method = "skip"
                 except Exception: pass
                 log("[向导积分] 方式=跳过(不扣款)")
             time.sleep(1.4)
             continue
-        if _native_click_el(page, _TEXTBTN_JS, r"I.?ll do this later|do this later|Skip for now|Maybe later"):
+        if _click_later(page):
             time.sleep(1.3)
             continue
         if _native_click_el(page, _TEXTBTN_JS, r"^Continue$"):
@@ -327,18 +551,64 @@ def get_api_key(page, name=None, expiration="No expiration"):
     elif wkey:
         log("[取Key] 成功(向导) %s… (%s)" % (wkey[:14], "onboarding"))
         return {"ok": True, "key": wkey, "name": "onboarding"}
-    # 名字框出现=弹窗已开:#name 优先,再兜底任何可见的 name 输入框(新版弹窗 id/占位可能变)。
-    name_visible = ("if(document.querySelector('#name')&&document.querySelector('#name').offsetParent!==null)return true;"
+    # 名字框出现=弹窗已开。【元素维护可覆盖 key_name_input】:有覆盖→先查覆盖选择器命中可见元素;
+    #   无覆盖→ _kn_prefix 为空 → 下面老逻辑【原样】跑(#name + 任意可见 name 框、排搜索框),保证老代码不变。
+    _kn_ov = sel('key_name_input')                       # [] = 无页面覆盖
+    _kn_prefix = (("var KNS=" + json.dumps(_kn_ov) + ";for(var i=0;i<KNS.length;i++){try{var _kn=document.querySelector(KNS[i]);if(_kn&&_kn.offsetParent!==null)return true;}catch(e){}}") if _kn_ov else "")
+    # 【加固「创建弹窗没打开」误报】改版后命名框可能不再含单词 'name'(placeholder 变 "Untitled key"/"e.g. Production"、
+    #   浮动 label 致 placeholder 空、或 Radix portal 输入框无 name 元数据)→ 只认 'name' 的老门会把【已打开的弹窗】判否、
+    #   空转 6 轮误报。补一个【严格超集】分支:只要【确实打开的 dialog/modal 容器内】有可见非search文本输入就算开。
+    #   只放宽不收紧(整段只 return true)、限定 dialog 容器(不误命中 dashboard 外的 'Search by name…' 框)、
+    #   排除账单/地址弹窗(payment/card/cvc/zip…)、尺寸+可见性门挡占位框、裹 try/catch 异常静默回落原行为。
+    #   位置在 #name return 之后、name 正则 return 之前 → 带 #name 的老号在前面已 return、本分支不可达,老行为逐字不变。
+    _dlg_open_js = (
+        "try{var _mods=[].slice.call(document.querySelectorAll('[role=dialog],[aria-modal=\"true\"],[data-state=\"open\"][class*=ontent],[class*=modal i],[class*=overlay i],[class*=Dialog i]'));"
+        "for(var _i=0;_i<_mods.length;_i++){var _m=_mods[_i];"
+        "if(_m.offsetParent===null&&getComputedStyle(_m).position!=='fixed')continue;"
+        "var _r=_m.getBoundingClientRect();if(_r.width<40||_r.height<40)continue;"
+        "var _tx=(_m.innerText||'').toLowerCase();"
+        "if(/payment|card number|add a payment|billing address|update address|verify your identity|cardholder|expiry|cvc|postal code|zip/.test(_tx))continue;"
+        "var _ins=[].slice.call(_m.querySelectorAll('input,textarea'));"
+        "for(var _j=0;_j<_ins.length;_j++){var _e=_ins[_j];if(_e.offsetParent===null)continue;"
+        "var _t=(_e.type||'text').toLowerCase();"
+        "if(_t==='search'||_t==='hidden'||_t==='checkbox'||_t==='radio'||_t==='submit'||_t==='button'||_t==='file')continue;"
+        "var _em=((_e.id||'')+' '+(_e.getAttribute('name')||'')+' '+(_e.getAttribute('placeholder')||'')+' '+(_e.getAttribute('aria-label')||'')+' '+(_e.getAttribute('role')||'')).toLowerCase();"
+        "if(/search|combobox|listbox/.test(_em))continue;"
+        "var _ec=getComputedStyle(_e);if(_ec.visibility==='hidden'||_ec.display==='none')continue;"
+        "var _br=_e.getBoundingClientRect();if(_br.width<30||_br.height<8)continue;"
+        "return true;}}}catch(_e0){}")
+    name_visible = (_kn_prefix +
+                    "if(document.querySelector('#name')&&document.querySelector('#name').offsetParent!==null)return true;"
+                    + _dlg_open_js +
                     "return !!Array.from(document.querySelectorAll('input,textarea')).find(function(e){"
-                    "return e.offsetParent!==null && /(^|[^a-z])name([^a-z]|$)/i.test((e.id||'')+' '+(e.getAttribute('name')||'')+' '+(e.getAttribute('placeholder')||''));});")
-    # 打开创建弹窗：已开就别再点(再点会切掉)。New Key 是 React 按钮→【原生click】更可靠(evaluate点DOM可能不触发onClick)。
+                    "if(e.offsetParent===null)return false;"
+                    "var meta=((e.id||'')+' '+(e.getAttribute('name')||'')+' '+(e.getAttribute('placeholder')||'')+' '+(e.getAttribute('aria-label')||'')).toLowerCase();"
+                    "if(e.type==='search'||/search/.test(meta))return false;"
+                    "return /(^|[^a-z])name([^a-z]|$)/i.test(meta);});")
+    # 打开创建弹窗。【加固「创建弹窗没打开」间歇:落空 dashboard 后页面刚切、按钮/弹窗渲染有时序】:
+    #   ① 先等 dashboard 稳(New Key 按钮真出现) ② 点前把按钮【滚进视野】(原生 click 更可靠) ③ 6 轮重试、期间清残留 onboarding 浮层。
+    #   已开就别再点(再点会切掉);New Key 是 React 按钮 → 原生 click(evaluate 点 DOM 可能不触发 onClick)。
+    # 【元素维护可覆盖 newkey_button】:有覆盖→用覆盖文本(转义拼成正则);无覆盖→原样老表达式,保证老代码不变。
+    _nk_ov = sel('newkey_button')                        # [] = 无覆盖
+    _nk_test = (("new RegExp(" + json.dumps("|".join(re.escape(s) for s in _nk_ov)) + ",'i').test(t)") if _nk_ov
+                else "(/New Key|Create Key|Create API Key/i.test(t)||t==='Create')")
+    _NEWKEY_JS = ("var b=[].slice.call(document.querySelectorAll('button,[role=button],a')).find(function(x){"
+                  "var t=(x.innerText||'').trim();return " + _nk_test + ";});"
+                  "if(b){try{b.scrollIntoView({block:'center'});}catch(e){}}return b||null;")
+    _newkey_present = ("return !!Array.from(document.querySelectorAll('button,[role=button],a')).find(function(x){"
+                      "var t=(x.innerText||'').trim();return " + _nk_test + ";});")
+    # ① 等 dashboard 稳:New Key 按钮真出现 或 弹窗已在(最多 ~10s),别在刚切页的空窗里空点。
+    for _s in range(10):
+        if page.js(name_visible) or page.js(_newkey_present):
+            break
+        time.sleep(1)
     opened = False
-    for _ in range(4):
+    for _ in range(6):
         if page.js(name_visible):
             opened = True
             break
-        dismiss_onboarding(page)
-        if not _native_click_el(page, _TEXTBTN_JS, r"New Key|Create Key|Create API Key|^Create$"):
+        dismiss_onboarding(page)                          # 清残留 onboarding 浮层(可能挡着 New Key 按钮)
+        if not _native_click_el(page, _NEWKEY_JS):        # 找到 New Key 按钮 + 滚进视野 + 原生 click
             page.click_text(["New Key", "Create Key", "Create API Key"], 6)
         for _w in range(10):
             time.sleep(1)
@@ -348,8 +618,21 @@ def get_api_key(page, name=None, expiration="No expiration"):
         if opened:
             break
     if not opened:
-        log("[取Key] 创建弹窗没打开"); return {"ok": False, "key": None, "name": key_name}
-    page.fill_in_frames(["#name", 'input[name="name"]', 'input[placeholder*="name" i]'], key_name)
+        log("[取Key] 创建弹窗没打开(已等dashboard稳+滚动入视+6轮重试仍没开)"); return {"ok": False, "key": None, "name": key_name}
+    # 【乱写修复】不能用裸 input[placeholder*=name](会命中 dashboard 的 'Search by name...' 搜索框→把 key 名打进搜索框)。
+    # 优先弹窗内 name 字段 → #name / input[name=name] → 最后才退【弹窗内】placeholder=name;绝不裸匹配 placeholder。
+    # 【元素维护可覆盖 key_name_input】:有覆盖用覆盖列表,否则用下面老列表(保证老代码不变)。
+    # 末尾再追加【弹窗内非search文本框】兜底:配合上面 name_visible 的 dialog-open 超集分支——
+    #   当命名框已不叫 #name/无 name-placeholder(改版)时,前面具体选择器全落空才退到这里填弹窗内首个文本框。
+    #   全部 dialog 限定且排 search/combobox,且置于列表【最末】→ 带 #name 的老号在前面就命中返回,兜底不可达,老行为不变。
+    _DLG_FILL_FALLBACK = ['[role=dialog] input[type=text]:not([role=combobox])',
+                          '[aria-modal="true"] input[type=text]:not([role=combobox])',
+                          '[role=dialog] input:not([type]):not([role=combobox]):not([type=search])',
+                          '[aria-modal="true"] input:not([type]):not([role=combobox]):not([type=search])',
+                          '[role=dialog] textarea', '[aria-modal="true"] textarea']
+    _kn_fill = (sel('key_name_input') or ['[role=dialog] #name', '[aria-modal="true"] input[placeholder*="name" i]',
+                                          '#name', 'input[name="name"]', '[role=dialog] input[placeholder*="name" i]']) + _DLG_FILL_FALLBACK
+    page.fill_in_frames(_kn_fill, key_name)
     time.sleep(0.5)
     # 有效期 combobox（默认 No expiration，按需选）
     if expiration and expiration != "No expiration":

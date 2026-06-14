@@ -64,6 +64,23 @@ function pyFailReason(r) {
   if (r.error) return String(r.error).slice(0, 80);
   return s && Object.keys(s).length ? JSON.stringify(s).slice(0, 60) : 'unknown';
 }
+
+// 跨引擎衔接(split 第二轮)分类:某失败行该转去哪个引擎再试一次,返回 'hybrid'|'selenium'|null。
+// ★结果行不含 engine 字段 → 「当前引擎」由【来源结果文件】决定(results.jsonl=selenium / hybrid_results.jsonl=hybrid),
+//   故 sourceEngine 必须由调用方按文件传入,绝不从行里读。只对失败行判定。
+//   - selenium 失败且 steps.key===false(取 key 向导进了但抓不到 key,WIZARD_NO_KEY)→ 转 hybrid(Playwright 能过新页面)。
+//   - hybrid 失败且加卡人机验证过不去(card==='hcaptcha' / giveup_reason==='hcaptcha' / card_hcaptcha)→ 转 selenium。
+//   其它失败(declined / not_allowed / 代理网络 / 注册 Turnstile)不转。
+function handoffTarget(row, sourceEngine) {
+  if (!row || isSuccessRow(row)) return null;
+  const s = row.steps || {};
+  if (sourceEngine === 'selenium') return s.key === false ? 'hybrid' : null;
+  if (sourceEngine === 'hybrid') {
+    const hcap = s.card === 'hcaptcha' || row.giveup_reason === 'hcaptcha' || row.card_hcaptcha === true;
+    return hcap ? 'selenium' : null;
+  }
+  return null;
+}
 // Python 结果行 → 前端账号表形状(success / failed)。accByEmail:把输入账号的原密码 join 回来(结果文件不含密码)。
 function mapRow(r, accByEmail) {
   const exitIp = String(r.proxy || '').split(':')[0] || '';
@@ -105,11 +122,15 @@ function writeBatchResults(jobId, successRows, failedRows, successTpl, failureTp
 }
 
 // stdout 单号结果行解析(run.py / hybrid 两种格式)
+// 实时成功判定必须与 isSuccessRow 对齐:ok=true 或 steps.card=='card-bound' 都算成功。
+// 否则实时面板只按 ok= 单判 → 「加卡绑成但没取到 Key」的号被流成 account-failed,
+// 与最终聚合/运行详情/结果聚合(card-bound 计成功)对不上,成功账号面板空着不回显。
 function parseResultLine(line) {
+  const cardBound = /['"]card['"]\s*:\s*['"]card-bound['"]/.test(line); // 行内 steps 是 Python repr(单引号)
   let m = line.match(/════\s*结果\s+(\S+?)\s+ok=(\w+)\s+steps=/);   // run.py:  ════ 结果 NAME ok=B steps=...
-  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) };
+  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) || cardBound };
   m = line.match(/════\s+(\S+?)\s+结果\s+ok=(\w+)/);                // hybrid:  ════ NAME 结果 ok=B pw=...
-  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) };
+  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) || cardBound };
   return null;
 }
 
@@ -117,9 +138,23 @@ function parseResultLine(line) {
 // 但空串/空白 = 字段留空 → 用默认(Number('')===0 会误判成显式 0,故先判空)。
 function _numOr(v, d) { const s = String(v == null ? '' : v).trim(); if (s === '') return d; const n = Number(s); return Number.isFinite(n) ? n : d; }
 
+// ★并发硬上限(防 AdsPower 在高并发下批量掉线 session-deleted)。高级参数页 maxConcurrency 设了就把【任何 job】
+//   的每进程并发钳到 ≤ 它,无论控制台请求多少;留空/<=0 = 不限(老行为逐字节不变)。读 advanced-store(持久),
+//   每次起 job 时算 → 设一次以后都生效,不用每次手调。split 模式两引擎各跑 _clampConc 个 = 总 2× 上限,注意。
+function _clampConc(req, jobId) {
+  const c = Math.max(1, Number(req) || 1);
+  let cap = 0;
+  try { cap = Number((require('./advanced-store').get() || {}).maxConcurrency) || 0; } catch (_e) { cap = 0; }
+  if (cap > 0 && c > cap) {
+    try { console.error(`[engine-runner] 并发 ${c} 超过高级参数上限 ${cap} → 钳制为 ${cap}${jobId ? ` (job ${jobId})` : ''}`); } catch (_e) { /* 日志失败不影响钳制 */ }
+    return cap;
+  }
+  return c;
+}
+
 // UI 选项 → run.py 参数
 function seleniumArgs(accFile, pxFile, p, jobId) {
-  const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(Math.max(1, Number(p.concurrency) || 1))];
+  const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(_clampConc(p.concurrency, jobId))];
   a.push(p.doApiKey === false ? '--no-key' : '--do-key');
   if (p.doCard) a.push('--do-card');
   if (p.doPurchase) { a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5))); }
@@ -134,8 +169,9 @@ function seleniumArgs(accFile, pxFile, p, jobId) {
 }
 // UI 选项 → hybrid_run.py 参数(混合全流程:注册→取key→绑地址→加卡)
 function hybridArgs(accFile, pxFile, p, jobId) {
-  const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(Math.max(1, Number(p.concurrency) || 1))];
+  const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(_clampConc(p.concurrency, jobId))];
   if (p.unifiedPassword) a.push('--op-pw', p.unifiedPassword);
+  if (p.doChangePw && p.unifiedPassword) a.push('--do-changepw'); // 改密目标=统一密码(已由 --op-pw 带入);混合现支持改密
   a.push('--max-rotations', String(_numOr(p.maxRotations, 3)));
   a.push('--cooldown-hours', String(_numOr(p.cooldownHours, 3)));
   a.push('--max-reopen', String(_numOr(p.maxReopen, 3)));
@@ -154,6 +190,11 @@ function buildEnv(p) {
   const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
   // 验证码/邮箱 key 池:挑一个可用 key 注入 env(Python common/config.py 读它们);池空回退 config。
   try { Object.assign(env, serviceKeys.envPatch()); } catch (_e) { /* 用 config 兜底 */ }
+  // 高级参数(全局/共用调优旋钮 advanced-store):只注用户【显式设的覆盖值】(空=Python 用内置默认)。
+  // 放在下方引擎配置 FIXC_*/WIZARD_* 显式注入【之前】→ 引擎配置(per-engine)优先;且两边键去重不重叠,互不覆盖。
+  try { Object.assign(env, require('./advanced-store').envPatch()); } catch (_e) { /* 覆盖失败不致命,用默认 */ }
+  // 元素选择器覆盖(selectors-store → ORSEL_*):页面改了关键元素定位规则就注进去;common.selectors.sel() 读,空=用内置默认。
+  try { Object.assign(env, require('./selectors-store').envPatch()); } catch (_e) { /* 覆盖失败不致命,用内置默认 */ }
   // 跨节点下发:中心机随 payload 复制了它生效的验证码/邮箱 key → 子机优先用下发的(覆盖本机池/config)。
   if (p.captchaApiKey) { env.OPENROUTER_CAPTCHA_KEY = String(p.captchaApiKey); if (p.captchaProvider) env.OPENROUTER_CAPTCHA_PROVIDER = String(p.captchaProvider); }
   if (p.mailboxApiKey) { env.OPENROUTER_FIRSTMAIL_KEY = String(p.mailboxApiKey); if (p.mailboxApiBaseUrl) env.OPENROUTER_FIRSTMAIL_BASE = String(p.mailboxApiBaseUrl); }
@@ -183,6 +224,12 @@ function buildEnv(p) {
   // 点框后复检等待(秒):Fix C 点完 I am human 后轮询复检框是否消失的时间窗(控制台可配)
   const _nRecheck = Number(p.hcRecheckWait);
   if (p.hcRecheckWait !== undefined && p.hcRecheckWait !== '' && Number.isFinite(_nRecheck)) env.FIXC_HC_RECHECK_WAIT = String(_nRecheck);
+  // 绑卡结果等待上限(秒):点 Save 后轮询绑成/被拒结果的上限,到点转去刷新核验(fixc_core 读 FIXC_RESULT_WAIT)。引擎配置可调。
+  const _nResWait = Number(p.cardResultWait);
+  if (p.cardResultWait !== undefined && p.cardResultWait !== '' && Number.isFinite(_nResWait) && _nResWait > 0) env.FIXC_RESULT_WAIT = String(_nResWait);
+  // 取key卡死自救阈值(秒):某一屏卡过这么久不前进 → 刷新逃逸(steps_key 读 WIZARD_STALL_REFRESH)。仅纯 Selenium 取key 用。
+  const _nStall = Number(p.wizardStallRefresh);
+  if (p.wizardStallRefresh !== undefined && p.wizardStallRefresh !== '' && Number.isFinite(_nStall) && _nStall > 0) env.WIZARD_STALL_REFRESH = String(_nStall);
   return env;
 }
 
@@ -208,6 +255,16 @@ function runSpec(jobId, spec, publish, shared) {
 
     const onLine = (line) => {
       if (!line) return;
+      // 逐号阶段进度标记(Python common.log_stage 发):转成 worker-update 画线程进度条,并吞掉这行不刷屏运行日志。
+      // 格式与 base.py 对齐:@@STAGE@@ slot=<int> stage=<name> status=<running|done> email=<email>
+      const sm = line.match(/@@STAGE@@\s+slot=(\d+)\s+stage=(\S+)\s+status=(\S+)\s+email=(\S+)/);
+      if (sm) {
+        publish(jobId, 'worker-update', { worker: {
+          workerId: Number(sm[1]) + (spec.slotBase || 0),   // split 两子进程槽位都从 0 起 → 按 spec 偏移防 workerId 撞车
+          status: sm[3] === 'done' ? 'done' : 'running', stage: sm[2], account: sm[4],
+        } });
+        return;
+      }
       const tagged = spec.tag ? `${spec.tag} ${line}` : line;
       publish(jobId, 'log', tagged);
       const r = parseResultLine(line);
@@ -257,14 +314,19 @@ async function spawnEngine(jobId, engine, payload, publish) {
       startLines.hybrid = countLines(RESULTS.hybrid);
       // 多引擎共屏:两进程各自 slot 都从 0 起会叠窗(layout.py 用 GRID_TOTAL/GRID_SLOT_OFFSET 统一网格)。
       // 各进程跑 concurrency 个 worker(slot 0..C-1)→ 共同 GRID_TOTAL=2C,A 偏移 0、B 偏移 C → 两组窗口不重叠。
-      const _c = Math.max(1, Number(payload.concurrency) || 1);
-      const envA = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: '0' };
-      const envB = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: String(_c) };
+      const _c = _clampConc(payload.concurrency, jobId);   // 钳制后再算网格,保证窗口布局与实际 worker 数一致
+      // 跨引擎衔接开 → 第一轮【秒关/快速失败】:Selenium 组撞新版取key向导即弃(转混合)、混合组绑卡撞图片九宫格即弃(转纯Sel)。
+      // 引擎专属标志,互不误伤;第二轮(衔接重试)用 base env 不注 → 最终引擎全力尝试。
+      const _ho = payload.crossHandoff !== false;
+      const envA = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: '0', ...(_ho ? { OPENROUTER_FAST_HANDOFF_KEY: '1' } : {}) };
+      const envB = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: String(_c), ...(_ho ? { OPENROUTER_FAST_HANDOFF_CARD: '1' } : {}) };
       specs = [
-        { script: path.join(SELENIUM_DIR, 'run.py'), args: seleniumArgs(w.groupA.accFile, w.pxFile, payload, jobId), env: envA, label: '[引擎A·Selenium]', tag: '[A]' },
-        { script: path.join(SELENIUM_DIR, 'hybrid_run.py'), args: hybridArgs(w.groupB.accFile, w.pxFile, payload, jobId), env: envB, label: '[引擎B·混合]', tag: '[B]' },
+        { script: path.join(SELENIUM_DIR, 'run.py'), args: seleniumArgs(w.groupA.accFile, w.pxFile, payload, jobId), env: envA, label: '[引擎A·Selenium]', tag: '[A]', slotBase: 0 },
+        { script: path.join(SELENIUM_DIR, 'hybrid_run.py'), args: hybridArgs(w.groupB.accFile, w.pxFile, payload, jobId), env: envB, label: '[引擎B·混合]', tag: '[B]', slotBase: _c },
       ];
       resultFiles = [RESULTS.selenium, RESULTS.hybrid];
+      shared._splitPxFile = w.pxFile;   // 第二轮(跨引擎衔接)复用同一 proxies.txt(不重写代理)
+      shared._splitClampC = _c;          // 第二轮沿用同一网格基数 GRID_TOTAL=2C
     } else {
       const w = tempInputs.write(jobId, payload.accounts, payload.proxies);
       const isHybrid = engine === 'hybrid';
@@ -291,8 +353,46 @@ async function spawnEngine(jobId, engine, payload, publish) {
   // 排除其它 job(不同 job_id)的行。比"文件级 all-or-nothing"稳:新旧 Python 混跑时不会把本 job 的结果整批丢掉。
   const _tailStats = { dropped: 0 };
   const harvest = (file, startLine) => readTail(file, startLine, _tailStats).filter((r) => r && (!r.job_id || r.job_id === jobId));
-  const rows = [];
-  if (engine === 'split') {
+  let rows = [];
+  if (engine === 'split' && payload.crossHandoff !== false) {
+    // 跨引擎衔接:第一轮分别 harvest 两文件(用【来源文件】判定当前引擎),按规则分两桶,再跑唯一一轮第二轮,按 email 合并(第二轮覆盖)。
+    const selRows = harvest(RESULTS.selenium, startLines.selenium);
+    const hybRows = harvest(RESULTS.hybrid, startLines.hybrid);
+    const toHybrid = new Set();    // selenium 新页面过不去 → 转混合
+    const toSelenium = new Set();  // 混合 加卡人机验证过不去 → 转 selenium
+    for (const r of selRows) if (r && r.email && handoffTarget(r, 'selenium') === 'hybrid') toHybrid.add(r.email);
+    for (const r of hybRows) if (r && r.email && handoffTarget(r, 'hybrid') === 'selenium') toSelenium.add(r.email);
+    const byEmail = new Map();      // 合并底图:第一轮每号一行
+    for (const r of selRows) if (r && r.email) byEmail.set(r.email, r);
+    for (const r of hybRows) if (r && r.email) byEmail.set(r.email, r);
+
+    if (toHybrid.size === 0 && toSelenium.size === 0) {
+      rows = [...byEmail.values()];   // 无可衔接 → 跳过第二轮(零额外开销)
+    } else {
+      publish(jobId, 'log', `衔接重试:${toHybrid.size} 个新页面失败转混合 / ${toSelenium.size} 个人机验证失败转Selenium`);
+      // 实时计数清账(仅影响 LIVE UI):被转号第一轮已 account-failed 且 local-part 进了 seenResults,
+      // 删掉让第二轮结果能重新 emit 并回退 fail 计数;最终 summary 由合并 rows 重算,与此无关(best-effort,local-part 跨域撞车只影响实时显示)。
+      for (const em of toHybrid)   { const nm = String(em).split('@')[0]; if (shared.seenResults.delete(nm)) shared.counters.fail -= 1; }
+      for (const em of toSelenium) { const nm = String(em).split('@')[0]; if (shared.seenResults.delete(nm)) shared.counters.fail -= 1; }
+      const pxFile = shared._splitPxFile;                                   // 复用第一轮的 proxies.txt
+      const _c = shared._splitClampC || _clampConc(payload.concurrency, jobId);
+      const p2specs = [];
+      if (toHybrid.size) {
+        const w2 = tempInputs.writeSubset(jobId, payload.accounts, toHybrid, 'accounts.handoff-hybrid.txt');
+        if (w2.count) p2specs.push({ script: path.join(SELENIUM_DIR, 'hybrid_run.py'), args: hybridArgs(w2.accFile, pxFile, payload, jobId), env: { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: '0' }, label: '[衔接·混合]', tag: '[H→混合]', slotBase: 0 });
+      }
+      if (toSelenium.size) {
+        const w2 = tempInputs.writeSubset(jobId, payload.accounts, toSelenium, 'accounts.handoff-selenium.txt');
+        if (w2.count) p2specs.push({ script: path.join(SELENIUM_DIR, 'run.py'), args: seleniumArgs(w2.accFile, pxFile, payload, jobId), env: { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: String(_c) }, label: '[衔接·Selenium]', tag: '[S→Sel]', slotBase: _c });
+      }
+      // 先记第二轮 startLines,再跑,只 harvest 第二轮新增行 → 与第一轮隔离
+      const p2start = { selenium: countLines(RESULTS.selenium), hybrid: countLines(RESULTS.hybrid) };
+      if (p2specs.length) await Promise.all(p2specs.map((s) => runSpec(jobId, s, publish, shared)));
+      for (const r of harvest(RESULTS.selenium, p2start.selenium)) if (r && r.email) byEmail.set(r.email, r);  // 第二轮覆盖第一轮
+      for (const r of harvest(RESULTS.hybrid, p2start.hybrid)) if (r && r.email) byEmail.set(r.email, r);
+      rows = [...byEmail.values()];
+    }
+  } else if (engine === 'split') {
     harvest(RESULTS.selenium, startLines.selenium).forEach((r) => rows.push(r));
     harvest(RESULTS.hybrid, startLines.hybrid).forEach((r) => rows.push(r));
   } else {
@@ -339,4 +439,4 @@ async function spawnEngine(jobId, engine, payload, publish) {
   }
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget };

@@ -58,6 +58,16 @@ def log(*a):
     print("%s %s" % (time.strftime("%H:%M:%S"), _LOG_PREFIX), *a, flush=True)
 
 
+def log_stage(slot, email, stage, status="running"):
+    """逐号阶段进度标记(结构化,供 web/engine-runner.js 解析成 worker-update 画线程进度条)。
+    slot=并发槽位(0..N-1,当 workerId)；stage∈env/auth/key/card/charge/changepw；status=running|done。
+    email 放末尾,Node 侧正则贪婪取到行尾。发射失败绝不影响主流程。"""
+    try:
+        print("@@STAGE@@ slot=%s stage=%s status=%s email=%s" % (slot, stage, status, email), flush=True)
+    except Exception:
+        pass
+
+
 def digits(s):
     return "".join(ch for ch in str(s if s is not None else "") if ch.isdigit())
 
@@ -177,6 +187,6 @@ __all__ = [
     "CREDITS_URL", "KEYS_URL", "SIGNUP_URL", "SIGNIN_URL",
     "NUM", "EXP", "CVC", "ZIP",
     "RE_502", "RE_DECL", "RE_OK", "RE_NEEDPHONE", "RE_HCAPTCHA",
-    "set_log_prefix", "log", "digits", "http_post_json",
+    "set_log_prefix", "log", "log_stage", "digits", "http_post_json",
     "_atomic_write_json", "_FileLock", "_file_lock",
 ]

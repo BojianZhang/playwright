@@ -9,10 +9,12 @@
 # 入参 op_password = OpenRouter 账号密码(注册时设/登录时用)；mailbox_pw = 邮箱密码(读 OTP 用)。
 # ═══════════════════════════════════════════════════════════════════════
 
+import os
 import time
 
 import common
 from common import log, SIGNUP_URL, SIGNIN_URL, KEYS_URL
+from common.selectors import sel, sel_csv   # 元素维护页可覆盖关键元素选择器(无覆盖=内置默认,老代码原样)
 from services import captcha
 from services import firstmail
 
@@ -127,24 +129,25 @@ def _solve_turnstile_if_present(page, page_url, cfg, exit_url_substrs):
     return False  # 没抓到 hook（可能没 Turnstile 但也没推进）
 
 
-def _enter_otp(page, email, mailbox_pw, cfg, since_ts):
+def _enter_otp(page, email, mailbox_pw, cfg, since_ts, op_password=""):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
     log("[OTP] 到验证页，读邮箱 %s 的验证码…" % email)
+    # alt_password=op_password:★该号若被改过密,邮箱真实密码已是统一密码,旧 mailbox_pw 读不到信 → 自动换统一密码读(根治 fail:OTP)。
     code = firstmail.wait_verify_code(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"),
-                                      attempts=16, interval=3, since_ts=since_ts, strict=True)
+                                      attempts=16, interval=3, since_ts=since_ts, strict=True, alt_password=op_password)
     if not code:
         # 兜底:OTP 邮件偶尔晚到 → 多等几秒再多轮询一组(仍 strict,绝不回退旧码),取最新一封
         log("[OTP] 首轮没读到码 → 等 6s 再兜底轮询一次(仍 strict)")
         time.sleep(6)
         code = firstmail.wait_verify_code(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"),
-                                          attempts=6, interval=3, since_ts=since_ts, strict=True)
+                                          attempts=6, interval=3, since_ts=since_ts, strict=True, alt_password=op_password)
     if not code:
         log("[OTP] ✗ Firstmail 没读到【本次的新】验证码(strict:不提交旧码)"); return False
     log("[OTP] 读到验证码 %s，填入并提交" % code)
     # 填 OTP（Clerk 多为单框/拆分框，往第一个可见的填整码通常能填满）
     filled = False
-    for css in ['input[inputmode="numeric"]', 'input[name="code"]', 'input[autocomplete="one-time-code"]', 'input[id*="code"]']:
+    for css in sel('otp_input', 'input[inputmode="numeric"]', 'input[name="code"]', 'input[autocomplete="one-time-code"]', 'input[id*="code"]'):
         try:
             els = [e for e in page.d.find_elements(By.CSS_SELECTOR, css) if e.is_displayed()]
             if els:
@@ -162,17 +165,23 @@ def _enter_otp(page, email, mailbox_pw, cfg, since_ts):
     return True
 
 
-def _verify_email_link(page, email, mailbox_pw, cfg):
+def _verify_email_link(page, email, mailbox_pw, cfg, op_password=""):
     """注册邮箱验证 = Clerk 魔法链接（非验证码）：读链接 → 同浏览器打开 → 回 keys 确认。
-    收不到链接时点页面上的 'Resend' 让 OpenRouter 重发再轮询(最多3轮),应对首封邮件丢失/晚到。"""
+    收不到链接时点页面上的 'Resend' 让 OpenRouter 重发再轮询(最多3轮),应对首封邮件丢失/晚到。
+    op_password:改过密的号(登录失败回退重注册时)邮箱真实密码已是统一密码 → 旧密码读不到链接就用统一密码读。"""
     log("[验证] 到验证页，读邮箱 %s 的 Clerk 注册验证链接…" % email)
     link = None
-    for _cycle in range(3):                          # 1 次初始 + 2 次重发
+    # 【可前端调:高级参数页 邮箱验证组】默认 3轮×12次×3s(+Resend)≈196s。收信慢/想快失败时把这几个调小;
+    #   不设=用内置默认(逐字节同原行为)。MAIL_VERIFY_CYCLES=1 即只读不重发。
+    _v_cycles = max(1, int(os.environ.get("MAIL_VERIFY_CYCLES", "3") or 3))         # 重发轮数(1 次初始 + 其余重发)
+    _v_attempts = max(1, int(os.environ.get("MAIL_VERIFY_ATTEMPTS", "12") or 12))   # 每轮读链接轮询次数
+    _v_interval = float(os.environ.get("MAIL_VERIFY_INTERVAL", "3") or 3)           # 每次轮询间隔(秒)
+    for _cycle in range(_v_cycles):                  # 1 次初始 + (cycles-1) 次重发
         link = firstmail.wait_verify_link(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"),
-                                          attempts=12, interval=3)
+                                          attempts=_v_attempts, interval=_v_interval, alt_password=op_password)
         if link:
             break
-        if _cycle < 2:
+        if _cycle < _v_cycles - 1:
             clicked = False
             for _w in range(8):                      # 'Resend (N)' 倒计时结束才可点,最多等 24s
                 if page.click_text(["Resend", "Resend link"], 2):
@@ -208,13 +217,39 @@ def register(page, email, op_password, mailbox_pw, cfg):
             _diag(page, "noform")
             return "fail:NO_SIGNUP_FORM"
     local = email.split("@")[0]
-    fn = _set_value(page, "#firstName-field", (local[:6] or "John").capitalize())
-    ln = _set_value(page, "#lastName-field", "M")
-    ev = _set_value(page, "#emailAddress-field", email)
-    pv = _set_value(page, "#password-field", op_password)
-    lc = _check(page, "#legalAccepted-field")
-    log("[注册] 填表 firstName=%s lastName=%s email=%s password=%s legal=%s" % (fn, ln, ev, pv, lc))
+    # 【时序竞态修复】Clerk 注册表单 wait_field_present 一出现就填,但它常在随后 hydrate/重渲染时把刚填的值清掉
+    #   (stanleysanchez 现象:_set_value 全 True,但紧接着 #field.value 全空 → 空表单提交触发 required 校验,
+    #    再 3 次重提 + 解 Turnstile 干耗 = 看着「卡死」)。_set_value 只确认 send_keys 跑了,没确认值【粘住】。
+    #   → 填完【回读真实 #field.value 校验】,email/password(≥8)/legal 没粘住就整体重填,最多 3 轮;粘住才提交。
+    def _fill_form():
+        _set_value(page, "#firstName-field", (local[:6] or "John").capitalize())
+        _set_value(page, "#lastName-field", "M")
+        _set_value(page, "#emailAddress-field", email)
+        _set_value(page, "#password-field", op_password)
+        _check(page, "#legalAccepted-field")
+
+    def _form_stuck():
+        d = page.js("return {em:((document.querySelector('#emailAddress-field')||{}).value||''),"
+                    "pw:(((document.querySelector('#password-field')||{}).value||'').length),"
+                    "legal:!!((document.querySelector('#legalAccepted-field')||{}).checked)};") or {}
+        return bool(d.get("em")) and (d.get("pw") or 0) >= 8 and bool(d.get("legal"))
+
+    stuck = False
+    for _fa in range(3):
+        _fill_form()
+        time.sleep(0.8)   # 留窗口给 React:要清值就在这 0.8s 内清掉,之后回读才反映真实状态
+        if _form_stuck():
+            stuck = True
+            break
+        log("[注册] 填表值没粘住(第%d次,表单疑似刚 hydrate 重渲染)→ 整体重填" % (_fa + 1))
+        time.sleep(1.0)
+    log("[注册] 填表 stuck=%s(email/password/legal 已回读确认)" % stuck)
     _diag(page, "filled")
+    if not stuck:
+        # 3 次重填仍没粘住 → 别空提交(会 3 次重提 + 白解 Turnstile 干耗成"卡死"),快速失败走整号重试(下轮换新环境/重渲染时机不同)。
+        log("[注册] 3 次重填后表单值仍没粘住 → 快速失败,不空提交(省 2captcha + 不卡死)")
+        _diag(page, "fill_stuck_fail")
+        return "fail:FORM_NOT_FILLED"
     since = time.time() * 1000
     # 提交 + 解 Turnstile + 等到验证页;若提交后仍停在 /sign-up(Turnstile widget 在但没提交成功),
     # 再点一次 Sign Up 并必要时重解 Turnstile,最多重试 2 次(共 3 次提交)再判 UNCONFIRMED。
@@ -253,7 +288,7 @@ def register(page, email, op_password, mailbox_pw, cfg):
             break
     log("[注册] 提交后停在 …%s (到验证页=%s)" % (page.url()[-40:], "/verify-email" in page.url()))
     if "/verify-email" in page.url():
-        if not _verify_email_link(page, email, mailbox_pw, cfg):
+        if not _verify_email_link(page, email, mailbox_pw, cfg, op_password=op_password):
             _diag(page, "verify_fail")
             return "fail:VERIFY_LINK"
     # 确认登录
@@ -271,7 +306,7 @@ def login(page, email, op_password, mailbox_pw, cfg):
     page.goto(SIGNIN_URL, wait=2)
     if not page.wait_field_present(["#identifier-field"], 20, "identifier"):
         return "fail:SIGNIN_NO_FORM"
-    _set_value(page, "#identifier-field", email)
+    _set_value(page, sel_csv('signin_identifier', '#identifier-field'), email)
     page.click_text(["Continue"], 6)
     time.sleep(2)
     _set_value(page, "#password-field", op_password)
@@ -290,7 +325,8 @@ def login(page, email, op_password, mailbox_pw, cfg):
     _solve_turnstile_if_present(page, SIGNIN_URL, cfg, ["/factor-two", "/verify", "/settings"])
     u = page.url()
     if "/factor-two" in u or "/verify" in u:
-        if not _enter_otp(page, email, mailbox_pw, cfg, since):
+        # 传 op_password 作备用密码:改过密的号邮箱真实密码=统一密码,旧 mailbox_pw 读不到 OTP(fail:OTP 根因)。
+        if not _enter_otp(page, email, mailbox_pw, cfg, since, op_password=op_password):
             return "fail:OTP"
     # 确认
     em = detect_session(page)

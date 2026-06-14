@@ -5,9 +5,9 @@ import { Icon } from '../../lib/icons';
 import { withToken } from '../../lib/auth';
 import type { JobStreamState } from '../../lib/useJobStream';
 import { PoolTab, LedgerTab, StatusTab, ErrorsTab } from '../panels';
-import { ENGINE_LABEL, STAGE_LABELS, STAGE_ORDER, type Engine, type TabKey } from './shared';
+import { STAGE_LABELS, STAGE_ORDER, SEL_STAGE_LABELS, SEL_STAGE_ORDER, type Engine, type TabKey } from './shared';
 
-export default function MonitorPanel({ state, isPython, engine, submitting, jobId, runHint, onRun, requeue, onOpenPolicy }: {
+export default function MonitorPanel({ state, isPython, submitting, jobId, runHint, onRun, requeue, onOpenPolicy }: {
   state: JobStreamState; isPython: boolean; engine: Engine; submitting?: boolean; jobId: string | null;
   runHint: { html?: string; danger?: boolean }; onRun: () => void; requeue: () => void; onOpenPolicy: () => void;
 }) {
@@ -15,15 +15,18 @@ export default function MonitorPanel({ state, isPython, engine, submitting, jobI
   const failed = state.failed;
 
   const workerRows = useMemo(() => {
+    // 阶段词表按引擎选:Python(Selenium/混合)走 SEL_*,Playwright 走原词表。进度条百分比 = 当前阶段在序列里的位置。
+    const order = isPython ? SEL_STAGE_ORDER : STAGE_ORDER;
+    const labels = isPython ? SEL_STAGE_LABELS : STAGE_LABELS;
     const ids = Object.keys(state.workers).map(Number).sort((a, b) => a - b);
     return ids.map((id) => {
       const w = state.workers[id];
-      const idx = STAGE_ORDER.indexOf(w.stage || '');
-      const pct = w.status === 'done' ? 100 : Math.max(2, Math.round(((idx < 0 ? 0 : idx) / (STAGE_ORDER.length - 1)) * 100));
-      const stage = STAGE_LABELS[w.stage || ''] || w.stage || w.status || '';
+      const idx = order.indexOf(w.stage || '');
+      const pct = w.status === 'done' ? 100 : Math.max(2, Math.round(((idx < 0 ? 0 : idx) / (order.length - 1)) * 100));
+      const stage = labels[w.stage || ''] || w.stage || w.status || '';
       return { id, account: w.account || '', stage, pct };
     });
-  }, [state.workers]);
+  }, [state.workers, isPython]);
   const aliveCount = workerRows.filter((w) => { const s = state.workers[w.id]; return s && s.status !== 'done' && s.status !== 'idle' && s.status !== 'failed'; }).length;
 
   const Stat = ({ cls, val, label }: { cls: string; val: string | number; label: React.ReactNode }) => (
@@ -66,26 +69,21 @@ export default function MonitorPanel({ state, isPython, engine, submitting, jobI
 
       {/* 监控面板 */}
       <section className="card">
-        {isPython ? (
-          <div className="panel-sec">
-            <div className="panel-sec-head"><span className="ps-title"><Icon name="activity" size={14} style={{ color: 'var(--primary)' }} />实时进度</span></div>
-            <div className="worker-empty">{ENGINE_LABEL[engine]} 引擎按【运行日志】展示实时进度(见下方标签);成败计数见上方统计条。{state.running ? ' 运行中…' : ''}</div>
+        {/* 工作线程实时状态:Playwright 与 Python(Selenium/混合)都渲染逐号阶段进度条。
+            Python 进度来自子进程 stdout 的 @@STAGE@@ 标记 → engine-runner 转 worker-update(见 useJobStream)。 */}
+        <div className="panel-sec">
+          <div className="panel-sec-head"><span className="ps-title"><Icon name="cpu" size={14} style={{ color: 'var(--primary)' }} />工作线程实时状态</span><span className="cnt-pill" style={{ marginLeft: 8 }}>{aliveCount} 个线程</span></div>
+          <div>
+            {!workerRows.length ? <div className="worker-empty">尚未开始 —— 在上方填好配置后点 <b style={{ color: 'var(--text)' }}>「开始执行」</b>,每个浏览器线程的实时进度会显示在这里。{isPython && state.running ? ' 运行中…(等首个账号进入阶段)' : ''}</div> :
+              workerRows.map((w) => (
+                <div className="worker-row" key={w.id}>
+                  <span className="wid">#{w.id}</span>
+                  <div><div className="wmail">{w.account}</div><div className="wstage">阶段:{w.stage}</div></div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="wbar"><i style={{ width: w.pct + '%' }} /></div><span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-3)', minWidth: 34, textAlign: 'right' }}>{w.pct}%</span></div>
+                </div>
+              ))}
           </div>
-        ) : (
-          <div className="panel-sec">
-            <div className="panel-sec-head"><span className="ps-title"><Icon name="cpu" size={14} style={{ color: 'var(--primary)' }} />工作线程实时状态</span><span className="cnt-pill" style={{ marginLeft: 8 }}>{aliveCount} 个线程</span></div>
-            <div>
-              {!workerRows.length ? <div className="worker-empty">尚未开始 —— 在上方填好配置后点 <b style={{ color: 'var(--text)' }}>「开始执行」</b>,每个浏览器线程的实时进度会显示在这里。</div> :
-                workerRows.map((w) => (
-                  <div className="worker-row" key={w.id}>
-                    <span className="wid">#{w.id}</span>
-                    <div><div className="wmail">{w.account}</div><div className="wstage">阶段:{w.stage}</div></div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="wbar"><i style={{ width: w.pct + '%' }} /></div><span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-3)', minWidth: 34, textAlign: 'right' }}>{w.pct}%</span></div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
+        </div>
 
         <div className="panel-sec">
           <div className="io-grid">

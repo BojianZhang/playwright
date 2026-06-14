@@ -1,0 +1,5 @@
+{
+  "fixcZipDeadline": "10",
+  "zipRetry": "0",
+  "maxConcurrency": "8"
+}

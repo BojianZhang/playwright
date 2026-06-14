@@ -53,6 +53,18 @@ function writeSplit(jobId, accounts, proxies, ratioA) {
   return { dir, pxFile, groupA: { accFile: aFile, count: groupA.length }, groupB: { accFile: bFile, count: groupB.length } };
 }
 
+// 跨引擎衔接(split 第二轮)用:从 payload.accounts 里挑「邮箱 ∈ emailSet」的子集,写到 <jobId>/<name>。
+// 代理沿用 writeSplit 已写的 proxies.txt(不重写代理)。返回 { accFile, count }。
+// 文件名(如 accounts.handoff-hybrid.txt)不与 accounts.A/B.txt 冲突,readResumeInputs 也不读它们 → 续跑不受影响;cleanup(jobId) 已能清。
+function writeSubset(jobId, accounts, emailSet, name) {
+  const dir = path.join(TMP_BASE, jobId);
+  fs.mkdirSync(dir, { recursive: true });
+  const subset = (accounts || []).filter((a) => emailSet.has(a.email));
+  const accFile = path.join(dir, name);
+  fs.writeFileSync(accFile, subset.map((a) => `${a.email}:${a.password || ''}`).join('\n') + '\n', 'utf8');
+  return { accFile, count: subset.length };
+}
+
 function cleanup(jobId) {
   try { fs.rmSync(path.join(TMP_BASE, jobId), { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 }
@@ -86,4 +98,4 @@ function readResumeInputs(jobId) {
   return { accountsRaw, proxiesRaw: rd('proxies.txt'), manifest, splitHint };
 }
 
-module.exports = { write, writeSplit, cleanup, writeManifest, readResumeInputs, TMP_BASE };
+module.exports = { write, writeSplit, writeSubset, cleanup, writeManifest, readResumeInputs, TMP_BASE };
