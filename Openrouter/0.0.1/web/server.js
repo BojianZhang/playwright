@@ -1063,9 +1063,18 @@ function launchPythonJob(engine, sliced, proxies, payload, resumedFrom) {
     tempInputs.writeManifest(jobId, manifest);
   } catch (_e) { /* manifest 落盘失败不阻断:续跑会回退 runs.json 精简参数 */ }
   try {
+    // 配置快照:记下本次跑用的【激活引擎预设 / 执行方案 / 高级参数】→ 历史可溯源"上批是哪套配置跑出的"。纯只读,不改任何 store。
+    let configSnapshot = null;
+    try {
+      configSnapshot = {
+        advanced: require('./advanced-store').get() || {},
+        enginePresetId: (((require('./engine-config-store').getAll() || {}).engines || {})[engine] || {}).activeId || null,
+        schemeId: (((require('./schemes-store').getAll() || {}).schemes) || {}).activeId || null,
+      };
+    } catch (_e2) { /* 快照失败不影响起 job */ }
     runsStore.start({
       jobId, nodeId: NODE_ID, engine, startedAt: Date.now(), total: sliced.length, resumedFrom: resumedFrom || null,
-      params: { engine, concurrency: Math.max(1, Math.floor(Number(payload.concurrency) || 1)), doApiKey: payload.doApiKey !== false, doCard: !!payload.doCard, doPurchase: !!payload.doPurchase, solveHcaptcha: payload.solveHcaptcha || 'random' },
+      params: { engine, concurrency: Math.max(1, Math.floor(Number(payload.concurrency) || 1)), doApiKey: payload.doApiKey !== false, doCard: !!payload.doCard, doPurchase: !!payload.doPurchase, solveHcaptcha: payload.solveHcaptcha || 'random', configSnapshot },
     });
   } catch (_e) { /* 历史落盘失败不阻断 */ }
   if (resumedFrom) eventBus.publish(jobId, 'log', `续跑自 ${resumedFrom.slice(-14)}:断点续跑(resume=on)将自动跳过已完成的号`);

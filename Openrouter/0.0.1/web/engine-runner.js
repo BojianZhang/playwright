@@ -382,6 +382,17 @@ async function spawnEngine(jobId, engine, payload, publish) {
   // 邮箱→原密码映射(结果行不含密码):流式 account-failed 带上它,前端「重跑(登录)」才能回填 email:密码,否则只剩 email: 空密码登不进。
   const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), seenResults: new Set() };
 
+  // 并发钳制可见提示:maxConcurrency 把请求并发压低时,在【运行日志】显式告知(此前只 console.error 进服务端 stderr,
+  //   控制台看不到→用户以为按填的并发在跑)。spawnEngine 内只算/发一次,避免 selenium/hybridArgs 重复打日志。
+  try {
+    const _reqC = Math.max(1, Number(payload.concurrency) || 1);
+    const _clampedC = _clampConc(payload.concurrency, jobId);
+    if (_clampedC < _reqC) {
+      publish(jobId, 'log', `⚙ 并发已从 ${_reqC} 钳制到 ${_clampedC} 以保护 AdsPower(高级参数·并发硬上限 maxConcurrency)`
+        + (engine === 'split' ? `;split 两引擎各 ${_clampedC} = 共 ${_clampedC * 2}` : ''));
+    }
+  } catch (_e) { /* 提示失败不影响起 job */ }
+
   let specs = [];
   let resultFiles = [];
   let startLines = {};

@@ -64,7 +64,9 @@ export interface AccountFailedEvt {
 export interface JobDoneEvt { jobId: string; total: number; success: number; failed: number; durationMs: number; failureStats?: { total: number; byClass: Record<string, number>; byReason: Record<string, number> }; }
 
 // 运行历史 + 总览(期2)
-export interface RunParams { mode?: string; concurrency?: number; count?: number; billingAction?: string; doApiKey?: boolean; doPasswordChange?: boolean; topUpAmount?: number; headed?: boolean; browserProvider?: string; }
+export interface RunParams { mode?: string; concurrency?: number; count?: number; billingAction?: string; doApiKey?: boolean; doPasswordChange?: boolean; topUpAmount?: number; headed?: boolean; browserProvider?: string; engine?: string; doCard?: boolean; doPurchase?: boolean; solveHcaptcha?: string;
+  // 配置快照:本次跑用的激活引擎预设/执行方案/高级参数(server.js handleApiRun 写入,可溯源)
+  configSnapshot?: { advanced?: Record<string, unknown>; enginePresetId?: string | null; schemeId?: string | null } | null; }
 export interface RunSummary {
   jobId: string; nodeId: string; engine?: string; status: 'running' | 'finished' | 'error' | 'interrupted';
   startedAt: number; finishedAt: number | null; durationMs: number | null;

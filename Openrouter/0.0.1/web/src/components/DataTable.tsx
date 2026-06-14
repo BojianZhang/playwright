@@ -94,7 +94,14 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
     const onScroll = () => { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; setScrollTop(el.scrollTop); }); };
     el.addEventListener('scroll', onScroll, { passive: true });
     setVpH(el.clientHeight || maxHeight);
-    return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf); };
+    // 容器变高(窗口最大化/旋转/兄弟折叠)而 maxHeight 没变时,只测一次的 vpH 会偏小 → 底部留白到重挂载才补。
+    // 用 ResizeObserver 在容器尺寸变化时重测,彻底闭掉这个"长大后留白"。
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => setVpH(el.clientHeight || maxHeight));
+      ro.observe(el);
+    }
+    return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf); if (ro) ro.disconnect(); };
   }, [maxHeight]);
 
   function toggleHidden(key: string) {
