@@ -309,6 +309,13 @@ function buildEnv(p) {
   const _nZip = Number(p.zipRetry);
   if (p.zipRetry !== undefined && p.zipRetry !== '' && Number.isFinite(_nZip) && _nZip >= 0) env.ZIP_RETRY = String(_nZip);
   if (String(p.cardFillMethod) === 'selenium') env.FIXC = '0';   // 旧 Selenium 填卡;Fix C(默认)绝不显式设 FIXC,保持与今天一致
+  // 自动重试失败号(run.py 读 AUTO_RETRY_FAILED + AUTO_RETRY_FAILED_TIMES):一批跑完后 resume 语义重跑失败号 N 轮,降失败率。
+  //   默认关=不注 env=run.py range(0) 不重试,行为逐字节不变。resume 复用 prior_key/charged 防重复取key/扣款;NOT_ALLOWED/坏邮箱不重试。
+  if (p.autoRetryFailed) {
+    env.AUTO_RETRY_FAILED = '1';
+    const _nRetry = Number(p.autoRetryTimes);
+    env.AUTO_RETRY_FAILED_TIMES = String(Number.isFinite(_nRetry) && _nRetry > 0 ? Math.min(_nRetry, 5) : 1);
+  }
   return env;
 }
 
@@ -561,4 +568,50 @@ async function spawnEngine(jobId, engine, payload, publish) {
   }
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine };
+// 部署引导用:真跑一次 adspower_env.py --selftest(建→启→接管→停→删)验证 AdsPower 能否【真开浏览器】——
+//   光 ping /status 不够,license/额度/内核不匹配等只有真开才暴露。带死线+SIGKILL 兜底;python 自测自身 finally 删环境防孤儿。
+//   串行锁 _selftestRunning:同一时刻只允许一个自测;"勿与真任务同跑"由调用方(server)用 procRegistry 把关。
+let _selftestRunning = false;
+function adspowerSelftest({ timeoutMs = 90000 } = {}) {
+  return new Promise((resolve) => {
+    if (_selftestRunning) return resolve({ ok: false, busy: true, detail: '已有一个 AdsPower 自测在跑,请稍候再试' });
+    _selftestRunning = true;
+    let out = '';
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; _selftestRunning = false; resolve(r); };
+    let child;
+    try {
+      child = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { return finish({ ok: false, detail: 'python 启动失败: ' + (e && e.message) }); }
+    if (!child.pid) return finish({ ok: false, detail: '未拿到 pid(python 未安装?设环境变量 OPENROUTER_PYTHON)' });
+    const cap = (b) => { out += String(b); if (out.length > 24000) out = out.slice(-24000); };
+    child.stdout.on('data', cap); child.stderr.on('data', cap);
+    // ★超时 SIGKILL 会绕过 python 的 finally(删环境)→ 若此时环境已建会残留 `_selftest_` 孤儿。
+    //   根治:杀掉后【自动跑一次 --cleanup-selftest 扫删孤儿】(独立短进程、best-effort、自带 20s 死线),不再依赖被杀进程跑 finally。
+    const killer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_e) { /* 已退出 */ }
+      let cleaned = false;
+      try {
+        const cl = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--cleanup-selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: 'ignore' });
+        cleaned = !!(cl && cl.pid);
+        const clKill = setTimeout(() => { try { cl.kill('SIGKILL'); } catch (_e) { /* 已退出 */ } }, 20000);
+        cl.on('close', () => clearTimeout(clKill));
+        cl.on('error', () => clearTimeout(clKill));
+      } catch (_e) { /* 清理进程都起不来→只能提示手动删 */ }
+      finish({ ok: false, detail: `自测超时(>${Math.round(timeoutMs / 1000)}s)被终止 —— AdsPower 未响应或开浏览器太慢;`
+        + (cleaned ? '已自动清理可能残留的 _selftest 环境(后台进行)。' : '★可能残留一个「_selftest_」环境,请到 AdsPower 客户端手动删除。'), log: out.slice(-1500) });
+    }, timeoutMs);
+    child.on('error', (e) => { clearTimeout(killer); finish({ ok: false, detail: '进程错误: ' + (e && e.message), log: out.slice(-1500) }); });
+    child.on('close', (code) => {
+      clearTimeout(killer);
+      const ok = /指纹一致性/.test(out);   // 真开成浏览器 + 读到指纹 = 通过(环境已在 python finally 删)
+      const detail = ok
+        ? 'AdsPower 可正常开浏览器(已建→启→接管→停→删,无残留环境)'
+        : /启动\/接管异常/.test(out) ? '建了环境但开浏览器/接管失败 —— 见日志(内核版本 / license?)'
+          : '建环境失败 —— 检查 AdsPower 是否开着、Local API、额度或密钥';
+      finish({ ok, detail, code, log: out.slice(-1500) });
+    });
+  });
+}
+
+module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };

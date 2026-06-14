@@ -25,6 +25,7 @@ const DEFAULTS = {
   // (cardDeadline/solveFutileCap/maxHcaptchaCardSwaps 仅 hybrid 读,不放进 selenium 默认,避免"设了不生效"。)
   selenium: {
     solveHcaptcha: 'random', hcRecheckWait: '5', cardResultWait: '24', cardSaveDialog: 'dismiss', wizardStallRefresh: '30', noDeleteEnv: false,
+    autoRetryFailed: false, autoRetryTimes: '1',   // 自动重试失败号(resume 语义重跑 N 轮,降失败率;默认关)
     // 走法变体(默认 '' = 跟随 Python 内置默认 → 不注 env、行为逐字节不变)
     wizardPayMode: '', wizardCreditMode: '', cardStrategy: '', zipRetry: '', cardFillMethod: '',
   },
@@ -38,6 +39,7 @@ const DEFAULTS = {
   split: {
     solveHcaptcha: 'random', cardDeadline: '480', solveFutileCap: '3', maxHcaptchaCardSwaps: '1',
     hcRecheckWait: '5', cardResultWait: '24', cardSaveDialog: 'dismiss', wizardStallRefresh: '30', maxRotations: '3', cooldownHours: '3', maxReopen: '3', manualCard: false,
+    autoRetryFailed: false, autoRetryTimes: '1',   // 自动重试失败号(仅作用 split 的 Selenium 组,resume 重跑;默认关)
     isolate: false, noDeleteEnv: false, noGc: false, splitRatio: '0.5', crossHandoff: true,
   },
 };

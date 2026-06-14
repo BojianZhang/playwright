@@ -46,12 +46,12 @@ const CARD_COLS: Column<AnalyticsCardRow>[] = [
 
 export default function AnalysisPage() {
   const [engine, setEngine] = useState('all');
-  const [days, setDays] = useState(0);
+  const [days, setDays] = useState(7);   // 默认近 7 天(原 0=全史:首屏就全量扫 results.jsonl,大文件慢);要全史用筛选切到「全部」
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['analytics', engine, days],
     queryFn: () => apiGet<AnalyticsResp>(`/api/analytics?engine=${engine}&days=${days}`, true),
-    staleTime: 15_000,
-    refetchInterval: 15_000, // 只读分析,自动刷新(跑任务时失败分析随之更新);手动「刷新」按钮仍可用
+    staleTime: 60_000,
+    refetchInterval: 60_000, // 只读分析,自动刷新放宽到 60s(后端已加 mtime 缓存,文件没变近乎零成本);手动「刷新」仍可用
   });
 
   // 一键禁用差 IP / 差卡:前端把 战绩行(host / 末4)映射回已保存的代理池/卡池 id,复用现有禁用接口。

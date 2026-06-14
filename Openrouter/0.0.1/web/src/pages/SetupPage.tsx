@@ -182,6 +182,7 @@ function AdsPowerStep({ onDone }: { onDone: () => void }) {
   const [apiBase, setApiBase] = useState('http://127.0.0.1:50325');
   const [apiKey, setApiKey] = useState('');
   const [pinging, setPinging] = useState(false);
+  const [selftesting, setSelftesting] = useState(false);
   const save = useMutation({ mutationFn: (b: unknown) => apiPost('/api/config', b), onSuccess: onDone });
   async function saveAndPing() {
     setPinging(true);
@@ -197,11 +198,24 @@ function AdsPowerStep({ onDone }: { onDone: () => void }) {
     } catch (e) { toast.push('保存/测试出错:' + (e as Error).message, 'err'); }
     finally { setPinging(false); }
   }
+  // 真开一次浏览器自测(建→启→接管→停→删)验证 AdsPower 真能用——光 ping /status 不够;约 30-60s,有任务在跑会被服务端拒绝。
+  async function launchSelftest() {
+    setSelftesting(true);
+    try {
+      const r = await apiPost('/api/adspower/launch-selftest', {}) as { ok: boolean; detail?: string; busy?: boolean };
+      if (r.ok) toast.push('✓ AdsPower 可正常开浏览器:' + (r.detail || ''), 'ok');
+      else toast.push((r.busy ? '⏳ ' : '✗ ') + (r.detail || '自测失败'), 'err');
+    } catch (e) { toast.push('自测出错(可能超时/网络):' + (e as Error).message, 'err'); }
+    finally { setSelftesting(false); }
+  }
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div className="field" style={{ margin: 0 }}><div className="label"><span className="l-name">Local API 地址</span><span className="l-hint">AdsPower 客户端「设置 → Local API」里能看到,默认 127.0.0.1:50325</span></div><input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} /></div>
       <div className="field" style={{ margin: 0 }}><div className="label"><span className="l-name">API 密钥</span><span className="l-hint">本机网关一般<b>免填</b>;指向远程 / 开了 Local API 鉴权才填</span></div><input type="password" value={apiKey} autoComplete="new-password" placeholder="可留空" onChange={(e) => setApiKey(e.target.value)} /></div>
-      <div><button className="btn btn-primary btn-sm" disabled={pinging || !apiBase.trim()} onClick={saveAndPing}><Icon name="activity" size={12} />{pinging ? '保存并测试中…' : '保存并测试连接'}</button></div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn btn-primary btn-sm" disabled={pinging || !apiBase.trim()} onClick={saveAndPing}><Icon name="activity" size={12} />{pinging ? '保存并测试中…' : '保存并测试连接'}</button>
+        <button className="btn btn-ghost btn-sm" disabled={selftesting || pinging} onClick={launchSelftest} title="真建一个环境并开一次浏览器(约30-60s)验证 AdsPower 可用,完事自动删环境">{selftesting ? '开浏览器自测中(约30s)…' : '验证能否真开浏览器'}</button>
+      </div>
       <p className="help" style={{ margin: 0 }}>注:多机 / 多端点(各带地址+密钥)可在 <Link to="/adspower" style={{ color: 'var(--primary-text)' }}>AdsPower 管理</Link> 里加端点池。本地走系统代理可能 502,改 127.0.0.1 或排除代理。</p>
     </div>
   );

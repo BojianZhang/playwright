@@ -269,8 +269,32 @@ def _selftest(proxy_spec=None):
     log("=== 自测结束（环境已删干净）===")
 
 
+def _cleanup_selftest():
+    """删掉所有 `_selftest_` 开头的孤儿环境 —— 自测超时被 SIGKILL(没跑到 finally 删环境)时遗留的【兜底清理】;
+       也顺带清历史遗留的同类孤儿。返回删除数。供 web 自测超时后调用,根治"超时残留环境"。"""
+    deleted, page = 0, 1
+    while True:
+        try:
+            d = ads_call("/api/v1/user/list?page=%d&page_size=100" % page, method="GET")
+        except Exception as e:
+            log("[cleanup-selftest] 列环境失败: %s" % str(e)[:80]); break
+        lst = (d.get("data") or {}).get("list") or []
+        for u in lst:
+            if (u.get("name") or "").startswith("_selftest_"):
+                uid = u.get("user_id")
+                if uid and delete_env(uid):
+                    deleted += 1
+        if len(lst) < 100:
+            break
+        page += 1
+    log("[cleanup-selftest] 删除孤儿自测环境 %d 个" % deleted)
+    return deleted
+
+
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
+    if "--cleanup-selftest" in sys.argv:
+        _cleanup_selftest()
+    elif "--selftest" in sys.argv:
         px = None
         if "--proxy" in sys.argv:
             i = sys.argv.index("--proxy")
@@ -278,4 +302,4 @@ if __name__ == "__main__":
                 px = sys.argv[i + 1]
         _selftest(px)
     else:
-        log("用法: python selenium-e2e/adspower_env.py --selftest [--proxy socks5://user:pass@host:port]")
+        log("用法: python selenium-e2e/services/adspower_env.py --selftest [--proxy …] | --cleanup-selftest")

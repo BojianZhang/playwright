@@ -40,7 +40,7 @@ export default function ResultsPage() {
   const [selRows, setSelRows] = useState<AccountRow[]>([]);   // 表格里勾选的行 → 复制/导出"选中优先"
   const loadingRef = useRef(false);
 
-  const { data: cards } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: auto ? 5000 : false });
+  const { data: cards } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: auto ? 20000 : false });
 
   async function loadData(silent: boolean) {
     if (loadingRef.current) return; loadingRef.current = true;
@@ -53,7 +53,8 @@ export default function ResultsPage() {
   }
 
   useEffect(() => { loadData(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!auto) return; const t = setInterval(() => loadData(true), 5000); return () => clearInterval(t); }, [auto, hosts, includeLocal, dedupe]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 自动刷新会【整集群重聚合 + 全量重渲染】,代价高 → 从 5s 放宽到 20s(默认仍关;跑批时实时进度看控制台 SSE)。
+  useEffect(() => { if (!auto) return; const t = setInterval(() => loadData(true), 20000); return () => clearInterval(t); }, [auto, hosts, includeLocal, dedupe]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function download(name: string, content: string, type: string) {
     const blob = new Blob([content], { type });
@@ -102,7 +103,7 @@ export default function ResultsPage() {
           <span className="mh-meta">节点 <b>{sources.length || 1}</b> · 账号 <b>{all.length}</b></span>
           <span className="mh-spacer" />
           <span className="mh-updated">更新于 <b>{updatedAt || '—'}</b></span>
-          <label className="check"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /><span className="box"><Icon name="check" size={11} /></span>自动刷新 <span className="sub">5s</span></label>
+          <label className="check"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /><span className="box"><Icon name="check" size={11} /></span>自动刷新 <span className="sub">20s</span></label>
           <button className="btn btn-primary btn-sm" onClick={() => loadData(false)}><Icon name="refresh" size={12} />立即聚合</button>
         </div>
         <div className="mh-strip mh-tools">

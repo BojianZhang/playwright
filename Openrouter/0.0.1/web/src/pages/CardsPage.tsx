@@ -13,7 +13,7 @@ import { PoolTab } from '../features/panels';
 
 export default function CardsPage() {
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: 8000 });
+  const { data } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: 20000 });   // 有界卡池,8s→20s
   const cards = data?.cards || [];
   const [impOpen, setImpOpen] = useState(false);
   const [maxUses, setMaxUses] = useState(10);

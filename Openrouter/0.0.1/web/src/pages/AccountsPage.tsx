@@ -18,7 +18,7 @@ import { StatusTab } from '../features/panels';
 export default function AccountsPage() {
   const qc = useQueryClient();
   const toast = useToast();
-  const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => apiGet<AccountsResp>('/api/accounts', true), refetchInterval: 8000 });
+  const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => apiGet<AccountsResp>('/api/accounts', true), refetchInterval: 20000 });   // 进度台账非实时遥测,8s→20s 减少全量重拉(react-query 默认页面隐藏即暂停)
   const accts = data?.accounts || [];
   const [addOpen, setAddOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);

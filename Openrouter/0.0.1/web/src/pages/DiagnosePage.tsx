@@ -63,7 +63,7 @@ export default function DiagnosePage() {
     queryKey: ['diagnose', by, value],
     queryFn: () => apiGet<DiagResp>(`/api/diagnose?by=${by}&value=${encodeURIComponent(value)}`, true),
     enabled: !!value,
-    refetchInterval: 5000,
+    refetchInterval: 30000,   // 取证查看页,每次后端全量扫 usage.jsonl;5s→30s(react-query 页面隐藏即暂停,手动改查询也会立刷)
   });
 
   function submit(e: React.FormEvent) { e.preventDefault(); setSp({ by: byInput, value: valInput.trim() }); }

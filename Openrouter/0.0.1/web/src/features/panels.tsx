@@ -107,6 +107,8 @@ export function LedgerTab() {
           <span className="kbadge info">总充值 ${data?.totalCharged || 0}</span>
           <span className="kbadge ok">成功 {data?.success || 0}</span>
           <span className="kbadge fail">被拒 {data?.declined || 0}</span>
+          {/* 诚实标注:KPI(总充值/成功/被拒)按【全量】算,但下方明细只列最近 N 条 → 别让用户以为只有这么多笔 */}
+          <span className="cnt-pill">{data?.truncated ? <>最近 <b>{data?.returned}</b> / 共 <b>{data?.total}</b> 笔</> : <>共 <b>{data?.total || 0}</b> 笔</>}</span>
           <button className="btn btn-ghost btn-sm" disabled={!entries.length} onClick={() => downloadCsv('billing', ['时间', '邮箱', '卡末4', '金额', '结果', '错误'], entries.map((e) => [shortTime(e.at), e.email, e.cardLast4 || '', e.charged || '', e.result, e.error || '']))}><Icon name="download" size={12} />导出</button>
           <button className="btn btn-danger-soft btn-sm" onClick={async () => { if (!confirm('清空充值台账?')) return; await apiPost('/api/billing/clear'); qc.invalidateQueries({ queryKey: ['billing'] }); toast.push('台账已清空', 'ok'); }}><Icon name="trash" size={12} />清空台账</button>
         </div>
@@ -224,7 +226,7 @@ export function ErrorsTab({ onOpenPolicy }: { onOpenPolicy: () => void }) {
         <button className="btn btn-ghost btn-sm" onClick={() => qc.invalidateQueries({ queryKey: ['errors'] })}><Icon name="refresh" size={12} />刷新</button>
         <button className="btn btn-ghost btn-sm" disabled={!entries.length} onClick={() => downloadCsv('errors', ['时间', '邮箱', '阶段', '错误', '动作', '第几次'], entries.map((e) => [shortTime(e.at), e.email || '', e.stage || '', e.reason, ERR_ACTION[e.action || ''] || e.action || '', e.attempt ?? '']))}><Icon name="download" size={12} />导出</button>
         <button className="btn btn-danger-soft btn-sm" onClick={async () => { if (!confirm('清空全部错误记录?')) return; await apiPost('/api/errors/clear'); qc.invalidateQueries({ queryKey: ['errors'] }); toast.push('错误记录已清空', 'ok'); }}><Icon name="trash" size={12} />清空</button>
-        <span className="cnt-pill">本节点 · 共 <b style={{ color: 'var(--text)' }}>{data?.total || 0}</b> 条</span>
+        <span className="cnt-pill">本节点 · {data?.truncated ? <>最近 <b style={{ color: 'var(--text)' }}>{data?.returned}</b> / 共 <b style={{ color: 'var(--text)' }}>{data?.total}</b></> : <>共 <b style={{ color: 'var(--text)' }}>{data?.total || 0}</b></>} 条</span>
       </SubHead>
       <p className="help" style={{ margin: '-2px 0 10px' }}>每次阶段失败都会记一条(含被路由成什么动作)。错误的「说明 / 策略配置」在 <button className="link-inline" onClick={onOpenPolicy}>📖 错误策略 / 说明</button> 里改。</p>
       {chips.length > 0 && <div className="err-summary">{chips}</div>}

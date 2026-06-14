@@ -15,6 +15,7 @@ export interface CardsResp { cards: CardRow[]; available: number; }
 export interface LedgerEntry { at: string; email: string; result: string; charged: number; cardLast4?: string; jobId?: string; error?: string; }
 export interface LedgerSummary {
   total: number; success: number; declined: number; totalCharged: number;
+  returned?: number; truncated?: boolean;   // entries 是「最近 returned 条 / 共 total」;truncated=列表被截断(KPI 仍按全量算)
   byResult?: Record<string, number>; byCard?: Record<string, { count: number; charged: number }>;
   entries: LedgerEntry[];
 }
@@ -30,7 +31,7 @@ export interface StageSummary { total: number; registered: number; key: number; 
 export interface AccountsResp { count: number; accounts: AccountRow[]; summary?: StageSummary; }
 
 export interface ErrorEntry { at: string; email?: string; stage?: string; reason: string; action?: string; attempt?: number; jobId?: string; }
-export interface ErrorSummary { total: number; byReason: Record<string, number>; byAction: Record<string, number>; entries: ErrorEntry[]; }
+export interface ErrorSummary { total: number; returned?: number; truncated?: boolean; byReason: Record<string, number>; byAction: Record<string, number>; entries: ErrorEntry[]; }
 
 export type PolicyAction = 'retry' | 'retry-new-proxy' | 'relogin' | 'blacklist' | 'abort';
 export interface PolicyRow {
@@ -66,7 +67,7 @@ export interface JobDoneEvt { jobId: string; total: number; success: number; fai
 // 运行历史 + 总览(期2)
 export interface RunParams { mode?: string; concurrency?: number; count?: number; billingAction?: string; doApiKey?: boolean; doPasswordChange?: boolean; topUpAmount?: number; headed?: boolean; browserProvider?: string; engine?: string; doCard?: boolean; doPurchase?: boolean; solveHcaptcha?: string;
   // 配置快照:本次跑用的激活引擎预设/执行方案/高级参数(server.js handleApiRun 写入,可溯源)
-  configSnapshot?: { advanced?: Record<string, unknown>; enginePresetId?: string | null; schemeId?: string | null } | null; }
+  configSnapshot?: { advanced?: Record<string, unknown>; enginePresetId?: string | null; engineOpts?: Record<string, unknown> | null; schemeId?: string | null } | null; }
 export interface RunSummary {
   jobId: string; nodeId: string; engine?: string; status: 'running' | 'finished' | 'error' | 'interrupted';
   startedAt: number; finishedAt: number | null; durationMs: number | null;

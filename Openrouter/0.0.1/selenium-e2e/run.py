@@ -236,7 +236,84 @@ def main():
                 except Exception as e:
                     log("worker 异常: %s" % str(e)[:80])
 
-    log("全部跑完。结果见 %s" % res_file)
+    # ════ 自动重试失败号(开关 AUTO_RETRY_FAILED;默认关 → 下面 range(0) 不执行,行为逐字节不变)════
+    #   一批跑完后,重读 results/checkpoint 重算"已完成"→ 只剩【本批失败且可重试】的号,以 resume 语义再跑 N 轮,降失败率。
+    #   ★resume 语义(复用 prior_key/charged/_prior_done)保证:已取key不重建、已充值不重扣、已绑卡跳过 → 只补做失败那一步。
+    #   ★永久跳过的不重试:NOT_ALLOWED/banned(口径 is_banned_reason)与坏邮箱(load_bad_mailboxes)都计入"完成"不再跑。
+    _retry_times = 0
+    if str(os.environ.get("AUTO_RETRY_FAILED", "")).strip().lower() in ("1", "on", "true", "yes"):
+        try:
+            _retry_times = max(0, int(os.environ.get("AUTO_RETRY_FAILED_TIMES", "1") or 1))
+        except Exception:
+            _retry_times = 1
+    for _rt in range(_retry_times):
+        # 重算 done/registered/charged(口径同初始扫描;这里【不受 --no-resume 清空】——必须跳过本批已成功的号)
+        _done2, _reg2, _chg2 = set(), set(), set()
+        if os.path.exists(res_file):
+            with open(res_file, "r", encoding="utf-8") as _rf:
+                for _ln in _rf:
+                    try:
+                        _rr = json.loads(_ln)
+                    except Exception:
+                        continue
+                    _st = (_rr.get("steps") or {})
+                    if _st.get("auth") == "ok":
+                        _reg2.add(_rr.get("email"))
+                    if _st.get("purchase") == "success":
+                        _chg2.add(_rr.get("email"))
+                    if _rr.get("not_allowed") or common.is_banned_reason(_st.get("auth")):
+                        _done2.add(_rr.get("email"))
+                    if args.do_card:
+                        if _st.get("card") == "card-bound":
+                            _done2.add(_rr.get("email"))
+                    elif _rr.get("ok"):
+                        _done2.add(_rr.get("email"))
+        try:
+            with open(_PROGRESS_FILE, encoding="utf-8") as _pf:
+                _prog2 = json.load(_pf)
+        except Exception:
+            _prog2 = {}
+        _bad2 = common.load_bad_mailboxes()
+        _retry_pending = []
+        for _i, _acct in enumerate(accounts):
+            if _acct["email"] in _done2 or common.is_bad_mailbox(_acct["email"], _bad2):
+                continue
+            # 刷新该号 resume 状态:注册过→直登不重注册、充过→不重扣、有key→复用不重建(防重复劳动/扣款)
+            if _acct["email"] in _reg2:
+                _acct["registered"] = True
+            if _acct["email"] in _chg2:
+                _acct["charged"] = True
+            _rec = (_prog2 or {}).get(_acct["email"]) or {}
+            if _rec:
+                _acct["prior"] = _rec
+                if _rec.get("api_key"):
+                    _acct["prior_key"] = _rec["api_key"]
+            _retry_pending.append((_i, _acct))
+        if not _retry_pending:
+            log("自动重试:无失败号待重试 → 结束")
+            break
+        log("════ 自动重试 第 %d/%d 轮:%d 个失败号 resume 重跑(已成功/永久跳过的不再跑)════" % (
+            _rt + 1, _retry_times, len(_retry_pending)))
+        if conc <= 1:
+            for _i, _acct in _retry_pending:
+                try:
+                    worker(_i, _acct)
+                except Exception as _e:
+                    log("重试账号异常 %s: %s" % (_acct["email"], str(_e)[:80]))
+                time.sleep(args.gap)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=conc) as _ex2:
+                _futs2 = []
+                for _i, _acct in _retry_pending:
+                    _futs2.append(_ex2.submit(worker, _i, _acct))
+                    time.sleep(min(args.gap, 3))
+                for _fu in concurrent.futures.as_completed(_futs2):
+                    try:
+                        _fu.result()
+                    except Exception as _e:
+                        log("重试 worker 异常: %s" % str(_e)[:80])
+
+    log("全部跑完%s。结果见 %s" % ((" (含自动重试 %d 轮)" % _retry_times) if _retry_times else "", res_file))
 
 
 if __name__ == "__main__":

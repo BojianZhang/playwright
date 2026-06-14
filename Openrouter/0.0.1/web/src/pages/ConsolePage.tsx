@@ -266,6 +266,7 @@ export default function ConsolePage() {
       // 走法变体(原样透传,允许 ''):空值由 engine-runner.buildEnv 的守卫跳过 → 不注 env → Python 用内置默认。
       wizardPayMode: eng.wizardPayMode ?? '', wizardCreditMode: eng.wizardCreditMode ?? '',
       cardStrategy: eng.cardStrategy ?? '', zipRetry: eng.zipRetry ?? '', cardFillMethod: eng.cardFillMethod ?? '',
+      autoRetryFailed: !!eng.autoRetryFailed, autoRetryTimes: eng.autoRetryTimes ?? '1',   // 自动重试失败号(降失败率)
       useProxyPool, useAddressPool, useAdspowerPool,
       successTemplate: tplOk, failureTemplate: tplFail,
     };

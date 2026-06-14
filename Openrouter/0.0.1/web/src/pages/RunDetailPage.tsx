@@ -76,7 +76,7 @@ export default function RunDetailPage() {
               <span className="err-chip">改密 <b>{s.params?.doPasswordChange ? '是' : '否'}</b></span>
               <span className="err-chip">指纹 <b>{s.params?.browserProvider || 'none'}</b></span>
               {s.params?.configSnapshot && (
-                <span className="err-chip" title={'本次高级参数: ' + JSON.stringify(s.params.configSnapshot.advanced || {})}>
+                <span className="err-chip" title={'引擎opts: ' + JSON.stringify(s.params.configSnapshot.engineOpts || {}) + '\n高级参数: ' + JSON.stringify(s.params.configSnapshot.advanced || {})}>
                   配置快照 <b>预设 {s.params.configSnapshot.enginePresetId || '—'} · 方案 {s.params.configSnapshot.schemeId || '—'}</b>
                 </span>
               )}

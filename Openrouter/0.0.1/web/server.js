@@ -33,6 +33,7 @@ const engineRunner = require('./engine-runner');
 const tempInputs = require('./temp-inputs');
 const procRegistry = require('./proc-registry');
 const procCleanup = require('./proc-cleanup');
+const { offsetPage } = require('./paginate');   // 列表接口可选 offset/limit 分页(不带 limit=全量,向后兼容)
 const configRw = require('./config-rw');
 const strategiesStore = require('./strategies-store');
 const schemesStore = require('./schemes-store');
@@ -502,14 +503,19 @@ function handleDownload(req, res, query) {
 function listResultJsonl() {
   try { return fs.readdirSync(RESULTS_DIR).filter(f => f.endsWith('-success.jsonl')); } catch (_e) { return []; }
 }
+const _jobRecCache = new Map(); // file -> { mtimeMs, size, rows }:按 mtime+size memo,避免每次聚合/计数都重读+解析同一 success.jsonl
 function readJobRecords(jobId) {
-  const out = [];
+  const file = path.join(RESULTS_DIR, `${jobId}-success.jsonl`);
   try {
-    fs.readFileSync(path.join(RESULTS_DIR, `${jobId}-success.jsonl`), 'utf8')
-      .split('\n').filter(Boolean)
+    const st = fs.statSync(file);
+    const c = _jobRecCache.get(file);
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.rows;  // 文件没变(追加/删改都会改 size)→ 复用;调用方只 spread/map 不就地改,可共享引用
+    const out = [];
+    fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
       .forEach((line) => { try { out.push(JSON.parse(line)); } catch (_e) { /* skip */ } });
-  } catch (_e) { /* none */ }
-  return out;
+    _jobRecCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, rows: out });
+    return out;
+  } catch (_e) { return []; }  // 无文件/读失败 → 空(不缓存,下次重试)
 }
 // GET /api/results —— 本节点的 job 列表 + 各自成功数
 function handleApiResults(res) {
@@ -532,9 +538,11 @@ function handleApiResultsAll(res, query) {
   if ((query.get('format') || 'json') === 'txt') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(records.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'));
-    return;
+    return;   // txt 导出始终全量(复制/导全用),不分页
   }
-  sendJson(res, 200, { nodeId: NODE_ID, count: records.length, accounts: records });
+  // 默认全量(向后兼容:节点间互拉 /api/results/all 不带 limit → 收全量供合并去重);UI 可带 ?limit=&offset= 分页。
+  const page = offsetPage(records, query);
+  sendJson(res, 200, { nodeId: NODE_ID, count: records.length, returned: page.returned, offset: page.offset, limit: page.limit, nextOffset: page.nextOffset, accounts: page.rows });
 }
 // GET /api/results/job?jobId= —— 单个 job 的成功账号
 function handleApiResultsJob(res, query) {
@@ -605,23 +613,29 @@ async function handleApiAggregate(req, res) {
     for (const f of listResultJsonl()) { const jobId = f.replace('-success.jsonl', ''); for (const r of readJobRecords(jobId)) { all.push({ nodeId: NODE_ID, jobId, ...r }); n += 1; } }
     sources.push({ source: `local(${NODE_ID})`, count: n, ok: true });
   }
-  for (const h of hosts) {
-    try {
-      const u = String(h).replace(/\/+$/, '') + '/api/results/all';
-      // 节点间聚合带上令牌(假设全集群同一 token);也支持 URL 内嵌 user:pass。
-      const headers = AUTH_TOKEN ? { 'X-Auth-Token': AUTH_TOKEN } : {};
-      const resp = await fetch(u, { headers, signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const j = await resp.json();
-      const arr = j.accounts || [];
-      arr.forEach((a) => all.push(a));
-      sources.push({ source: j.nodeId || h, count: arr.length, ok: true }); // 用对方 nodeId 显示更直观
-    } catch (e) {
+  // 跨节点【并行】拉取(原串行:N 个慢节点累加 N×15s;改 Promise.allSettled 后总墙钟≈最慢单个 15s)。
+  // 仍按 hosts 原顺序合并 all/sources,保证去重「先到先留」结果与串行版逐条一致。
+  const peerResults = await Promise.allSettled(hosts.map(async (h) => {
+    const u = String(h).replace(/\/+$/, '') + '/api/results/all';
+    // 节点间聚合带上令牌(假设全集群同一 token);也支持 URL 内嵌 user:pass。
+    const headers = AUTH_TOKEN ? { 'X-Auth-Token': AUTH_TOKEN } : {};
+    const resp = await fetch(u, { headers, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const j = await resp.json();
+    return { nodeId: j.nodeId, arr: j.accounts || [] };
+  }));
+  hosts.forEach((h, i) => {
+    const r = peerResults[i];
+    if (r.status === 'fulfilled') {
+      r.value.arr.forEach((a) => all.push(a));
+      sources.push({ source: r.value.nodeId || h, count: r.value.arr.length, ok: true }); // 用对方 nodeId 显示更直观
+    } else {
       // 远端错误文本不原样回吐(sec-2):截短 + 抹掉疑似凭据(key=…/token=…),避免对方报错里夹带密钥被反射给客户端。
-      const safeErr = String(e.message || e).replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+/gi, '$1***').slice(0, 120);
+      const e = r.reason;
+      const safeErr = String((e && e.message) || e).replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+/gi, '$1***').slice(0, 120);
       sources.push({ source: h, count: 0, ok: false, error: safeErr });
     }
-  }
+  });
   // 子机推送过来的数据(NAT 后子机)——去重会自动处理与 pull 的重叠。
   for (const p of readPushed()) { p.accounts.forEach((a) => all.push(a)); sources.push({ source: `push(${p.nodeId})`, count: p.count, ok: true }); }
   let merged = all;
@@ -642,7 +656,9 @@ async function handleApiAggregate(req, res) {
     }
     merged = [...seen.values()];
   }
-  sendJson(res, 200, { total: all.length, count: merged.length, sources, accounts: merged });
+  // 默认全量(向后兼容);前端可在 body 传 limit/offset 分页。total/count 仍是全量数,masthead「共 N」不变。
+  const page = offsetPage(merged, body);
+  sendJson(res, 200, { total: all.length, count: merged.length, returned: page.returned, offset: page.offset, limit: page.limit, nextOffset: page.nextOffset, sources, accounts: page.rows });
 }
 
 // ── 结果删除/清空(聚合页一键操作)──────────────────────────────────────────
@@ -888,7 +904,7 @@ async function handleBillingClear(res) {
 }
 
 // 账号进度状态（断点续跑）：列表 / 清空 / 单条重置。
-function handleAccountsList(res) {
+function handleAccountsList(res, query) {
   const accounts = accountStore.list();
   // 按阶段汇总(漏斗):每号做到哪一步一目了然,避免重复在已跑过的步骤上做。
   // address/card 用 attainedLevel 判达标(declined/no-card/no-address 算 0,不误计);charge 看真实扣款。
@@ -904,7 +920,9 @@ function handleAccountsList(res) {
     changepw: n((a) => a.passwordChanged),
     blacklisted: n((a) => a.blacklisted),
   };
-  sendJson(res, 200, { count: accounts.length, accounts, summary });
+  // summary 始终按【全量】算(漏斗/KPI/图表不受分页影响);accounts 默认全量,UI 可带 ?limit=&offset= 分页。
+  const page = offsetPage(accounts, query);
+  sendJson(res, 200, { count: accounts.length, returned: page.returned, offset: page.offset, limit: page.limit, nextOffset: page.nextOffset, accounts: page.rows, summary });
 }
 async function handleAccountsClear(res) {
   await accountStore.clear();
@@ -1066,9 +1084,13 @@ function launchPythonJob(engine, sliced, proxies, payload, resumedFrom) {
     // 配置快照:记下本次跑用的【激活引擎预设 / 执行方案 / 高级参数】→ 历史可溯源"上批是哪套配置跑出的"。纯只读,不改任何 store。
     let configSnapshot = null;
     try {
+      const ec = require('./engine-config-store');
+      const en = (((ec.getAll() || {}).engines) || {})[engine] || {};
       configSnapshot = {
         advanced: require('./advanced-store').get() || {},
-        enginePresetId: (((require('./engine-config-store').getAll() || {}).engines || {})[engine] || {}).activeId || null,
+        enginePresetId: en.activeId || null,
+        // ★按值快照引擎opts(不只存 activeId 指针)→ 预设后续被编辑也能溯源【当时真正跑的参数】。
+        engineOpts: (typeof ec.activeOpts === 'function') ? ec.activeOpts(engine) : null,
         schemeId: (((require('./schemes-store').getAll() || {}).schemes) || {}).activeId || null,
       };
     } catch (_e2) { /* 快照失败不影响起 job */ }
@@ -1335,6 +1357,19 @@ function pingAdspower(apiBase, apiKey) {
 async function handleAdspowerPing(res) {
   const ap = (configRw.readMerged() || {}).adspower || {};
   sendJson(res, 200, await pingAdspower(ap.apiBase || 'http://127.0.0.1:50325', ap.apiKey));
+}
+// 部署引导『真开浏览器』自测:跑 adspower_env --selftest(建→启→接管→停→删)→ 验证 AdsPower 真能开浏览器
+//   (光 ping /status 不够)。有任务在跑则拒绝(自测占用 AdsPower、限频);自测自身 finally 删环境防孤儿。
+async function handleAdspowerLaunchSelftest(res) {
+  try {
+    // 有任务在跑就拒绝(自测会占用 AdsPower、本地接口限频 ~1req/s)。procRegistry 只跟踪 Python 引擎子进程 →
+    //   再用 runsStore 的 running 行兜底覆盖【Playwright 引擎】任务(它不进 procRegistry)。
+    let running = procRegistry.list().length > 0;
+    if (!running) { try { running = (runsStore.list() || []).some((r) => r && r.status === 'running'); } catch (_e) { /* 读不到当未跑 */ } }
+    if (running) return void sendJson(res, 409, { ok: false, detail: '有任务正在运行 —— 自测会占用 AdsPower(本地接口限频 ~1req/s),请待任务结束后再试' });
+    const r = await engineRunner.adspowerSelftest({ timeoutMs: 90000 });
+    sendJson(res, r && r.busy ? 409 : 200, r);
+  } catch (e) { sendJson(res, 500, { ok: false, detail: String((e && e.message) || e) }); }
 }
 // 端点池 CRUD
 function handleEndpointsGet(res) { sendJson(res, 200, { items: adspowerEndpointStore.list() }); }
@@ -1695,7 +1730,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/cards/clear') return void handleCardAction(req, res, 'clear');
   if (req.method === 'GET' && pathname === '/api/billing') return void handleBillingSummary(res);
   if (req.method === 'POST' && pathname === '/api/billing/clear') return void handleBillingClear(res);
-  if (req.method === 'GET' && pathname === '/api/accounts') return void handleAccountsList(res);
+  if (req.method === 'GET' && pathname === '/api/accounts') return void handleAccountsList(res, url.searchParams);
   if (req.method === 'POST' && pathname === '/api/accounts/clear') return void handleAccountsClear(res);
   if (req.method === 'POST' && pathname === '/api/accounts/reset') return void handleAccountsReset(req, res);
   if (req.method === 'POST' && pathname === '/api/accounts/upsert') return void handleAccountsUpsert(req, res);
@@ -1751,6 +1786,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/adspower/remove') return void handleAdspowerRemove(req, res);
   if (req.method === 'POST' && pathname === '/api/adspower/clear') return void handleAdspowerClear(res);
   if (req.method === 'GET' && pathname === '/api/adspower/ping') return void handleAdspowerPing(res);
+  if (req.method === 'POST' && pathname === '/api/adspower/launch-selftest') return void handleAdspowerLaunchSelftest(res);
   if (req.method === 'GET' && pathname === '/api/adspower/endpoints') return void handleEndpointsGet(res);
   if (req.method === 'POST' && pathname === '/api/adspower/endpoints/add') return void handleEndpointsAdd(req, res);
   if (req.method === 'POST' && pathname === '/api/adspower/endpoints/update') return void handleEndpointsUpdate(req, res);
