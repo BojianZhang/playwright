@@ -125,7 +125,10 @@ def main():
                     r = json.loads(line)
                     if (r.get("steps") or {}).get("auth") == "ok":
                         registered.add(r.get("email"))
-                    if (r.get("steps") or {}).get("purchase") == "success":
+                    # ★AR-1/MP-02 修(防二次扣款):charged 第二独立信号必须覆盖【两条扣款路径】——
+                    #   ① billing purchase 成功(steps.purchase==success);② 向导内 add-credits 充值(pipeline 写 res["charged"]=10,
+                    #   但【不写 steps.purchase】)。原来只认 purchase → 向导充值号的 res["charged"] 成死信号 → checkpoint 丢即重扣。
+                    if (r.get("steps") or {}).get("purchase") == "success" or (r.get("charged") or 0) > 0:
                         charged.add(r.get("email"))   # 充值成功落过 results → 即便 checkpoint 没记上,也绝不再扣
                     # 被 OpenRouter 永久拒绝(NOT_ALLOWED)→ 标完成永久跳过,别每轮重试白烧 env/IP(--no-resume 仍可强制重试)
                     if r.get("not_allowed") or common.is_banned_reason((r.get("steps") or {}).get("auth")):
@@ -247,6 +250,8 @@ def main():
         except Exception:
             _retry_times = 1
     for _rt in range(_retry_times):
+        # ★AR-4:每轮换起始代理/出口IP重试(环境性失败=declined/Radar/网络 大概率因换IP而过;同IP重试大概率复现)。
+        args.proxy_offset += 1
         # 重算 done/registered/charged(口径同初始扫描;这里【不受 --no-resume 清空】——必须跳过本批已成功的号)
         _done2, _reg2, _chg2 = set(), set(), set()
         if os.path.exists(res_file):
@@ -259,12 +264,20 @@ def main():
                     _st = (_rr.get("steps") or {})
                     if _st.get("auth") == "ok":
                         _reg2.add(_rr.get("email"))
-                    if _st.get("purchase") == "success":
+                    if _st.get("purchase") == "success" or (_rr.get("charged") or 0) > 0:   # AR-1:向导充值第二信号
                         _chg2.add(_rr.get("email"))
                     if _rr.get("not_allowed") or common.is_banned_reason(_st.get("auth")):
                         _done2.add(_rr.get("email"))
                     if args.do_card:
-                        if _st.get("card") == "card-bound":
+                        _card = _st.get("card")
+                        # 已绑=完成;★RETRY-CARD-01:已点 Save 的【歧义态】(server-error/card-502/needphone)卡可能已提交 Stripe,
+                        #   自动重跑会再提交【另一张卡】=重复绑卡 + 烧 BIN(违反铁律③)→ 计入完成【不自动重试】,留人工核验,绝不盲重绑。
+                        if _card in ("card-bound", "server-error", "card-502", "needphone"):
+                            _done2.add(_rr.get("email"))
+                    elif args.do_purchase:
+                        # ★AR-2:纯充值模式(do_purchase 无 do_card)完成须【充值成功】(purchase==success 或 charged>0),
+                        #   不能只看 ok(ok 不含 purchase)→ 否则取到key但充值失败的号被误判完成、永不重试。
+                        if _st.get("purchase") == "success" or (_rr.get("charged") or 0) > 0:
                             _done2.add(_rr.get("email"))
                     elif _rr.get("ok"):
                         _done2.add(_rr.get("email"))
@@ -273,6 +286,10 @@ def main():
                 _prog2 = json.load(_pf)
         except Exception:
             _prog2 = {}
+        # ★AR-3:并入 checkpoint 的 registered 标记(对齐初始扫描)→ 已注册号重试直接登录,不再点注册(否则卡 verify→UNCONFIRMED)
+        for _em0, _rec0 in (_prog2.items() if isinstance(_prog2, dict) else []):
+            if _rec0.get("registered"):
+                _reg2.add(_em0)
         _bad2 = common.load_bad_mailboxes()
         _retry_pending = []
         for _i, _acct in enumerate(accounts):

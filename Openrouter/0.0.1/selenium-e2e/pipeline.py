@@ -226,15 +226,21 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 # ★可审计:取key失败时落盘原因(WIZARD_KEY_NOT_CAPTURED=新版向导没抓到明文key→走split/混合;
                 #   NEWKEY_DIALOG_NOT_OPENED / NEWKEY_NOT_CREATED=老号New Key流程失败)。原来只记 key:false 不记因,
                 #   日志无法区分"新页面硬失败 vs 老路异常",修复方向无从判断。默认不影响成功路径。
-                if not k.get("ok"):
+                # ★MP-01 修(回归止血#1):key checkpoint 必须在【成功路径无条件落盘】。原来误把落盘放进 if not ok(失败)
+                #   分支 → 失败时落了个 null key(无用),而 newkey/capture-fallback 成功路径(不调 on_key)【根本不落 key】
+                #   → 续跑取不到 prior_key → 重建第二把 key + credits 模式重跑向导二次扣款。改:成功(ok 且有 key)就落
+                #   checkpoint + _ck(wizard 路径 on_key 已落=幂等无害);失败只记 key_reason/diag,绝不落 null key。
+                if k.get("ok") and k.get("key"):
+                    if checkpoint:
+                        try:
+                            checkpoint(email, registered=True, api_key=k.get("key"))
+                        except Exception:
+                            pass
+                        _ck(checkpoint, email, "key", "ok", api_key=k.get("key"), key_name=k.get("name"))
+                else:
                     res["key_reason"] = k.get("reason") or k.get("name")
                     if k.get("key_diag"):
                         res["key_diag"] = k.get("key_diag")   # 子诊断:向导停在哪屏/key是否掩码出现过(判修Sel vs转split)
-                    try:
-                        checkpoint(email, registered=True, api_key=k.get("key"))
-                    except Exception:
-                        pass
-                    _ck(checkpoint, email, "key", "ok", api_key=k.get("key"), key_name=k.get("name"))
 
         # 记录向导里所选的支付/积分方式(对比"哪种方式绑卡":wizard-address/later-skip · add-credits/skip)
         res["pay_method"] = getattr(page, "_pay_method", None)

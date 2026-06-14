@@ -92,7 +92,7 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
                 <span className="ps-title ok"><Icon name="okcircle" size={14} />成功账号</span>
                 <div className="right"><button className="btn btn-ghost btn-sm" disabled={!jobId || !state.okLines.length} onClick={() => jobId && window.open(withToken(`/download?jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />下载</button></div>
               </div>
-              <div className={'io-box' + (state.okLines.length ? '' : ' empty')}>{state.okLines.length ? state.okLines.map((l, i) => <div key={i} className="ln-ok">{l}</div>) : (state.running ? '运行中…' : '等待中…')}</div>
+              <div className={'io-box' + (state.okLines.length ? '' : ' empty')}>{state.okLines.length ? state.okLines.slice(-200).map((l, i) => <div key={i} className="ln-ok">{l}</div>) : (state.running ? '运行中…' : '等待中…')}</div>
             </div>
             <div>
               <div className="panel-sec-head" style={{ marginBottom: 8 }}>
@@ -102,7 +102,7 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
                   <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={requeue}><Icon name="refresh" size={12} />重跑(登录)</button>
                 </div>
               </div>
-              <div className={'io-box' + (state.failLines.length ? '' : ' empty')}>{state.failLines.length ? state.failLines.map((l, i) => <div key={i} className="ln-fail">{l}</div>) : (state.running ? '运行中…' : '等待中…')}</div>
+              <div className={'io-box' + (state.failLines.length ? '' : ' empty')}>{state.failLines.length ? state.failLines.slice(-200).map((l, i) => <div key={i} className="ln-fail">{l}</div>) : (state.running ? '运行中…' : '等待中…')}</div>
             </div>
           </div>
         </div>
@@ -119,7 +119,7 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
           {tab === 'errors' && <ErrorsTab onOpenPolicy={onOpenPolicy} />}
           {tab === 'logs' && (
             <div className="io-box" style={{ minHeight: 200, maxHeight: 320 }}>
-              {state.logs.length ? state.logs.map((l, i) => <div key={i}><span style={{ color: 'var(--text-4)' }}>{l.ts}</span>  <span className={l.cls}>{l.msg}</span></div>) : '等待开始…'}
+              {state.logs.length ? state.logs.slice(-200).map((l, i) => <div key={i}><span style={{ color: 'var(--text-4)' }}>{l.ts}</span>  <span className={l.cls}>{l.msg}</span></div>) : '等待开始…'}
             </div>
           )}
         </div>

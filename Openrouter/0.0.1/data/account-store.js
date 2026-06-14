@@ -39,7 +39,7 @@ function flushNow() {
   try {
     fs.mkdirSync(path.dirname(ACCOUNTS_FILE), { recursive: true });
     const tmp = `${ACCOUNTS_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(STATE, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(STATE), 'utf8');   // 落盘是机器读(ensureLoaded JSON.parse),不缩进省一半序列化+写入字节;UI 的 list() 另行脱敏展示
     fs.renameSync(tmp, ACCOUNTS_FILE); // 原子替换，避免半写文件
   } catch (e) { try { console.error('[account-store] 落盘失败(账号进度可能丢):', e && e.message); } catch (_e) { /* ignore */ } }
 }

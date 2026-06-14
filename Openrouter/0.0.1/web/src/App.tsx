@@ -9,6 +9,7 @@ import { useToast } from './lib/toast';
 import { Icon } from './lib/icons';
 import type { NodeInfo, HealthInfo, SetupStatus } from './lib/types';
 import Sidebar, { type NavGroup } from './components/Sidebar';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import ConsolePage from './pages/ConsolePage';
 import FlowPage from './pages/FlowPage';
 import ResultsPage from './pages/ResultsPage';
@@ -156,8 +157,11 @@ export default function App() {
       <Sidebar nav={NAV} collapsed={collapsed} onToggle={toggleCollapse} version={health?.version} />
       <div className="main">
         <TopBar />
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
+        {/* 错误边界包住路由内容:某页渲染抛错只塌这块,侧栏/TopBar 与实时任务监视(在 ConsolePage 路由内)仍在;
+            key=pathname → 切到别的页自动重挂边界、清掉错误状态(可恢复)。 */}
+        <ErrorBoundary key={loc.pathname} label={loc.pathname}>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
           <Route path="/console" element={<ConsolePage />} />
           <Route path="/flow" element={<FlowPage />} />
           <Route path="/engine-config" element={<EngineConfigPage />} />
@@ -181,7 +185,8 @@ export default function App() {
           <Route path="/health" element={<HealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<ComingSoon title="页面不存在" note="检查地址,或从左侧导航进入。" />} />
-        </Routes>
+          </Routes>
+        </ErrorBoundary>
       </div>
     </div>
   );

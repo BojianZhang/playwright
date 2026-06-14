@@ -490,11 +490,18 @@ async function spawnEngine(jobId, engine, payload, publish) {
       rows = [...byEmail.values()];
     }
   } else if (engine === 'split') {
-    harvest(RESULTS.selenium, startLines.selenium).forEach((r) => rows.push(r));
-    harvest(RESULTS.hybrid, startLines.hybrid).forEach((r) => rows.push(r));
+    // ★F1:按 email last-wins 去重(对齐 crossHandoff 路径)。AUTO_RETRY 让 run.py 对失败号追加【第二行结果】(同 email/job_id),
+    //   不去重则同号既进 successRows 又进 failedRows → 双计 + 同号写进 success.jsonl 和 failed.jsonl + usage 记两条 + completeness>100%。
+    const _byEmail = new Map();
+    for (const r of harvest(RESULTS.selenium, startLines.selenium)) if (r && r.email) _byEmail.set(r.email, r);
+    for (const r of harvest(RESULTS.hybrid, startLines.hybrid)) if (r && r.email) _byEmail.set(r.email, r);
+    rows = [...rows, ..._byEmail.values()];
   } else {
     const key = engine === 'hybrid' ? 'hybrid' : 'selenium';
-    harvest(RESULTS[key], startLines[key]).forEach((r) => rows.push(r));
+    // ★F1:同上,AUTO_RETRY 重试成功行覆盖首轮失败行,每号唯一(不双计/不双写导出/不双记 usage)。
+    const _byEmail = new Map();
+    for (const r of harvest(RESULTS[key], startLines[key])) if (r && r.email) _byEmail.set(r.email, r);
+    rows = [...rows, ..._byEmail.values()];
   }
   // 续跑被跳过的号(已完成/被拒/冷却/坏邮箱)本 job 没有结果行 → 控制台「本次任务」详情/计数看不到「跑过的号」。
   //   用它们【历史最近一行】回填进本 job 视图,让这些号可见。★只读回填、按 email 取历史 latest、ok/steps 原样(banned→failed、

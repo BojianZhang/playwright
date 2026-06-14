@@ -253,6 +253,22 @@ def register(page, email, op_password, mailbox_pw, cfg):
         _set_value(page, "#emailAddress-field", email)
         _set_value(page, "#password-field", op_password)
 
+    def _fill_native():
+        # ★native value setter + dispatch input/change(React 受控正确填法,值能扛住 hydrate 清值粘住)。【只补设值,不 focus/不 blur】
+        #   —— 上次纯 native 74% LEGAL 失败的两大嫌疑(无真实交互 + blur 触发重渲染)都避开:此函数【只在 send_keys 已失败的轮次补打】,
+        #   send_keys 已给过真实键盘交互→Clerk 表单状态/legal 正常,native 仅让值粘住。正常号第1轮 send_keys 就 stuck、根本到不了这。
+        try:
+            page.d.execute_script(
+                "var a=arguments;"
+                "function _pf(el){return (el.tagName||'')==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;}"
+                "function _sv(s,v){var el=document.querySelector(s);if(!el)return;"
+                "var p=Object.getOwnPropertyDescriptor(_pf(el),'value');if(p&&p.set){p.set.call(el,v);}else{try{el.value=v;}catch(e){}}"
+                "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}"
+                "_sv('#firstName-field',a[0]);_sv('#lastName-field',a[1]);_sv('#emailAddress-field',a[2]);_sv('#password-field',a[3]);",
+                (local[:6] or "John").capitalize(), "M", email, op_password)
+        except Exception:
+            pass
+
     def _fields_stuck():
         d = page.js("return {em:((document.querySelector('#emailAddress-field')||{}).value||''),"
                     "pw:(((document.querySelector('#password-field')||{}).value||'').length)};") or {}
@@ -278,7 +294,16 @@ def register(page, email, op_password, mailbox_pw, cfg):
         if _fields_stuck():
             stuck = True
             break
-        log("[注册] 字段没粘住(第%d次,表单疑似刚 hydrate 重渲染)→ 整体重填" % _fa)
+        # ★send_keys 这轮没粘住(hydrate 清值)→ 第2轮起【补一遍 native value setter】让值粘住(React 受控,抗清)。
+        #   加法式兜底:只对 send_keys 已失败的号生效(send_keys 已给真实交互→legal 正常);正常号第1轮就 stuck、到不了这。
+        if _fa >= 2:
+            _fill_native()
+            time.sleep(0.8)
+            if _fields_stuck():
+                stuck = True
+                log("[注册] native value setter 兜底后字段粘住 ✓(send_keys 输给了 hydrate 清值)")
+                break
+        log("[注册] 字段没粘住(第%d次,表单疑似刚 hydrate 重渲染)→ 整体重填(含 native 兜底)" % _fa)
         time.sleep(1.0)
     if not stuck:
         log("[注册] 填表预算(%ss)内字段(email/password)仍没粘住 → 快速失败,不空提交(省 2captcha + 不卡死)"
@@ -301,6 +326,32 @@ def register(page, email, op_password, mailbox_pw, cfg):
     # 提交 + 解 Turnstile + 等到验证页;若提交后仍停在 /sign-up(Turnstile widget 在但没提交成功),
     # 再点一次 Sign Up 并必要时重解 Turnstile,最多重试 2 次(共 3 次提交)再判 UNCONFIRMED。
     for _submit in range(3):
+        # ★防「页面弹页面」(page-over-page)兜底:检测到【重复 sign-up 表单 / Clerk 模态里也有 sign-up 字段】
+        #   (底层页 + 模态各一套表单叠加)→ 刷新 /sign-up 塌回【单一表单】再填,绝不在叠加表单上填错层/提交空模态。
+        #   ★只在【真检测到】才刷(不白刷、不无谓重触 Turnstile);单一表单(正常)时此分支不可达。配合"绝不点导航Sign Up"双保险。
+        try:
+            # ★只认【真重复表单】(同 id 出现>1=确凿的 page-over-page/两套表单叠加)。不再用 [role=dialog]/[aria-modal] 判——
+            #   Clerk 内联 sign-up 也可能被包在 dialog 角色里→那会误命中→每次重试都刷新→重置 Turnstile=白烧一次 2captcha 解。
+            _dup = page.js("try{return document.querySelectorAll('#emailAddress-field').length>1;}catch(e){return false;}")
+        except Exception:
+            _dup = False
+        if _dup:
+            log("[注册] 检测到页面弹页面(重复 sign-up 表单/模态内表单)→ 刷新 /sign-up 塌回单一表单再填")
+            page.goto(SIGNUP_URL, wait=2.5)
+            page.wait_field_present(["#emailAddress-field"], 15, "注册表单(刷新塌模态后)")
+        # ★防空表单提交(用户实测「Please fill out this field」频发根因):readback 通过后 Clerk hydrate 可能在【提交前】
+        #   又把值清掉 → 点 Continue 提交空表单 → 触发浏览器 required 校验、空耗重试。每次提交前【重验字段还粘着,
+        #   没粘住就重填 + 重勾同意条款再提交】,绝不在空表单上点提交。★纯增量:仅在字段被清时动作(填着=no-op),
+        #   不改默认填法、不碰正常号、不影响 Windows 默认成功路径(填着的号此分支不可达)。
+        if not _fields_stuck():
+            log("[注册] 提交前发现字段被 hydrate 清空 → 重填 + 重勾同意条款再提交(防空表单 required 报错)")
+            _fill_fields()
+            time.sleep(0.8)
+            for _lc2 in range(3):
+                if _legal_on():
+                    break
+                _check(page, "#legalAccepted-field")
+                time.sleep(0.4)
         if _submit == 0:
             page.click_text(["Continue"], 8)
             time.sleep(2)
@@ -309,7 +360,7 @@ def register(page, email, op_password, mailbox_pw, cfg):
             _diag(page, "after_turnstile")
         else:
             log("[注册] 提交后仍停在 /sign-up(没进 /verify-email)→ 第 %d 次重试提交 + 重解 Turnstile" % _submit)
-            page.click_text(["Continue", "Sign Up", "Sign up"], 8)
+            page.click_text(["Continue"], 8)   # ★只点表单提交「Continue」;绝不点导航栏「Sign Up」(那是 Clerk SignUpButton→弹出模态盖在原页上=页面弹页面,两套表单叠加→填底层/模态空→"Please fill out this field")
             time.sleep(2)
             _solve_turnstile_if_present(page, SIGNUP_URL, cfg, ["/verify-email"])
             _diag(page, "after_turnstile_retry%d" % _submit)

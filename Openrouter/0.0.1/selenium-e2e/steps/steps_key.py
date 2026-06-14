@@ -267,9 +267,14 @@ def _newkey_fail_diag(page):
           var btns=[].slice.call(document.querySelectorAll('button,[role=button],a'));
           var nk=btns.filter(function(b){var t=(b.innerText||'').trim();return /New Key|Create Key|Create API Key/i.test(t)||t==='Create';});
           var nkVis=nk.filter(function(b){return b.offsetParent!==null;});
+          // ★命中的 New Key 按钮详情:tag(a=链接会导航非弹窗)/href/disabled/aria-disabled → 判"点了为啥不弹窗"
+          var nkInfo='';
+          if(nkVis[0]){var b=nkVis[0];nkInfo=(b.tagName||'')+'|'+((b.innerText||'').trim().slice(0,16))+'|href='+((b.getAttribute&&b.getAttribute('href'))||'')+'|dis='+(!!b.disabled)+'|ad='+((b.getAttribute&&b.getAttribute('aria-disabled'))||'');}
           var dlg=document.querySelectorAll('[role=dialog],[aria-modal="true"],[data-state="open"]').length;
           var ins=[].slice.call(document.querySelectorAll('input,textarea')).filter(function(e){return e.offsetParent!==null && (e.type||'')!=='hidden' && (e.type||'')!=='search';});
-          return JSON.stringify({nk:nk.length,nkVis:nkVis.length,dlg:dlg,ins:ins.length,head:(document.body.innerText||'').slice(0,110).replace(/\s+/g,' ')});
+          // ★页面错误/门控文案(如 must add credits / verify / limit / not allowed)→ 判是否被门控不让建key
+          var et='';try{var m=(document.body.innerText||'').match(/[^\n]*(error|must |required|add credits|verify your|limit|not allowed|try again|upgrade|please complete|disabled)[^\n]*/i);if(m)et=m[0].replace(/\s+/g,' ').slice(0,90);}catch(e){}
+          return JSON.stringify({nk:nk.length,nkVis:nkVis.length,nkInfo:nkInfo,dlg:dlg,ins:ins.length,err:et,head:(document.body.innerText||'').slice(0,90).replace(/\s+/g,' ')});
         """) or ""
     except Exception:
         return ""
@@ -770,16 +775,23 @@ def _handle_onboarding_wizard(page, on_key=None, on_charge=None):
                     #   注意:credit_mode 默认 skip 不进此分支,不会误触发充值。
                     _native_click_el(page, _TEXTBTN_JS, r"\$\s?10(\.0+)?\b|^\s*10\s*$")  # 选最小预设 $10
                     time.sleep(0.6)
-                    _native_click_el(page, _TEXTBTN_JS, r"^Add credits$")    # ★真实扣款
-                    try: page._credit_method = "add-credits"
-                    except Exception: pass
-                    # ★扣款【那一刻】立刻登记 charge 去重(审计 RESUME-01/#3):防杀在 return 前丢信号 → 重跑/billing 二次扣款。
-                    if on_charge:
-                        try:
-                            on_charge()
-                        except Exception:
-                            pass
-                    log("[向导积分] 方式=充值 $10(★真实扣款)")
+                    _clicked = _native_click_el(page, _TEXTBTN_JS, r"^Add credits$")    # ★真实扣款(回读是否真点中)
+                    # ★MP-03 修:只在【确认点中 Add credits】后才登记扣款去重 + 回调。否则点不中却 on_charge → 虚标 $10
+                    #   (acct.charged=True / charge checkpoint)→ 阻断后续【合法】充值、且把"没扣的号"当已扣。
+                    if _clicked:
+                        try: page._credit_method = "add-credits"
+                        except Exception: pass
+                        # ★扣款【那一刻】立刻登记 charge 去重(审计 RESUME-01/#3):防杀在 return 前丢信号 → 重跑/billing 二次扣款。
+                        if on_charge:
+                            try:
+                                on_charge()
+                            except Exception:
+                                pass
+                        log("[向导积分] 方式=充值 $10(★真实扣款)")
+                    else:
+                        try: page._credit_method = "add-credits-click-failed"
+                        except Exception: pass
+                        log("[向导积分] ⚠ 没点中 Add credits 按钮 → 不登记扣款(避免虚标已充阻断合法充值)")
                 else:
                     _click_later(page)
                     try: page._credit_method = "skip"

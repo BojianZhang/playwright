@@ -241,9 +241,12 @@ function serveStatic(req, res, urlPath) {
       res.writeHead(404); res.end('Not Found'); return;
     }
     const ext = path.extname(filePath).toLowerCase();
+    // Vite 给 /assets/* 产物名带内容哈希(index-xxxx.js):内容一变文件名就变,而 index.html(下方/上方 no-store,每次校验)
+    // 引用的是新哈希,旧哈希永不再被请求 → /assets/* 可放心长缓存 immutable(免每次冷加载重下 ~600KB),其余保持 no-store。
+    const longCache = rel.startsWith('assets/');
     res.writeHead(200, {
       'Content-Type': STATIC_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache, no-store, must-revalidate', // 避免浏览器缓存旧 JS/CSS
+      'Cache-Control': longCache ? 'public, max-age=31536000, immutable' : 'no-cache, no-store, must-revalidate',
     });
     res.end(data);
   });
@@ -934,7 +937,7 @@ async function handleAccountsReset(req, res) {
   const email = String(body.email || '').trim();
   if (!email) { sendJson(res, 400, { error: 'MISSING_EMAIL' }); return; }
   await accountStore.reset(email);
-  sendJson(res, 200, { ok: true, accounts: accountStore.list() });
+  sendJson(res, 200, { ok: true });   // 客户端收到后即 invalidate+重拉 /api/accounts → 这里不回全量(原来要重新脱敏整表、客户端还白解析一遍丢掉)
 }
 // 手动新增/编辑账号进度(upsert;只接已知字段,密码字段允许写)。
 async function handleAccountsUpsert(req, res) {
@@ -946,7 +949,7 @@ async function handleAccountsUpsert(req, res) {
   const fields = {};
   for (const k of ALLOW) if (k in (body.patch || {})) fields[k] = body.patch[k];
   await accountStore.update(email, fields);
-  sendJson(res, 200, { ok: true, accounts: accountStore.list() });
+  sendJson(res, 200, { ok: true });   // 同上:客户端 invalidate+重拉,不回全量
 }
 // 批量导入账号进度台账:每行 email:password(密码可空),逐行 upsert(已存在=更新,不存在=新建)。
 async function handleAccountsImport(req, res) {
@@ -967,7 +970,7 @@ async function handleAccountsImport(req, res) {
     await accountStore.update(email, password ? { originalPassword: password } : {});
     if (isNew) { added++; existing.add(email.toLowerCase()); } else updated++;
   }
-  sendJson(res, 200, { ok: true, added, updated, bad, accounts: accountStore.list() });
+  sendJson(res, 200, { ok: true, added, updated, bad });   // 客户端 invalidate+重拉,不回全量
 }
 
 // 错误策略：查看(含说明+生效) / 配置覆盖 / 重置。
@@ -1311,10 +1314,21 @@ function tcpPing(host, port, timeoutMs) {
     sock.on('error', () => finish(false));
   });
 }
+// 有界并发执行 fn(item):同时最多 limit 个在飞;单项失败不连累整体。把「测全部代理/端点/余额」从串行(N×超时,
+// 200 个死代理 ×8s ≈ 26 分钟把请求挂死)改并行(墙钟≈最慢一个)。JS 单线程,fn 的 await 只在 ping/HTTP 处让出,
+// recordTest 等同步写在 await 之间原子执行,不会互相穿插。
+async function mapLimit(items, limit, fn) {
+  let i = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (i < items.length) { const idx = i++; try { await fn(items[idx], idx); } catch (_e) { /* 单项已各自兜底,继续 */ } }
+  });
+  await Promise.all(workers);
+}
 async function handleProxiesTest(req, res) {
   const b = await _body(req, res); if (!b) return;
   const ids = Array.isArray(b.ids) ? b.ids : (b.id ? [b.id] : proxyStore.list().map((p) => p.id));
-  for (const id of ids) { const p = proxyStore.list().find((x) => x.id === id); if (!p) continue; const r = await tcpPing(p.host, p.port, 8000); proxyStore.recordTest(id, r); }
+  const byId = new Map(proxyStore.list().map((x) => [x.id, x]));   // 一次建索引,免循环里每个 id 都 list().find() 退化成 O(n²)
+  await mapLimit(ids, 20, async (id) => { const p = byId.get(id); if (!p) return; const r = await tcpPing(p.host, p.port, 8000); proxyStore.recordTest(id, r); });
   sendJson(res, 200, { ok: true, items: proxyStore.list() });
 }
 
@@ -1380,7 +1394,7 @@ async function handleEndpointsClear(res) { adspowerEndpointStore.clear(); sendJs
 async function handleEndpointsTest(req, res) {
   const b = await _body(req, res); if (!b) return;
   const ids = Array.isArray(b.ids) ? b.ids : (b.id ? [b.id] : adspowerEndpointStore.list().map((e) => e.id));
-  for (const id of ids) { const ep = adspowerEndpointStore.getFull(id); if (!ep) continue; const r = await pingAdspower(ep.apiBase, ep.apiKey); adspowerEndpointStore.recordTest(id, r); }
+  await mapLimit(ids, 20, async (id) => { const ep = adspowerEndpointStore.getFull(id); if (!ep) return; const r = await pingAdspower(ep.apiBase, ep.apiKey); adspowerEndpointStore.recordTest(id, r); });
   sendJson(res, 200, { ok: true, items: adspowerEndpointStore.list() });
 }
 
@@ -1439,7 +1453,7 @@ async function captchaBalance(provider, apiKey) {
 async function handleCaptchaBalance(req, res) {
   const b = await _body(req, res); if (!b) return;
   const ids = Array.isArray(b.ids) ? b.ids : (b.id ? [b.id] : captchaStore.list().map((k) => k.id));
-  for (const id of ids) { const k = captchaStore.getFull(id); if (!k) continue; const r = await captchaBalance(k.provider, k.apiKey); captchaStore.recordBalance(id, r); }
+  await mapLimit(ids, 10, async (id) => { const k = captchaStore.getFull(id); if (!k) return; const r = await captchaBalance(k.provider, k.apiKey); captchaStore.recordBalance(id, r); });   // 外部 HTTP 12s,并发压低到 10
   sendJson(res, 200, { ok: true, items: captchaStore.list() });
 }
 // 邮箱
@@ -1839,17 +1853,21 @@ const onListening = () => {
       } catch (_e) { /* 中心机暂不可达,下次重试 */ }
     };
     // 推送本机成功账号给中心机(出站,穿 NAT;中心机够不着子机时也能拿到数据)。
+    let _pushing = false;   // 防重叠:单次 push 若超过 30s 周期,下一个 beat 不再叠起并发 POST(否则越堆越多)
     const pushResults = async () => {
+      if (_pushing) return;
+      _pushing = true;
       try {
         const records = [];
         for (const f of listResultJsonl()) { const jobId = f.replace('-success.jsonl', ''); for (const r of readJobRecords(jobId)) records.push({ nodeId: NODE_ID, jobId, ...r }); }
         if (!records.length) return;
         await fetch(base + '/api/push', { method: 'POST', headers: authHdr, body: JSON.stringify({ nodeId: NODE_ID, accounts: records }), signal: AbortSignal.timeout(20000) });
       } catch (_e) { /* 忽略,下次重试 */ }
+      finally { _pushing = false; }
     };
     const beat = () => { register(); pushResults(); };
     beat();
-    setInterval(beat, 30000);
+    const _hb = setInterval(beat, 30000); if (_hb.unref) _hb.unref();   // unref:与本模块其它后台定时器(PEERS 驱逐等)一致,不阻止进程优雅退出
     // eslint-disable-next-line no-console
     console.log(`📡 自动注册并推送结果到中心机: ${CENTRAL_URL}(每 30s)`);
   }
