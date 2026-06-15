@@ -466,6 +466,7 @@ function runSpec(jobId, spec, publish, shared) {
         cwd: SELENIUM_DIR, env: spec.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32', // unix:独立进程组,便于杀树
+        windowsHide: true,                       // ★Windows:不给 python.exe 子进程弹黑色控制台窗(stdout/stderr 已走管道,无需可见窗)
       });
     } catch (e) {
       publish(jobId, 'log', `${spec.label}启动失败: ${e && e.message}`);
@@ -775,7 +776,7 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
     const finish = (r) => { if (done) return; done = true; _selftestRunning = false; resolve(r); };
     let child;
     try {
-      child = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     } catch (e) { return finish({ ok: false, detail: 'python 启动失败: ' + (e && e.message) }); }
     if (!child.pid) return finish({ ok: false, detail: '未拿到 pid(python 未安装?设环境变量 OPENROUTER_PYTHON)' });
     const cap = (b) => { out += String(b); if (out.length > 24000) out = out.slice(-24000); };
@@ -786,7 +787,7 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
       try { child.kill('SIGKILL'); } catch (_e) { /* 已退出 */ }
       let cleaned = false;
       try {
-        const cl = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--cleanup-selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: 'ignore' });
+        const cl = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--cleanup-selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: 'ignore', windowsHide: true });
         cleaned = !!(cl && cl.pid);
         const clKill = setTimeout(() => { try { cl.kill('SIGKILL'); } catch (_e) { /* 已退出 */ } }, 20000);
         cl.on('close', () => clearTimeout(clKill));
