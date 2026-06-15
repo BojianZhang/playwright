@@ -20,7 +20,8 @@ const crypto = require('crypto');
 const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 const { envInt, envFloat } = require('./env-tunables');
 
-const POOL_FILE = path.join(__dirname, '..', 'data', 'card-pool.json');
+// 默认指向 data/card-pool.json;OPENROUTER_CARD_POOL_FILE 可覆盖(仅供单测指向临时卡池,不污染生产数据)。默认行为不变。
+const POOL_FILE = process.env.OPENROUTER_CARD_POOL_FILE || path.join(__dirname, '..', 'data', 'card-pool.json');
 const LOCK_FILE = POOL_FILE + '.lock';
 const mutex = createMutex();
 
@@ -305,9 +306,12 @@ function report(id, outcome) {
       c.declineCount = 0; c.errorCount = 0; delete c.cooldownUntil; // 绑成清账(好卡不被环境declined误累计;对齐 common.py:655-662)
       if (c.usedCount >= c.maxUses) c.status = 'exhausted';
     } else if (result === 'bound') {
-      // 仅加卡(未扣费)：不消耗付款次数，保持可用，仅更新时间/结果。绑成同样清 declined 账。
+      // ★M7(用户定 maxUses=【绑定数】):绑卡到一个号即消耗一次容量(无论有没有扣款)→ 与 Python ledger.py:415 card-bound 对齐,
+      //   两引擎同卡消耗速率一致。每绑一个号 usedCount++/successCount++,到 maxUses 即 exhausted;绑成同样清 declined 账。
       c.lastResult = 'bound';
+      c.usedCount += 1; c.successCount += 1;
       c.declineCount = 0; c.errorCount = 0; delete c.cooldownUntil;
+      if (c.usedCount >= c.maxUses) c.status = 'exhausted';
     } else if (result === 'declined') {
       // declined 多是环境因素(AVS/ZIP·IP)→ 单次只【冷却不禁卡】;累到阈值(多会话都拒=真坏卡)才禁。对齐 common.py:663-679。
       c.declineCount += 1;

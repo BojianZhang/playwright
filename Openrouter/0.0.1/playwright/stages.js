@@ -1001,7 +1001,7 @@ async function billing(ctx) {
       card = picked.card;
       if (!card) { log(`手动模式未选卡（取消/超时），停止试卡`); lastResult = outcome.result === 'success' ? outcome.result : 'no-card'; break; }
     }
-    // 卡池计数：success=扣费成功(计一次用量)；card-bound=仅加卡(不计用量)；declined=踢卡。
+    // 卡池计数(M7:maxUses=绑定数)：success=扣款成功 与 card-bound=仅加卡 都【计一次绑定用量】(与 Python ledger 对齐)；declined=冷却/累计禁卡。
     const repResult = outcome.result === 'card-bound' ? 'bound' : outcome.result;
     await cardPool.report(card.id, { result: repResult, error: outcome.error });
     pushCard(card.last4, outcome.result, outcome.error);
