@@ -853,6 +853,14 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         log("[混合] %s 异常: %s" % (email, str(e)[:160]))
         return res
     finally:
+        # ★M2:hybrid 在 card-bound 处提前置 ok=True,若随后 do_purchase 充值没成 → ok 与新成功口径(每个关键节点真成功)矛盾,
+        #   且实时面板按 stdout 的 ok= 会把它闪计成功。收尾统一按 purchase 回算 ok(只改上报 ok 字段,不动 success 变量/env/changepw 逻辑)。
+        #   失败行 ok 本就 False → no-op;skipped_charge(续跑已充)时 purchase 已是 success → 不误降。覆盖所有 return 路径(finally 在 return 物化前跑、res 可变)。
+        try:
+            if do_purchase and res.get("ok") and res.get("purchase") != "success":
+                res["ok"] = False
+        except Exception:
+            pass
         log_stage(slot, email, "done", "done")
         try:
             res["timings"]["total"] = round(time.perf_counter() - t_start, 1)   # 整号端到端耗时(秒)

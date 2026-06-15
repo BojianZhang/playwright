@@ -136,7 +136,11 @@ def main():
                     if args.do_card:
                         # 只有【已绑】才永久跳过；弹过验证的号下一轮换 IP+指纹再试(本轮内是快速跳过不卡住)
                         if (r.get("steps") or {}).get("card") == "card-bound":
-                            done.add(r.get("email"))
+                            # ★card 干净绑成,但 do_purchase 开且本号没充成(没扣过)→ 不标完成,留续跑【补充值】
+                            #   (卡已绑:pipeline 据 prior 跳过重绑、只补购,不重复扣款也不重复绑卡)。与新成功口径一致。
+                            _pur_ok = (r.get("steps") or {}).get("purchase") == "success" or (r.get("charged") or 0) > 0
+                            if not args.do_purchase or _pur_ok:
+                                done.add(r.get("email"))
                     elif r.get("ok"):
                         done.add(r.get("email"))
                 except Exception:
@@ -273,7 +277,11 @@ def main():
                         # 已绑=完成;★RETRY-CARD-01:已点 Save 的【歧义态】(server-error/card-502/needphone)卡可能已提交 Stripe,
                         #   自动重跑会再提交【另一张卡】=重复绑卡 + 烧 BIN(违反铁律③)→ 计入完成【不自动重试】,留人工核验,绝不盲重绑。
                         if _card in ("card-bound", "server-error", "card-502", "needphone"):
-                            _done2.add(_rr.get("email"))
+                            # ★只对【干净 card-bound】:do_purchase 开且没充成 → 不标完成,留续跑补充值(卡已绑不重绑,纯补购)。
+                            #   歧义态(server-error/card-502/needphone)仍标完成不自动重绑(保留 RETRY-CARD-01 铁律)。
+                            _pur_ok = _st.get("purchase") == "success" or (_rr.get("charged") or 0) > 0
+                            if _card != "card-bound" or not args.do_purchase or _pur_ok:
+                                _done2.add(_rr.get("email"))
                     elif args.do_purchase:
                         # ★AR-2:纯充值模式(do_purchase 无 do_card)完成须【充值成功】(purchase==success 或 charged>0),
                         #   不能只看 ok(ok 不含 purchase)→ 否则取到key但充值失败的号被误判完成、永不重试。
