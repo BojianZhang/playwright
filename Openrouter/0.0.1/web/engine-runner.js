@@ -164,17 +164,30 @@ function bestBillingStatus(r) {
   return best || r.billing_status || (r.steps && r.steps.card) || '';
 }
 
+// ★充值结果归一化(用户要求「充值成功/失败要有相应字段」):消除 charged=0 的歧义 —— 区分
+//   success(充成 +金额)/ failed(拒付/未确认,带真因)/ skipped(续跑已充跳过)/ not-attempted(do_purchase 关或没走到充值)。
+//   纯Sel 充值结果在 steps.purchase、混合在顶层 r.purchase → 二者取一(与 isSuccessRow/classifyBlame 同口径)。
+function purchaseOutcome(r) {
+  const s = r.steps || {};
+  const pur = (s.purchase != null) ? s.purchase : r.purchase;
+  const charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : null);
+  if (r.skipped_charge) return { status: 'skipped', label: '已充值(续跑跳过)', amount: charged, reason: '' };
+  if (pur === 'success' || (charged || 0) > 0) return { status: 'success', label: '成功', amount: charged, reason: '' };
+  if (pur != null && pur !== 'success') return { status: 'failed', label: '失败', amount: null, reason: String(pur) };
+  return { status: 'not-attempted', label: '未充值', amount: null, reason: '' };   // do_purchase 关 / 没走到充值阶段
+}
 // Python 结果行 → 前端账号表形状(success / failed)。accByEmail:把输入账号的原密码 join 回来(结果文件不含密码)。
 function mapRow(r, accByEmail) {
   const exitIp = String(r.proxy || '').split(':')[0] || '';
   const orig = (accByEmail && accByEmail.get(r.email)) || '';
+  const po = purchaseOutcome(r);   // 充值结果归一化(成功/失败/已充跳过/未充值)
   if (isSuccessRow(r)) {
     // ★充值额键名:hybrid 写 res["charged"]、纯Sel 也补写 charged;旧 r.charge 兜底。balance_after=充值后真实积分余额。
     const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
-    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
+    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
   }
   // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
-  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
+  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
@@ -499,14 +512,20 @@ function runSpec(jobId, spec, publish, shared) {
     //   原来没监听 → 未捕获 error 冒泡可能崩主进程;且 close 时主动 .close() 释放接口。
     const rlOut = readline.createInterface({ input: child.stdout });
     rlOut.on('line', onLine); rlOut.on('error', () => { /* 子进程被杀,流异常,忽略 */ });
+    // ★崩溃可诊断:缓存本子进程 stderr 末尾若干行(python traceback/导入错都在 stderr)→ 崩溃(无结果)时落进
+    //   summary.error + error-log,不再只甩一句"见运行日志"(日志本就没持久化)。环形缓冲只留最后 25 行,内存可控。
+    const errBuf = [];
     const rlErr = readline.createInterface({ input: child.stderr });
-    rlErr.on('line', (l) => onLine(l)); rlErr.on('error', () => { /* 同上 */ });
+    rlErr.on('line', (l) => { if (l) { errBuf.push(l); if (errBuf.length > 25) errBuf.shift(); } onLine(l); });
+    rlErr.on('error', () => { /* 同上 */ });
     child.on('error', (e) => { publish(jobId, 'log', `${spec.label}进程错误: ${e && e.message}`); });
     child.on('close', (code, signal) => {
       try { rlOut.close(); rlErr.close(); } catch (_e) { /* ignore */ }
       procRegistry.unregister(jobId, child.pid);
       publish(jobId, 'log', `${spec.label}结束(code=${code}${signal ? ' signal=' + signal : ''})`);
-      shared.exits.push({ started: true, code, signal });
+      // 仅非零退出(且非被信号杀=非用户主动停)才带 stderr 尾,正常结束不留(免噪声/省内存)。
+      const _crash = (typeof code === 'number' && code !== 0 && !signal);
+      shared.exits.push({ started: true, code, signal, label: spec.label, stderrTail: _crash ? errBuf.slice(-15) : [] });
       resolve();
     });
   });
@@ -702,8 +721,15 @@ async function spawnEngine(jobId, engine, payload, publish) {
   // 子进程异常退出(没起来 / 自行非零退出且非被 kill)且零结果 → 这是真失败,不能登记成 0/0 的"完成"。
   const exits = shared.exits || [];
   const crashed = exits.some((e) => !e.started || (typeof e.code === 'number' && e.code !== 0 && !e.signal));
+  // ★崩溃可诊断:带上崩溃子进程的 stderr 末尾(python traceback/导入错)→ 落进 summary.error(runs.json 持久化、
+  //   运行详情「异常」chip 可见),不再只甩"见运行日志"(日志没持久化,等于查不到)。
+  const _crashExit = exits.find((e) => e && e.stderrTail && e.stderrTail.length);
+  const _tail = _crashExit ? _crashExit.stderrTail : [];
   const crashError = (crashed && success === 0 && failed === 0)
-    ? 'Python 子进程异常退出(无结果)—— 见运行日志(python 未安装/导入失败/启动报错?)' : '';
+    ? ('Python 子进程异常退出(无结果,python 未安装/导入失败/启动报错?)'
+       + (_tail.length ? ' ‖ stderr末尾:' + _tail.join(' ⏎ ').slice(0, 600) : ' ‖ 无 stderr 输出(可能根本没启动)'))
+    : '';
+  if (_tail.length) { try { console.error('[' + jobId + '] Python 崩溃 stderr 末尾:\n' + _tail.join('\n')); } catch (_e) { /* ignore */ } }
   // 资源使用记录(诊断/排查用):host 反查 proxyId;Python 自动建环境 → envId 留空(诚实)。
   try {
     const pxByHost = new Map(proxyStore.list().map((p) => [p.host, p.id]));
@@ -782,4 +808,4 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
   });
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, purchaseOutcome, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };

@@ -43,6 +43,7 @@ const FIELDS = [
   // ── 卡池(两套共用,载卡时 ledger 读)──────────────────────────────────────
   { key: 'cardStrategy', env: 'CARD_STRATEGY', type: 'text', scope: 'both', group: '卡池', def: '' },
   { key: 'cardPreferBin', env: 'CARD_PREFER_BIN', type: 'text', scope: 'both', group: '卡池', def: '' },
+  { key: 'cardBinDailyCap', env: 'CARD_BIN_DAILY_CAP', type: 'number', scope: 'both', group: '卡池', def: '' },
   // ── 充值 / 改密(计费收尾)──────────────────────────────────────────────────
   // 充值结果等待上限(秒):成功/拒付一般几十秒内判定;到点仍 unknown 才放弃。空=代码默认 90(原来死等 300s)。
   { key: 'purchaseWait', env: 'FIXC_PURCHASE_WAIT', type: 'number', scope: 'both', group: '充值改密', def: '90' },

@@ -24,6 +24,7 @@ export interface AccountRow {
   email: string; createdAt?: string; updatedAt?: string;
   registered?: boolean; apiKey?: string; apiKeyName?: string;
   passwordChanged?: boolean; billingStatus?: string; charged?: number; balanceAfter?: number | null;
+  purchaseStatus?: 'success' | 'failed' | 'skipped' | 'not-attempted'; purchaseReason?: string;   // 充值结果(明确成功/失败/已充跳过/未充值)
   cardLast4?: string; exitIp?: string; blacklisted?: boolean; blacklistReason?: string;
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;
 }
@@ -108,6 +109,7 @@ export interface HealthInfo {
   uptimeSec: number; version: string;
   peers: { nodeId: string; url: string; ageSec: number }[];
   storage: { resultFiles: number; resultsBytes: number; runsBytes: number };
+  cardPool?: { total: number; active: number; disabled: number; exhausted: number; dispatched: number; remaining: number; available: number; todayConsumed: number; projectedDays: number | null } | null;
   config: { captchaKeySet: boolean; mailboxKeySet: boolean; tokenSet: boolean; captchaProvider: string; mailboxProvider: string; gateStatic: boolean };
   warnings: string[];
 }

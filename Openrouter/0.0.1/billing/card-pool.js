@@ -495,6 +495,25 @@ function availableCount() {
   return n;
 }
 
+// 卡池健康统计(系统健康页用):各状态卡数 + 活跃卡剩余可用次数 + 当前可用卡数。
+function stats() {
+  ensureLoaded();
+  const s = { total: 0, active: 0, disabled: 0, exhausted: 0, dispatched: 0, remaining: 0, available: 0 };
+  for (const c of POOL.values()) {
+    s.total += 1;
+    const st = c.status || 'active';
+    if (st === 'active') {
+      s.active += 1;
+      const rem = Math.max(0, (c.maxUses || 1) - (c.usedCount || 0));   // 该活跃卡剩余可用次数
+      s.remaining += rem;
+      if (rem > 0) s.available += 1;
+    } else if (st === 'exhausted') s.exhausted += 1;
+    else if (st === 'dispatched') s.dispatched += 1;
+    else s.disabled += 1;   // disabled / declined / 其它非活跃统一计入禁用
+  }
+  return s;
+}
+
 module.exports = {
   parseCardLines,
   upsertMany,
@@ -513,5 +532,6 @@ module.exports = {
   remove,
   clear,
   availableCount,
+  stats,
   _POOL_FILE: POOL_FILE,
 };

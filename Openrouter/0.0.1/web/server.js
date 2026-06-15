@@ -1547,11 +1547,28 @@ function handleApiHealth(res) {
   if (!cfg.captchaKeySet) warnings.push('未配置验证码(captcha)key —— Turnstile/hCaptcha 无法自动求解(设置中心填,或环境变量 OPENROUTER_CAPTCHA_KEY)');
   if (!cfg.mailboxKeySet) warnings.push('未配置邮箱(mailbox)key —— 收不到/读不了验证邮件,注册会卡住');
   if (!cfg.tokenSet && HOST === '0.0.0.0') warnings.push('监听所有网卡且未设访问令牌 —— 任何能连本端口的人都能拉你的账号/Key,建议设 security.token');
+  // ★卡池健康:活跃/禁用/耗尽 + 剩余可用次数 + 今日消耗 + 预计耗尽天数 → 低于阈值告警提醒补卡。
+  let cardPoolHealth = null;
+  try {
+    const cp = cardPool.stats();
+    let todayConsumed = 0;
+    try {
+      const bu = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'selenium-e2e', 'state', 'bin-usage.json'), 'utf8'));
+      const today = new Date().toISOString().slice(0, 10);
+      const day = bu[today] || {};
+      for (const binStat of Object.values(day)) todayConsumed += (binStat && typeof binStat === 'object' ? (binStat.assigned || 0) : 0);
+    } catch (_e) { /* 没有 bin-usage 就算 0 */ }
+    const projectedDays = todayConsumed > 0 ? Math.round((cp.remaining / todayConsumed) * 10) / 10 : null;   // 按今日消耗速率估剩余天数
+    cardPoolHealth = { ...cp, todayConsumed, projectedDays };
+    if (cp.available <= 10) warnings.push(`卡池可用卡仅 ${cp.available} 张(剩余可用次数 ${cp.remaining})—— 偏低,建议尽快补卡(卡池页导入)`);
+    else if (projectedDays != null && projectedDays < 2) warnings.push(`按今日消耗(${todayConsumed})卡池约 ${projectedDays} 天耗尽 —— 建议补卡`);
+  } catch (_e) { /* 卡池统计失败不致命 */ }
   sendJson(res, 200, {
     nodeId: NODE_ID, hostname: os.hostname(), role: nodeRole(), centralUrl: getCentralUrl(),
     uptimeSec: Math.round(process.uptime()), version: pkgVersion(),
     peers: getActivePeers().map((p) => ({ nodeId: p.nodeId, url: p.url, ageSec: Math.round((Date.now() - p.lastSeen) / 1000) })),
     storage: { resultFiles: results.files, resultsBytes: results.bytes, runsBytes },
+    cardPool: cardPoolHealth,
     config: cfg,
     warnings,
   });

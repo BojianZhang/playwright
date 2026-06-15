@@ -113,6 +113,25 @@ export default function HealthPage() {
 
           <div className="section-gap" />
 
+          {/* 卡池健康(活跃/禁用/剩余可用次数/今日消耗/预计耗尽) */}
+          {data.cardPool && (
+            <>
+              <section className="card">
+                <div className="eb-top"><span className="idx c-green"><Icon name="card" size={12} /></span><h3>卡池健康</h3>
+                  <span className="head-hint">活跃 {data.cardPool.active} · 禁用 {data.cardPool.disabled} / 共 {data.cardPool.total}</span>
+                  <Link className="link-btn" to="/cards" style={{ marginLeft: 'auto' }}><Icon name="card" size={14} />去卡池</Link>
+                </div>
+                <div className="kpi-grid" style={{ padding: '12px 18px 18px' }}>
+                  <div className="card kpi"><div className="kpi-label"><Icon name="card" />可用卡</div><div className="kpi-num" style={{ color: data.cardPool.available <= 10 ? 'var(--danger)' : undefined }}>{data.cardPool.available}</div><div className="kpi-sub">剩余可用次数 {data.cardPool.remaining}</div></div>
+                  <div className="card kpi"><div className="kpi-label"><Icon name="xcircle" />已禁用</div><div className="kpi-num">{data.cardPool.disabled}</div><div className="kpi-sub">declined/耗尽,占 {data.cardPool.total ? Math.round(100 * data.cardPool.disabled / data.cardPool.total) : 0}%</div></div>
+                  <div className="card kpi info"><div className="kpi-label"><Icon name="activity" />今日消耗</div><div className="kpi-num">{data.cardPool.todayConsumed}</div><div className="kpi-sub">今日已分配卡次数</div></div>
+                  <div className="card kpi"><div className="kpi-label"><Icon name="alert" />预计耗尽</div><div className="kpi-num" style={{ fontSize: 20, color: (data.cardPool.projectedDays != null && data.cardPool.projectedDays < 2) ? 'var(--danger)' : undefined }}>{data.cardPool.projectedDays != null ? data.cardPool.projectedDays + ' 天' : '—'}</div><div className="kpi-sub">{data.cardPool.projectedDays != null ? '按今日消耗速率估算' : '今日暂无消耗'}</div></div>
+                </div>
+              </section>
+              <div className="section-gap" />
+            </>
+          )}
+
           {/* 配置状态 */}
           <section className="card">
             <div className="eb-top"><span className="idx c-info">i</span><h3>配置状态</h3><Link className="link-btn" to="/settings" style={{ marginLeft: 'auto' }}><Icon name="settings" size={14} />去设置中心</Link></div>

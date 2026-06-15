@@ -8,7 +8,7 @@ import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { fmtDateTime, fmtDuration, trunc } from '../lib/parse';
-import type { RunDetailResp, StartJobResp, IncompleteRow } from '../lib/types';
+import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow } from '../lib/types';
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
 
 const PY_ENGINES = ['selenium', 'hybrid', 'split'];
@@ -105,7 +105,7 @@ export default function RunDetailPage() {
           <div className="card-head"><span className="idx c-green"><Icon name="okcircle" size={12} /></span><h3>成功账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{success.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => copy(success.map((a) => `${a.email || ''}:${a.apiKey || ''}`).join('\n'))}>复制 邮箱:Key</button>
-              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值', '卡末4', '出口IP', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => window.open(withToken(`/download?jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -113,14 +113,14 @@ export default function RunDetailPage() {
             {!success.length ? <div className="empty-note">无成功账号。</div> : (
               <div className="tbl-wrap" style={{ maxHeight: 460 }}>
                 <table className="tbl">
-                  <thead><tr><th>邮箱</th><th>API Key</th><th>账单</th><th>充值</th><th>卡末4</th><th>出口IP</th></tr></thead>
+                  <thead><tr><th>邮箱</th><th>API Key</th><th>账单</th><th>充值</th><th>卡末4</th><th>出口IP</th></tr></thead>{/* 充值列:明确 成功/失败/已充跳过/未充值,不再只显 $0 */}
                   <tbody>
                     {success.slice(0, RENDER_CAP).map((a, i) => (
                       <tr key={i}>
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--primary-text)' }} title={a.apiKey}>{trunc(a.apiKey, 20)}</td>
                         <td>{a.billingStatus === 'success' ? <span className="kbadge ok">success</span> : a.billingStatus ? <span className="kbadge warn">{a.billingStatus}</span> : <span className="kbadge neutral">—</span>}</td>
-                        <td className="mono">{a.charged != null ? '$' + a.charged : '—'}</td>
+                        <td>{renderPurchase(a)}</td>
                         <td className="mono">{a.cardLast4 ? '•••• ' + a.cardLast4 : '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.exitIp || '—'}</td>
                       </tr>
@@ -209,6 +209,16 @@ export default function RunDetailPage() {
   );
 }
 
+// 充值结果列:明确 成功(+金额)/ 失败(带真因)/ 已充跳过 / 未充值,消除「charged=$0」的歧义。
+const PURCHASE_LABEL: Record<string, string> = { success: '成功', failed: '失败', skipped: '已充跳过', 'not-attempted': '未充值' };
+function renderPurchase(a: AccountRow) {
+  const ps = a.purchaseStatus;
+  if (ps === 'success') return <span className="kbadge ok">成功{a.charged ? ' $' + a.charged : ''}</span>;
+  if (ps === 'failed') return <span className="kbadge fail" title={a.purchaseReason || ''}>失败{a.purchaseReason ? '·' + a.purchaseReason : ''}</span>;
+  if (ps === 'skipped') return <span className="kbadge neutral" title="续跑检测到已充值,跳过(防重复扣款)">已充·跳过</span>;
+  if (ps === 'not-attempted') return <span className="kbadge neutral" title="本次未启用充值(do_purchase 关)或未走到充值阶段">未充值</span>;
+  return <span className="mono">{a.charged != null ? '$' + a.charged : '—'}</span>;   // 老结果行无 purchaseStatus → 回退原显示
+}
 // 未完整号状态徽章:banned/坏邮箱=永久态(红/灰,不重跑)、incomplete/not-run=可续跑(黄/蓝)
 const INCOMPLETE_BADGE: Record<string, JSX.Element> = {
   banned: <span className="kbadge fail">号被拒</span>,

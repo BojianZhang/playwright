@@ -279,7 +279,14 @@ def load_card(account=None, exclude=None, count_bin=True, exclude_bins=None):
             # 每个号【随机取】一张卡——但仍尊重 BIN 当日限量:优先从"当日没超额的 BIN"里随机,
             # 避免随机大量命中独大的 BIN(如 436120 占一大半)→撞 Stripe Radar velocity。
             under = [c for c in cands if _assigned(_bin_of(c)) < cap]
-            best = _rnd.choice(under or cands)
+            if under:
+                best = _rnd.choice(under)
+            else:
+                # ★所有 BIN 当日都超额 → 不再【random over all】(会偏向卡最多的独大 BIN,正是 436120 一天 200+ 的根因);
+                #   改【轮换到当日发号最少的 BIN】再随机取,overflow 也尽量摊匀。仍绝不饿卡:cands 非空必返一张(不因超额返 None)。
+                _min_a = min(_assigned(_bin_of(c)) for c in cands)
+                best = _rnd.choice([c for c in cands if _assigned(_bin_of(c)) == _min_a])
+                log("[卡] 所有 BIN 当日均超额(cap=%d)→ 轮换到发号最少的 BIN(避免独大 BIN 继续堆 Radar velocity)" % cap)
             bin_picked = _bin_of(best)
             if count_bin:
                 slot = today_use.setdefault(bin_picked, {})

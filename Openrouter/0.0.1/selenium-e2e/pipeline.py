@@ -128,7 +128,8 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
     cfg = opts["cfg"]
     # password=当前 OpenRouter 登录密码:设了统一密码就＝统一密码,否则＝原邮箱密码(与 Playwright loginPassword=unified||original 对齐)。
     # 不写这个字段 → web 回退成原密码,导致「设了统一密码/改密成功后 当前密码仍显示原密码」。
-    res = {"email": email, "ok": False, "steps": {}, "password": op_pw}
+    res = {"email": email, "ok": False, "steps": {}, "timings": {}, "password": op_pw}
+    t_start = time.perf_counter()   # 整号端到端耗时(秒),与混合 hybrid_run 对齐 → 详情/分析能看每号慢在哪
     env_id = None
     driver = None
     patcher = None
@@ -372,6 +373,10 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         log("账号 %s 异常: %s" % (email, str(e)[:140]))
         return res
     finally:
+        try:
+            res["timings"]["total"] = round(time.perf_counter() - t_start, 1)   # 整号端到端耗时(秒);finally 覆盖所有 return 路径
+        except Exception:
+            pass
         log_stage(slot, email, "done", "done")
         try:
             if patcher:
