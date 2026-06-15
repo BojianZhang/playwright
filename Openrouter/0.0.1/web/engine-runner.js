@@ -416,7 +416,10 @@ function runSpec(jobId, spec, publish, shared) {
         if (shared.seenResults.has(r.name)) return;
         shared.seenResults.add(r.name);
         if (r.ok) shared.counters.ok += 1; else shared.counters.fail += 1;
-        const _orig = (shared.accByEmail && shared.accByEmail.get(r.name)) || '';
+        // ★M5:实时结果行的 r.name 是 email 的 local-part(stdout 只打 local-part)→ 用【local-part→密码】表查,
+        //   原来查 email-keyed 的 accByEmail 永远 miss → 无统一密码时实时事件密码恒空,「重跑(登录)」回填不进。
+        //   跨域同名 local-part 撞车只影响实时显示(非权威,收口仍按全 email 的 mapRow),可接受;accByEmail 兜底兼容全 email 名。
+        const _orig = (shared.accByLocal && shared.accByLocal.get(r.name)) || (shared.accByEmail && shared.accByEmail.get(r.name)) || '';
         // 现密码=统一密码(设了就用)否则原密码 → 与收口 mapRow(password=r.password||orig,r.password=op_pw)对齐。
         //   无统一密码时 shared.unifiedPw='' → 回退 _orig,默认逐字节不变。仅驱动 LIVE UI「重跑(登录)」回填,
         //   不参与续跑权威参数(走 successRows/failedRows 的 mapRow)/billing/charged → 无降级/重复扣款风险。
@@ -448,7 +451,7 @@ async function spawnEngine(jobId, engine, payload, publish) {
   const startedAt = Date.now();
   const env = buildEnv(payload);
   // 邮箱→原密码映射(结果行不含密码):流式 account-failed 带上它,前端「重跑(登录)」才能回填 email:密码,否则只剩 email: 空密码登不进。
-  const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), unifiedPw: String(payload.unifiedPassword || '').trim(), seenResults: new Set() };
+  const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), accByLocal: new Map((payload.accounts || []).map((a) => [String(a.email || '').split('@')[0], a.password || ''])), unifiedPw: String(payload.unifiedPassword || '').trim(), seenResults: new Set() };
 
   // 并发钳制可见提示:maxConcurrency 把请求并发压低时,在【运行日志】显式告知(此前只 console.error 进服务端 stderr,
   //   控制台看不到→用户以为按填的并发在跑)。spawnEngine 内只算/发一次,避免 selenium/hybridArgs 重复打日志。

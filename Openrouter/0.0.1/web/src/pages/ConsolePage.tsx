@@ -277,7 +277,7 @@ export default function ConsolePage() {
     if (runningRef.current) { // 停止
       if (runEngine !== 'playwright' && jobId) { try { await apiPost('/api/jobs/stop', { jobId }); } catch { /* ignore */ } }
       stream.close(); runningRef.current = false;
-      setRunHint({ html: runEngine === 'playwright' ? '已停止监听。断点续跑已记录进度,再次执行会自动跳过已完成阶段。' : '已发停止:杀 Python 进程树(含浏览器),收尾后本次结果落历史。' });
+      setRunHint({ html: runEngine === 'playwright' ? '⚠ 已停止监听,但 Playwright 任务仍在后台继续跑完(含加卡/充值)——无法中途安全中断。进度已落盘,可用「续跑这批」接管查看。' : '已发停止:杀 Python 进程树(含浏览器),收尾后本次结果落历史。' });
       return;
     }
     if (!data.account.trim()) { setRunHint({ html: '请先填写或上传「账号凭证」(在第 1 步「数据」)', danger: true }); return; }

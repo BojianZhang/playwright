@@ -22,6 +22,8 @@ export default function RunDetailPage() {
   const s = data?.summary;
   const success = data?.success || [];
   const failed = data?.failed || [];
+  // ★M21:大批次详情(后端封顶 5000 行)若整表渲染进 DOM 会卡顿 → 只渲染前 RENDER_CAP 行,溢出给提示+引导下载(完整数据在 .csv/.txt)。
+  const RENDER_CAP = 1000;
   const copy = (txt: string) => navigator.clipboard.writeText(txt).then(() => toast.push('已复制', 'ok'), () => toast.push('复制失败', 'err'));
 
   // 「续跑这批」:中断/异常的 Python 任务,后端用残留输入强制 resume 重起 → 跳控制台实时显示。
@@ -105,7 +107,7 @@ export default function RunDetailPage() {
                 <table className="tbl">
                   <thead><tr><th>邮箱</th><th>API Key</th><th>账单</th><th>充值</th><th>卡末4</th><th>出口IP</th></tr></thead>
                   <tbody>
-                    {success.map((a, i) => (
+                    {success.slice(0, RENDER_CAP).map((a, i) => (
                       <tr key={i}>
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--primary-text)' }} title={a.apiKey}>{trunc(a.apiKey, 20)}</td>
@@ -117,6 +119,7 @@ export default function RunDetailPage() {
                     ))}
                   </tbody>
                 </table>
+                {success.length > RENDER_CAP && <div className="empty-note">仅显示前 {RENDER_CAP} / 共 {success.length} 行(防卡顿)——完整数据请用上方「.csv」「.txt」下载。</div>}
               </div>
             )}
           </div>
@@ -138,7 +141,7 @@ export default function RunDetailPage() {
                 <table className="tbl">
                   <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th><th>现密码</th></tr></thead>
                   <tbody>
-                    {failed.map((a, i) => (
+                    {failed.slice(0, RENDER_CAP).map((a, i) => (
                       <tr key={i} className="is-banned">
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--danger)' }}>{a.reason}</td>
@@ -151,6 +154,7 @@ export default function RunDetailPage() {
                     ))}
                   </tbody>
                 </table>
+                {failed.length > RENDER_CAP && <div className="empty-note">仅显示前 {RENDER_CAP} / 共 {failed.length} 行(防卡顿)——完整数据请用上方「.csv」「.txt」下载。</div>}
               </div>
             )}
           </div>
