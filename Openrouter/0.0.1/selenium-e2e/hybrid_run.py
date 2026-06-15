@@ -526,7 +526,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             elif do_changepw and op_pw and not _cpw_prior:
                 log_stage(slot, email, "changepw")
                 try:
-                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"))
+                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"), cfg.get("mail_base") or firstmail.DEFAULT_BASE)
                     res["steps"]["changepw"] = bool(cp_ok)
                     if cp_ok:
                         save_progress(email, _stage=("changepw", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S")}))
@@ -839,7 +839,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             else:
                 log_stage(slot, email, "changepw")
                 try:
-                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"))
+                    cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"), cfg.get("mail_base") or firstmail.DEFAULT_BASE)
                     res["steps"]["changepw"] = bool(cp_ok)
                     if cp_ok:
                         save_progress(email, _stage=("changepw", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S")}))

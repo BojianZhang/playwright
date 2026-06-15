@@ -202,7 +202,7 @@ def change_mailbox_password(email, current, new, api_key, base_url=DEFAULT_BASE,
         if e.code in (400, 401, 403, 409, 422) and current != new:
             try:
                 code2, body2 = _post(new)
-                log("改邮箱密码: 旧密码被拒,但 new 当前有效 → 已是目标密码,视为成功 (HTTP %s)" % code2)
+                log("改邮箱密码: 旧密码被拒,但 new 当前有效 → 已是目标密码,视为成功 (HTTP %s) %s" % (code2, body2[:80]))   # 带 body2:万一 2xx 却含错误体可人工察觉
                 return True
             except Exception:
                 pass
