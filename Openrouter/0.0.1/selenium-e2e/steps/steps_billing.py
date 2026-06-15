@@ -532,6 +532,13 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
     while time.time() < end:
         if not link_saved:
             link_saved = _click_link_save(page)   # 出现 Link 'Save card?' 就点 Save(在 hcaptcha 处理前先点,防 NO_MANUAL 早返回漏点)
+            if link_saved:
+                # ★一劳永逸(对齐 Fix C):Stripe Link「Save card?」存卡弹窗【只在收卡成功后才弹】(declined/502 不弹、hcaptcha 更早一环就拦下)
+                #   → 检测到=card-bound 专属强信号(_click_link_save 只认 'Save card?'/'save your card and encrypted' 专属文案,不会误判)。
+                #   已点它的 Save(把卡存进 Link 供手动测试)→ 直接判绑成收口,不再轮询、不走 _card_attached 的 goto(/credits) 刷新核验
+                #   → 根治 /credits 上 Save card? 被重新弹出来【逗留】。
+                log("[加卡] ✓ 检测到 Save card? 存卡弹窗(收卡成功专属信号)→ 判 card-bound,收口(不再刷新核验)")
+                return {"result": "card-bound", "detail": "检测到 Link 存卡弹窗(收卡成功专属信号)", "hcaptcha": saw_hcaptcha}
         if time.time() >= hc_cooldown_until:
             _ok, _hc = _handle_hcaptcha(page, cfg, manual_hcaptcha, patcher=patcher, proxy=proxy)
             saw_hcaptcha = saw_hcaptcha or _hc
