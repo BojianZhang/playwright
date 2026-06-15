@@ -356,19 +356,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         res["ok"] = _ok
         # ★错误不做糊涂账:把"在哪一步、因为啥"失败浓缩成 fail_stage/fail_reason 两字段(按流程顺序取第一个没过的环节),
         #   UI/分析页直接显示,不用人肉拼 steps 字典。原始 steps/各 reason 字段照旧保留,这里只做归因汇总。
+        #   ★归因逻辑抽到 common.attribute_failure(单一来源,与混合引擎共用,杜绝漂移);对纯Sel输入与原内联块逐字节等价(见 test_attribution.py)。
         try:
-            _st = res.get("steps") or {}
-            _fs = _fr = None
-            if _st.get("auth") not in ("ok", None):
-                _fs, _fr = "register", str(_st.get("auth") or "register-failed")
-            elif _st.get("key") is False:
-                _fs, _fr = "key", str(res.get("key_reason") or "key-not-captured")
-            elif opts.get("do_card") and _bill_ok and _st.get("card") not in ("card-bound", None):
-                _fs, _fr = "card", str(_st.get("card"))            # declined / card-502 / hcaptcha / needphone …
-            elif opts.get("do_purchase") and _bill_ok and _st.get("purchase") not in ("success", None):
-                _fs, _fr = "charge", str(_st.get("purchase"))      # declined / server-error / unknown
-            elif opts.get("do_changepw") and _bill_ok and _cpw_gate and _st.get("changepw") is False:
-                _fs, _fr = "changepw", "changepw-failed"
+            _fs, _fr = common.attribute_failure(res.get("steps"), opts, res)
             if _fs:
                 res["fail_stage"] = _fs
                 res["fail_reason"] = _fr

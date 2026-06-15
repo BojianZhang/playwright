@@ -111,9 +111,19 @@ function pyFailReason(r) {
   if (s.purchase && s.purchase !== 'success') return 'charge:' + s.purchase;   // 补漏:充值拒付/未成功(原来落到 JSON 糊涂账)
   if (s.key === false) return 'key:' + (r.key_reason || 'fail');               // 补漏:取key 失败
   if (r.giveup_permanent) return 'giveup' + (r.steps && r.steps.giveup ? ':' + r.steps.giveup : '');
+  if (s.giveup) return 'giveup:' + s.giveup;                                   // 混合加卡放弃(card-deadline/all-segments-502/…)
+  const _pur = (s.purchase != null) ? s.purchase : r.purchase;                 // 混合 purchase 在顶层 r.purchase
+  if (_pur && _pur !== 'success') return 'charge:' + _pur;
   if (isNotAllowed(r)) return 'ACCOUNT_NOT_ALLOWED';
   if (r.error) return String(r.error).slice(0, 80);
-  return s && Object.keys(s).length ? JSON.stringify(s).slice(0, 60) : 'unknown';
+  // ★兜底:绝不把裸 JSON.stringify(steps) 丢给用户 —— 按 steps 最远到达的阶段说一句人话。
+  if (s.auth === 'ok') {
+    if (s.card === 'card-bound') return '充值/收尾未完成';                      // 卡绑成但整体判失败 → 多为充值/改密没过
+    if (s.key === true || s.pw === true || r.api_key) return '加卡未完成(未绑卡)';
+    return '已注册·后续阶段未完成';
+  }
+  if (s.auth) return 'auth:' + s.auth;                                         // auth 非 ok 又非 fail 前缀(如 REGISTER_UNCONFIRMED)
+  return Object.keys(s).length ? '未完成(详见运行日志)' : 'unknown';
 }
 
 // 跨引擎衔接(split 第二轮)分类:某失败行该转去哪个引擎再试一次,返回 'hybrid'|'selenium'|null。
@@ -213,10 +223,44 @@ async function bridgeToAccountStore(rows) {
   }
   if (ups.length) await Promise.allSettled(ups);
 }
-function writeDetail(jobId, engine, successRows, failedRows) {
+// ★未完整号归因:本批无结果行、历史也回填不到的号 —— 读已有状态文件给出「为啥未完整」,不再静默丢弃(每个输入号都有归宿)。
+function _readIncompleteState() {
+  const st = { banned: new Set(), badMail: new Set(), progress: {} };
+  try {
+    for (const line of fs.readFileSync(path.join(STATE_DIR, 'banned_accounts.txt'), 'utf8').split('\n')) {
+      const e = line.trim().split(/[\s,|]+/)[0];
+      if (e && e.includes('@')) st.banned.add(e.toLowerCase());
+    }
+  } catch (_e) { /* 没有就空 */ }
+  try {
+    const bm = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'bad_mailboxes.json'), 'utf8'));
+    const arr = Array.isArray(bm) ? bm : Object.keys(bm || {});
+    for (const x of arr) { const em = (typeof x === 'string' ? x : (x && x.email)) || ''; if (em) st.badMail.add(String(em).toLowerCase()); }
+  } catch (_e) { /* */ }
+  try { st.progress = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'account_progress.json'), 'utf8')) || {}; } catch (_e) { /* */ }
+  return st;
+}
+// 纯函数(可单测):给一个【本批没结果、历史也回填不到】的号判「为啥未完整 + 最远到哪一步」。state 由 _readIncompleteState 预读。
+function classifyIncomplete(email, state) {
+  const e = String(email || '').toLowerCase();
+  const s = state || {};
+  if (s.banned && s.banned.has(e)) return { status: 'banned', reason: '号被拒(NOT_ALLOWED,历史已登记)— 永久跳过,不重跑' };
+  // 坏邮箱:整邮箱登记 或【整域 404】登记(bad_mailboxes.json 可存 @domain 域级条目)
+  const _domain = e.includes('@') ? '@' + e.split('@')[1] : '';
+  if (s.badMail && (s.badMail.has(e) || (_domain && s.badMail.has(_domain)))) return { status: 'bad-mailbox', reason: '坏邮箱/整域不可达(收不到验证邮件,历史已登记)— 换邮箱源' };
+  const p = (s.progress && (s.progress[email] || s.progress[e])) || null;
+  if (p) {
+    if (p.api_key) return { status: 'incomplete', reason: '中途中断:已取到 Key(' + (p.billing_status || '未到加卡') + ')— 续跑补后续' };
+    if (p.billing_status) return { status: 'incomplete', reason: '中途中断:已到「' + p.billing_status + '」,未取 Key/未完成 — 可续跑' };
+    if (p.registered) return { status: 'incomplete', reason: '中途中断:已注册,未取 Key — 可续跑' };
+    return { status: 'incomplete', reason: '中途中断(checkpoint 有进度,阶段不明)— 可续跑' };
+  }
+  return { status: 'not-run', reason: '本批未产出结果(疑中途被 kill / 并发未排到 / 子进程丢结果)— 可续跑' };
+}
+function writeDetail(jobId, engine, successRows, failedRows, incompleteRows) {
   try {
     fs.mkdirSync(DETAILS_DIR, { recursive: true });
-    fs.writeFileSync(path.join(DETAILS_DIR, jobId + '.json'), JSON.stringify({ jobId, engine, success: successRows.slice(0, 5000), failed: failedRows.slice(0, 5000) }));
+    fs.writeFileSync(path.join(DETAILS_DIR, jobId + '.json'), JSON.stringify({ jobId, engine, success: successRows.slice(0, 5000), failed: failedRows.slice(0, 5000), incomplete: (incompleteRows || []).slice(0, 5000) }));
     return { ok: true };
   } catch (e) { return { ok: false, error: String(e && e.message) }; }   // 失败不再静默(be-8):返回给调用方告警
 }
@@ -574,6 +618,8 @@ async function spawnEngine(jobId, engine, payload, publish) {
     // ★F1/M3:同上,收原始行交给 dedupBySuccess(成功恒胜)——AUTO_RETRY 重试成功行覆盖首轮失败行,每号唯一(不双计/不双写导出/不双记 usage)。
     rows = [...harvest(RESULTS[key], startLines[key])];
   }
+  // ★第三桶「未完整/未运行」:本批无结果、历史也回填不到的号收进这里(逐号标原因),不再静默丢弃 → 每个输入号都有归宿。
+  const incompleteRows = [];
   // 续跑被跳过的号(已完成/被拒/冷却/坏邮箱)本 job 没有结果行 → 控制台「本次任务」详情/计数看不到「跑过的号」。
   //   用它们【历史最近一行】回填进本 job 视图,让这些号可见。★只读回填、按 email 取历史 latest、ok/steps 原样(banned→failed、
   //   已绑→success),【绝不伪造成功】;只进 per-job 快照(writeDetail/writeBatchResults),不写 append-only results.jsonl(不污染权威源)。
@@ -601,10 +647,11 @@ async function spawnEngine(jobId, engine, payload, publish) {
       for (const a of wantAccts) {
         const r = latest.get(a.email);
         if (r) { rows.push({ ...r, job_id: jobId, _resumed_skip: true }); _back += 1; }
+        // 回填不到历史的号【不在这里处理】→ 交给后面 mapRow 之后的【未完整桶最终对账】(独立于本 try,抛错也不丢账)。
       }
       if (_back) publish(jobId, 'log', `续跑:${_back} 个已完成/跳过的号用历史结果回填进本次视图(不重跑、不改判定、不污染结果源)`);
     }
-  } catch (_e) { /* 回填失败不致命,仅本 job 视图少几个跳过号 */ }
+  } catch (_e) { /* 回填失败不致命,仅本 job 视图少几个跳过号(未完整桶最终对账仍会兜住它们) */ }
   // ★M3:全 email 唯一化 + 成功恒胜失败(success-wins),一处兜底替代各分支 last-wins —— 杜绝同号既进 success 又进 failed
   //   (双计 / 同号双写 success.jsonl+failed.jsonl / usage 双记 / completeness>100% / 成功号被迟到失败行降级)。回填行已是 success-wins,此处幂等。
   {
@@ -617,6 +664,26 @@ async function spawnEngine(jobId, engine, payload, publish) {
   const successRows = [];
   const failedRows = [];
   for (const r of rows) { const [k, v] = mapRow(r, accByEmail); (k === 'success' ? successRows : failedRows).push(v); }
+  // ★第三桶「未完整」最终对账(robust):每个【唯一输入邮箱】既不在成功也不在失败 → 收进未完整并标原因。
+  //   独立于上面的回填 try(即便那里抛错也能兜住);按【唯一邮箱】去重天然不双计(修审计 DEFECT 2 的重复邮箱重计);
+  //   无邮箱行 parseAccounts 已滤、这里再跳一次(DEFECT 1);_readIncompleteState 内部已防御,外层再 try 包住不致命。
+  try {
+    const _done = new Set();
+    for (const v of successRows) if (v && v.email) _done.add(String(v.email).toLowerCase());
+    for (const v of failedRows) if (v && v.email) _done.add(String(v.email).toLowerCase());
+    const _seen = new Set();
+    const _incState = _readIncompleteState();
+    for (const a of (payload.accounts || [])) {
+      const em = a && a.email ? String(a.email) : '';
+      if (!em) continue;                                  // 无邮箱(理论上 parseAccounts 已滤)→ 跳
+      const k = em.toLowerCase();
+      if (_done.has(k) || _seen.has(k)) continue;         // 已成/已败 或 同邮箱已计 → 不双计
+      _seen.add(k);
+      const ci = classifyIncomplete(em, _incState);
+      incompleteRows.push({ email: em, password: a.password || '', status: ci.status, reason: ci.reason });
+    }
+    if (incompleteRows.length) publish(jobId, 'log', `未完整:${incompleteRows.length} 个号本批没产出结果且历史查不到 → 收进「未完整」桶并逐号标原因(可只续跑这些)`);
+  } catch (e) { publish(jobId, 'log', `⚠ 未完整桶对账失败(不影响成功/失败结果展示):${e && e.message}`); }
   // 桥接进账号台账(账号页/续跑读它):注册/key/billing/充值/卡/拉黑都合并进去,修"账号页对 Python 引擎一片空白"。
   try { await bridgeToAccountStore(rows); } catch (_e) { /* 桥接失败不影响 job 收口 */ }
   let success = successRows.length;
@@ -641,7 +708,7 @@ async function spawnEngine(jobId, engine, payload, publish) {
   // 结果落盘:失败不再静默(be-8)。tail 丢行(be-4)/落盘失败都告警到运行日志,
   // 避免前端看到"完成"却拿到残缺的下载/详情而毫无提示。
   if (_tailStats.dropped) publish(jobId, 'log', `⚠ 结果文件有 ${_tailStats.dropped} 行无法解析被跳过 —— 这些账号可能未计入结果(磁盘/编码/半写?)`);
-  const _wd = writeDetail(jobId, engine, successRows, failedRows);   // 每 job 详情快照(Python 结果文件是 append-only 非 per-job)
+  const _wd = writeDetail(jobId, engine, successRows, failedRows, incompleteRows);   // 每 job 详情快照(成功/失败/未完整三桶;Python 结果文件是 append-only 非 per-job)
   // 写 Node 同款 batch-results(txt 按用户模板渲染 + jsonl 映射后形状)→ 下载/聚合/详情 对 Python 也生效
   const _wb = writeBatchResults(jobId, successRows, failedRows, payload.successTemplate, payload.failureTemplate);
   if ((_wd && !_wd.ok) || (_wb && !_wb.ok)) publish(jobId, 'log', `⚠ 结果落盘失败(下载/详情/聚合可能不全): ${(_wd && _wd.error) || ''} ${(_wb && _wb.error) || ''}`.trim());
@@ -650,7 +717,7 @@ async function spawnEngine(jobId, engine, payload, publish) {
   const resultCount = success + failed;
   const completenessPct = Math.round((100 * resultCount) / Math.max(1, shared.total));
   const partial = resultCount > 0 && resultCount < shared.total;   // >0 且 <total:部分结果(区别于 crashError 的零结果整崩)
-  const summary = { jobId, total: shared.total, success, failed, durationMs: Date.now() - startedAt, engine, resultFiles, completenessPct, ...(partial ? { partial: true } : {}), ...(crashError ? { error: crashError } : {}) };
+  const summary = { jobId, total: shared.total, success, failed, incomplete: incompleteRows.length, durationMs: Date.now() - startedAt, engine, resultFiles, completenessPct, ...(partial ? { partial: true } : {}), ...(crashError ? { error: crashError } : {}) };
   if (partial) publish(jobId, 'log', `⚠ 结果可能未完整:${resultCount}/${shared.total}(${completenessPct}%)—— 某分流组/子进程疑似中途退出丢了部分账号结果,可用「续跑这批」补齐`);
   if (crashError) publish(jobId, 'log', crashError);
   publish(jobId, 'job-done', summary);
@@ -706,4 +773,4 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
   });
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };

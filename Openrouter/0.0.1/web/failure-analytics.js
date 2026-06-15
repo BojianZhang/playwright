@@ -51,22 +51,25 @@ function _shortErr(e) {
 // ── 失败归因:把一条失败结果行归到单一环节(stage)+ 细节(detail) ──
 function classifyBlame(r) {
   const s = r.steps || {};
-  // ★优先用 pipeline 写进结果行的 fail_stage/fail_reason(不做糊涂账:哪步+为啥已归因好,直接映射展示标签)
+  // ★号被拒(永久不可控)优先于 fail_stage 判定 —— not_allowed 的 auth 是 NOT_ALLOWED 串,attribution 会归到 register,
+  //   但它本质是「号被拒」该进 B 桶,不能混进 C.注册/登录(否则"可优化的注册问题"被号源质量污染)。两引擎统一在此拦下。
+  if (r.not_allowed || s.banned === 'not-allowed') return { stage: 'B.号被拒', detail: 'not_allowed' };
+  // ★优先用结果行的 fail_stage/fail_reason(pipeline + 混合现都已归因好;不做糊涂账:哪步+为啥已写好,直接映射展示标签)
   if (r.fail_stage) {
-    const M = { exception: 'A.基建', register: 'C.注册/登录', key: 'F.取Key', card: 'D.加卡', charge: 'G.充值', changepw: 'H.改密' };
+    const M = { exception: 'A.基建', register: 'C.注册/登录', key: 'F.取Key', card: 'D.加卡', charge: 'G.充值', changepw: 'H.改密', banned: 'B.号被拒' };
     return { stage: M[r.fail_stage] || ('Z.' + r.fail_stage), detail: String(r.fail_reason || r.fail_stage).slice(0, 48) };
   }
-  // 旧结果行(无 fail_stage)回退原逻辑 + 补 取key/充值/改密 三个原来漏判落入「Z.其它」的环节
+  // 旧结果行(无 fail_stage)回退原逻辑 + 补 取key/充值/改密/needphone/amount-fail 原来漏判落入「Z.其它」的环节
   if (r.error) return { stage: 'A.基建', detail: _shortErr(r.error) };
-  if (r.not_allowed) return { stage: 'B.号被拒', detail: 'not_allowed' };
   if (typeof s.auth === 'string' && s.auth !== 'ok') return { stage: 'C.注册/登录', detail: 'auth:' + s.auth };
   if (s.pw === false) return { stage: 'C.注册/登录', detail: 'pw:' + (s.pw_reason || 'fail') };
   if (s.key === false) return { stage: 'F.取Key', detail: 'key:' + (r.key_reason || 'fail') };
   if (s.giveup) return { stage: 'E.加卡放弃', detail: 'giveup:' + s.giveup };
-  if (s.card && s.card !== 'card-bound') return { stage: 'D.加卡', detail: 'card:' + s.card };
-  if (s.purchase && s.purchase !== 'success') return { stage: 'G.充值', detail: 'charge:' + s.purchase };
+  if (s.card && s.card !== 'card-bound') return { stage: 'D.加卡', detail: 'card:' + s.card };   // needphone/card-502/server-error 均在此归 D
+  const _pur = (s.purchase != null) ? s.purchase : r.purchase;   // ★混合 purchase 在顶层 r.purchase(非 steps)→ 二者取一,补 amount-fail 等漏判
+  if (_pur && _pur !== 'success') return { stage: 'G.充值', detail: 'charge:' + _pur };
   if (s.changepw === false) return { stage: 'H.改密', detail: 'changepw:fail' };
-  return { stage: 'Z.其它', detail: JSON.stringify(s).slice(0, 40) };
+  return { stage: 'Z.其它', detail: '未完成(信号不全,详见日志)' };   // ★不再把裸 JSON.stringify(steps) 当 detail
 }
 
 // ── 智能分类层:6+ 类,带"是否外部不可控" + 一句优化建议 ──

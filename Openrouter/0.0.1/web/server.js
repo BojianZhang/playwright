@@ -1049,8 +1049,8 @@ function handleApiRunsDetail(res, query) {
   if (!/^job-[\w-]+$/.test(jobId)) { sendJson(res, 400, { error: 'BAD_JOB_ID' }); return; }
   const summary = runsStore.get(jobId);
   const detail = engineRunner.readDetail(jobId);   // Python(selenium/hybrid/split)引擎:per-job 快照
-  if (detail) { sendJson(res, 200, { jobId, summary, success: detail.success || [], failed: detail.failed || [] }); return; }
-  sendJson(res, 200, { jobId, summary, success: readJobRecords(jobId), failed: readFailedRecords(jobId) });
+  if (detail) { sendJson(res, 200, { jobId, summary, success: detail.success || [], failed: detail.failed || [], incomplete: detail.incomplete || [] }); return; }
+  sendJson(res, 200, { jobId, summary, success: readJobRecords(jobId), failed: readFailedRecords(jobId), incomplete: [] });
 }
 async function handleApiRunsClear(res) {
   await runsStore.clear();
@@ -1164,9 +1164,17 @@ async function handleApiRunResume(req, res) {
   } : {};
   // 续跑强制 resume=true(只跑没完成的、跳过已完成,绝不重复扣费);代理/账号用残留的真实输入。
   const payload = { ...base, ...fallback, engine, accountsRaw: inp.accountsRaw, proxiesRaw: inp.proxiesRaw, resume: true };
-  const accounts = parseAccounts(payload.accountsRaw);
+  let accounts = parseAccounts(payload.accountsRaw);
   const proxies = parseProxies(payload.proxiesRaw);
   if (!accounts.length) { sendJson(res, 400, { error: 'NO_ACCOUNTS', message: '残留账号文件为空,无法续跑' }); return; }
+  // ★「只续跑未完整的」:前端可传 onlyEmails 子集(运行详情页第三桶「未完整」按钮)→ 只重跑这些号,其余不动。
+  //   仍强制 resume=true(对子集内已完成的环节也跳过、防重复扣费);子集与残留账号取交集(防注入不在本批的号)。
+  if (Array.isArray(body.onlyEmails) && body.onlyEmails.length) {
+    const want = new Set(body.onlyEmails.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean));
+    const subset = accounts.filter((a) => want.has(String(a.email || '').toLowerCase()));
+    if (!subset.length) { sendJson(res, 400, { error: 'NO_MATCH', message: '指定的续跑邮箱都不在该任务的残留账号里,无法续跑' }); return; }
+    accounts = subset;
+  }
   const r = launchPythonJob(engine, accounts, proxies, payload, srcJobId);
   if (r.duplicate) { sendJson(res, 409, { error: 'DUPLICATE_SUBMIT', message: `相同账号批次已在运行中(jobId …${String(r.conflictJobId).slice(-10)}),已挡掉重复续跑防重复扣费;等它结束后再试。` }); return; }
   sendJson(res, 200, { ...r, resumedFrom: srcJobId });

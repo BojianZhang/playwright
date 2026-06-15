@@ -71,7 +71,7 @@ export interface RunParams { mode?: string; concurrency?: number; count?: number
 export interface RunSummary {
   jobId: string; nodeId: string; engine?: string; status: 'running' | 'finished' | 'error' | 'interrupted';
   startedAt: number; finishedAt: number | null; durationMs: number | null;
-  total: number; success: number; failed: number; params: RunParams;
+  total: number; success: number; failed: number; incomplete?: number; params: RunParams;
   failureStats?: { total: number; byClass: Record<string, number>; byReason: Record<string, number> } | null;
   error?: string | null;
   partial?: boolean; completenessPct?: number; // 结果对账:有结果但 <total(疑某分流组/子进程中途退出丢结果)
@@ -79,7 +79,9 @@ export interface RunSummary {
 }
 export interface RunsResp { nodeId: string; runs: RunSummary[]; }
 export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; }
-export interface RunDetailResp { jobId: string; summary: RunSummary | null; success: AccountRow[]; failed: FailedRecord[]; }
+// 未完整/未运行号(第三桶):本批无结果且历史回填不到 → 逐号标原因(可只续跑这些)
+export interface IncompleteRow { email: string; password?: string; status: 'banned' | 'bad-mailbox' | 'incomplete' | 'not-run'; reason: string; }
+export interface RunDetailResp { jobId: string; summary: RunSummary | null; success: AccountRow[]; failed: FailedRecord[]; incomplete?: IncompleteRow[]; }
 // 设置中心 + 健康(期4)
 export interface ConfigView {
   config: {

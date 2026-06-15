@@ -28,6 +28,7 @@ from .ledger import *      # noqa: F401,F403
 from .layout import *      # noqa: F401,F403
 from .page import *        # noqa: F401,F403
 from .config import *      # noqa: F401,F403
+from .attribution import attribute_failure   # noqa: F401   (失败归因单一来源:pipeline + hybrid 共用)
 
 # 外部代码事实上在用的【私有】符号(common._xxx) —— import * 默认带不出下划线名,
 # 虽各子模块 __all__ 已列入,这里再显式导一遍做双保险(改 __all__ 时不至于悄悄断掉外部调用)。

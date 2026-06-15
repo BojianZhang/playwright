@@ -121,12 +121,96 @@ def test_acquire_browser_proxy_scoring():
          P.common.adspower_stop, P.common.proxy_retired, P.common.mark_proxy_result, P.time.sleep) = bak
 
 
+def test_attribution_helper():
+    """common.attribute_failure 失败归因单一来源:
+       ① 对纯Sel输入与 pipeline 原内联块【逐字节等价】(等价对拍,守住"默认逐字节不变");
+       ② 混合专属(pw=False/giveup/顶层 res.purchase)正确归因;③ 边界不抛。"""
+    import common
+    af = common.attribute_failure
+
+    # 参考实现 = pipeline 重构前的原内联块(byte-exact 复刻),用于等价对拍
+    def old(st, opts, res):
+        st = st or {}
+        res = res or {}
+        key_ok = bool(st.get("key")) or bool(res.get("api_key"))
+        bill_ok = key_ok or (not opts.get("do_key", True))
+        cpw_gate = True
+        if (os.environ.get("CHANGEPW_REQUIRE_PURCHASE", "") or "").strip().lower() in ("1", "true", "on", "yes"):
+            cpw_gate = (st.get("purchase") == "success") or bool(res.get("skipped_charge"))
+        fs = fr = None
+        if st.get("auth") not in ("ok", None):
+            fs, fr = "register", str(st.get("auth") or "register-failed")
+        elif st.get("key") is False:
+            fs, fr = "key", str(res.get("key_reason") or "key-not-captured")
+        elif opts.get("do_card") and bill_ok and st.get("card") not in ("card-bound", None):
+            fs, fr = "card", str(st.get("card"))
+        elif opts.get("do_purchase") and bill_ok and st.get("purchase") not in ("success", None):
+            fs, fr = "charge", str(st.get("purchase"))
+        elif opts.get("do_changepw") and bill_ok and cpw_gate and st.get("changepw") is False:
+            fs, fr = "changepw", "changepw-failed"
+        return fs, fr
+
+    OPTS = {"do_key": True, "do_card": True, "do_purchase": True, "do_changepw": True}
+    matrix = [
+        {"auth": "ok", "key": True, "card": "card-bound", "purchase": "success", "changepw": True},
+        {"auth": "fail:FORM_NOT_FILLED"},
+        {"auth": "ok", "key": False},
+        {"auth": "ok", "key": True, "card": "declined"},
+        {"auth": "ok", "key": True, "card": "hcaptcha"},
+        {"auth": "ok", "key": True, "card": "server-error"},
+        {"auth": "ok", "key": True, "card": "card-bound", "purchase": "declined"},
+        {"auth": "ok", "key": True, "card": "card-bound", "purchase": "success", "changepw": False},
+        {"auth": "ok"},                                       # 只注册没往下(缺 key)
+        {"auth": "ok", "key": True, "card": "card-bound"},    # 缺 purchase(do_purchase 开但无结果 → None → 不归 charge)
+    ]
+    # ① 纯Sel 等价对拍:matrix × res 变体 × opts 变体
+    for st in matrix:
+        for res_extra in ({}, {"key_reason": "WIZARD_KEY_NOT_CAPTURED"}, {"api_key": "sk-or-x"}):
+            res = dict(res_extra)
+            check("等价 st=%s res=%s" % (st, res_extra), af(dict(st), OPTS, res) == old(dict(st), OPTS, res))
+    for opts in ({"do_key": True, "do_card": False, "do_purchase": False, "do_changepw": False},
+                 {"do_key": False, "do_card": True, "do_purchase": True, "do_changepw": True}):
+        for st in matrix:
+            check("等价 opts=%s st=%s" % (opts, st), af(dict(st), opts, {}) == old(dict(st), opts, {}))
+    # 等价对拍也覆盖 CHANGEPW_REQUIRE_PURCHASE=on 分支
+    _bak_env = os.environ.get("CHANGEPW_REQUIRE_PURCHASE")
+    os.environ["CHANGEPW_REQUIRE_PURCHASE"] = "on"
+    try:
+        for st in matrix:
+            for res_extra in ({}, {"skipped_charge": True}):
+                check("等价(cpw-req) st=%s res=%s" % (st, res_extra),
+                      af(dict(st), OPTS, dict(res_extra)) == old(dict(st), OPTS, dict(res_extra)))
+    finally:
+        if _bak_env is None:
+            os.environ.pop("CHANGEPW_REQUIRE_PURCHASE", None)
+        else:
+            os.environ["CHANGEPW_REQUIRE_PURCHASE"] = _bak_env
+
+    # ② 混合专属归因
+    check("混合 pw=False → key", af({"auth": "ok", "pw": False, "pw_reason": "API_KEY_MODAL"}, OPTS, {}) == ("key", "API_KEY_MODAL"))
+    check("混合 giveup → card(优先 giveup 文案)",
+          af({"auth": "ok", "pw": True, "card": "server-error", "giveup": "all-segments-502"}, OPTS, {}) == ("card", "all-segments-502"))
+    check("混合 giveup 但 card 无值 → card",
+          af({"auth": "ok", "pw": True, "giveup": "no-good-proxy"}, OPTS, {}) == ("card", "no-good-proxy"))
+    check("混合 顶层 res.purchase 失败 → charge",
+          af({"auth": "ok", "pw": True, "card": "card-bound"}, OPTS, {"purchase": "declined"}) == ("charge", "declined"))
+    check("混合 复用 key(api_key)→ bill_ok 成立 → 仍追加卡失败",
+          af({"auth": "ok", "card": "declined"}, OPTS, {"api_key": "sk-or-x"}) == ("card", "declined"))
+
+    # ③ 边界
+    check("全成 → (None,None)", af({"auth": "ok", "key": True, "card": "card-bound", "purchase": "success"}, OPTS, {}) == (None, None))
+    check("None 输入不抛 → (None,None)", af(None, None, None) == (None, None))
+    check("取key失败 → 只到 key 不追卡(bill_ok=False 拦住)",
+          af({"auth": "ok", "key": False, "card": "declined"}, OPTS, {}) == ("key", "key-not-captured"))
+
+
 TESTS = [
     test_prior_done,
     test_save_progress_stage_merge,
     test_charge_double_spend_gate,
     test_diversify_proxies,
     test_acquire_browser_proxy_scoring,
+    test_attribution_helper,
 ]
 
 

@@ -8,7 +8,7 @@ import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { fmtDateTime, fmtDuration, trunc } from '../lib/parse';
-import type { RunDetailResp, StartJobResp } from '../lib/types';
+import type { RunDetailResp, StartJobResp, IncompleteRow } from '../lib/types';
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
 
 const PY_ENGINES = ['selenium', 'hybrid', 'split'];
@@ -22,17 +22,23 @@ export default function RunDetailPage() {
   const s = data?.summary;
   const success = data?.success || [];
   const failed = data?.failed || [];
+  const incomplete = data?.incomplete || [];
+  // 未完整里【可续跑】的(banned/坏邮箱是永久态,不重跑)→ 给「只续跑未完整」按钮用
+  const resumableEmails = incomplete.filter((r) => r.status === 'incomplete' || r.status === 'not-run').map((r) => r.email).filter(Boolean);
   // ★M21:大批次详情(后端封顶 5000 行)若整表渲染进 DOM 会卡顿 → 只渲染前 RENDER_CAP 行,溢出给提示+引导下载(完整数据在 .csv/.txt)。
   const RENDER_CAP = 1000;
   const copy = (txt: string) => navigator.clipboard.writeText(txt).then(() => toast.push('已复制', 'ok'), () => toast.push('复制失败', 'err'));
 
   // 「续跑这批」:中断/异常的 Python 任务,后端用残留输入强制 resume 重起 → 跳控制台实时显示。
+  // onlyEmails 传子集 → 后端只重跑这些号(运行详情「未完整」桶的「只续跑未完整」按钮);不传=整批续跑。
   const canResume = !!s && PY_ENGINES.includes(s.engine || '') && (s.status === 'interrupted' || s.status === 'error');
-  async function resume() {
+  async function resume(onlyEmails?: string[]) {
     if (resuming) return;
     setResuming(true);
     try {
-      const d = await apiPost<StartJobResp>('/api/run/resume', { jobId, engine: s?.engine });
+      const body: { jobId: string; engine?: string; onlyEmails?: string[] } = { jobId, engine: s?.engine };
+      if (onlyEmails && onlyEmails.length) body.onlyEmails = onlyEmails;
+      const d = await apiPost<StartJobResp>('/api/run/resume', body);
       toast.push(`已续跑 · 接受 ${d.accepted} 个号(已完成的自动跳过)`, 'ok');
       navigate(`/console?attach=${encodeURIComponent(d.jobId)}&total=${d.accepted || 0}&engine=${encodeURIComponent(d.engine || s?.engine || 'selenium')}`);
     } catch (e) {
@@ -47,7 +53,7 @@ export default function RunDetailPage() {
         <h2 style={{ marginLeft: 8 }}>运行详情</h2>
         <span className="z-hint mono">{jobId.slice(-14)}</span><span className="z-line" />
         {canResume && (
-          <button className="btn btn-primary btn-sm" disabled={resuming} onClick={resume} title="用这批账号断点续跑:自动跳过已完成的号,只跑没跑完的;跑起后跳到控制台看实时进度">
+          <button className="btn btn-primary btn-sm" disabled={resuming} onClick={() => resume()} title="用这批账号断点续跑:自动跳过已完成的号,只跑没跑完的;跑起后跳到控制台看实时进度">
             <Icon name="refresh" size={13} />{resuming ? '续跑中…' : '续跑这批'}
           </button>
         )}
@@ -56,10 +62,12 @@ export default function RunDetailPage() {
       {isLoading ? <div className="card card-pad"><div className="empty-note">加载中…</div></div> : !s ? (
         <div className="card card-pad"><div className="empty-note">未找到该任务的汇总(可能历史已清或 jobId 有误)。仍可查看下方 batch-results 明细(若有)。</div></div>
       ) : (
-        <section className="card statbar" style={{ gridTemplateColumns: 'repeat(5,1fr)' }}>
+        <section className="card statbar" style={{ gridTemplateColumns: 'repeat(6,1fr)' }}>
           <div className="stat-cell s-total"><div className="num">{s.total}</div><div className="lbl">账号总数</div></div>
           <div className="stat-cell s-ok"><div className="num">{s.success}</div><div className="lbl">成功</div></div>
           <div className="stat-cell s-fail"><div className="num">{s.failed}</div><div className="lbl">失败</div></div>
+          {/* ★第三桶「未完整」:本批无结果且历史回填不到的号(被 kill/并发没排到/丢结果);total = 成功+失败+未完整,无号丢失。*/}
+          <div className="stat-cell s-q" title="未完整=本批没产出结果、历史也查不到的号(疑中途被 kill / 并发未排到 / 子进程丢结果)。下方有逐号原因,可一键只续跑这些。"><div className="num">{s.incomplete != null ? s.incomplete : Math.max(0, s.total - s.success - s.failed)}</div><div className="lbl">未完整</div></div>
           <div className="stat-cell s-br"><div className="num" style={{ fontSize: 18 }}>{fmtDuration(s.durationMs)}</div><div className="lbl">用时</div></div>
           <div className="stat-cell s-q"><div className="num" style={{ fontSize: 18 }}><RunStatus status={s.status} partial={s.partial} completenessPct={s.completenessPct} /></div><div className="lbl">{fmtDateTime(s.startedAt)} 起</div></div>
         </section>
@@ -160,6 +168,51 @@ export default function RunDetailPage() {
           </div>
         </section>
       </div>
+
+      {/* ★第三桶「未完整 / 未运行」:本批无结果且历史回填不到的号 —— 逐号标原因(banned/坏邮箱/中途中断/未跑到),可一键只续跑可恢复的。*/}
+      {incomplete.length > 0 && (
+        <>
+          <div className="section-gap" />
+          <section className="card">
+            <div className="card-head"><span className="idx c-amber"><Icon name="alert" size={12} /></span><h3>未完整 / 未运行 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{incomplete.length}</span></h3>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span className="z-hint">这些号本批没产出结果(被中断/并发没排到/丢结果),已逐号标明原因</span>
+                {canResume && resumableEmails.length > 0 && (
+                  <button className="btn btn-primary btn-sm" disabled={resuming} onClick={() => resume(resumableEmails)} title={`只把这 ${resumableEmails.length} 个【可恢复】的未完整号续跑(banned/坏邮箱永久态不重跑);已完成的环节自动跳过、防重复扣费`}>
+                    <Icon name="refresh" size={13} />{resuming ? '续跑中…' : `只续跑未完整(${resumableEmails.length})`}
+                  </button>
+                )}
+                <button className="btn btn-ghost btn-sm" disabled={!incomplete.length} onClick={() => downloadCsv('run-incomplete', ['邮箱', '状态', '原因', '现密码'], incomplete.map((a) => [a.email || '', a.status || '', a.reason || '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              </div>
+            </div>
+            <div className="panel-sec" style={{ paddingTop: 8 }}>
+              <div className="tbl-wrap" style={{ maxHeight: 420 }}>
+                <table className="tbl">
+                  <thead><tr><th>邮箱</th><th>状态</th><th>为啥未完整(可续跑性)</th></tr></thead>
+                  <tbody>
+                    {incomplete.slice(0, RENDER_CAP).map((a: IncompleteRow, i) => (
+                      <tr key={i}>
+                        <td className="mono">{a.email}</td>
+                        <td>{INCOMPLETE_BADGE[a.status] || <span className="kbadge neutral">{a.status}</span>}</td>
+                        <td className="mono" style={{ color: 'var(--text-2)' }}>{a.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {incomplete.length > RENDER_CAP && <div className="empty-note">仅显示前 {RENDER_CAP} / 共 {incomplete.length} 行(防卡顿)——完整数据请用上方「.csv」下载。</div>}
+              </div>
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
+
+// 未完整号状态徽章:banned/坏邮箱=永久态(红/灰,不重跑)、incomplete/not-run=可续跑(黄/蓝)
+const INCOMPLETE_BADGE: Record<string, JSX.Element> = {
+  banned: <span className="kbadge fail">号被拒</span>,
+  'bad-mailbox': <span className="kbadge neutral">坏邮箱</span>,
+  incomplete: <span className="kbadge warn">中途中断</span>,
+  'not-run': <span className="kbadge warn">未跑到</span>,
+};

@@ -861,6 +861,22 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 res["ok"] = False
         except Exception:
             pass
+        # ★失败归因(用户原则「每个失败的运行必须标注好啥错误」):混合原来一个 fail_stage 都不写 → 失败全靠前端反推、
+        #   分析页「Z.其它」虚高。这里在 finally(覆盖所有 return 路径,含 not_allowed/取key败/绑卡放弃早返)给失败行补
+        #   fail_stage/fail_reason —— 用与 pipeline 同一套 common.attribute_failure(混合恒做 key+card,do_card/do_key 传 True)。
+        #   只给【失败行】补(not ok)、且【没归过】才补(幂等);成功行不动。归因不出但有异常 → 落 exception(不做糊涂账)。
+        try:
+            if not res.get("ok") and not res.get("fail_stage"):
+                _attr_opts = {"do_key": True, "do_card": True, "do_purchase": do_purchase, "do_changepw": do_changepw}
+                _fs, _fr = common.attribute_failure(res.get("steps"), _attr_opts, res)
+                if _fs:
+                    res["fail_stage"] = _fs
+                    res["fail_reason"] = _fr
+                elif res.get("error"):
+                    res["fail_stage"] = "exception"
+                    res["fail_reason"] = str(res.get("error"))[:160]
+        except Exception:
+            pass
         log_stage(slot, email, "done", "done")
         try:
             res["timings"]["total"] = round(time.perf_counter() - t_start, 1)   # 整号端到端耗时(秒)
