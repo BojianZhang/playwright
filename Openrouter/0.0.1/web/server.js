@@ -731,16 +731,26 @@ async function handleApiResultsDelete(req, res) {
   const items = Array.isArray(body.items) ? body.items.filter((it) => it && (it.email || it.apiKey)) : [];
   if (!items.length) { sendJson(res, 400, { error: 'NO_ITEMS' }); return; }
   const localItems = items.filter((it) => !it.nodeId || String(it.nodeId) === NODE_ID);
-  const localDeleted = deleteLocalResults(localItems);
+  // ★M10:在跑 job 的 success.jsonl 会在 job 收口被 engine-runner 全量覆写 → 此刻删行会被"复活"。
+  //   跳过仍在跑的 jobId(procRegistry 跟踪 Python 引擎子进程),把它们报给前端 skippedRunning(让用户知道稍后再删)。
+  const runningJobs = new Set();
+  const safeLocalItems = localItems.filter((it) => {
+    const j = String(it.jobId || '');
+    if (j && procRegistry.has(j)) { runningJobs.add(j); return false; }
+    return true;
+  });
+  const localDeleted = deleteLocalResults(safeLocalItems);
   const pushedDeleted = deletePushedResults(items);
   let remote = [];
   if (body.relay !== false) { try { remote = await relayDeleteToRemotes(items); } catch (_e) { remote = []; } }
-  sendJson(res, 200, { ok: true, localDeleted, pushedDeleted, remote });
+  sendJson(res, 200, { ok: true, localDeleted, pushedDeleted, remote, skippedRunning: [...runningJobs] });
 }
 // POST /api/results/clear —— 清空本机所有成功结果(success.jsonl + _pushed 缓存)。不向远端广播。
 async function handleApiResultsClear(req, res) {
   let body = {};
   try { body = await readJsonBody(req); } catch (_e) { body = {}; }
+  // ★M10:清空会删所有 success.jsonl;若有 Python job 在跑,其文件会在收口被 engine-runner 重写"复活"且与删除竞争 → 拒绝。
+  if (procRegistry.list().length > 0) { sendJson(res, 409, { error: 'JOB_RUNNING', message: '有任务在跑,稍后再清空结果(避免已删结果复活/文件竞争)' }); return; }
   let files = 0, records = 0;
   try { for (const f of listResultJsonl()) { const jobId = f.replace('-success.jsonl', ''); records += readJobRecords(jobId).length; fs.unlinkSync(path.join(RESULTS_DIR, f)); files += 1; } } catch (_e) { /* ignore */ }
   let pushedFiles = 0;

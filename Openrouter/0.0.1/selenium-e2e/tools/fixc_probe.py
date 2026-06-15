@@ -34,36 +34,43 @@ PROBE_JS = r"""
 def main():
     print("启动环境 %s ..." % ENV, flush=True)
     port = common.adspower_start(ENV, force_stop=True)
-    for _ in range(25):
-        if common._port_ready(port, 2):
-            break
-        time.sleep(1)
-    time.sleep(2)
-
-    # A) 原生 CDP 先测【干净页】(chromedriver 还没碰过任何页)
     try:
-        cdp = RawCDP()
-        u = cdp.connect(port, "")          # 取第一个 page,不挑 url
-        print("原生CDP 已连干净页:", (u or "")[:55], flush=True)
-        ra = cdp.evaluate(PROBE_JS)
-        print("【原生CDP 不开enable·干净页】", ra, flush=True)
-        cdp.close()
-    except Exception as e:
-        print("原生CDP 探针异常:", str(e)[:140], flush=True)
+        for _ in range(25):
+            if common._port_ready(port, 2):
+                break
+            time.sleep(1)
+        time.sleep(2)
 
-    # B) 再上 chromedriver(它会 Runtime.enable)对比
-    try:
-        driver = common.attach_chrome(port, common.resolve_chromedriver(port))
-        rb = driver.execute_script("return " + PROBE_JS.strip())
-        print("【chromedriver+FixA隐身  】", rb, flush=True)
+        # A) 原生 CDP 先测【干净页】(chromedriver 还没碰过任何页)
         try:
-            driver.service.process.kill()
+            cdp = RawCDP()
+            u = cdp.connect(port, "")          # 取第一个 page,不挑 url
+            print("原生CDP 已连干净页:", (u or "")[:55], flush=True)
+            ra = cdp.evaluate(PROBE_JS)
+            print("【原生CDP 不开enable·干净页】", ra, flush=True)
+            cdp.close()
+        except Exception as e:
+            print("原生CDP 探针异常:", str(e)[:140], flush=True)
+
+        # B) 再上 chromedriver(它会 Runtime.enable)对比
+        try:
+            driver = common.attach_chrome(port, common.resolve_chromedriver(port))
+            rb = driver.execute_script("return " + PROBE_JS.strip())
+            print("【chromedriver+FixA隐身  】", rb, flush=True)
+            try:
+                driver.service.process.kill()
+            except Exception:
+                pass
+        except Exception as e:
+            print("chromedriver 探针异常:", str(e)[:100], flush=True)
+
+        print("--- 判读:原生CDP leak=false 而 chromedriver leak=true → Fix C 机制成立 ---", flush=True)
+    finally:
+        # ★M15:无论探针成功与否都回收 AdsPower 环境,否则每跑一次泄漏一个孤儿浏览器(占 AdsPower 并发额度)。
+        try:
+            common.adspower_stop(ENV)
         except Exception:
             pass
-    except Exception as e:
-        print("chromedriver 探针异常:", str(e)[:100], flush=True)
-
-    print("--- 判读:原生CDP leak=false 而 chromedriver leak=true → Fix C 机制成立 ---", flush=True)
 
 
 if __name__ == "__main__":

@@ -88,8 +88,13 @@ def bind_one(env, num, exp, cvc, zipc, wait=25, tag="", precheck=True):
         lg("等 %ds 后重连核验..." % wait)
         time.sleep(wait)
 
+        # ★M12:复核重连用 bounded retries(对齐 steps_billing:287)——否则浏览器在加卡后已死时,attach_chrome 默认 retries=8/delay=4
+        #   会干等 ~9 分钟,在 fixc_parallel 并发下拖垮整个池。端口未就绪即判"浏览器已关"返回,不硬等。
         p2 = common.adspower_start(env)
-        d2 = common.attach_chrome(p2, common.resolve_chromedriver(p2))
+        if not p2 or not common._port_ready(p2, 6):
+            res["bound"] = False; res["reason"] = "browser closed"; lg("✗ 重连核验:端口未就绪(浏览器已关)")
+            return res
+        d2 = common.attach_chrome(p2, common.resolve_chromedriver(p2), retries=2, delay=2)
         from steps import steps_billing
         bound = steps_billing._card_attached(common.Page(d2))
         res["bound"] = bool(bound); res["reason"] = "已绑" if bound else "未绑"
