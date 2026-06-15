@@ -258,6 +258,39 @@ def _dismiss_link_dialog(cdp, log=print):
     return None
 
 
+def _savecard_present_and_dismiss(cdp, log=print):
+    """★一劳永逸根治「Save card? 弹窗逗留」:专门检测 Stripe Link 的【存卡弹窗】(文案含 'save your card'/'Save card?')。
+       它【只在 Stripe 已收卡成功后才弹】(declined 不弹;图片验证更早一环就早返回,根本到不了这)→ 检测到=绑成强信号。
+       顺手点 No thanks/Skip 关掉它(绝不点 Save——点 Save 要手机号 Error 400);找不到关闭按钮也返回 True
+       (检测到即判绑成,残留弹窗交环境回收时关,不影响绑卡结果)。返回 True=确是存卡弹窗(绑成)。
+       与 _dismiss_link_dialog 区别:那个泛关任意 Link 屏(填卡期用);这个【只认存卡弹窗】并作为绑成判据,绝不误判别的 pending 态。"""
+    try:
+        for tg in cdp.get_targets():
+            if tg.get("type") != "iframe":
+                continue
+            u = (tg.get("url") or "").lower()
+            if "stripe" not in u and "link" not in u:          # Link 存卡弹窗 iframe(stripe/link 域)
+                continue
+            try:
+                sid = cdp.attach_target(tg["targetId"])
+                r = cdp.evaluate(r"""(function(){
+                  var t=(document.body.innerText||'');
+                  /* ★只认存卡弹窗的【专属文案】(与 steps_billing._click_link_save 同口径),不碰填卡期的 "save your information" 勾选项 → 杜绝误判绑成 */
+                  if(!/Save card\?|save your card and encrypted/i.test(t)) return 0;
+                  var bs=document.querySelectorAll('button,[role=button],a');
+                  for(var i=0;i<bs.length;i++){var x=(bs[i].textContent||'').trim().toLowerCase();
+                    if(/^(no thanks|not now|skip|maybe later|continue without|close)$/.test(x)){bs[i].click();return 2;}}
+                  return 1;})()""", session_id=sid)
+                if r:
+                    log("  Save card? 存卡弹窗 %s" % ("已关(No thanks)" if r == 2 else "检测到(没找到关闭按钮,不影响绑成判定)"))
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 def _disable_link_optin(cdp, log=print):
     """关掉 Stripe Link 的所有勾选(\"Save my information for faster checkout\"/\"Pay faster next time with Link\")。
        勾上会触发 Link 注册、要【手机号】→ Save 报 'Please provide a mobile phone number'(Error 400)而绑不上。
@@ -549,12 +582,17 @@ def cdp_fill_and_save(driver, num, exp, cvc, zipc, log=print, alt_zips=None,
                     break
                 if st == "pending" and os.environ.get("FIXC_SAVECARD", "dismiss") != "wait":
                     # ★点 Save 后 Stripe 弹"Save card?"存卡弹窗(它【自带 Save 按钮】→ 被绑成轮询误读成 pending)。
-                    #   该弹窗【只在 Stripe 已收卡成功后才出现】(declined 不弹;图片验证更早一环就早返回了,根本到不了这)→
-                    #   关掉它(只点 No thanks/Skip,绝不点 Save,点 Save 会要手机号 Error 400)→ 露出 Auto Top-Up,下一轮立即判绑成。
-                    #   【默认 dismiss(原 fast_mode 门控,已提为默认)】:用户实测 /credits "逗留好久 + 反复刷新" 根因就是默认不关它 →
-                    #   干等满 FIXC_RESULT_WAIT(24s)→ 超时 reload 核验。关它不改变绑卡结果(实测 card-bound 仍 100%)。
-                    #   【控制台可配 FIXC_SAVECARD】引擎配置「Save card 存卡弹窗处理」:dismiss=秒关(默认/推荐);
-                    #   wait=不关、等满 FIXC_RESULT_WAIT 再核验(对照测试用——用于自行验证"等待 vs 图片验证"无关)。
+                    #   该弹窗【只在 Stripe 已收卡成功后才出现】(declined 不弹;图片验证更早一环就早返回了,根本到不了这)。
+                    #   ★一劳永逸根治「/credits 逗留 + 反复弹 Save card?」:检测到存卡弹窗 = 绑成强信号 → 关掉它(只点 No thanks,绝不点 Save=要手机号 Error400)
+                    #   + 【直接置 bound_seen 并 break】→ 调用方据 bound_seen 跳过 _card_attached 的 goto(/credits) 刷新核验。
+                    #   根因:旧码只关弹窗、不置 bound_seen → 多半轮到 'closed' 弱信号 → 调用方仍 goto /credits 核验,而 /credits 上 Stripe Link
+                    #   会把 Save card? 【重新弹出来】→ 那一步没人关它 → 逗留(用户截图所见)。现在绑成处直接收口,根本不去 /credits 重弹。
+                    #   【控制台可配 FIXC_SAVECARD=wait】:不走此路、等满 FIXC_RESULT_WAIT 再核验(对照测试用)。
+                    if _savecard_present_and_dismiss(cdp, log):
+                        bound_seen = True
+                        log("✓ Save card? 存卡弹窗已处理(它只在 Stripe 收卡成功后出现)→ 判绑成,跳过 /credits 刷新核验(根治逗留)")
+                        break
+                    # 没检测到存卡弹窗的 pending(可能主表单 Save 按钮残留/别的态)→ 退回泛关 Link 屏,继续轮询等明确结果
                     _dismiss_link_dialog(cdp, log)
             except Exception:
                 pass
