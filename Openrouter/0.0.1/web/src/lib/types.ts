@@ -26,6 +26,7 @@ export interface AccountRow {
   passwordChanged?: boolean; billingStatus?: string; charged?: number; balanceAfter?: number | null;
   purchaseStatus?: 'success' | 'failed' | 'skipped' | 'not-attempted'; purchaseReason?: string;   // 充值结果(明确成功/失败/已充跳过/未充值)
   cardLast4?: string; exitIp?: string; blacklisted?: boolean; blacklistReason?: string;
+  durationSec?: number | null;   // 单号端到端耗时(秒)
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;
 }
 export interface StageSummary { total: number; registered: number; key: number; address: number; card: number; charge: number; changepw: number; blacklisted: number; }
@@ -79,7 +80,7 @@ export interface RunSummary {
   resumedFrom?: string | null; // 续跑来源 jobId(普通提交为 null)
 }
 export interface RunsResp { nodeId: string; runs: RunSummary[]; }
-export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; }
+export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; purchaseStatus?: string; purchaseReason?: string; durationSec?: number | null; }
 // 未完整/未运行号(第三桶):本批无结果且历史回填不到 → 逐号标原因(可只续跑这些)
 export interface IncompleteRow { email: string; password?: string; status: 'banned' | 'bad-mailbox' | 'incomplete' | 'not-run'; reason: string; }
 export interface RunDetailResp { jobId: string; summary: RunSummary | null; success: AccountRow[]; failed: FailedRecord[]; incomplete?: IncompleteRow[]; }

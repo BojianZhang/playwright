@@ -49,6 +49,7 @@ function start(rec) {
     total: rec.total || 0,
     success: 0,
     failed: 0,
+    incomplete: 0,                        // 第三桶「未完整」数(finish 时由 summary 落值)
     resumedFrom: rec.resumedFrom || null, // 续跑来源 jobId(普通提交为 null)
     params: rec.params || {},
     failureStats: null,
@@ -79,6 +80,7 @@ function finish(jobId, summary) {
   if (s.total != null) row.total = s.total;
   row.success = s.success || 0;
   row.failed = s.failed || 0;
+  if (s.incomplete != null) row.incomplete = s.incomplete;   // ★第三桶「未完整」数:engine-runner summary 有,这里要落进 runs.json(否则历史页/详情统计取不到,只能 total-成-败 兜底)
   row.failureStats = s.failureStats || null;
   // 结果对账(split 尤其):有结果但不足总数→标 partial,历史页显「⚠ 未完整 N%」,提示可续跑补齐。
   if (s.completenessPct != null) row.completenessPct = s.completenessPct;

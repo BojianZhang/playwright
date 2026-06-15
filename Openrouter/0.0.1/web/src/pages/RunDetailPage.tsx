@@ -105,7 +105,7 @@ export default function RunDetailPage() {
           <div className="card-head"><span className="idx c-green"><Icon name="okcircle" size={12} /></span><h3>成功账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{success.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => copy(success.map((a) => `${a.email || ''}:${a.apiKey || ''}`).join('\n'))}>复制 邮箱:Key</button>
-              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '耗时s', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.durationSec != null ? a.durationSec : '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => window.open(withToken(`/download?jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -113,7 +113,7 @@ export default function RunDetailPage() {
             {!success.length ? <div className="empty-note">无成功账号。</div> : (
               <div className="tbl-wrap" style={{ maxHeight: 460 }}>
                 <table className="tbl">
-                  <thead><tr><th>邮箱</th><th>API Key</th><th>账单</th><th>充值</th><th>卡末4</th><th>出口IP</th></tr></thead>{/* 充值列:明确 成功/失败/已充跳过/未充值,不再只显 $0 */}
+                  <thead><tr><th>邮箱</th><th>API Key</th><th>账单</th><th>充值</th><th>卡末4</th><th>出口IP</th><th>耗时</th></tr></thead>{/* 充值列:明确 成功/失败/已充跳过/未充值,不再只显 $0;耗时=单号端到端秒数 */}
                   <tbody>
                     {success.slice(0, RENDER_CAP).map((a, i) => (
                       <tr key={i}>
@@ -123,6 +123,7 @@ export default function RunDetailPage() {
                         <td>{renderPurchase(a)}</td>
                         <td className="mono">{a.cardLast4 ? '•••• ' + a.cardLast4 : '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.exitIp || '—'}</td>
+                        <td className="mono" style={{ color: 'var(--text-3)' }}>{a.durationSec != null ? a.durationSec + 's' : '—'}</td>
                       </tr>
                     ))}
                   </tbody>

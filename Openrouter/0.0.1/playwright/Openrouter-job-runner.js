@@ -55,17 +55,17 @@ function detectWorkspace() {
       // 须在 DISPLAY 分支【之前】判 darwin：装了 XQuartz 的 Mac 也可能设了 DISPLAY,会误走 Linux 分支。
       const out = execSync(
         `osascript -e 'tell application "Finder" to get bounds of window of desktop'`,
-        { encoding: 'utf8', timeout: 6000 },
+        { encoding: 'utf8', timeout: 6000, windowsHide: true },
       ).trim();
       const n = out.split(/[,\s]+/).map(Number).filter((v) => !Number.isNaN(v));
       if (n.length === 4 && n[2] > 0 && n[3] > 0) { _SCREEN_CACHE = { width: n[2], height: n[3] }; return _SCREEN_CACHE; }
     } else if (process.env.DISPLAY) {
       // Linux：优先 xdpyinfo，回退 xrandr
       try {
-        const out = execSync("xdpyinfo | grep -m1 dimensions", { encoding: 'utf8', timeout: 6000 });
+        const out = execSync("xdpyinfo | grep -m1 dimensions", { encoding: 'utf8', timeout: 6000, windowsHide: true });
         _SCREEN_CACHE = parse(out); if (_SCREEN_CACHE) return _SCREEN_CACHE;
       } catch (_e) { /* try xrandr */ }
-      const out2 = execSync("xrandr --current 2>/dev/null | grep -m1 '*'", { encoding: 'utf8', timeout: 6000 });
+      const out2 = execSync("xrandr --current 2>/dev/null | grep -m1 '*'", { encoding: 'utf8', timeout: 6000, windowsHide: true });
       _SCREEN_CACHE = parse(out2); if (_SCREEN_CACHE) return _SCREEN_CACHE;
     }
   } catch (_e) { /* fallthrough */ }

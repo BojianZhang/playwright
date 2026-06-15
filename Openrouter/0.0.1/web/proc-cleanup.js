@@ -31,7 +31,7 @@ function countProc(image) {
     }
     // -xc 精确进程名计数(对齐下面 `pkill -9 -x` 的精确名杀):-fc 会按整条命令行子串匹配,
     // 'chromedriver' 会把每个 'chromedriver_stealth' 也算进去 → 与 stealth 项重复计数,清理弹窗数字虚高。
-    const out = execSync(`pgrep -xc ${image.replace(/[^\w.-]/g, '')} 2>/dev/null || true`, { encoding: 'utf8' });
+    const out = execSync(`pgrep -xc ${image.replace(/[^\w.-]/g, '')} 2>/dev/null || true`, { encoding: 'utf8', windowsHide: true });
     return Number(String(out).trim()) || 0;
   } catch (_e) { return 0; }
 }
@@ -49,7 +49,7 @@ function killOrphanDrivers(opts = {}) {
   for (const img of IMAGES) {
     try {
       if (WIN) execFileSync('taskkill', ['/IM', img, '/F'], { stdio: 'ignore', windowsHide: true });
-      else execSync(`pkill -9 -x ${img.replace(/[^\w.-]/g, '')} 2>/dev/null || true`);
+      else execSync(`pkill -9 -x ${img.replace(/[^\w.-]/g, '')} 2>/dev/null || true`, { windowsHide: true });
     } catch (_e) { /* 没有该进程时 taskkill 非零退出 → 忽略 */ }
   }
   const killed = {}; let total = 0;

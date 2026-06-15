@@ -20,6 +20,7 @@ const COLUMNS: Column<RunSummary>[] = [
   { key: 'total', label: '账号', className: 'mono', align: 'right', sortAccessor: (r) => r.total, render: (r) => r.total },
   { key: 'success', label: '成功', className: 'mono', align: 'right', sortAccessor: (r) => r.success, cellStyle: { color: 'var(--success)' }, render: (r) => r.success },
   { key: 'failed', label: '失败', className: 'mono', align: 'right', sortAccessor: (r) => r.failed, cellStyle: { color: 'var(--danger)' }, render: (r) => r.failed },
+  { key: 'incomplete', label: '未完整', className: 'mono', align: 'right', sortAccessor: (r) => r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed), exportValue: (r) => r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed), cellStyle: { color: 'var(--text-3)' }, render: (r) => (r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed)) || 0 },
   { key: 'durationMs', label: '用时', className: 'mono', align: 'right', sortAccessor: (r) => r.durationMs || 0, exportValue: (r) => fmtDuration(r.durationMs), cellStyle: { color: 'var(--text-2)' }, render: (r) => fmtDuration(r.durationMs) },
   { key: 'status', label: '状态', sortAccessor: (r) => r.status, exportValue: (r) => RUN_STATUS_LABEL[r.status] || r.status, render: (r) => <RunStatus status={r.status} partial={r.partial} completenessPct={r.completenessPct} /> },
   { key: 'jobId', label: 'jobId', className: 'mono', cellStyle: { color: 'var(--text-4)' }, render: (r) => <span title={r.jobId}>{r.jobId.slice(-10)}</span> },

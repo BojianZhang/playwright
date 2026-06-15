@@ -1768,6 +1768,7 @@ function respawnSelf() {
   const { spawn } = require('child_process');
   const child = spawn(process.execPath, [__filename, ...process.argv.slice(2)], {
     cwd: process.cwd(), env: process.env, detached: true, stdio: 'inherit',
+    windowsHide: false,   // ★特例:Node 自重启,stdio:inherit 共用用户终端 → 故意【不】隐藏(否则新服务端没有可见日志窗)
   });
   child.unref();
 }

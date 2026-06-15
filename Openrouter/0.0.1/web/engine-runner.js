@@ -11,7 +11,7 @@
 // 零依赖、CommonJS。playwright(Node)引擎不走这里,仍走 Openrouter-job-runner.runJob。
 // ═══════════════════════════════════════════════════════════════════════
 
-const { spawn } = require('child_process');
+const { safeSpawn } = require('./spawn-safe');   // 统一 spawn:默认 windowsHide(防 Windows 弹黑窗),见 spawn-safe.js
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -181,13 +181,14 @@ function mapRow(r, accByEmail) {
   const exitIp = String(r.proxy || '').split(':')[0] || '';
   const orig = (accByEmail && accByEmail.get(r.email)) || '';
   const po = purchaseOutcome(r);   // 充值结果归一化(成功/失败/已充跳过/未充值)
+  const durationSec = (r.timings && r.timings.total != null) ? r.timings.total : null;   // 单号端到端耗时(纯Sel/混合都写 timings.total)→ 详情可见,排查谁慢
   if (isSuccessRow(r)) {
     // ★充值额键名:hybrid 写 res["charged"]、纯Sel 也补写 charged;旧 r.charge 兜底。balance_after=充值后真实积分余额。
     const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
-    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
+    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', durationSec, createdAt: r.at || '' }];
   }
   // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
-  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
+  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', durationSec, createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
@@ -462,11 +463,11 @@ function runSpec(jobId, spec, publish, shared) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(pythonBin(), [spec.script, ...spec.args], {
+      child = safeSpawn(pythonBin(), [spec.script, ...spec.args], {
         cwd: SELENIUM_DIR, env: spec.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32', // unix:独立进程组,便于杀树
-        windowsHide: true,                       // ★Windows:不给 python.exe 子进程弹黑色控制台窗(stdout/stderr 已走管道,无需可见窗)
+        // windowsHide 由 safeSpawn 默认开 → 不给 python.exe 弹黑色控制台窗(stdout/stderr 已走管道)
       });
     } catch (e) {
       publish(jobId, 'log', `${spec.label}启动失败: ${e && e.message}`);
@@ -776,7 +777,7 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
     const finish = (r) => { if (done) return; done = true; _selftestRunning = false; resolve(r); };
     let child;
     try {
-      child = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      child = safeSpawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) { return finish({ ok: false, detail: 'python 启动失败: ' + (e && e.message) }); }
     if (!child.pid) return finish({ ok: false, detail: '未拿到 pid(python 未安装?设环境变量 OPENROUTER_PYTHON)' });
     const cap = (b) => { out += String(b); if (out.length > 24000) out = out.slice(-24000); };
@@ -787,7 +788,7 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
       try { child.kill('SIGKILL'); } catch (_e) { /* 已退出 */ }
       let cleaned = false;
       try {
-        const cl = spawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--cleanup-selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: 'ignore', windowsHide: true });
+        const cl = safeSpawn(pythonBin(), [path.join(SELENIUM_DIR, 'services', 'adspower_env.py'), '--cleanup-selftest'], { cwd: SELENIUM_DIR, env: process.env, stdio: 'ignore' });
         cleaned = !!(cl && cl.pid);
         const clKill = setTimeout(() => { try { cl.kill('SIGKILL'); } catch (_e) { /* 已退出 */ } }, 20000);
         cl.on('close', () => clearTimeout(clKill));
