@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from './lib/api';
@@ -10,32 +10,33 @@ import { Icon } from './lib/icons';
 import type { NodeInfo, HealthInfo, SetupStatus } from './lib/types';
 import Sidebar, { type NavGroup } from './components/Sidebar';
 import { ErrorBoundary } from './components/ErrorBoundary';
+// 落地/高频页保持 eager(避免首屏/常用页闪 loading);其余按路由 lazy 拆包 → 主包更小、首屏更快(子机走 WAN 尤其受益)。
 import ConsolePage from './pages/ConsolePage';
-import FlowPage from './pages/FlowPage';
-import ResultsPage from './pages/ResultsPage';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
-import RunsPage from './pages/RunsPage';
-import RunDetailPage from './pages/RunDetailPage';
-import SettingsPage from './pages/SettingsPage';
-import EngineConfigPage from './pages/EngineConfigPage';
-import AdvancedPage from './pages/AdvancedPage';
-import ElementsPage from './pages/ElementsPage';
-import StrategiesPage from './pages/StrategiesPage';
-import RecoveryStrategiesPage from './pages/RecoveryStrategiesPage';
-import HealthPage from './pages/HealthPage';
-import CardsPage from './pages/CardsPage';
-import AccountsPage from './pages/AccountsPage';
-import ProxiesPage from './pages/ProxiesPage';
-import AddressesPage from './pages/AddressesPage';
-import AdsPowerPage from './pages/AdsPowerPage';
-import CaptchaPage from './pages/CaptchaPage';
-import MailboxPage from './pages/MailboxPage';
-import ClusterPage from './pages/ClusterPage';
-import DiagnosePage from './pages/DiagnosePage';
-import AnalysisPage from './pages/AnalysisPage';
-import SetupPage from './pages/SetupPage';
 import ComingSoon from './pages/ComingSoon';
+const FlowPage = lazy(() => import('./pages/FlowPage'));
+const ResultsPage = lazy(() => import('./pages/ResultsPage'));
+const RunsPage = lazy(() => import('./pages/RunsPage'));
+const RunDetailPage = lazy(() => import('./pages/RunDetailPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const EngineConfigPage = lazy(() => import('./pages/EngineConfigPage'));
+const AdvancedPage = lazy(() => import('./pages/AdvancedPage'));
+const ElementsPage = lazy(() => import('./pages/ElementsPage'));
+const StrategiesPage = lazy(() => import('./pages/StrategiesPage'));
+const RecoveryStrategiesPage = lazy(() => import('./pages/RecoveryStrategiesPage'));
+const HealthPage = lazy(() => import('./pages/HealthPage'));
+const CardsPage = lazy(() => import('./pages/CardsPage'));
+const AccountsPage = lazy(() => import('./pages/AccountsPage'));
+const ProxiesPage = lazy(() => import('./pages/ProxiesPage'));
+const AddressesPage = lazy(() => import('./pages/AddressesPage'));
+const AdsPowerPage = lazy(() => import('./pages/AdsPowerPage'));
+const CaptchaPage = lazy(() => import('./pages/CaptchaPage'));
+const MailboxPage = lazy(() => import('./pages/MailboxPage'));
+const ClusterPage = lazy(() => import('./pages/ClusterPage'));
+const DiagnosePage = lazy(() => import('./pages/DiagnosePage'));
+const AnalysisPage = lazy(() => import('./pages/AnalysisPage'));
+const SetupPage = lazy(() => import('./pages/SetupPage'));
 
 const NAV: NavGroup[] = [
   { group: '运行', items: [
@@ -162,6 +163,8 @@ export default function App() {
         {/* 错误边界包住路由内容:某页渲染抛错只塌这块,侧栏/TopBar 与实时任务监视(在 ConsolePage 路由内)仍在;
             key=pathname → 切到别的页自动重挂边界、清掉错误状态(可恢复)。 */}
         <ErrorBoundary key={loc.pathname} label={loc.pathname}>
+          {/* lazy 路由的代码块加载期占位(局域网/本机几乎无感;子机走 WAN 时短暂显示) */}
+          <Suspense fallback={<div className="page"><div className="card card-pad"><div className="empty-note">加载中…</div></div></div>}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />
           <Route path="/console" element={<ConsolePage />} />
@@ -189,6 +192,7 @@ export default function App() {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<ComingSoon title="页面不存在" note="检查地址,或从左侧导航进入。" />} />
           </Routes>
+          </Suspense>
         </ErrorBoundary>
       </div>
     </div>

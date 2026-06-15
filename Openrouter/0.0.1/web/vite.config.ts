@@ -19,6 +19,16 @@ export default defineConfig({
     emptyOutDir: true, // 期1:旧 public 已移入 public-legacy 后才构建,此时 public 只放产物
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        // 第三方库拆独立 chunk:vendor/query 单独缓存 → 改业务代码只失效 app chunk,第三方 chunk 浏览器继续命中
+        //   缓存(重部署免重下);配合路由 lazy 进一步缩小首屏主包。
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          query: ['@tanstack/react-query'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

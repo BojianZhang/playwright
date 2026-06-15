@@ -1031,14 +1031,19 @@ async function handleErrorsClear(res) {
 }
 
 // ── 运行历史 + 总览(只读聚合,补「无 job 级汇总」「无总览」的洞)────────────
+const _failedRecCache = new Map(); // file -> { mtimeMs, size, rows }:与 readJobRecords 同款 mtime+size memo(原来 failed 没缓存,每次详情请求都冷读+解析)
 function readFailedRecords(jobId) {
-  const out = [];
+  const file = path.join(RESULTS_DIR, `${jobId}-failed.jsonl`);
   try {
-    fs.readFileSync(path.join(RESULTS_DIR, `${jobId}-failed.jsonl`), 'utf8')
-      .split('\n').filter(Boolean)
+    const st = fs.statSync(file);
+    const c = _failedRecCache.get(file);
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) return c.rows;
+    const out = [];
+    fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
       .forEach((line) => { try { out.push(JSON.parse(line)); } catch (_e) { /* skip */ } });
-  } catch (_e) { /* none */ }
-  return out;
+    _failedRecCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, rows: out });
+    return out;
+  } catch (_e) { return []; }  // 无文件/读失败 → 空(不缓存,下次重试)
 }
 // GET /api/runs —— 本节点任务历史列表(最新在前)
 function handleApiRuns(res, query) {
