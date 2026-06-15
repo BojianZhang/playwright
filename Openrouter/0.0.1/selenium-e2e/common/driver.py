@@ -34,6 +34,13 @@ def _macos_adhoc_sign(path):
     try:
         subprocess.run(["codesign", "--remove-signature", path], capture_output=True, timeout=30)  # 可能本无签名段,失败无妨
         r = subprocess.run(["codesign", "--force", "--sign", "-", path], capture_output=True, timeout=30)
+        if r.returncode != 0:
+            # ★把 codesign stderr 暴露出来:原来静默吞掉 → arm64 上 chromedriver 被 SIGKILL 时无从定位是签名问题
+            try:
+                _err = (r.stderr.decode("utf-8", "ignore")[:160] if r.stderr else ("rc=%d" % r.returncode))
+                log("[stealth] codesign ad-hoc 重签名失败(Apple Silicon 将 SIGKILL 改写过的 chromedriver):%s" % _err)
+            except Exception:
+                pass
         return r.returncode == 0
     except Exception:
         return False

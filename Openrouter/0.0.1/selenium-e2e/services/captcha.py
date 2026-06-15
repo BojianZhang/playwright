@@ -45,6 +45,8 @@ def inject_hooks(driver):
 
 # ── 2captcha ────────────────────────────────────────────────────────────
 def _solve_2captcha(api_key, task, timeout=180):
+    if not api_key:                                  # ★key 未配置:立即返回,免空跑满一个 timeout 轮询周期(白堵卡/注册链路)
+        log("2captcha key 未配置 → 跳过求解(不空跑轮询)"); return None
     try:
         cr = http_post_json("https://api.2captcha.com/createTask", {"clientKey": api_key, "task": task}, timeout=30)
     except Exception as e:

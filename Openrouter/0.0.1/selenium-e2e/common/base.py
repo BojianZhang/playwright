@@ -125,6 +125,8 @@ def _atomic_write_json(path, data):
             tmp = "%s.tmp.%d.%d" % (path, os.getpid(), threading.get_ident())
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(s)
+                f.flush()
+                os.fsync(f.fileno())   # ★兜底路径也 fsync,与主路径同等耐久(防崩在 replace 前留半截 tmp)
             os.replace(tmp, path)
         except Exception:
             pass

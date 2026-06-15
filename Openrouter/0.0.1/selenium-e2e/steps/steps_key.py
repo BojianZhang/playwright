@@ -90,7 +90,6 @@ def _fill_wizard_address(page):
 
 def dismiss_onboarding(page):
     """关掉问卷/「You.?re all set!」/个人资料弹层——但【绝不关账单弹窗】。"""
-    By = page.By
     # 问卷：Where did you first hear about OpenRouter → Other / Not sure → Continue
     try:
         t = (page.all_frames_text() or "")
@@ -883,7 +882,6 @@ def get_api_key(page, name=None, expiration="No expiration", on_key=None, on_cha
     else:
         page.goto(KEYS_URL, wait=3)
     dismiss_onboarding(page)
-    By = page.By
     key_name = name or ("auto-" + rand_name(6))
     # 新号 onboarding 向导:先试走向导直接抓 key(新版强制流程)。抓到就返回;非向导/老号 → 交回下面 New Key 流程。
     wkey = _handle_onboarding_wizard(page, on_key=on_key, on_charge=on_charge)
