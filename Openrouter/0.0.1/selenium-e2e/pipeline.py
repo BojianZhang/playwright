@@ -34,8 +34,10 @@ def _ck(checkpoint, email, stage, status, **prod):
         obj = dict(status=status, at=time.strftime("%Y-%m-%d %H:%M:%S"))
         obj.update({k: v for k, v in prod.items() if v not in (None, "")})
         checkpoint(email, _stage=(stage, obj))
-    except Exception:
-        pass
+    except Exception as _e:
+        # ★F7:checkpoint 落盘异常不再静默(续跑漏判该步 → 充值步可能重扣)。save_progress 内部也会查写返回值告警,这里兜底。
+        try: log("[checkpoint] ⚠ 阶段 %s 落盘异常(续跑可能漏判,充值步可能重扣): %s" % (stage, str(_e)[:80]))
+        except Exception: pass
 
 
 def _prior_done(acct, stage):
@@ -269,6 +271,10 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             # ★已绑卡(prior stages.card=ok)→ 跳过加卡,省一整段绑卡(还避免冷却/换卡冲突)。
             res["steps"]["card"] = "card-bound"
             res["card_skipped"] = True
+            # ★F3:续跑恢复 card_id/last4 → 充值容量闸(reserve_charge)能定位这张卡;否则跳过加卡后 card_id 缺失 → 闸退化(直接真扣)。
+            _pcard = ((acct.get("prior") or {}).get("stages") or {}).get("card") or {}
+            if _pcard.get("card_id"): res["card_id"] = _pcard.get("card_id")
+            if _pcard.get("card_last4"): res["card_last4"] = _pcard.get("card_last4")
             log("[续跑] %s 已绑卡,跳过加卡" % email)
         elif opts.get("do_card") and _bill_ok:
             addr = common.rand_address()
@@ -305,7 +311,8 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 break   # 绑成 / hcaptcha / 其它 → 不再换卡(各自后续逻辑处理)
             # 绑成就 checkpoint(卡 + 地址)→ 续跑跳过加卡/绑地址,不重复劳动、不冷却冲突。
             if r and r.get("result") == "card-bound":
-                _ck(checkpoint, email, "card", "ok", card_last4=(card.get("last4") if card else None), result="card-bound")
+                # ★F3:checkpoint 存 card_id(仅 id,绝不存 PAN)→ 续跑能恢复 card_id 供充值容量闸定位卡。card.get("id") 为空(无id卡)则不存。
+                _ck(checkpoint, email, "card", "ok", card_last4=(card.get("last4") if card else None), card_id=(card.get("id") if card else None), result="card-bound")
                 _ck(checkpoint, email, "address", "ok", zip=addr.get("zip"))
 
         # ★止血#2 防重复扣款:两个独立信号判"已充过"——checkpoint 的 stages.charge(可能因写盘异常丢)
@@ -330,33 +337,39 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 _gate = opts.get("card_charge_gate")
                 _try_batch = opts.get("try_batch_charge")
                 _reserved = False
+                _charge_resolved = False   # commit/release/预留失败 后置 True;finally 据此兜底释放未结清预留(F2)
                 _do_real = True
-                # ① 容量账本【原子预留】(够 + 同卡并发未满 才放行;未跟踪卡永远放行=旧行为)
-                if _gate:
-                    try:
-                        _ok, _reason = common.reserve_charge(_cid, _amt)
-                    except Exception:
-                        _ok, _reason = True, ""   # 预留异常不拦正常充值(安全:退回旧行为)
-                    if _ok:
-                        _reserved = True
-                    else:
-                        _rmap = {"capacity": "卡容量用尽", "concurrency": "同卡并发已满", "no-card": "无绑卡", "no-pool": "卡池读失败", "write-fail": "卡池落盘失败(安全起见不真扣)"}
-                        res["steps"]["purchase"] = "insufficient-funds"
-                        res["fail_stage"] = "charge"; res["fail_reason"] = "钱不够:" + _rmap.get(_reason, str(_reason))
+                try:
+                    # ① 容量账本【原子预留】(够 + 同卡并发未满 才放行;未跟踪卡永远放行=旧行为)。
+                    #   ★续跑边界:已绑卡跳过加卡时 card_id 可能缺失 → 无 _cid 时【跳过容量闸直接真扣】(不误拦合法号),不当钱不够。
+                    if _gate and _cid:
+                        try:
+                            _ok, _reason = common.reserve_charge(_cid, _amt)
+                        except Exception:
+                            _ok, _reason = True, ""   # 预留异常不拦正常充值(安全:退回旧行为)
+                        if _ok:
+                            _reserved = True
+                        else:
+                            _rmap = {"capacity": "卡容量用尽", "concurrency": "同卡并发已满", "no-card": "无绑卡", "no-pool": "卡池读失败", "write-fail": "卡池落盘失败(安全起见不真扣)", "lock-degraded": "卡池锁退化(安全起见不真扣)"}
+                            res["steps"]["purchase"] = "insufficient-funds"
+                            res["fail_stage"] = "charge"; res["fail_reason"] = "钱不够:" + _rmap.get(_reason, str(_reason))
+                            _do_real = False
+                            _charge_resolved = True   # 没预留成功 → 无在飞可释放
+                            log("[充值] %s 预留失败(%s)→ 钱不够,不真扣,END" % (email, _reason))
+                    elif _gate:
+                        log("[充值] %s 容量闸开但无 card_id(续跑边界)→ 跳过容量闸直接真扣" % email)
+                    # ② 整批最多真充 N 次【测试帽】(reserve 成功后才占名额,避免预留失败也烧帽)
+                    if _do_real and _try_batch and not _try_batch():
+                        if _reserved:
+                            try: common.release_charge(_cid)
+                            except Exception: pass
+                            _charge_resolved = True
+                        res["steps"]["purchase"] = "charge-test-capped"
+                        res["fail_stage"] = "charge"; res["fail_reason"] = "整批已达最多真充次数(测试帽)"
                         _do_real = False
-                        log("[充值] %s 预留失败(%s)→ 钱不够,不真扣,END" % (email, _reason))
-                # ② 整批最多真充 N 次【测试帽】(reserve 成功后才占名额,避免预留失败也烧帽)
-                if _do_real and _try_batch and not _try_batch():
-                    if _reserved:
-                        try: common.release_charge(_cid)
-                        except Exception: pass
-                    res["steps"]["purchase"] = "charge-test-capped"
-                    res["fail_stage"] = "charge"; res["fail_reason"] = "整批已达最多真充次数(测试帽)"
-                    _do_real = False
-                    log("[充值] %s 整批真充已达上限(测试帽)→ 不真扣,END" % email)
-                # ③ 真实充值(steps_billing.purchase 真实时序一行不改)
-                if _do_real:
-                    try:
+                        log("[充值] %s 整批真充已达上限(测试帽)→ 不真扣,END" % email)
+                    # ③ 真实充值(steps_billing.purchase 真实时序一行不改)
+                    if _do_real:
                         r = steps_billing.purchase(page, _amt, cfg, opts.get("manual_hcaptcha", True))
                         res["steps"]["purchase"] = r.get("result")
                         res["balance_after"] = r.get("balance_after")
@@ -365,16 +378,19 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                             if _reserved:
                                 try: common.commit_charge(_cid, _amt)   # 真扣成功 → 提交:chargedTotal++/balance 扣/在飞-1
                                 except Exception: pass
+                            _charge_resolved = True
                             _ck(checkpoint, email, "charge", "ok", amount=_amt, balance_after=r.get("balance_after"))
                         else:
                             if _reserved:
                                 try: common.release_charge(_cid)   # 没充成 → 还预留额度(不计 chargedTotal)
                                 except Exception: pass
-                    except Exception:
-                        if _reserved:
-                            try: common.release_charge(_cid)   # 异常也还额度,绝不泄漏在飞
-                            except Exception: pass
-                        raise
+                            _charge_resolved = True
+                finally:
+                    # ★F2:任何【未预期异常】(_try_batch()/purchase 抛错等)使预留没走到 commit/release →
+                    #   这里兜底释放,绝不把在飞预留泄漏到 10min reap。已结清(commit/release/预留失败)不重复释放。
+                    if _reserved and not _charge_resolved:
+                        try: common.release_charge(_cid)
+                        except Exception: pass
 
         # ★【CHANGEPW_REQUIRE_PURCHASE=on】只在充值【确认成功】才改邮箱密码(用户选:最严)。
         #   默认空=关=与现状逐字节一致(取到 key 即改密,与充值结果无关)。

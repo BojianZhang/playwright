@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "recovery": {
+    "activeId": "r_default",
+    "presets": [
+      {
+        "id": "r_default",
+        "name": "默认(全部重试)",
+        "builtin": true,
+        "opts": {
+          "retryRegister": "on",
+          "retryKey": "on",
+          "retryCard": "on",
+          "retryCharge": "on"
+        }
+      }
+    ]
+  }
+}

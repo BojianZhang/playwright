@@ -85,10 +85,14 @@ def save_progress(email, **fields):
             if v not in (None, ""):
                 rec[k] = v
         rec["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        # ★F9:_atomic_write_json 失败【返回 False 不抛】→ 查返回值告警(原来 try/except 抓不到,静默丢 charge checkpoint
+        #   → 续跑漏判已充 → 重扣风险)。
         try:
-            common._atomic_write_json(_PROGRESS_FILE, d)
-        except Exception:
-            pass
+            if not common._atomic_write_json(_PROGRESS_FILE, d):
+                log("[checkpoint] ⚠⚠ save_progress 落盘失败(续跑可能漏判已充→重扣风险),请人工核对: %s" % email)
+        except Exception as _e:
+            try: log("[checkpoint] ⚠ save_progress 异常: %s" % str(_e)[:80])
+            except Exception: pass
 
 
 def _start_env_fresh(env_id, proxy, force_stop=False):
@@ -235,9 +239,68 @@ def _rank_rotation_candidates(proxies, start_idx):
     return sorted(order, key=_score_key, reverse=True)   # Python sort 稳定:同分保持 order 的错开次序
 
 
+def _charge_with_gate(page, amount, cfg, manual_hcaptcha, card_id, card_charge_gate, try_batch_charge, res, email):
+    """混合引擎充值容量闸(对齐 pipeline.py 充值段;F3-F6 修)。仅 real_charge 真扣时调用。
+    原子:reserve(per-card 容量/同卡并发)→ 批N帽 → purchase → commit/release;finally 兜底释放未结清预留。
+    card_charge_gate=False 时仅做批N帽(不做 per-card 预留);card_id 缺失(续跑边界)→ 跳过容量闸直接真扣(不误拦合法号)。
+    设 res["purchase"]/["charged"]/["balance_after"]/(被拦时)["fail_stage"]/["fail_reason"]。purchase 抛错【向上抛】(调用方决定是否吞)。
+    返回 'ok'(真扣已发生,结果在 res["purchase"])/ 'blocked'(被闸拦,未真扣)。"""
+    _reserved = False; _resolved = False
+    try:
+        # ① per-card 原子预留(容量闸开 且 有 card_id 才做;无 id=续跑边界→跳过闸直接真扣)
+        if card_charge_gate and card_id:
+            try:
+                _ok, _reason = common.reserve_charge(card_id, amount)
+            except Exception:
+                _ok, _reason = True, ""   # 预留异常不拦正常充值(安全:退回旧行为)
+            if _ok:
+                _reserved = True
+            else:
+                _rmap = {"capacity": "卡容量用尽", "concurrency": "同卡并发已满", "no-card": "无绑卡", "no-pool": "卡池读失败", "write-fail": "卡池落盘失败(安全起见不真扣)", "lock-degraded": "卡池锁退化(安全起见不真扣)"}
+                res["purchase"] = "insufficient-funds"; res["charged"] = 0
+                res["fail_stage"] = "charge"; res["fail_reason"] = "钱不够:" + _rmap.get(_reason, str(_reason))
+                _resolved = True
+                log("[混合] %s 充值预留失败(%s)→ 钱不够,不真扣" % (email, _reason))
+                return "blocked"
+        elif card_charge_gate:
+            log("[混合] %s 容量闸开但无 card_id(续跑边界)→ 跳过容量闸直接真扣" % email)
+        # ② 整批最多真充 N 次【测试帽】(reserve 成功后才占名额)
+        if try_batch_charge and not try_batch_charge():
+            if _reserved:
+                try: common.release_charge(card_id)
+                except Exception: pass
+                _resolved = True
+            res["purchase"] = "charge-test-capped"; res["charged"] = 0
+            res["fail_stage"] = "charge"; res["fail_reason"] = "整批已达最多真充次数(测试帽)"
+            log("[混合] %s 整批真充已达上限(测试帽)→ 不真扣" % email)
+            return "blocked"
+        # ③ 真实充值(steps_billing.purchase 真实时序一行不改)
+        pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=manual_hcaptcha)
+        res["purchase"] = pr.get("result")
+        res["charged"] = amount if pr.get("result") == "success" else 0
+        res["balance_after"] = pr.get("balance_after")
+        if pr.get("result") == "success":
+            if _reserved:
+                try: common.commit_charge(card_id, amount)
+                except Exception: pass
+            _resolved = True
+        else:
+            if _reserved:
+                try: common.release_charge(card_id)
+                except Exception: pass
+            _resolved = True
+        return "ok"
+    finally:
+        # ★F2/F6:任何未预期异常(purchase 抛错等)使预留没走到 commit/release → 兜底释放,绝不泄漏在飞到 10min reap。
+        if _reserved and not _resolved:
+            try: common.release_charge(card_id)
+            except Exception: pass
+
+
 def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 prior=None, slot=0, slots_total=1, max_rotations=6, isolate=False, manual_card=False,
-                keep_failed_env=False, do_purchase=False, amount=5, do_changepw=False):
+                keep_failed_env=False, do_purchase=False, amount=5, do_changepw=False, real_charge=False,
+                card_charge_gate=False, try_batch_charge=None):
     email, mailbox_pw = acct["email"], acct["mailbox_pw"]
     # password=当前 OpenRouter 登录密码:设了统一密码就＝统一密码,否则＝原邮箱密码(与纯 Selenium / Playwright 对齐)。
     res = {"email": email, "ok": False, "steps": {}, "timings": {}, "password": op_pw}
@@ -502,13 +565,20 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
             res["ok"] = True; success = True; res["card_skipped"] = True
             log("[混合] %s 已绑卡(prior stages.card=ok)→ 跳过加卡(防重绑/重扣)" % email)
             _charged_before = ((((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok") or ((prior or {}).get("purchase") == "success")
-            if do_purchase and not _charged_before:
+            if do_purchase and not _charged_before and not real_charge:
+                # ★真实充值开关【关】= dry-run:走到充值步但【不真点 Purchase】(镜像 pipeline.py:323)。不设 res["purchase"]
+                #   → 与 card-bound 同口径成功(下方 finally ok 回算仅 real_charge 时才要求 purchase==success)。修#2:
+                #   原来混合/split 选了充值就【无视 realCharge 真扣】→ realCharge=关 的零成本 dry-run 承诺对混合半失效。
+                res["charge_dryrun"] = True
+                log("[混合] %s 充值 dry-run(未开真实充值):走到充值步不真点 Purchase、不扣款" % email)
+            elif do_purchase and not _charged_before:
                 log_stage(slot, email, "charge")
+                # ★F3:续跑恢复 card_id(prior 卡阶段持久化)→ 容量闸能定位卡;缺失则闸退化为直接真扣(不误拦)。
+                _cid1 = (((prior or {}).get("stages") or {}).get("card") or {}).get("card_id") or res.get("card_id")
+                if _cid1: res["card_id"] = _cid1
                 try:
-                    pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
-                    res["purchase"] = pr.get("result"); res["charged"] = amount if pr.get("result") == "success" else 0
-                    res["balance_after"] = pr.get("balance_after")   # ★M2:充值后真实余额回传(否则混合成功号 UI/台账恒显 null 余额,无法对账)
-                    if pr.get("result") == "success":
+                    _charge_with_gate(page, amount, cfg, False, _cid1, card_charge_gate, try_batch_charge, res, email)
+                    if res.get("purchase") == "success":
                         save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
                 except Exception as _pe:
                     res["purchase"] = "error"; log("[混合] %s 补充值异常: %s" % (email, str(_pe)[:80]))
@@ -668,7 +738,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 success = True
                 # 绑成 checkpoint(卡+地址)→ 续跑可判已绑、web 阶段统计可见。
                 _now = time.strftime("%Y-%m-%d %H:%M:%S")
-                save_progress(email, _stage=("card", {"status": "ok", "at": _now, "card_last4": card.get("last4"), "result": "card-bound"}))
+                save_progress(email, _stage=("card", {"status": "ok", "at": _now, "card_last4": card.get("last4"), "card_id": card.get("id"), "result": "card-bound"}))  # ★F3:存 card_id(仅id,绝不存PAN)→ 续跑充值容量闸能定位卡
                 save_progress(email, _stage=("address", {"status": "ok", "at": _now}))
                 # 充值($5):仅 --do-purchase 显式开启才【真扣费】(默认关,防误扣);卡刚绑成、page.d 活着、环境未删,直接复用。
                 _charged_before = ((((prior or {}).get("stages") or {}).get("charge") or {}).get("status") == "ok") or ((prior or {}).get("purchase") == "success")   # 双信号:checkpoint 或 上次 results 充值成功 → 防重复扣款
@@ -678,16 +748,19 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                     res["charged"] = 0
                     res["skipped_charge"] = True
                     log("[混合] %s 已充值过,跳过(防重复扣款)" % email)
+                elif do_purchase and not real_charge:
+                    # ★真实充值开关【关】= dry-run:绑成后走到充值步【不真点 Purchase、不扣款】(镜像 pipeline.py:323;
+                    #   修#2:对齐纯Sel,realCharge=关 时混合也只 dry-run,split 整批零成本测全流程)。不设 res["purchase"]=card-bound 成功。
+                    res["charge_dryrun"] = True
+                    log("[混合] %s 充值 dry-run(未开真实充值):走到充值步不真点 Purchase、不扣款" % email)
                 elif do_purchase:
                     log_stage(slot, email, "charge")
                     try:
-                        pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
-                        res["purchase"] = pr.get("result")
-                        res["charged"] = amount if pr.get("result") == "success" else 0
-                        res["balance_after"] = pr.get("balance_after")   # ★M2:充值后真实余额回传(否则混合成功号 UI/台账恒显 null 余额,无法对账)
-                        if pr.get("result") == "success":
+                        # ★F3-F6:经容量闸真扣(res["card_id"] 刚绑成已设)。原来混合直接 purchase 无 per-card 容量/同卡并发/批N帽。
+                        _charge_with_gate(page, amount, cfg, False, res.get("card_id"), card_charge_gate, try_batch_charge, res, email)
+                        if res.get("purchase") == "success":
                             save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
-                        log("[混合] %s 充值 $%s 结果=%s" % (email, amount, pr.get("result")))
+                        log("[混合] %s 充值 $%s 结果=%s" % (email, amount, res.get("purchase")))
                     except Exception as e:
                         res["purchase"] = "error"
                         log("[混合] %s 充值异常(不影响绑卡成功): %s" % (email, str(e)[:80]))
@@ -857,7 +930,9 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         #   且实时面板按 stdout 的 ok= 会把它闪计成功。收尾统一按 purchase 回算 ok(只改上报 ok 字段,不动 success 变量/env/changepw 逻辑)。
         #   失败行 ok 本就 False → no-op;skipped_charge(续跑已充)时 purchase 已是 success → 不误降。覆盖所有 return 路径(finally 在 return 物化前跑、res 可变)。
         try:
-            if do_purchase and res.get("ok") and res.get("purchase") != "success":
+            # 修#2:仅【真实充值】时才要求 purchase==success 才算成功(镜像 pipeline.py:_ok 门)。
+            #   realCharge=关 的 dry-run(charge_dryrun=True)= card-bound 同口径成功,不因没真扣而误降。
+            if do_purchase and real_charge and res.get("ok") and res.get("purchase") != "success":
                 res["ok"] = False
         except Exception:
             pass
@@ -940,8 +1015,11 @@ def main():
     ap.add_argument("--no-gc", action="store_true", help="开跑前不做环境兜底GC(默认会回收孤儿 hyb-* 环境)")
     ap.add_argument("--gc-min-age", type=int, default=30, help="GC 只删建龄超过这么多分钟的环境(默认30,防误删并发刚建的)")
     ap.add_argument("--no-delete-env", action="store_true", help="即使绑卡成功也不删环境(调试用)")
-    ap.add_argument("--do-purchase", action="store_true", help="绑卡成功后【充值扣费】(★真扣费,默认关,显式开才充);绑成→删环境前复用同环境充值")
+    ap.add_argument("--do-purchase", action="store_true", help="绑卡成功后走到充值步;★默认 dry-run(不真扣),要真扣须再加 --real-charge(对齐纯Sel run.py 安全模型)")
     ap.add_argument("--amount", type=int, default=5, help="充值金额(美元,默认5;仅 --do-purchase 时生效)")
+    ap.add_argument("--real-charge", action="store_true", help="★真实充值开关:不加=dry-run 走到充值步不真点 Purchase(零成本测全流程);加=真扣费。默认关 → 与现状安全口径一致")
+    ap.add_argument("--card-charge-gate", action="store_true", help="开卡充值容量账本:充值步【原子预留】per-card 容量(次数/金额)+同卡并发上限;不开=不预留(旧行为)。仅 --real-charge 时有意义")
+    ap.add_argument("--charge-count", type=int, default=0, help="整批最多【真扣】N 次(测试帽,0=不限);达 N 后续号到充值步返回 charge-test-capped 不真扣")
     ap.add_argument("--isolate", action="store_true",
                     help="隔离架构:PW 用完即删环境,加卡换【全新 AdsPower 环境】登录(干净指纹绕开账号级 hCaptcha);"
                          "env_B 成败都删、每次重试都换全新环境;hcaptcha 不再永久放弃(换环境可能就不弹)")
@@ -1071,6 +1149,18 @@ def main():
             log("写 banned_accounts.txt 失败: %s" % str(e)[:80])
 
     conc = max(1, args.concurrency)
+    # ★F4/F5:整批最多真充 N 次(测试帽)——跨 worker 线程安全计数(对齐 run.py:188-199)。真扣【前】(reserve 成功后)调一次占名额,达 N 即拒。
+    _charge_lock = threading.Lock()
+    _charge_used = [0]
+    def try_batch_charge():
+        n = max(0, int(getattr(args, "charge_count", 0) or 0))
+        if n <= 0:
+            return True   # 0=不限
+        with _charge_lock:
+            if _charge_used[0] >= n:
+                return False
+            _charge_used[0] += 1
+            return True
     import queue
     _slots = queue.Queue()
     for s in range(conc):
@@ -1091,7 +1181,10 @@ def main():
                             delete_env=not args.no_delete_env, prior=prior, slot=slot,
                             slots_total=conc, max_rotations=args.max_rotations, isolate=args.isolate,
                             manual_card=args.manual_card, keep_failed_env=args.keep_failed_env,
-                            do_purchase=args.do_purchase, amount=args.amount, do_changepw=args.do_changepw)
+                            do_purchase=args.do_purchase, amount=args.amount, do_changepw=args.do_changepw,
+                            real_charge=args.real_charge,
+                            card_charge_gate=getattr(args, "card_charge_gate", False),
+                            try_batch_charge=try_batch_charge)
         finally:
             _slots.put(slot)
         r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")

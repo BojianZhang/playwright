@@ -557,13 +557,30 @@ function handleApiResultsJob(res, query) {
 }
 
 // POST /api/register —— 子机心跳上报;主机记录其地址(默认用请求来源 IP + 上报端口)。
+// ★B6b:校验子机注册 URL —— 这个 URL 会进 dispatch 白名单并被 POST【账号+卡数据 + AUTH_TOKEN】。
+//   只接受 http/https + 可解析 + 无内嵌凭证 + 限长;挡住 file://gopher:// 等 SSRF 协议与畸形/带凭证 URL。
+//   归一为 scheme://host:port(丢 path/query)。非法/缺省 → 调用方回退「请求来源 IP 派生」(子机注册自身最常见最安全的形态)。
+//   注:/api/register 本就经 checkAuth(token)鉴权 → 主防线是 token;这里是纵深防御(防 token 持有者误注册/被劫的坏 URL)。
+function _sanitizePeerUrl(raw) {
+  const s = String(raw || '').trim().slice(0, 300);
+  if (!s) return '';
+  let u;
+  try { u = new URL(s); } catch (_e) { return ''; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+  if (u.username || u.password) return '';
+  if (!u.hostname) return '';
+  return u.origin;
+}
 async function handleRegister(req, res) {
   let body;
   try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
   const nodeId = String(body.nodeId || '').replace(/[^\w-]/g, '-').slice(0, 60);   // 与 handlePush 一致 sanitize(rte-9:否则 PEERS key 与 push 落盘文件名不匹配)
   if (!nodeId) { sendJson(res, 400, { error: 'MISSING_NODE_ID' }); return; }
-  let url = String(body.url || '').trim();
-  if (!url) { url = `http://${clientIp(req)}:${Number(body.port) || PORT}`; }
+  let url = _sanitizePeerUrl(body.url);
+  if (!url) {
+    if (body.url) console.warn(`[安全] /api/register 拒绝非法 url(非 http(s)/带凭证/畸形),回退来源IP派生: nodeId=${nodeId}`);
+    url = `http://${clientIp(req)}:${Number(body.port) || PORT}`;
+  }
   PEERS.set(nodeId, { nodeId, url, lastSeen: Date.now() });
   sendJson(res, 200, { ok: true, registered: { nodeId, url } });
 }
@@ -1940,6 +1957,11 @@ const onListening = () => {
   try { Promise.resolve(cardPool.reapStaleInflight(600000)).then((r) => { if (r && r.reaped) console.log(`🧹 已回收 ${r.reaped} 笔陈旧的充值在飞预留(卡额度释放)`); }).catch(() => {}); } catch (_e) { /* ignore */ }
   if (ALLOW_IPS.length) console.log(`🔒 IP 白名单(+本机): ${ALLOW_IPS.join(', ')}${TRUST_PROXY ? ' [信任 X-Forwarded-For]' : ''}`);
   if (ALLOW_HOSTS.length) console.log(`🔒 域名白名单(+localhost): ${ALLOW_HOSTS.join(', ')}`);
+  // ★B6a:危险组合告警——开了「信任 X-Forwarded-For」+ IP 白名单做访问控制,但【没配 token/密码】→ IP 白名单是【唯一关卡】,
+  //   而 X-Forwarded-For 客户端可伪造 → 任意人伪造白名单 IP 即可绕过。务必同时配 OPENROUTER_AUTH_TOKEN(token 才是主关卡)。
+  if (TRUST_PROXY && ALLOW_IPS.length && !AUTH_TOKEN && !AUTH_USER) {
+    console.warn('⚠⚠ [安全] 已开 TRUST_PROXY + IP白名单 但【未配 token/密码】→ X-Forwarded-For 可被伪造绕过 IP 白名单!请配 OPENROUTER_AUTH_TOKEN,或仅在【会清洗 XFF 的可信反代】后开 TRUST_PROXY。');
+  }
 
   // 子机自动注册:配了中心机地址就启动时 + 每 30s 心跳上报,中心机自动聚合本机。
   const CENTRAL_URL = getCentralUrl();

@@ -542,7 +542,12 @@ def reserve_charge(card_id, amount):
        未跟踪(无次数无金额)且未限并发 = 永远 True(默认逐字节不变)。reason∈ no-card/capacity/concurrency。"""
     if not card_id:
         return (False, "no-card")
-    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE) as _lk:
+        # ★F1 修:跨进程文件锁退化为无锁(超时/句柄耗尽/无法判锁龄)→ 无法保证原子预留 →
+        #   宁可【本号不真扣】也不在无锁下并发预留(否则两 worker 可能都过容量/并发闸 → 超容量/超并发真扣)。fail-closed。
+        if not getattr(_lk, "_held", True):
+            log("[卡][充值] ⚠ reserve 取卡池锁退化为无锁 → 本号不真扣(安全,防无锁并发超扣): %s" % card_id)
+            return (False, "lock-degraded")
         try:
             with open(paths.POOL_FILE, encoding="utf-8") as _f:
                 pool = json.load(_f)

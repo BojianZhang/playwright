@@ -101,3 +101,16 @@ test('setCardCharge:改容量重置 chargedTotal(新预算可重新充满)', asy
   assert.strictEqual(c.chargeCap, 3); assert.strictEqual(c.chargedTotal, 0);
   assert.strictEqual((await cp.reserveCharge('chg6', 5)).ok, true, '新预算可再充');
 });
+
+test('状态自愈:usedCount≥maxUses 的 active 卡读盘归一为 exhausted(KPI 可用 与 表 可用 一致)', () => {
+  // 注入一张「绑满却仍 active」的历史脏数据(直接写盘),强制 mtime 前进保证 ensureLoaded 重读 → 应被归一为 exhausted。
+  const cur = JSON.parse(fs.readFileSync(TMP, 'utf8'));
+  cur.push({ id: 'stuck1', number: '4111111111111111', last4: '1111', expMonth: '12', expYear: '2030', cvc: '123', maxUses: 10, usedCount: 10, successCount: 10, declineCount: 0, errorCount: 0, status: 'active' });
+  fs.writeFileSync(TMP, JSON.stringify(cur));
+  fs.utimesSync(TMP, new Date(), new Date(Date.now() + 5000));   // mtime 前进 → ensureLoaded 必重读
+  const c = cp.snapshot().find((x) => x.id === 'stuck1');
+  assert.ok(c, 'stuck1 在池中(不被丢弃)');
+  assert.strictEqual(c.status, 'exhausted', 'usedCount≥maxUses 的 active 卡读盘后应为 exhausted');
+  // availableCount(active&usedCount<maxUses) 不含它 → 与按状态计的"可用"口径一致(都不算它)
+  assert.strictEqual(cp.snapshot().filter((x) => x.status === 'active' && x.id === 'stuck1').length, 0, '不再被按状态计成可用');
+});

@@ -123,7 +123,7 @@ export default function RunDetailPage() {
                         <td>{renderPurchase(a)}</td>
                         <td className="mono">{a.cardLast4 ? '•••• ' + a.cardLast4 : '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.exitIp || '—'}</td>
-                        <td className="mono" style={{ color: 'var(--text-3)' }}>{a.durationSec != null ? a.durationSec + 's' : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--text-3)', cursor: a.timings ? 'help' : undefined, textDecoration: a.timings ? 'underline dotted' : undefined }} title={timingTip(a)}>{a.durationSec != null ? a.durationSec + 's' : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -208,6 +208,18 @@ export default function RunDetailPage() {
       )}
     </main>
   );
+}
+
+// 逐步耗时分解(详情页「耗时」列 hover 显示):排查【哪步慢】可优化。慢→快排序,一眼看瓶颈。
+const STAGE_LABEL: Record<string, string> = { env: '环境', auth: '登录', register: '注册', key: '取Key', address: '绑址', card: '加卡', charge: '充值', changepw: '改密' };
+function timingTip(a: AccountRow): string | undefined {
+  const t = a.timings;
+  if (!t || typeof t !== 'object') return undefined;
+  const parts = Object.entries(t)
+    .filter(([, v]) => typeof v === 'number' && (v as number) > 0)
+    .sort((x, y) => (y[1] as number) - (x[1] as number))
+    .map(([k, v]) => `${STAGE_LABEL[k] || k} ${Math.round((v as number) * 10) / 10}s`);
+  return parts.length ? '逐步耗时(慢→快):\n' + parts.join('\n') : undefined;
 }
 
 // 充值结果列:明确 成功(+金额)/ 失败(带真因)/ 已充跳过 / 未充值,消除「charged=$0」的歧义。

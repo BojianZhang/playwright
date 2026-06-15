@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { withToken } from './auth';
 import type { AccountFailedEvt, JobDoneEvt, RuntimeStats } from './types';
 
-export interface WorkerState { status?: string; stage?: string; account?: string; }
+export interface WorkerState { status?: string; stage?: string; account?: string; stageAt?: number; }
 export interface LogLine { ts: string; msg: string; cls?: 'ln-ok' | 'ln-fail'; }
 
 export interface JobStreamState {
@@ -65,7 +65,14 @@ export function useJobStream(handlers: JobStreamHandlers = {}) {
     es.addEventListener('worker-update', (e) => {
       const w = (J(e as MessageEvent) || {}).worker || {};
       if (w.workerId == null) return;
-      setState((s) => ({ ...s, workers: { ...s.workers, [w.workerId]: { status: w.status ?? s.workers[w.workerId]?.status, stage: w.stage ?? s.workers[w.workerId]?.stage, account: w.account ?? s.workers[w.workerId]?.account } } }));
+      setState((s) => {
+        const prev = s.workers[w.workerId] || {};
+        const stage = w.stage ?? prev.stage;
+        const status = w.status ?? prev.status;
+        // 阶段(或 running→done)切换时记当前时刻 → 面板按它显示「当前阶段已用 Ns」(长阶段如加卡 ~80s 也看得到在动,不像冻结)。
+        const stageChanged = stage !== prev.stage || (status !== prev.status);
+        return { ...s, workers: { ...s.workers, [w.workerId]: { status, stage, account: w.account ?? prev.account, stageAt: stageChanged ? Date.now() : (prev.stageAt || Date.now()) } } };
+      });
     });
     es.addEventListener('runtime-stats', (e) => {
       const x: RuntimeStats = J(e as MessageEvent) || {};

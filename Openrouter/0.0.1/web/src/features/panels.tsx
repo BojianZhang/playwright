@@ -1,6 +1,7 @@
 // 下方监控面板:卡池 / 充值台账 / 账号状态(断点续跑) / 错误记录。
 // 各自走真实 /api,用 react-query 缓存+刷新;SSE 事件由 ConsolePage 触发 invalidate。
 // 卡池 / 账号状态用通用 DataTable(排序/筛选/列设置);台账 / 错误保持原样。
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiGet, apiPost } from '../lib/api';
@@ -16,7 +17,37 @@ import { batchRun } from '../lib/batch';
 const CARD_STATUS: Record<string, string> = { active: '可用', exhausted: '用尽', declined: '被拒', disabled: '已禁用', dispatched: '已下发' };
 const ERR_ACTION: Record<string, string> = { retry: '同代理重试', 'retry-new-proxy': '换代理重试', relogin: '重新登录', blacklist: '拉黑', abort: '放弃' };
 
+// 卡池页独立于具体运行,按最小充值额 $5 估算「这张卡还能真充几次」(与 card-pool.js cardChargeRemaining 同口径)。
+const CHARGE_AMOUNT_EST = 5;
+function cardTracked(c: CardRow): boolean { return (c.chargeCap || 0) > 0 || (c.balance || 0) > 0; }
+function chargeRemaining(c: CardRow): number {
+  const cap = c.chargeCap || 0;
+  if (cap > 0) return Math.max(0, cap - (c.chargedTotal || 0));          // 次数模式:cap - 已充
+  const bal = c.balance || 0;
+  if (bal > 0) return Math.floor(bal / CHARGE_AMOUNT_EST);               // 金额模式:floor(余额/充值额)(余额已在 commit 扣减)
+  return Number.POSITIVE_INFINITY;                                       // 未跟踪=不限
+}
+
 function SubHead({ children }: { children: React.ReactNode }) { return <div className="sub-head">{children}</div>; }
+
+// 受控数字编辑格(M-frontend-stale-input 修):无本地编辑时显示【服务端最新值】(后台 SSE/跨标签刷新即时跟随);
+// 编辑中显示本地输入;失焦提交后清本地 → 重新跟随服务端。修复 defaultValue 只在挂载读一次 → 刷新后误把【陈旧显示值】
+// 在失焦时回写覆盖掉别处刚改的新值(跨标签/多机编辑同卡时的数据丢失)。
+function NumCell({ value, min, max, step, float, title, onCommit }: {
+  value: number; min: number; max: number; step?: number; float?: boolean; title?: string; onCommit: (v: number) => void;
+}) {
+  const [local, setLocal] = useState<string | null>(null);
+  const shown = local === null ? String(value ?? 0) : local;
+  const commit = () => {
+    if (local === null) return;                                   // 没动过 → 不提交(避免无编辑失焦回写陈旧值)
+    let v = float ? (Number(local) || 0) : (Math.floor(Number(local)) || 0);
+    v = Math.max(min, Math.min(max, v));
+    setLocal(null);                                               // 提交即清本地 → 重新跟随服务端最新值
+    if (v !== (value || 0)) onCommit(v);
+  };
+  return <input className="cell-num" type="number" min={min} max={max} step={step} value={shown} title={title}
+    onChange={(e) => setLocal(e.target.value)} onBlur={commit} />;
+}
 
 /* ---------------- 卡池 ---------------- */
 export function PoolTab() {
@@ -36,23 +67,28 @@ export function PoolTab() {
     { key: 'exp', label: '有效期', className: 'mono', render: (c) => c.exp },
     { key: 'status', label: '状态', sortAccessor: (c) => c.status, exportValue: (c) => CARD_STATUS[c.status] || c.status, render: statusBadge },
     { key: 'maxUses', label: '可用次数', sortAccessor: (c) => c.maxUses, render: (c) => (
-      <input className="cell-num" type="number" min={1} max={100} defaultValue={c.maxUses}
-        onBlur={(e) => { const v = Math.max(1, Math.min(100, Math.floor(Number(e.target.value)) || 1)); if (v !== c.maxUses) act('update', { id: c.id, maxUses: v }); }} />
+      <NumCell value={c.maxUses} min={1} max={100} onCommit={(v) => act('update', { id: c.id, maxUses: v })} />
     ) },
     // 充值容量账本:充值次数 / 金额(填哪个用哪个,次数优先)/ 同卡并发上限。改了即重置「已充」(新预算可重新充满)。
     { key: 'chargeCap', label: '充值次数', sortAccessor: (c) => c.chargeCap || 0, render: (c) => (
-      <input className="cell-num" type="number" min={0} max={9999} defaultValue={c.chargeCap || 0} title="这张卡能真充几次;0=不按次数。与「金额」二选一,填了次数优先"
-        onBlur={(e) => { const v = Math.max(0, Math.floor(Number(e.target.value)) || 0); if (v !== (c.chargeCap || 0)) act('set-charge', { id: c.id, chargeCap: v }); }} />
+      <NumCell value={c.chargeCap || 0} min={0} max={9999} title="这张卡能真充几次;0=不按次数。与「金额」二选一,填了次数优先" onCommit={(v) => act('set-charge', { id: c.id, chargeCap: v })} />
     ) },
     { key: 'balance', label: '金额$', sortAccessor: (c) => c.balance || 0, render: (c) => (
-      <input className="cell-num" type="number" min={0} max={99999} step={0.01} defaultValue={c.balance || 0} title="卡上真实有多少钱;系统按 floor(金额/充值额) 算能充几次。0=不按金额"
-        onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== (c.balance || 0)) act('set-charge', { id: c.id, balance: v }); }} />
+      <NumCell value={c.balance || 0} min={0} max={99999} step={0.01} float title="卡上真实有多少钱;系统按 floor(金额/充值额) 算能充几次。0=不按金额" onCommit={(v) => act('set-charge', { id: c.id, balance: v })} />
     ) },
     { key: 'chargeConcurrency', label: '同卡并发', sortAccessor: (c) => c.chargeConcurrency || 0, defaultHidden: true, render: (c) => (
-      <input className="cell-num" type="number" min={0} max={99} defaultValue={c.chargeConcurrency || 0} title="同一时间最多几个号在这张卡上充值;0=不限"
-        onBlur={(e) => { const v = Math.max(0, Math.floor(Number(e.target.value)) || 0); if (v !== (c.chargeConcurrency || 0)) act('set-charge', { id: c.id, chargeConcurrency: v }); }} />
+      <NumCell value={c.chargeConcurrency || 0} min={0} max={99} title="同一时间最多几个号在这张卡上充值;0=不限" onCommit={(v) => act('set-charge', { id: c.id, chargeConcurrency: v })} />
     ) },
     { key: 'chargedTotal', label: '已充', className: 'mono', align: 'right', defaultHidden: true, sortAccessor: (c) => c.chargedTotal || 0, render: (c) => <span title={`已真充 ${c.chargedTotal || 0} 次 · 在飞预留 ${c.chargeInflight || 0}`}>{c.chargedTotal || 0}{(c.chargeInflight || 0) > 0 ? ` (+${c.chargeInflight})` : ''}</span> },
+    // 充值余量:这张卡【还能真充几次】(按 $5 估)。用尽=充值步会返「钱不够」END 不真扣 → 红徽提示该补容量/换卡。
+    { key: 'chargeRemaining', label: '充值余量', className: 'mono', align: 'right', sortAccessor: (c) => { const r = chargeRemaining(c); return r === Infinity ? 1e9 : r; }, render: (c) => {
+      if (!cardTracked(c)) return <span style={{ color: 'var(--text-4)' }} title="未设充值次数/金额=不跟踪不限(默认旧行为)">不限</span>;
+      const rem = chargeRemaining(c); const infl = c.chargeInflight || 0;
+      if (rem <= 0) return <span className="kbadge fail" title="充值容量已用尽:充值步会返回「钱不够」END,不会真扣。请补「充值次数/金额」或换卡">充值用尽</span>;
+      const avail = rem - infl;
+      return <span title={`还能真充 ${rem} 次${infl ? `,其中 ${infl} 个在飞预留(可立即用 ${Math.max(0, avail)})` : ''}${(c.chargeCap || 0) > 0 ? `(次数 ${c.chargeCap}−已充 ${c.chargedTotal || 0})` : `(余额 $${c.balance} ÷ $${CHARGE_AMOUNT_EST})`}`}
+        style={{ color: avail <= 0 ? 'var(--warn)' : undefined, fontWeight: 600 }}>{rem}{infl ? ` (−${infl})` : ''}</span>;
+    } },
     { key: 'usedCount', label: '已用', className: 'mono', align: 'right', sortAccessor: (c) => c.usedCount, render: (c) => c.usedCount },
     { key: 'remaining', label: '剩余', className: 'mono', align: 'right', sortAccessor: (c) => c.remaining, render: (c) => <b>{c.remaining}</b> },
     { key: 'successCount', label: '成功', className: 'mono', align: 'right', sortAccessor: (c) => c.successCount, cellStyle: { color: 'var(--success)' }, render: (c) => c.successCount },

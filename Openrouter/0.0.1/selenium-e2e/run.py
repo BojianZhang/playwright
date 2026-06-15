@@ -52,10 +52,14 @@ def save_progress(email, **fields):
             if v not in (None, ""):
                 rec[k] = v
         rec["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        # ★F7:_atomic_write_json 失败【返回 False 不抛】→ 必须查返回值告警(原来纯 try/except 抓不到,静默丢 checkpoint
+        #   → 续跑漏判已充 → 真金白银重扣)。写失败时大声告警,运维可人工核对。
         try:
-            common._atomic_write_json(_PROGRESS_FILE, d)
-        except Exception:
-            pass
+            if not common._atomic_write_json(_PROGRESS_FILE, d):
+                log("[checkpoint] ⚠⚠ save_progress 落盘失败(续跑可能漏判已充→重扣风险),请人工核对: %s" % email)
+        except Exception as _e:
+            try: log("[checkpoint] ⚠ save_progress 异常: %s" % str(_e)[:80])
+            except Exception: pass
 
 
 def read_accounts(path):

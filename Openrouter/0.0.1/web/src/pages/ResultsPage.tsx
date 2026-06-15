@@ -38,6 +38,7 @@ export default function ResultsPage() {
   const [auto, setAuto] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [selRows, setSelRows] = useState<AccountRow[]>([]);   // 表格里勾选的行 → 复制/导出"选中优先"
+  const [busy, setBusy] = useState(false);                    // 删除/清空在飞 → 禁按钮防双击重复提交(后端幂等,纯防重复 toast/请求)
   const loadingRef = useRef(false);
 
   const { data: cards } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true), refetchInterval: auto ? 20000 : false });
@@ -65,7 +66,9 @@ export default function ResultsPage() {
 
   // 删除选中结果行:按 (nodeId,jobId,email,apiKey) 定位;非本机记录后端尝试转发源节点删。
   async function deleteRows(rows: AccountRow[], clearSel: () => void) {
+    if (busy) return;
     if (!window.confirm(`删除选中的 ${rows.length} 条结果?\n\n结果含 API Key / 已绑卡,删除后不可恢复(建议先导出备份)。\n非本机的记录会尝试到源节点一并删除。`)) return;
+    setBusy(true);
     try {
       const items = rows.map((r) => ({ nodeId: r.nodeId, jobId: r.jobId, email: r.email, apiKey: r.apiKey }));
       const resp = await apiPost<{ localDeleted: number; pushedDeleted: number; remote: { nodeId: string; ok: boolean; deleted?: number; error?: string }[] }>('/api/results/delete', { items });
@@ -77,14 +80,18 @@ export default function ResultsPage() {
       clearSel();
       loadData(false);
     } catch (e) { toast.push('删除失败:' + (e as Error).message, 'err'); }
+    finally { setBusy(false); }
   }
   async function clearLocal() {
+    if (busy) return;
     if (!window.confirm('清空本机所有成功结果?\n\n含 API Key / 已绑卡,删除后不可恢复(建议先点 .json 导出备份)。\n只清本机(含子机推送缓存),不影响其它节点自身的结果。')) return;
+    setBusy(true);
     try {
       const r = await apiPost<{ files: number; records: number; pushedFiles: number }>('/api/results/clear', {});
       toast.push(`已清空本机 ${r.records} 条结果(${r.files} 个文件${r.pushedFiles ? ` + ${r.pushedFiles} 个推送缓存` : ''})`, 'ok');
       loadData(false);
     } catch (e) { toast.push('清空失败:' + (e as Error).message, 'err'); }
+    finally { setBusy(false); }
   }
 
   const poolCards = cards?.cards || [];
@@ -132,7 +139,7 @@ export default function ResultsPage() {
           <button className="btn btn-ghost btn-sm" disabled={!exportRows.length} title="复制选中的;未勾选则复制全部" onClick={() => copy(exportRows.map((r) => `${r.email || ''}:${r.apiKey || ''}`).join('\n'))}>复制 邮箱:Key <span className="dim">({selSuffix})</span></button>
           <button className="btn btn-ghost btn-sm" disabled={!exportRows.length} title="复制选中的;未勾选则复制全部" onClick={() => copy(exportRows.map((r) => `${r.email || ''}:${r.password || ''}`).join('\n'))}>复制 邮箱:密码</button>
           <button className="btn btn-soft btn-sm" disabled={!exportRows.length} title="自定义格式导出(选中优先,未勾选则全部):模板变量 + 自增序号,可导 .txt / .json" onClick={() => setExportOpen(true)}><Icon name="download" size={12} />自定义导出 <span className="dim">({selSuffix})</span></button>
-          <button className="btn btn-danger-soft btn-sm" disabled={!all.length} title="删除本机所有成功结果(含子机推送缓存),不影响其它节点" onClick={clearLocal}><Icon name="trash" size={12} />清空本机</button>
+          <button className="btn btn-danger-soft btn-sm" disabled={!all.length || busy} title="删除本机所有成功结果(含子机推送缓存),不影响其它节点" onClick={clearLocal}><Icon name="trash" size={12} />清空本机</button>
         </div>
       </section>
 
@@ -154,7 +161,7 @@ export default function ResultsPage() {
           selectable
           onSelectionChange={setSelRows}
           batchActions={(sel, clearSel) => (
-            <button className="btn btn-danger-soft btn-sm" onClick={() => deleteRows(sel, clearSel)}><Icon name="trash" size={12} />删除选中</button>
+            <button className="btn btn-danger-soft btn-sm" disabled={busy} onClick={() => deleteRows(sel, clearSel)}><Icon name="trash" size={12} />删除选中</button>
           )}
           emptyText="暂无成功账号,去控制台跑一批"
         />

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../lib/toast';
-import { apiPost } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 import { useJobStream } from '../lib/useJobStream';
 import { usePersistedState } from '../lib/usePersistedState';
 import { parseKind, KIND_LABEL, escapeHtml, type Kind } from '../lib/parse';
@@ -215,6 +215,34 @@ export default function ConsolePage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // ★刷新自动重连(修「页面不实时」唯一真缺口):普通 F5 刷新(没带 ?attach=)后,若服务端仍有【在跑】任务 →
+  //   自动接管其 SSE 实时流。根因:stream.start 原来只在「点开始执行」或「?attach=」时触发 → 普通刷新后 React 状态
+  //   清空、SSE 不重连 → 工作线程面板/计数器冻结到任务结束。event-bus 有环形缓冲 + Last-Event-ID 重放,重连即补断连期事件。
+  const autoReattachedRef = useRef(false);
+  useEffect(() => {
+    if (autoReattachedRef.current) return;
+    if (searchParams.get('attach')) return;          // 带 attach 的走上面那条一次性接管,不重复
+    if (runningRef.current) return;                   // 本页刚起/已接管的任务不重复接管
+    autoReattachedRef.current = true;
+    (async () => {
+      try {
+        const a = await apiGet<{ jobs: { jobId: string; engine: string }[] }>('/api/jobs/active', true);
+        const job = (a.jobs || [])[0];               // procRegistry 只登记【确实存活】的 Python 引擎进程 → 是真在跑的任务
+        if (!job || !job.jobId || runningRef.current) return;
+        let total = 0;
+        try {
+          const r = await apiGet<{ runs: { jobId: string; total?: number }[] }>('/api/runs', true);
+          total = (r.runs || []).find((x) => x.jobId === job.jobId)?.total || 0;
+        } catch { /* total 缺省 0 不致命:worker 面板与逐号成败事件照常流,只是进度分母先为 0 */ }
+        const eng = (job.engine || 'selenium') as Engine;
+        setJobId(job.jobId); setRunEngine(eng); runningRef.current = true;
+        stream.start(job.jobId, total);
+        setRunHint({ html: `检测到正在运行的任务 <b>${escapeHtml(job.jobId.slice(-14))}</b>(引擎 <b>${escapeHtml(ENGINE_LABEL[eng] || eng)}</b>)→ 已自动接管实时进度(刷新页面不再丢失)。` });
+      } catch { /* 无在跑任务 / 拉取失败 → 正常空闲页,不打扰 */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function buildPayload() {
     const key = activeOpts(strategies, 'key', 'playwright');

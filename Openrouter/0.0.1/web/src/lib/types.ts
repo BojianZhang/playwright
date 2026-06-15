@@ -29,6 +29,7 @@ export interface AccountRow {
   purchaseStatus?: 'success' | 'failed' | 'skipped' | 'not-attempted' | 'dry-run'; purchaseReason?: string;   // 充值结果(成功/失败/已充跳过/未充值/dry-run未真扣)
   cardLast4?: string; exitIp?: string; blacklisted?: boolean; blacklistReason?: string;
   durationSec?: number | null;   // 单号端到端耗时(秒)
+  timings?: Record<string, number> | null;   // 逐步耗时分解(env/auth/key/card/charge/changepw,秒)→ 详情页排查「哪步慢」
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;
 }
 export interface StageSummary { total: number; registered: number; key: number; address: number; card: number; charge: number; changepw: number; blacklisted: number; }

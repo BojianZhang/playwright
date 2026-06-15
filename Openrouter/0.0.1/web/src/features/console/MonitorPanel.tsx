@@ -1,6 +1,6 @@
 // 执行 & 监控(原 ConsolePage zone B 整块):运行条 + 统计条 + 工作线程/成败/日志 tabs。
 // 与向导同级常驻 —— 切步不会 unmount 它,SSE 连接和进度不丢。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../../lib/icons';
 import { withToken } from '../../lib/auth';
 import type { JobStreamState } from '../../lib/useJobStream';
@@ -24,10 +24,18 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
       const idx = order.indexOf(w.stage || '');
       const pct = w.status === 'done' ? 100 : Math.max(2, Math.round(((idx < 0 ? 0 : idx) / (order.length - 1)) * 100));
       const stage = labels[w.stage || ''] || w.stage || w.status || '';
-      return { id, account: w.account || '', stage, pct };
+      return { id, account: w.account || '', stage, pct, status: w.status, stageAt: w.stageAt };
     });
   }, [state.workers, isPython]);
   const aliveCount = workerRows.filter((w) => { const s = state.workers[w.id]; return s && s.status !== 'done' && s.status !== 'idle' && s.status !== 'failed'; }).length;
+
+  // 当前阶段已用秒数 ticker:运行中每秒重渲一次 → 长阶段(如加卡 ~80s)也看得见在计时,不再像冻结。
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!state.running) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [state.running]);
 
   const Stat = ({ cls, val, label }: { cls: string; val: string | number; label: React.ReactNode }) => (
     <div className={'stat-cell ' + cls}><div className="num" style={cls === 's-env' && state.stats.envBurned > 0 ? { color: 'var(--danger)' } : undefined}>{val}</div><div className="lbl">{label}</div></div>
@@ -75,13 +83,16 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
           <div className="panel-sec-head"><span className="ps-title"><Icon name="cpu" size={14} style={{ color: 'var(--primary)' }} />工作线程实时状态</span><span className="cnt-pill" style={{ marginLeft: 8 }}>{aliveCount} 个线程</span></div>
           <div>
             {!workerRows.length ? <div className="worker-empty">尚未开始 —— 在上方填好配置后点 <b style={{ color: 'var(--text)' }}>「开始执行」</b>,每个浏览器线程的实时进度会显示在这里。{isPython && state.running ? ' 运行中…(等首个账号进入阶段)' : ''}</div> :
-              workerRows.map((w) => (
+              workerRows.map((w) => {
+                const secs = (w.status && w.status !== 'done' && w.stageAt) ? Math.max(0, Math.round((nowTick - w.stageAt) / 1000)) : null;
+                return (
                 <div className="worker-row" key={w.id}>
                   <span className="wid">#{w.id}</span>
-                  <div><div className="wmail">{w.account}</div><div className="wstage">阶段:{w.stage}</div></div>
+                  <div><div className="wmail">{w.account}</div><div className="wstage">阶段:{w.stage}{secs != null ? <span style={{ color: 'var(--text-4)' }}> · 已 {secs}s</span> : ''}</div></div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="wbar"><i style={{ width: w.pct + '%' }} /></div><span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-3)', minWidth: 34, textAlign: 'right' }}>{w.pct}%</span></div>
                 </div>
-              ))}
+                );
+              })}
           </div>
         </div>
 

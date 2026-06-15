@@ -56,6 +56,12 @@ function _readFromDisk() {
       }
     }
   } catch (_e) { /* 文件不存在/损坏 → 空池 */ }
+  // ★状态自愈(单向 active→exhausted):usedCount≥maxUses 的卡 acquire 取不到(usable 要 usedCount<maxUses)=实际已用尽,
+  //   但历史数据/直接改小 maxUses 等路径可能遗留 status='active' 且绑满 → 造成「可用」按状态计(KPI/环形图)与按可绑计(表/availableCount)
+  //   两个数对不上(161 vs 156)。读盘时归一,只 active→exhausted 单向(绝不把禁用/被拒翻活),随下次写盘落盘自愈。
+  for (const c of next.values()) {
+    if (c && c.status === 'active' && Number(c.usedCount || 0) >= Number(c.maxUses || 1)) c.status = 'exhausted';
+  }
   POOL = next;
   loadedMtimeMs = _diskMtime();
 }

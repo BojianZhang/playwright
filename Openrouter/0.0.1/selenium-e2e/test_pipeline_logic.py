@@ -289,6 +289,35 @@ def test_charge_capacity_ledger():
         paths.POOL_FILE = _bak
 
 
+def test_reserve_charge_fail_closed_on_degraded_lock():
+    """F1:跨进程文件锁退化为无锁(_held=False)时 reserve_charge 必须 fail-closed
+       (返回 (False,'lock-degraded'),绝不在无锁下真扣 → 防并发超容量/超扣)。"""
+    import common
+    from common import paths, ledger
+    d = tempfile.mkdtemp(prefix="orchgdeg_")
+    pf = os.path.join(d, "card-pool.json")
+    json.dump([{"id": "g1", "number": "4111111111111111", "last4": "1111", "maxUses": 10, "usedCount": 0, "status": "active", "chargeCap": 5, "chargedTotal": 0, "chargeInflight": 0}], open(pf, "w"))
+    _bak = paths.POOL_FILE; paths.POOL_FILE = pf
+    _bak_lock = ledger._file_lock
+
+    class _Degraded:   # 模拟退化锁:进入但未真持有(_held=False)
+        _held = False
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    try:
+        check("degraded前 正常锁 reserve ok", common.reserve_charge("g1", 5)[0] is True)
+        ledger._file_lock = lambda *a, **k: _Degraded()
+        r = common.reserve_charge("g1", 5)
+        check("degraded锁 reserve fail-closed=lock-degraded", r[0] is False and r[1] == "lock-degraded")
+        # fail-closed 不应写盘增加 inflight(仍是上面那次正常预留的 1)
+        ledger._file_lock = _bak_lock
+        _p = {c["id"]: c for c in json.load(open(pf))}
+        check("degraded reserve 未增 inflight", _p["g1"]["chargeInflight"] == 1)
+    finally:
+        ledger._file_lock = _bak_lock
+        paths.POOL_FILE = _bak
+
+
 TESTS = [
     test_prior_done,
     test_save_progress_stage_merge,
@@ -298,6 +327,7 @@ TESTS = [
     test_attribution_helper,
     test_recovery_should_retry,
     test_charge_capacity_ledger,
+    test_reserve_charge_fail_closed_on_degraded_lock,
 ]
 
 

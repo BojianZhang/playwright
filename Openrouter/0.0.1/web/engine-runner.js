@@ -185,13 +185,18 @@ function mapRow(r, accByEmail) {
   const orig = (accByEmail && accByEmail.get(r.email)) || '';
   const po = purchaseOutcome(r);   // 充值结果归一化(成功/失败/已充跳过/未充值)
   const durationSec = (r.timings && r.timings.total != null) ? r.timings.total : null;   // 单号端到端耗时(纯Sel/混合都写 timings.total)→ 详情可见,排查谁慢
+  // 逐步耗时分解(env/auth/key/card/charge/changepw,秒)→ 详情页 tooltip 显示「哪步慢」,排查优化点。剔 total(已单列 durationSec)。
+  const stageTimings = (r.timings && typeof r.timings === 'object')
+    ? Object.fromEntries(Object.entries(r.timings).filter(([k, v]) => k !== 'total' && typeof v === 'number'))
+    : null;
+  const _timings = (stageTimings && Object.keys(stageTimings).length) ? stageTimings : null;
   if (isSuccessRow(r)) {
     // ★充值额键名:hybrid 写 res["charged"]、纯Sel 也补写 charged;旧 r.charge 兜底。balance_after=充值后真实积分余额。
     const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
-    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', durationSec, createdAt: r.at || '' }];
+    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', durationSec, timings: _timings, createdAt: r.at || '' }];
   }
   // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
-  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', durationSec, createdAt: r.at || '' }];
+  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', durationSec, timings: _timings, createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
@@ -406,7 +411,14 @@ function hybridArgs(accFile, pxFile, p, jobId) {
   a.push('--max-rotations', String(_numOr(p.maxRotations, 3)));
   a.push('--cooldown-hours', String(_numOr(p.cooldownHours, 3)));
   a.push('--max-reopen', String(_numOr(p.maxReopen, 3)));
-  if (p.doPurchase) { a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5))); }
+  if (p.doPurchase) {
+    a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5)));
+    // ★修#2 + F3-F6:混合/split 也认真实充值开关【与充值容量闸】→ 关=dry-run(到充值步不真扣,与纯Sel同口径);
+    //   开=真扣并受 per-card 容量账本(--card-charge-gate:次数/金额/同卡并发原子预留)+ 整批最多真充 N 次(--charge-count)。
+    //   原来 hybridArgs 完全不下发 → 混合半【无视开关真扣且无任何容量/并发/批N上限】(split 半批裸真扣)。
+    if (p.realCharge) { a.push('--real-charge', '--card-charge-gate'); }
+    if (Number(p.chargeCount) > 0) a.push('--charge-count', String(Math.floor(Number(p.chargeCount))));
+  }
   if (p.isolate) a.push('--isolate');
   if (p.manualCard) a.push('--manual-card');
   if (p.noDeleteEnv) a.push('--no-delete-env');
