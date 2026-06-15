@@ -70,6 +70,24 @@ function update(email, fields) {
     return next;
   });
 }
+// 批量 upsert:一次取 mutex 把整批写进内存、只 scheduleFlush 一次 —— 批量导入专用,
+// 避免逐条 await update 过 N 次 mutex(N=数千时把请求拖很久)。返回 {added, updated}(同名重复行算更新)。
+function updateMany(items) {
+  return mutex(() => {
+    ensureLoaded();
+    let added = 0, updated = 0;
+    for (const it of (items || [])) {
+      const k = norm(it && it.email);
+      if (!k) continue;
+      const isNew = !STATE[k];
+      const prev = STATE[k] || { email: String(it.email).trim(), createdAt: new Date().toISOString() };
+      STATE[k] = { ...prev, ...(it.fields || {}), email: prev.email || String(it.email).trim(), updatedAt: new Date().toISOString() };
+      if (isNew) added++; else updated++;
+    }
+    scheduleFlush();
+    return { added, updated };
+  });
+}
 
 /** 删除某账号状态（让它下次从头跑）。 */
 function reset(email) {
@@ -115,7 +133,7 @@ function billingSatisfied(priorStatus, action) {
 }
 
 module.exports = {
-  get, update, reset, clear, list,
+  get, update, updateMany, reset, clear, list,
   attainedLevel, requestedLevel, billingSatisfied,
   flushNow,   // 供 server.js 优雅退出时同步刷盘(否则 setTimeout(400) 窗口内的写在退出时丢失)
   _ACCOUNTS_FILE: ACCOUNTS_FILE,

@@ -38,9 +38,12 @@ export const ADV_FIELDS: AdvField[] = [
   // ── 卡池(两套共用,载卡时 ledger 读)──
   { key: 'cardStrategy', env: 'CARD_STRATEGY', label: '卡池策略', hint: '如 concentrate(集中灌一张测容量);留空=默认', type: 'text', scope: 'both', group: '卡池', def: '' },
   { key: 'cardPreferBin', env: 'CARD_PREFER_BIN', label: '优先BIN', hint: '优先用某 BIN 的卡;留空=不限', type: 'text', scope: 'both', group: '卡池', def: '' },
+  // ── 充值 / 改密(计费收尾)──
+  { key: 'purchaseWait', env: 'FIXC_PURCHASE_WAIT', label: '充值等待上限(秒)', hint: '充值后等结果的上限;成功(余额涨)/拒付一般几十秒内判定即提前结束,到点仍判不出才放弃。留空=代码默认90(原来死等300s,导致"付款后卡很久不改密")', type: 'number', scope: 'both', group: '充值改密', def: '90' },
+  { key: 'changepwRequirePurchase', env: 'CHANGEPW_REQUIRE_PURCHASE', label: '只在充值成功才改密 ★', hint: '空=关(取到key即改密,与现状逐字节一致);on=拒付/未确认成功就【跳过改邮箱密码】→ 该号保持"未定型"可干净重试,充值成功才改密保护邮箱', type: 'select', scope: 'selenium', group: '充值改密', def: '', options: ['', 'on'] },
   // ── 混合专属 ──
   { key: 'proxySegOctets', env: 'PROXY_SEG_OCTETS', label: '代理分段位数', hint: '混合:IP 分段去重的位数;留空=代码默认', type: 'number', scope: 'hybrid', group: '混合', def: '' },
   { key: 'proxyDiversify', env: 'PROXY_DIVERSIFY', label: '代理多样化', hint: '混合:换 IP 时尽量跨段;留空=代码默认', type: 'text', scope: 'hybrid', group: '混合', def: '' },
 ];
 
-export const ADV_GROUPS = ['提速', '取key', '邮箱验证', '加卡', '驱动环境', '卡池', '混合'];
+export const ADV_GROUPS = ['提速', '取key', '邮箱验证', '加卡', '驱动环境', '卡池', '充值改密', '混合'];

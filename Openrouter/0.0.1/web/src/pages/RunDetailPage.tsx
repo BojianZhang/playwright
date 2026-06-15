@@ -126,8 +126,9 @@ export default function RunDetailPage() {
         <section className="card">
           <div className="card-head"><span className="idx c-amber"><Icon name="xcircle" size={12} /></span><h3>失败账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{failed.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '尝试', '出口/代理', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.attempts ?? '', a.proxy || '', a.originalPassword || a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="现密码=OpenRouter 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.password || a.originalPassword || ''}`).join('\n'))}>复制 邮箱:密码</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="原密码=账号原始/邮箱密码" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>

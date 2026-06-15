@@ -21,7 +21,8 @@ FAKE_CARDS = {"4111111111111111", "4242424242424242", "4000000000000002",
 ALLOW_SUBSTR = ("example.com", "example.", "host:port", "user:pass", "127.0.0.1",
                 "0.0.0.0", "localhost", "<your", "your-", "xxx", "abcdef0123456789",
                 "<set>", "yyyy", "1234 1234 1234 1234",
-                "mynewpass#2026")  # ResultsExportModal 导出模板预览的 SAMPLE 假数据行(假密码+省略号假key),非真密钥
+                "mynewpass#2026",  # ResultsExportModal 导出模板预览的 SAMPLE 假数据行(假密码+省略号假key),非真密钥
+                "@unified2026")  # engine-runner.test.js mapRow 单测的假统一密码 fixture(验证失败行 password 回退),非真密钥
 
 # 二进制/产物/文档示例:不扫
 SKIP_EXT = (".png", ".jpg", ".jpeg", ".ico", ".zip", ".7z", ".rar", ".pdf",

@@ -955,8 +955,8 @@ async function handleAccountsUpsert(req, res) {
 async function handleAccountsImport(req, res) {
   const b = await _body(req, res); if (!b) return;
   const raw = String(b.raw || '');
-  const existing = new Set(accountStore.list().map((a) => String(a.email || '').toLowerCase()));
-  let added = 0, updated = 0, bad = 0;
+  // 先解析整批为 items,再【一次】updateMany(只过一次 mutex、只 flush 一次)→ 大批量导入不再逐条 await 拖很久。
+  const items = []; let bad = 0;
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s || s.startsWith('#')) continue;
@@ -966,10 +966,9 @@ async function handleAccountsImport(req, res) {
     const after = s.slice((em.index || 0) + email.length);
     const pm = after.match(/[\s:|,;\t]+(\S[^\s|,;\t]*)/);
     const password = pm ? pm[1].replace(/^["']|["']$/g, '').trim() : '';
-    const isNew = !existing.has(email.toLowerCase());
-    await accountStore.update(email, password ? { originalPassword: password } : {});
-    if (isNew) { added++; existing.add(email.toLowerCase()); } else updated++;
+    items.push({ email, fields: password ? { originalPassword: password } : {} });
   }
+  const { added, updated } = await accountStore.updateMany(items);
   sendJson(res, 200, { ok: true, added, updated, bad });   // 客户端 invalidate+重拉,不回全量
 }
 

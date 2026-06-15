@@ -1,6 +1,6 @@
 // 通用资源导入弹窗(人性化版):文件上传 + 粘贴框 + 拖拽 + 剪贴板 + 实时解析计数 + 忽略行预览 + 示例/模板。
 // 解析逻辑沿用 console 的 parseKind;复用 app.css 的 .upload/.fname/.field,新增 .import-* 系列样式。
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { Modal } from './Modal';
@@ -37,18 +37,36 @@ export function ImportModal({
 
   useEffect(() => { if (open) { setRaw(''); setFileMsg(null); setBusy(false); setDragging(false); setShowIgnored(false); } }, [open]);
 
-  // 实时计数:每次内容变就算「识别 N 条 · 忽略 M 行」
-  const stats = useMemo(() => {
-    if (!raw.trim()) return { kept: 0, ignored: 0 };
-    if (parse) { const { kept, ignored } = parse(raw); return { kept: kept.length, ignored }; }
-    return { kept: raw.split(/\r?\n/).filter((l) => l.trim()).length, ignored: 0 };
-  }, [raw, parse]);
+  // 大段粘贴/快速输入时,把昂贵的整段解析放到【延迟值】上跑(低优先级),textarea 本身用 raw 立即更新不卡。
+  const deferredRaw = useDeferredValue(raw);
+  // 调用方常传内联箭头 parse(每渲染新引用)→ 用 ref 取最新,memo 只依赖 deferredRaw,不被不稳定引用击穿(否则每次渲染都重解析)。
+  const parseRef = useRef(parse);
+  parseRef.current = parse;
 
-  // 被忽略的原始行(展开预览时才算,避免大粘贴每键卡顿)
+  // 实时计数:对延迟后的内容算「识别 N 条 · 忽略 M 行」
+  const stats = useMemo(() => {
+    const t = deferredRaw;
+    if (!t.trim()) return { kept: 0, ignored: 0 };
+    const p = parseRef.current;
+    if (p) { const { kept, ignored } = p(t); return { kept: kept.length, ignored }; }
+    return { kept: t.split(/\r?\n/).filter((l) => l.trim()).length, ignored: 0 };
+  }, [deferredRaw]);
+
+  // 被忽略的原始行(仅展开时算):逐行判定本身 O(N) 次解析 → 早退(预览只显 50,最多收 200)+ 封顶扫描行数,
+  // 避免超大粘贴点「查看」时卡死。真实总数走 stats.ignored(单次整段解析得出,准且便宜)。
   const ignoredLines = useMemo(() => {
-    if (!parse || !showIgnored) return [];
-    return raw.split(/\r?\n/).map((s) => s.trim()).filter((l) => l && !l.startsWith('#') && parse(l).kept.length === 0);
-  }, [raw, parse, showIgnored]);
+    const p = parseRef.current;
+    if (!p || !showIgnored) return [];
+    const lines = deferredRaw.split(/\r?\n/);
+    const out: string[] = [];
+    const SCAN_CAP = 20000;
+    for (let i = 0; i < lines.length && i < SCAN_CAP && out.length < 200; i++) {
+      const l = lines[i].trim();
+      if (!l || l.startsWith('#')) continue;
+      if (p(l).kept.length === 0) out.push(l);
+    }
+    return out;
+  }, [deferredRaw, showIgnored]);
 
   function append(text: string) {
     const add = text.replace(/\s+$/, '');
@@ -140,7 +158,7 @@ export function ImportModal({
           {showIgnored && ignoredLines.length > 0 && (
             <div className="import-ignored">
               {ignoredLines.slice(0, 50).map((l, i) => <div key={i} className="ig-line" title={l}>{l}</div>)}
-              {ignoredLines.length > 50 && <div className="ig-more">…共 {ignoredLines.length} 行未识别</div>}
+              {stats.ignored > 50 && <div className="ig-more">…共 {stats.ignored} 行未识别(预览前 50)</div>}
             </div>
           )}
         </div>

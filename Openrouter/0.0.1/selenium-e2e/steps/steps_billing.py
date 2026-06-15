@@ -678,8 +678,14 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
     page.click_text(["Purchase", "Pay now", "Confirm"], 10)
     _handle_hcaptcha(page, cfg, manual_hcaptcha)
 
-    end = time.time() + 300
+    # ★充值结果检测(根治用户报的"付款后等好久/额度显示0/不改密"):
+    #   ① 超时从 300s 砍到 FIXC_PURCHASE_WAIT(默认90s)—— 5分钟干等绝大多数是"成功了但没检测到",白堵后续 changepw;
+    #   ② 【关键】信用页余额【不在原页实时更新】→ 原来只读当前页 _balance 永远是旧值、永远检测不到充值成功 → 干等满。
+    #      改:每 ~10s reload 一次 /credits 取【最新余额】,余额涨了即判 success 立即 break(及时看额度变化)。
+    #   ③ success 一旦判定就 break → res["charged"] 写得上(不再显示 0)+ 尽快进 changepw。declined/502 文案命中仍秒判。
+    end = time.time() + float(os.environ.get("FIXC_PURCHASE_WAIT", "90") or 90)
     outcome = "unknown"
+    _last_reload = time.time()
     while time.time() < end:
         alert_txt = _accept_alert(page)
         t = (page.all_frames_text() or "") + " " + alert_txt
@@ -695,8 +701,15 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
                 outcome = "success"; break
         except Exception:
             pass
+        # ★每 ~10s 刷新 /credits 取最新余额(信用页余额非实时更新,不刷新读不到充值成功)
+        if time.time() - _last_reload > 10:
+            try:
+                page.goto(CREDITS_URL, wait=3)
+                _last_reload = time.time()
+            except Exception:
+                pass
         time.sleep(3)
     page.goto(CREDITS_URL, wait=4)
     bal1 = _balance(page)
-    log("[充值] 结果=%s 余额 $%s → $%s" % (outcome, bal0, bal1))
+    log("[充值] 结果=%s 余额 $%s → $%s (等待上限%ss)" % (outcome, bal0, bal1, os.environ.get("FIXC_PURCHASE_WAIT", "90")))
     return {"result": outcome, "balance_before": bal0, "balance_after": bal1}

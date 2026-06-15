@@ -54,6 +54,28 @@ function readTail(file, fromLine, stats) {
 // Python 结果行:ok=true 或 steps.card=='card-bound' 视为成功
 function isSuccessRow(r) { return !!(r && (r.ok === true || (r.steps && r.steps.card === 'card-bound'))); }
 
+// ★每 email 唯一化,且【成功恒胜失败】(success-wins),非 last-wins。这是「成功号不许再出现在失败里」的硬不变量。
+//   背景(实测病根):同一 job 内 AUTO_RETRY 会对失败号追加【第二行成功结果】(同 email/job_id,先 fail 后 success);
+//   旧逻辑用 last-wins(按文件/at 顺序)——一旦有【迟到的失败行】(如绑卡成功后 changepw 再报错、二次衔接、回填撞车)排在成功之后,
+//   成功号会被降级成失败 → 同号既进 successRows 又进 failedRows(运行详情快照里成功表/失败表同时出现该号)。
+//   规则:① 任一成功行存在 → 该 email 判成功(取最近一条成功行,带 api_key/卡尾号);② 全是失败行 → 取 at 最近的失败行(保留最新真因)。
+//   纯函数、可单测(有迹可查);返回去重后的行数组 + 折叠掉的重复数(供调用方落日志审计)。
+function dedupBySuccess(rows) {
+  const best = new Map();
+  let collapsed = 0;
+  for (const r of rows) {
+    if (!r || !r.email) continue;
+    const prev = best.get(r.email);
+    if (!prev) { best.set(r.email, r); continue; }
+    collapsed += 1;                                   // 同 email 第二次起即为一次折叠(无论谁胜)
+    const rs = isSuccessRow(r), ps = isSuccessRow(prev);
+    if (rs && !ps) { best.set(r.email, r); continue; }            // 成功胜失败
+    if (!rs && ps) continue;                                       // 已有成功 → 失败行丢弃(绝不降级)
+    if (String(r.at || '') >= String(prev.at || '')) best.set(r.email, r);  // 同态:取 at 更近者
+  }
+  return { rows: [...best.values()], collapsed };
+}
+
 // 统一「号被 OpenRouter 永久拒绝(拉黑)」判据 —— 覆盖两引擎:
 //   hybrid 写 res["not_allowed"]=True;纯Sel(run.py:131)靠 steps.auth 以 NOT_ALLOWED 结尾;另兼容 steps.banned 标记。
 function isNotAllowed(r) {
@@ -68,9 +90,12 @@ function isNotAllowed(r) {
 // Python 失败行 → 原因/阶段(供详情表展示)
 function pyFailReason(r) {
   const s = r.steps || {};
+  if (r.fail_reason) return String(r.fail_reason).slice(0, 80);          // ★pipeline 已归因好(不做糊涂账),直接用
   if (typeof s.auth === 'string' && s.auth.indexOf('fail') === 0) return s.auth;
   if (s.card && s.card !== 'card-bound') return 'card:' + s.card;
   if (s.pw === false && s.pw_reason) return 'pw:' + s.pw_reason;
+  if (s.purchase && s.purchase !== 'success') return 'charge:' + s.purchase;   // 补漏:充值拒付/未成功(原来落到 JSON 糊涂账)
+  if (s.key === false) return 'key:' + (r.key_reason || 'fail');               // 补漏:取key 失败
   if (r.giveup_permanent) return 'giveup' + (r.steps && r.steps.giveup ? ':' + r.steps.giveup : '');
   if (isNotAllowed(r)) return 'ACCOUNT_NOT_ALLOWED';
   if (r.error) return String(r.error).slice(0, 80);
@@ -102,7 +127,8 @@ function mapRow(r, accByEmail) {
     const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
     return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: r.billing_status || (r.steps && r.steps.card) || '', charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
   }
-  return ['failed', { email: r.email, password: orig, originalPassword: orig, reason: pyFailReason(r), stage: (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.card ? 'card' : (r.steps.pw === false ? 'register' : '')))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
+  // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
+  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
@@ -511,12 +537,19 @@ async function spawnEngine(jobId, engine, payload, publish) {
     const wantAccts = (payload.accounts || []).filter((a) => a && a.email && !haveEmails.has(a.email));
     if (wantAccts.length) {
       const files = engine === 'split' ? [RESULTS.selenium, RESULTS.hybrid] : [engine === 'hybrid' ? RESULTS.hybrid : RESULTS.selenium];
-      const latest = new Map();   // email → 历史最近一行(全文件扫,按 at 取更近者;跳过号的行在本 job startLine 之前)
+      // email → 历史代表行,【成功恒胜失败】(success-wins),非纯 at-latest。
+      //   病因:跳过号若历史是「先成功(card-bound)后又有一条迟到失败行」(再跑加额度/改密失败),纯 at-latest 会回填那条失败行
+      //   → 已成功的跳过号在本次视图里显示成失败(用户实测:"重跑成功的号还在失败里")。改 success-wins:有过成功就回填成功行。
+      const latest = new Map();
       for (const f of files) {
         for (const r of readTail(f, 0, { dropped: 0 })) {
           if (!r || !r.email) continue;
           const prev = latest.get(r.email);
-          if (!prev || String(r.at || '') >= String(prev.at || '')) latest.set(r.email, r);
+          if (!prev) { latest.set(r.email, r); continue; }
+          const rs = isSuccessRow(r), ps = isSuccessRow(prev);
+          if (rs && !ps) { latest.set(r.email, r); continue; }            // 成功胜失败
+          if (!rs && ps) continue;                                         // 已有成功 → 保留,失败行不覆盖
+          if (String(r.at || '') >= String(prev.at || '')) latest.set(r.email, r);  // 同态:取 at 更近者
         }
       }
       let _back = 0;

@@ -51,12 +51,21 @@ function _shortErr(e) {
 // ── 失败归因:把一条失败结果行归到单一环节(stage)+ 细节(detail) ──
 function classifyBlame(r) {
   const s = r.steps || {};
+  // ★优先用 pipeline 写进结果行的 fail_stage/fail_reason(不做糊涂账:哪步+为啥已归因好,直接映射展示标签)
+  if (r.fail_stage) {
+    const M = { exception: 'A.基建', register: 'C.注册/登录', key: 'F.取Key', card: 'D.加卡', charge: 'G.充值', changepw: 'H.改密' };
+    return { stage: M[r.fail_stage] || ('Z.' + r.fail_stage), detail: String(r.fail_reason || r.fail_stage).slice(0, 48) };
+  }
+  // 旧结果行(无 fail_stage)回退原逻辑 + 补 取key/充值/改密 三个原来漏判落入「Z.其它」的环节
   if (r.error) return { stage: 'A.基建', detail: _shortErr(r.error) };
   if (r.not_allowed) return { stage: 'B.号被拒', detail: 'not_allowed' };
   if (typeof s.auth === 'string' && s.auth !== 'ok') return { stage: 'C.注册/登录', detail: 'auth:' + s.auth };
   if (s.pw === false) return { stage: 'C.注册/登录', detail: 'pw:' + (s.pw_reason || 'fail') };
+  if (s.key === false) return { stage: 'F.取Key', detail: 'key:' + (r.key_reason || 'fail') };
   if (s.giveup) return { stage: 'E.加卡放弃', detail: 'giveup:' + s.giveup };
   if (s.card && s.card !== 'card-bound') return { stage: 'D.加卡', detail: 'card:' + s.card };
+  if (s.purchase && s.purchase !== 'success') return { stage: 'G.充值', detail: 'charge:' + s.purchase };
+  if (s.changepw === false) return { stage: 'H.改密', detail: 'changepw:fail' };
   return { stage: 'Z.其它', detail: JSON.stringify(s).slice(0, 40) };
 }
 
@@ -76,13 +85,16 @@ function categoryOf(blame) {
   if (blame.stage === 'A.基建') return 'infra';
   if (blame.stage === 'B.号被拒') return 'banned';
   if (blame.stage === 'C.注册/登录') return 'auth';
-  if (blame.stage === 'D.加卡' || blame.stage === 'E.加卡放弃') {
+  if (blame.stage === 'F.取Key') return 'detect';   // 取Key找不到入口/判不出结果 → 可改代码捞回
+  // 加卡 与 充值 都按 detail 细分(declined=环境卡/server-error=Radar/hcaptcha/unknown=检测)
+  if (blame.stage === 'D.加卡' || blame.stage === 'E.加卡放弃' || blame.stage === 'G.充值') {
     if (d.includes('unknown') || d.includes('fill-fail')) return 'detect';
     if (d.includes('declined')) return 'cardenv';
     if (d.includes('hcaptcha')) return 'hcaptcha';
     if (d.includes('server-error') || d.includes('card-deadline') || d.includes('502') || d.includes('no-good-proxy')) return 'radar';
-    return 'radar';
+    return d.includes('charge') ? 'cardenv' : 'radar';   // 充值未明 → 多为卡/环境
   }
+  if (blame.stage === 'H.改密') return 'other';     // 改密失败:多为邮箱密钥/旧密码失效,个案看
   return 'other';
 }
 

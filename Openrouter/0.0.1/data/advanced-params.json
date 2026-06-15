@@ -2,5 +2,6 @@
   "fixcZipDeadline": "10",
   "zipRetry": "0",
   "maxConcurrency": "10",
-  "fastMode": "on"
+  "fastMode": "on",
+  "changepwRequirePurchase": "on"
 }

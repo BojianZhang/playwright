@@ -141,6 +141,17 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
     return out;
   }, [rows, q, fvals, sort, columns, search, filters]);
 
+  // 虚拟化:搜索/筛选使 view 变短时把滚动复位到顶 —— 否则 startIdx 仍按旧的大 scrollTop 算,会有 ~1 帧显示底部窗口
+  // (浏览器随后自纠,但主动复位更干净,也符合「筛选后看最前匹配」的直觉)。
+  const prevViewLen = useRef(view.length);
+  useEffect(() => {
+    if (view.length < prevViewLen.current) {
+      if (wrapRef.current) wrapRef.current.scrollTop = 0;
+      setScrollTop(0);
+    }
+    prevViewLen.current = view.length;
+  }, [view.length]);
+
   // —— 多选(selectable 时) ——
   // 行身份键:按【行对象】缓存「用原始 rows 下标算出的 key」。排序/筛选只改 view 顺序,同一行 key 不变。
   // 关键:页面 rowKey 若含位置下标(…|${i}),view 下标≠rows 下标 —— 勾选(走 view 下标)存的 key 与

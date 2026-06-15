@@ -317,14 +317,27 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 res["charged"] = opts.get("amount", 5)   # ★充值额进结果行(供 UI/台账回显;之前漏写=账号页显示 $0)
                 _ck(checkpoint, email, "charge", "ok", amount=opts.get("amount", 5), balance_after=r.get("balance_after"))
 
-        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok:
+        # ★【CHANGEPW_REQUIRE_PURCHASE=on】只在充值【确认成功】才改邮箱密码(用户选:最严)。
+        #   默认空=关=与现状逐字节一致(取到 key 即改密,与充值结果无关)。
+        #   on:本批配置了充值且前置 ok → 必须 purchase==success(或续跑已充)才改密;
+        #      declined / server-error / unknown 一律【跳过改密】→ 该号保持"未定型"可干净重试,邮箱密码不被提前改掉。
+        #   错误不做糊涂账:跳过时把"为啥跳"写进结果行(skipped_changepw_reason),UI/分析一眼看清在哪步因为啥停。
+        _cpw_gate = True
+        if opts.get("do_changepw") and (os.environ.get("CHANGEPW_REQUIRE_PURCHASE", "") or "").strip().lower() in ("1", "true", "on", "yes"):
+            if opts.get("do_purchase") and _bill_ok:
+                _cpw_gate = (res["steps"].get("purchase") == "success") or bool(res.get("skipped_charge"))
+                if not _cpw_gate:
+                    res["skipped_changepw"] = True
+                    res["skipped_changepw_reason"] = "purchase-" + str(res["steps"].get("purchase") or "none")
+                    log("[拒付/未成功] %s 充值=%s → 跳过改密(保号可干净重试)" % (email, res["steps"].get("purchase")))
+        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _cpw_gate:
             log_stage(slot, email, "changepw")
-        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _prior_done(acct, "changepw"):
+        if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _cpw_gate and _prior_done(acct, "changepw"):
             # ★止血#3:已改密(prior stages.changepw=ok)→ 跳过。旧邮箱密码已失效,再改必 fail。
             res["steps"]["changepw"] = True
             res["skipped_changepw"] = True
             log("[续跑] %s 已改密,跳过" % email)
-        elif opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok:
+        elif opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _cpw_gate:
             ok = firstmail.change_mailbox_password(email, mailbox_pw, opts["unified_pw"],
                                                    cfg["mail_key"], cfg["mail_base"])
             res["steps"]["changepw"] = bool(ok)
@@ -332,9 +345,31 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 _ck(checkpoint, email, "changepw", "ok")
 
         res["ok"] = res["steps"].get("auth") == "ok" and res["steps"].get("key", True) is not False
+        # ★错误不做糊涂账:把"在哪一步、因为啥"失败浓缩成 fail_stage/fail_reason 两字段(按流程顺序取第一个没过的环节),
+        #   UI/分析页直接显示,不用人肉拼 steps 字典。原始 steps/各 reason 字段照旧保留,这里只做归因汇总。
+        try:
+            _st = res.get("steps") or {}
+            _fs = _fr = None
+            if _st.get("auth") not in ("ok", None):
+                _fs, _fr = "register", str(_st.get("auth") or "register-failed")
+            elif _st.get("key") is False:
+                _fs, _fr = "key", str(res.get("key_reason") or "key-not-captured")
+            elif opts.get("do_card") and _bill_ok and _st.get("card") not in ("card-bound", None):
+                _fs, _fr = "card", str(_st.get("card"))            # declined / card-502 / hcaptcha / needphone …
+            elif opts.get("do_purchase") and _bill_ok and _st.get("purchase") not in ("success", None):
+                _fs, _fr = "charge", str(_st.get("purchase"))      # declined / server-error / unknown
+            elif opts.get("do_changepw") and _bill_ok and _cpw_gate and _st.get("changepw") is False:
+                _fs, _fr = "changepw", "changepw-failed"
+            if _fs:
+                res["fail_stage"] = _fs
+                res["fail_reason"] = _fr
+        except Exception:
+            pass
         return res
     except Exception as e:
         res["error"] = str(e)[:200]
+        res["fail_stage"] = "exception"            # 异常也归因,不做糊涂账:哪步抛的看 stage 进度,为啥看 fail_reason
+        res["fail_reason"] = str(e)[:160]
         log("账号 %s 异常: %s" % (email, str(e)[:140]))
         return res
     finally:

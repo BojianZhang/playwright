@@ -56,7 +56,11 @@ test('mapRow 失败行: reason=真因, blacklisted=拉黑判定, 密码回退原
   const acc = new Map([['b@x.com', 'origpw']]);
   const [kind, row] = er.mapRow({ email: 'b@x.com', steps: { auth: 'ok', key: false } }, acc);
   assert.strictEqual(kind, 'failed');
-  assert.strictEqual(row.password, 'origpw', '失败行密码回退到输入的原密码');
+  assert.strictEqual(row.password, 'origpw', '失败行无 res.password 时回退到输入的原密码');
+  // ★失败号也要带【现密码=op_pw/统一密码】(已注册的 key:false 号重跑要用它登录)——与成功分支一致,不能丢
+  const [, urow] = er.mapRow({ email: 'b@x.com', password: '@Unified2026', steps: { auth: 'ok', key: false } }, acc);
+  assert.strictEqual(urow.password, '@Unified2026', '失败行 password=op_pw(统一密码)');
+  assert.strictEqual(urow.originalPassword, 'origpw', '失败行 originalPassword 仍=原密码(两者都在,重跑参数齐)');
   assert.strictEqual(row.reason, 'card:false' === row.reason ? row.reason : er.pyFailReason({ steps: { auth: 'ok', key: false } }));
   // 拉黑号
   const [, brow] = er.mapRow({ email: 'b@x.com', not_allowed: true, steps: { auth: 'REGISTER_NOT_ALLOWED' } }, acc);
