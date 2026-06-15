@@ -711,5 +711,17 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
         time.sleep(3)
     page.goto(CREDITS_URL, wait=4)
     bal1 = _balance(page)
+    # ★H1 修复(防续跑二次扣款):末尾这次 reload 才是最新余额(信用页非实时更新,真实充值常恰在最后一刷才显现)。
+    #   循环内对 bn 涨了即判 success(700-701),但末尾 bal1 之前【从不据此升级 outcome】→ 已扣款的号返回 unknown
+    #   → 下游 pipeline.py / run.py 只认 purchase==success 或 charged>0,unknown 不记已扣 → 续跑/AUTO_RETRY 对同号【二次扣款,不可逆】。
+    #   对歧义终态(unknown/server-error)观察到余额上涨即判权威 success(余额增加=确已扣款 → 杜绝重扣,与卡侧 RETRY-CARD-01 歧义态保护对称)。
+    #   declined 是确定负信号(卡被拒,余额不应增加)不升级,以保留拒付号的正常重试/重绑路径。沿用循环内同一 _balance 信号,不引入新判据。
+    if outcome in ("unknown", "server-error"):
+        try:
+            if bal1 and bal1 != bal0 and float(bal1) > float(bal0 or 0):
+                outcome = "success"
+                log("[充值] 末尾对账:余额 $%s→$%s 上涨,歧义终态(%s)升级为 success(防续跑重扣)" % (bal0, bal1, "unknown/502"))
+        except Exception:
+            pass
     log("[充值] 结果=%s 余额 $%s → $%s (等待上限%ss)" % (outcome, bal0, bal1, os.environ.get("FIXC_PURCHASE_WAIT", "90")))
     return {"result": outcome, "balance_before": bal0, "balance_after": bal1}

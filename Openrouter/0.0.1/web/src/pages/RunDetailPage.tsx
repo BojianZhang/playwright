@@ -136,7 +136,7 @@ export default function RunDetailPage() {
             {!failed.length ? <div className="empty-note">无失败账号。</div> : (
               <div className="tbl-wrap" style={{ maxHeight: 460 }}>
                 <table className="tbl">
-                  <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th></tr></thead>
+                  <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th><th>现密码</th></tr></thead>
                   <tbody>
                     {failed.map((a, i) => (
                       <tr key={i} className="is-banned">
@@ -146,6 +146,7 @@ export default function RunDetailPage() {
                         <td className="mono" style={{ color: 'var(--text-3)' }}>{a.failClass || '—'}</td>
                         <td className="mono">{a.attempts ?? '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }} title={a.proxy}>{a.proxy ? String(a.proxy).split(':').slice(0, 2).join(':') : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--primary-text)', cursor: a.password ? 'pointer' : 'default' }} title={'现密码=当前 OpenRouter 登录密码(设了统一密码就是它)' + (a.password ? '·点击复制' : '') + (a.originalPassword && a.originalPassword !== a.password ? '\n原密码:' + a.originalPassword : '')} onClick={() => a.password && copy(a.password)}>{a.password ? trunc(a.password, 16) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>

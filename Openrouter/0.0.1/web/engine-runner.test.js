@@ -22,6 +22,36 @@ test('isNotAllowed: 三判据(not_allowed / auth以NOT_ALLOWED结尾 / banned)',
   assert.strictEqual(er.isNotAllowed(null), false);
 });
 
+test('dedupBySuccess: 成功恒胜失败(success-wins),同态取 at 最近,折叠计数正确', () => {
+  // ① 同号先 fail 后 success(AUTO_RETRY)→ 判成功,取成功行
+  let { rows, collapsed } = er.dedupBySuccess([
+    { email: 'a@x.com', ok: false, at: '1', steps: { card: 'declined' } },
+    { email: 'a@x.com', ok: true, at: '2', api_key: 'sk-or-1' },
+  ]);
+  assert.strictEqual(rows.length, 1); assert.strictEqual(collapsed, 1);
+  assert.strictEqual(er.isSuccessRow(rows[0]), true); assert.strictEqual(rows[0].api_key, 'sk-or-1');
+
+  // ② 同号先 success 后【迟到 fail】(绑卡成功后 changepw 报错)→ 绝不降级,仍判成功
+  ({ rows } = er.dedupBySuccess([
+    { email: 'b@x.com', at: '1', steps: { card: 'card-bound' } },
+    { email: 'b@x.com', ok: false, at: '2', steps: { changepw: 'err' } },
+  ]));
+  assert.strictEqual(rows.length, 1); assert.strictEqual(er.isSuccessRow(rows[0]), true, '成功后迟到失败不许把成功降级');
+
+  // ③ 全失败 → 取 at 最近(保留最新真因)
+  ({ rows } = er.dedupBySuccess([
+    { email: 'c@x.com', ok: false, at: '1', steps: { auth: 'fail:A' } },
+    { email: 'c@x.com', ok: false, at: '2', steps: { auth: 'fail:B' } },
+  ]));
+  assert.strictEqual(rows.length, 1); assert.strictEqual(rows[0].steps.auth, 'fail:B');
+
+  // ④ 不同号互不影响 + 跳过无 email 行
+  ({ rows, collapsed } = er.dedupBySuccess([
+    { email: 'd@x.com', ok: true, at: '1' }, { email: 'e@x.com', ok: false, at: '1' }, { ok: true, at: '1' }, null,
+  ]));
+  assert.strictEqual(rows.length, 2); assert.strictEqual(collapsed, 0);
+});
+
 test('handoffTarget: selenium取key败→hybrid;hybrid加卡hcaptcha→selenium;其余→null', () => {
   // 纯Sel 取key向导进了抓不到key(steps.key===false)→ 转 Playwright
   assert.strictEqual(er.handoffTarget({ steps: { auth: 'ok', key: false } }, 'selenium'), 'hybrid');
@@ -42,7 +72,7 @@ test('mapRow 成功行: charged 多键名兜底 + billingStatus + passwordChange
   const acc = new Map([['a@x.com', 'origpw']]);
   const [kind, row] = er.mapRow({ email: 'a@x.com', ok: true, api_key: 'sk-or-1', steps: { card: 'card-bound', changepw: true }, card_last4: '4242', charged: 5, proxy: '1.2.3.4:9' }, acc);
   assert.strictEqual(kind, 'success');
-  assert.strictEqual(row.billingStatus, 'card-bound');
+  assert.strictEqual(row.billingStatus, 'success', 'C1: charged>0 → 账单达 success 等级(防续跑重扣)');
   assert.strictEqual(row.charged, 5);
   assert.strictEqual(row.passwordChanged, true);
   assert.strictEqual(row.cardLast4, '4242');
@@ -50,6 +80,18 @@ test('mapRow 成功行: charged 多键名兜底 + billingStatus + passwordChange
   // charged 兜底:无 charged 用 charge,再无→0
   assert.strictEqual(er.mapRow({ email: 'a@x.com', ok: true, charge: 3, steps: { card: 'card-bound' } }, acc)[1].charged, 3);
   assert.strictEqual(er.mapRow({ email: 'a@x.com', ok: true, steps: { card: 'card-bound' } }, acc)[1].charged, 0);
+});
+
+test('C1 bestBillingStatus: 取候选最高账单等级,address-bound 不短路盖掉真实 card-bound/success', () => {
+  const acc = new Map([['a@x.com', 'origpw']]);
+  const bs = (r) => er.mapRow(r, acc)[1].billingStatus;
+  // ★混合:billing_status 在 Playwright 前置写成 address-bound,绑卡成功只升 steps.card → 不得被 address-bound 短路盖掉
+  assert.strictEqual(bs({ email: 'a@x.com', ok: true, billing_status: 'address-bound', steps: { card: 'card-bound' } }), 'card-bound', 'address-bound 不得盖掉真实 card-bound');
+  // ★混合已充值:charged>0 → success 等级(否则续跑 billingSatisfied charge 误判未达标 → 真重扣)
+  assert.strictEqual(bs({ email: 'a@x.com', ok: true, billing_status: 'address-bound', steps: { card: 'card-bound' }, charged: 5 }), 'success', '已充值混合号 → success');
+  assert.strictEqual(bs({ email: 'a@x.com', ok: true, billing_status: 'address-bound', purchase: 'success', steps: { card: 'card-bound' } }), 'success', 'purchase==success → success');
+  // 仅绑卡未充值 → card-bound;纯 Sel 无 billing_status → 取 steps.card
+  assert.strictEqual(bs({ email: 'a@x.com', ok: true, steps: { card: 'card-bound' } }), 'card-bound', '仅绑卡未充值 → card-bound');
 });
 
 test('mapRow 失败行: reason=真因, blacklisted=拉黑判定, 密码回退原密码', () => {

@@ -41,6 +41,11 @@ class TurnstileApiPatcher:
         self.thread = None
         self._id = 0
         self._idlock = threading.Lock()
+        # ★H5 修复:后台 _loop 线程(响应事件时经 _send 发 setAutoAttach/Fetch.*/init-script)与调用线程
+        #   (eval_all/eval_collect 注入 token、读 sitekey/rqdata)对【同一个 websocket】并发 ws.send →
+        #   websocket-client 不允许两线程并发写,半帧交错会损坏对方帧 → 服务端关 socket(注入静默失效)或 JSON 解析报错。
+        #   单把 send 锁串行化【所有 ws.send】(recv 不加锁,只串行写)。
+        self._sendlock = threading.Lock()
         self._running = False
         self.sessions = set()
         self.patched = 0          # 成功改写过几次 api.js
@@ -63,7 +68,8 @@ class TurnstileApiPatcher:
         if session_id:
             msg["sessionId"] = session_id
         try:
-            self.ws.send(json.dumps(msg))
+            with self._sendlock:                        # ★H5:串行化写,防与 _loop / eval_* 并发 send 撕帧
+                self.ws.send(json.dumps(msg))
         except Exception as e:
             if not getattr(self, "_send_err", False):   # 只记首次,免刷屏
                 self.log("[apipatch] ws.send 失败,api.js 拦截可能已失效: %s" % str(e)[:60])
@@ -147,7 +153,8 @@ class TurnstileApiPatcher:
             msg = {"id": cid, "method": "Runtime.evaluate", "sessionId": sid,
                    "params": {"expression": expression, "returnByValue": True, "awaitPromise": False}}
             try:
-                self.ws.send(json.dumps(msg))
+                with self._sendlock:                    # ★H5:与 _send 共用同一把发送锁,串行化所有 ws.send
+                    self.ws.send(json.dumps(msg))
                 cids.append((cid, evt))
             except Exception:
                 with self._eval_lock:
@@ -221,15 +228,18 @@ class TurnstileApiPatcher:
             if mid is not None and mid in self._pending:
                 self._on_body(mid, msg)
                 continue
-            if mid is not None and mid in self._eval_evt:   # Runtime.evaluate 回包
-                try:
-                    val = (((msg.get("result") or {}).get("result")) or {}).get("value")
-                    with self._eval_lock:
-                        self._eval_res[mid] = val
-                    self._eval_evt[mid].set()
-                except Exception:
-                    pass
-                continue
+            if mid is not None:   # Runtime.evaluate 回包(★M18:check+存结果原子在 _eval_lock 内,杜绝与 _drain_inflight 清字典竞态丢结果)
+                evt = None
+                with self._eval_lock:
+                    evt = self._eval_evt.get(mid)
+                    if evt is not None:
+                        try:
+                            self._eval_res[mid] = (((msg.get("result") or {}).get("result")) or {}).get("value")
+                        except Exception:
+                            self._eval_res[mid] = None
+                if evt is not None:
+                    evt.set()   # set() 自身线程安全,放锁外免长持锁
+                    continue
             method = msg.get("method")
             if method == "Target.attachedToTarget":
                 p = msg.get("params", {})
@@ -242,6 +252,13 @@ class TurnstileApiPatcher:
                     # 继续向下 auto-attach（OOPIF/嵌套帧）
                     self._send("Target.setAutoAttach",
                                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}, sid)
+            elif method == "Target.detachedFromTarget":
+                # ★M19 修复:target 销毁(iframe 卸载/页面切换)→ 从 sessions 丢弃其 sid,否则死 session 单调累积 →
+                #   eval_collect 对每个死 session 各等满超时(注入延迟随死 session 线性增长),且死帧结果稀释有效结果。
+                #   add 与 discard 都在本(_loop)线程,无跨线程互斥问题;调用线程只 list(self.sessions) 快照读。
+                sid = msg.get("params", {}).get("sessionId")
+                if sid:
+                    self.sessions.discard(sid)
             elif method == "Fetch.requestPaused":
                 self._on_paused(msg.get("params", {}), msg.get("sessionId"))
 

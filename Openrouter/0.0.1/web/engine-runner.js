@@ -118,6 +118,28 @@ function handoffTarget(row, sourceEngine) {
   }
   return null;
 }
+// ★账单状态取【候选里最高账单等级】(C1 修):混合引擎里 billing_status 在 Playwright 前置阶段
+//   早早被写成 'address-bound',之后 Selenium 绑卡/充值成功【只升级 steps.card / charged,从不回写
+//   billing_status】→ 旧式 `r.billing_status || steps.card` 会被真值 'address-bound' 短路,把真正的
+//   card-bound/success 丢掉 → 台账记成 level-1 → Playwright/混合续跑 billingSatisfied 误判未达标 →
+//   对【已绑卡/已充值】号重新加卡/充值(真金白银,不可回滚)。故按 attainedLevel 取最高等级,
+//   候选 = billing_status / steps.card / (purchase==success || charged>0 → 'success')。
+function bestBillingStatus(r) {
+  if (!r) return '';
+  const charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
+  const cands = [
+    r.billing_status,
+    r.steps && r.steps.card,
+    (r.purchase === 'success' || (charged != null && charged > 0)) ? 'success' : '',
+  ];
+  let best = '';
+  for (const c of cands) {
+    if (c && accountStore.attainedLevel(c) > accountStore.attainedLevel(best)) best = c;
+  }
+  // best 为空(全是 level-0 的非空标记,如 'declined')→ 回退旧式首个真值,保持显示不变(桥接侧仍有单调护栏兜底)。
+  return best || r.billing_status || (r.steps && r.steps.card) || '';
+}
+
 // Python 结果行 → 前端账号表形状(success / failed)。accByEmail:把输入账号的原密码 join 回来(结果文件不含密码)。
 function mapRow(r, accByEmail) {
   const exitIp = String(r.proxy || '').split(':')[0] || '';
@@ -125,7 +147,7 @@ function mapRow(r, accByEmail) {
   if (isSuccessRow(r)) {
     // ★充值额键名:hybrid 写 res["charged"]、纯Sel 也补写 charged;旧 r.charge 兜底。balance_after=充值后真实积分余额。
     const _charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : 0);
-    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: r.billing_status || (r.steps && r.steps.card) || '', charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
+    return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', createdAt: r.at || '' }];
   }
   // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
   return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', createdAt: r.at || '' }];
@@ -151,10 +173,15 @@ async function bridgeToAccountStore(rows) {
       if (r.api_key) { patch.apiKey = r.api_key; patch.registered = true; }
       if (r.api_key_name) patch.apiKeyName = r.api_key_name;
       if (r.registered || success) patch.registered = true;
+      // ★GAP-1:Python 引擎也把【当前登录密码=op_pw(统一密码优先,Python res 已写)】落台账,与 Playwright snap.loginPassword 口径一致。
+      //   否则某号被 Python 跑过后台账 loginPassword 始终为空 → 后续 Playwright 续跑/账号页展示回退成原密码(本次"失败号显原密码"的跨引擎同根病灶)。
+      if (r.password) patch.loginPassword = r.password;
       // ★billingStatus 单调护栏(防二次扣款):只在新状态【账单等级 ≥ 旧状态】时才覆盖。否则失败行(declined/hcaptcha
       //   写进 steps.card)会把已达标的 card-bound/success 降级 → Playwright 续跑读 billingSatisfied 误判未达标
       //   → 对【已绑卡/已充值】号重新加卡/充值(真金白银,不可回滚)。
-      const billing = r.billing_status || (r.steps && r.steps.card) || '';
+      // ★C1:用 bestBillingStatus 取候选最高等级(billing_status/steps.card/charged>0→success),修「混合 billing_status
+      //   早写 address-bound 短路盖掉真实 card-bound/success → 台账记 level-1 → 续跑重加卡/重扣」。
+      const billing = bestBillingStatus(r);
       if (billing && accountStore.attainedLevel(billing) >= accountStore.attainedLevel(prior.billingStatus)) patch.billingStatus = billing;
       // 充值额:只写【正数】真实充值。失败/跳过会写 charged=0(hybrid_run),若覆盖已有正充值额同样造成降级误判 → 只升不降。
       const charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : null);
@@ -252,7 +279,11 @@ function seleniumArgs(accFile, pxFile, p, jobId) {
   a.push(p.doApiKey === false ? '--no-key' : '--do-key');
   if (p.doCard) a.push('--do-card');
   if (p.doPurchase) { a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5))); }
-  if (p.doChangePw && p.unifiedPassword) a.push('--do-changepw', '--unified-pw', p.unifiedPassword);
+  // 统一密码=OpenRouter 登录密码:设了就下发(与混合 hybridArgs 的 --op-pw 同口径,不再被「改密」开关门控)。
+  //   原来仅 (doChangePw && unifiedPassword) 才下发 → 用户设了统一密码但没开改密时,纯Sel 拿不到 unified_pw
+  //   → run.py 里 op_pw 回退邮箱原密码 → 注册与回显(成功+失败号)都成原密码。--do-changepw 单独开关,目标已由 --unified-pw 带入。
+  if (p.unifiedPassword) a.push('--unified-pw', p.unifiedPassword);
+  if (p.doChangePw && p.unifiedPassword) a.push('--do-changepw');
   if (Number(p.proxyOffset)) a.push('--proxy-offset', String(Number(p.proxyOffset)));
   if (Number(p.gap)) a.push('--gap', String(Number(p.gap)));
   if (p.noDeleteEnv) a.push('--no-delete-env');
@@ -386,7 +417,11 @@ function runSpec(jobId, spec, publish, shared) {
         shared.seenResults.add(r.name);
         if (r.ok) shared.counters.ok += 1; else shared.counters.fail += 1;
         const _orig = (shared.accByEmail && shared.accByEmail.get(r.name)) || '';
-        publish(jobId, r.ok ? 'account-success' : 'account-failed', { email: r.name, rendered: tagged, reason: r.ok ? '' : reasonFromLine(tagged), password: _orig, originalPassword: _orig });
+        // 现密码=统一密码(设了就用)否则原密码 → 与收口 mapRow(password=r.password||orig,r.password=op_pw)对齐。
+        //   无统一密码时 shared.unifiedPw='' → 回退 _orig,默认逐字节不变。仅驱动 LIVE UI「重跑(登录)」回填,
+        //   不参与续跑权威参数(走 successRows/failedRows 的 mapRow)/billing/charged → 无降级/重复扣款风险。
+        const _pw = shared.unifiedPw || _orig;
+        publish(jobId, r.ok ? 'account-success' : 'account-failed', { email: r.name, rendered: tagged, reason: r.ok ? '' : reasonFromLine(tagged), password: _pw, originalPassword: _orig });
         publish(jobId, 'runtime-stats', { jobDone: shared.counters.ok + shared.counters.fail, jobTotal: shared.total, browsersActive: 0, browsersMax: 0 });
       }
     };
@@ -413,7 +448,7 @@ async function spawnEngine(jobId, engine, payload, publish) {
   const startedAt = Date.now();
   const env = buildEnv(payload);
   // 邮箱→原密码映射(结果行不含密码):流式 account-failed 带上它,前端「重跑(登录)」才能回填 email:密码,否则只剩 email: 空密码登不进。
-  const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), seenResults: new Set() };
+  const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), unifiedPw: String(payload.unifiedPassword || '').trim(), seenResults: new Set() };
 
   // 并发钳制可见提示:maxConcurrency 把请求并发压低时,在【运行日志】显式告知(此前只 console.error 进服务端 stderr,
   //   控制台看不到→用户以为按填的并发在跑)。spawnEngine 内只算/发一次,避免 selenium/hybridArgs 重复打日志。
@@ -485,12 +520,12 @@ async function spawnEngine(jobId, engine, payload, publish) {
     const toSelenium = new Set();  // 混合 加卡人机验证过不去 → 转 selenium
     for (const r of selRows) if (r && r.email && handoffTarget(r, 'selenium') === 'hybrid') toHybrid.add(r.email);
     for (const r of hybRows) if (r && r.email && handoffTarget(r, 'hybrid') === 'selenium') toSelenium.add(r.email);
-    const byEmail = new Map();      // 合并底图:第一轮每号一行
-    for (const r of selRows) if (r && r.email) byEmail.set(r.email, r);
-    for (const r of hybRows) if (r && r.email) byEmail.set(r.email, r);
+    // ★M3:收【原始行】不在此 last-wins 预折叠(预折叠会把"成功后又有迟到失败行"降级成失败,且后续无从恢复);
+    //   最终统一用 dedupBySuccess(成功恒胜失败 + 同态取 at 最近)去重 → 第二轮成功仍覆盖第一轮失败,语义不变且更安全。
+    rows = [...selRows, ...hybRows];
 
     if (toHybrid.size === 0 && toSelenium.size === 0) {
-      rows = [...byEmail.values()];   // 无可衔接 → 跳过第二轮(零额外开销)
+      // 无可衔接 → 跳过第二轮(零额外开销);rows 已含第一轮全部行
     } else {
       publish(jobId, 'log', `衔接重试:${toHybrid.size} 个新页面失败转混合 / ${toSelenium.size} 个人机验证失败转Selenium`);
       // 实时计数清账(仅影响 LIVE UI):被转号第一轮已 account-failed 且 local-part 进了 seenResults,
@@ -511,23 +546,16 @@ async function spawnEngine(jobId, engine, payload, publish) {
       // 先记第二轮 startLines,再跑,只 harvest 第二轮新增行 → 与第一轮隔离
       const p2start = { selenium: countLines(RESULTS.selenium), hybrid: countLines(RESULTS.hybrid) };
       if (p2specs.length) await Promise.all(p2specs.map((s) => runSpec(jobId, s, publish, shared)));
-      for (const r of harvest(RESULTS.selenium, p2start.selenium)) if (r && r.email) byEmail.set(r.email, r);  // 第二轮覆盖第一轮
-      for (const r of harvest(RESULTS.hybrid, p2start.hybrid)) if (r && r.email) byEmail.set(r.email, r);
-      rows = [...byEmail.values()];
+      rows.push(...harvest(RESULTS.selenium, p2start.selenium), ...harvest(RESULTS.hybrid, p2start.hybrid));  // 第二轮新增行(成功覆盖第一轮由 dedupBySuccess 保证)
     }
   } else if (engine === 'split') {
-    // ★F1:按 email last-wins 去重(对齐 crossHandoff 路径)。AUTO_RETRY 让 run.py 对失败号追加【第二行结果】(同 email/job_id),
+    // ★F1/M3:收原始行,最终 dedupBySuccess 去重。AUTO_RETRY 让 run.py 对失败号追加【第二行结果】(同 email/job_id),
     //   不去重则同号既进 successRows 又进 failedRows → 双计 + 同号写进 success.jsonl 和 failed.jsonl + usage 记两条 + completeness>100%。
-    const _byEmail = new Map();
-    for (const r of harvest(RESULTS.selenium, startLines.selenium)) if (r && r.email) _byEmail.set(r.email, r);
-    for (const r of harvest(RESULTS.hybrid, startLines.hybrid)) if (r && r.email) _byEmail.set(r.email, r);
-    rows = [...rows, ..._byEmail.values()];
+    rows = [...harvest(RESULTS.selenium, startLines.selenium), ...harvest(RESULTS.hybrid, startLines.hybrid)];
   } else {
     const key = engine === 'hybrid' ? 'hybrid' : 'selenium';
-    // ★F1:同上,AUTO_RETRY 重试成功行覆盖首轮失败行,每号唯一(不双计/不双写导出/不双记 usage)。
-    const _byEmail = new Map();
-    for (const r of harvest(RESULTS[key], startLines[key])) if (r && r.email) _byEmail.set(r.email, r);
-    rows = [...rows, ..._byEmail.values()];
+    // ★F1/M3:同上,收原始行交给 dedupBySuccess(成功恒胜)——AUTO_RETRY 重试成功行覆盖首轮失败行,每号唯一(不双计/不双写导出/不双记 usage)。
+    rows = [...harvest(RESULTS[key], startLines[key])];
   }
   // 续跑被跳过的号(已完成/被拒/冷却/坏邮箱)本 job 没有结果行 → 控制台「本次任务」详情/计数看不到「跑过的号」。
   //   用它们【历史最近一行】回填进本 job 视图,让这些号可见。★只读回填、按 email 取历史 latest、ok/steps 原样(banned→failed、
@@ -560,6 +588,13 @@ async function spawnEngine(jobId, engine, payload, publish) {
       if (_back) publish(jobId, 'log', `续跑:${_back} 个已完成/跳过的号用历史结果回填进本次视图(不重跑、不改判定、不污染结果源)`);
     }
   } catch (_e) { /* 回填失败不致命,仅本 job 视图少几个跳过号 */ }
+  // ★M3:全 email 唯一化 + 成功恒胜失败(success-wins),一处兜底替代各分支 last-wins —— 杜绝同号既进 success 又进 failed
+  //   (双计 / 同号双写 success.jsonl+failed.jsonl / usage 双记 / completeness>100% / 成功号被迟到失败行降级)。回填行已是 success-wins,此处幂等。
+  {
+    const _dd = dedupBySuccess(rows);
+    if (_dd.collapsed) publish(jobId, 'log', `去重:折叠 ${_dd.collapsed} 条同号重复结果行(成功恒胜失败)`);
+    rows = _dd.rows;
+  }
   // 把输入账号的原密码 join 回结果(结果文件不含密码)→ 导出/重跑能拿到 email:原密码
   const accByEmail = new Map((payload.accounts || []).map((a) => [a.email, a.password || '']));
   const successRows = [];
@@ -654,4 +689,4 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
   });
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };

@@ -810,11 +810,26 @@ async function handleDispatch(req, res) {
       try {
         const proxLines = String(proxyStore.activeLines() || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
         proxSlices = proxLines.length ? _chunk(proxLines, targets.length) : [];
-        // ★原子预留:单锁内挑出全部可用卡并就地冻结为 dispatched(挑+冻同一把锁)→ 下发窗口内本机 acquire/
-        //   另一次派发都选不到这些卡,根除"快照→下发→冻结"间隙的同卡多机重复扣款(HIGH#1)。
-        const reserved = await cardPool.reserveForDispatch();          // [{id,line}] 已就地冻结
-        reservedCardIds = reserved.map((x) => x.id);
-        cardSlices = reserved.length ? _chunk(reserved, targets.length) : [];
+        // ★H2 修复(防派发清空整个卡池):只为【真正会收卡的远端目标(非 self)】按其账号数有界预留,
+        //   而非旧的 reserveForDispatch() 无参(→ lim=Infinity 冻结全部可用卡 + markDispatched 计满 → 主机池被一次清空)。
+        //   预留 budget = 远端账号数 × CARD_DISPATCH_FACTOR(默认1)。卡 maxUses 默认10 → 1卡/号已含~10×拒付余量;
+        //   要更多余量可调大 CARD_DISPATCH_FACTOR。只分给远端目标,self 用本机池不收卡。
+        //   仍是单锁内原子挑+冻(reserveForDispatch),保留"快照→下发→冻结"间隙的同卡多机防重叠保护。
+        const remoteIdx = [];
+        for (let i = 0; i < targets.length; i++) {
+          const _self = targets[i].self || targets[i].url === 'self';
+          if (!_self && groups[i] && groups[i].length) remoteIdx.push(i);
+        }
+        const remoteAccounts = remoteIdx.reduce((s, i) => s + groups[i].length, 0);
+        if (remoteAccounts > 0) {
+          const _factor = Number(process.env.CARD_DISPATCH_FACTOR) || 1;
+          const budget = Math.max(1, Math.ceil(remoteAccounts * _factor));
+          const reserved = await cardPool.reserveForDispatch(budget);  // [{id,line}] 已就地冻结(有界)
+          reservedCardIds = reserved.map((x) => x.id);
+          const _chunks = reserved.length ? _chunk(reserved, remoteIdx.length) : [];
+          remoteIdx.forEach((ti, k) => { cardSlices[ti] = _chunks[k] || []; });   // 稀疏数组,按 target 下标对齐(self 下标留空 → 不发卡)
+        }
+        // remoteAccounts===0(全部目标为 self/loopback)→ 完全跳过卡预留:self 直接用本机池,绝不冻卡。
         shipAddrRaw = String(addressStore.activeLines() || '');
         const cap = serviceKeys.pickCaptcha() || {};
         const mb = serviceKeys.pickMailbox() || {};

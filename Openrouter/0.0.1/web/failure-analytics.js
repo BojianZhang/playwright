@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { RESULTS, readTail, isSuccessRow } = require('./engine-runner');
+const { RESULTS, readTail, isSuccessRow, dedupBySuccess } = require('./engine-runner');
 let runsStore = null; try { runsStore = require('./runs-store'); } catch (_e) { /* 趋势缺省为空 */ }
 
 const DATA = path.join(__dirname, '..', 'data');
@@ -107,7 +107,11 @@ function filesFor(engine) {
 }
 
 function _engineReport(label, file, cutoff) {
-  const all = _readRowsCached(file).filter((r) => !cutoff || _ts(r.at) >= cutoff || _ts(r.at) === 0);
+  const all0 = _readRowsCached(file).filter((r) => !cutoff || _ts(r.at) >= cutoff || _ts(r.at) === 0);
+  // ★M4:账号级指标(漏斗/成功率/分类)按 email 去重(成功恒胜)—— 否则 AUTO_RETRY 对失败号追加的第二行(同 email,先 fail 后 success)
+  //   会让同号【既算成功又算失败】(total 虚高、okRate 失真、已挽回的号还出现在失败分类里)。
+  //   注:卡/IP 战绩(byProxy/byCard)仍用【原始尝试行 all0】统计 —— 一张卡的"拒付"是真实事件,即便该号后来换卡绑成也不该被去重抹掉。
+  const all = dedupBySuccess(all0).rows;
   const total = all.length;
   const ok = all.filter(isSuccessRow).length;
   const reachedKey = all.filter((r) => r.api_key && String(r.api_key).length > 10).length;
@@ -124,7 +128,8 @@ function _engineReport(label, file, cutoff) {
       diedAtCard: reachedCard - bound,
     },
     cardStates,
-    _rows: all, // 内部用,顶层会删
+    _rows: all,                                                  // 账号级去重行(combined/fails/分类用),顶层会删
+    _rawCarded: all0.filter((r) => r.steps && r.steps.card),     // 原始加卡尝试行(卡/IP 战绩用,保留每次尝试),顶层会删
   };
 }
 
@@ -136,7 +141,8 @@ function analyze(opts) {
   const cutoff = sinceDays ? Date.now() - sinceDays * 86400000 : 0;
 
   const engines = filesFor(engine).map(([lab, f]) => _engineReport(lab, f, cutoff));
-  const rows = engines.flatMap((e) => e._rows);
+  // ★M4:跨引擎再去重一次(同号在 split/衔接里可能 selenium+hybrid 两文件各一行)→ combined/fails 不跨引擎双计。
+  const rows = dedupBySuccess(engines.flatMap((e) => e._rows)).rows;
   const fails = rows.filter((r) => !isSuccessRow(r));
 
   // 失败归因 + 分类

@@ -350,7 +350,9 @@ async function processTask(ctx) {
     // 已拉黑(永久失败)的账号 → 直接判失败，不开浏览器。
     if (ps && ps.blacklisted) {
       const reason = ps.blacklistReason || 'BLACKLISTED';
-      const failRaw = { email: account.email || '', password: account.password || '', originalPassword: account.password || '', reason, stage: 'blacklist', failClass: 'business', attempts: 0, detail: '账号已拉黑(永久失败)，如需重试请在「账号状态」重置', proxy: '', createdAt: new Date().toISOString() };
+      // 现密码=统一密码(设了就用)→ 否则台账已注册 loginPassword → 否则原密码;originalPassword 保持原密码。默认未设统一密码且 ps 无 loginPassword → 回退原密码,逐字节不变。
+      const _blPw = String(taskParams.unifiedPassword || '').trim() || ps.loginPassword || account.password || '';
+      const failRaw = { email: account.email || '', password: _blPw, originalPassword: account.password || '', reason, stage: 'blacklist', failClass: 'business', attempts: 0, detail: '账号已拉黑(永久失败)，如需重试请在「账号状态」重置', proxy: '', createdAt: new Date().toISOString() };
       const rendered = exportTemplates.render(failureTemplate || '{{email}}:{{password}}:{{reason}}', failRaw);
       recordFailed(rendered, failRaw);
       recordFailure(failureStats, reason, 'business');
@@ -469,9 +471,15 @@ async function processTask(ctx) {
   const rawMsg = (last.reason && last.reason !== code) ? last.reason : last.detail;
   const failClass = classify(code);
   recordFailure(failureStats, code, failClass);
+  // 失败号「现密码」与成功号(buildPayloadFromState/register 交付)口径对齐:当前真实 OpenRouter 登录密码
+  //   = 统一密码(设了就用)→ 否则状态库已注册的 loginPassword → 否则原始输入密码。originalPassword 始终=原密码不动。
+  //   默认(未设统一密码且未注册成功)→ 回退 account.password,逐字节不变。priorState 是 runAttempt 局部、此处不可见 → accountStore.get 重读(line 341 已有先例)。
+  const _unified = String(taskParams.unifiedPassword || '').trim();
+  const _ps = accountStore.get(account.email);
+  const _curPw = _unified || (_ps && _ps.loginPassword) || account.password || '';
   const failRaw = {
     email: account.email || '',
-    password: account.password || '',
+    password: _curPw,
     originalPassword: account.password || '',
     reason: code,
     stage: last.stage || '',

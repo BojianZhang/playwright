@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 const { ENGINES, DEFAULTS, KEYS } = require('./engine-schema');
 
 const FILE = path.join(__dirname, '..', 'data', 'engine-configs.json');
@@ -23,12 +24,8 @@ function _genId() { return 'e' + Date.now().toString(36) + (_seq++).toString(36)
 
 function _load() {
   if (_db) return _db;
-  try {
-    const o = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    _db = (o && typeof o === 'object' && o.engines) ? o : { version: 1, engines: {} };
-  } catch (_e) {
-    _db = { version: 1, engines: {} };
-  }
+  const o = readJsonOr(FILE, null, 'engine-config-store');   // ★H4:解析失败先备份 .corrupt 再退默认,绝不被下次写入抹掉
+  _db = (o && typeof o === 'object' && o.engines) ? o : { version: 1, engines: {} };
   _seed();
   return _db;
 }

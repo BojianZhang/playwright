@@ -13,7 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import common
 from services import adspower_env
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# ★H3 修复:原 `os.path.dirname(os.path.abspath(__file__))` 在文件移入 tools/ 后只回到 tools/,
+#   致 RES 指向不存在的 tools/state/hybrid_results.jsonl → _latest() 恒空 → 保留护栏失效 → GC 误删带 key 的续跑环境。
+#   直接用 common.HERE(=selenium-e2e,与生产者 hybrid_run.py:944 同源)杜绝路径漂移;兄弟工具(status/flag_accounts/watch_results)亦锚此。
+HERE = common.HERE
 RES = os.path.join(HERE, "state", "hybrid_results.jsonl")
 
 
@@ -87,6 +90,12 @@ def gc_envs(min_age_min=30, dry_run=True, log=print):
     kept_now = sum(1 for u in envs if u.get("user_id") in keep)
     log("[GC] hyb-* 环境 %d 个 | 续跑保留 %d | 正开着 %d | 待删孤儿 %d (建龄>%d分钟)" % (
         len(envs), kept_now, len(open_ids), len(todel), min_age_min))
+    # ★H3 护栏:结果文件读出来为空(latest 空)却存在待删环境 —— 正是路径回归/结果丢失的强信号:
+    #   此时 keep 必为空,真删会把【已抓 key 未绑卡】的续跑环境一并销毁。降级为只报告,绝不真删。
+    if (not dry_run) and (not latest) and todel:
+        log("[GC] ⚠ 结果文件%s(%s)却有 %d 个待删环境 → 拒绝真删(疑似路径错/结果丢失,防误删带 key 环境)" % (
+            ("不存在" if not os.path.exists(RES) else "无任何记录"), RES, len(todel)))
+        dry_run = True
     for u in todel:
         log("  %s %s (serial=%s)" % ("[dry-run 不删]" if dry_run else "删→", u.get("name"), u.get("serial_number")))
         if not dry_run:

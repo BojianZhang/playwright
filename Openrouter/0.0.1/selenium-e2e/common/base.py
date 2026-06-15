@@ -183,9 +183,15 @@ class _FileLock:
                     return self
                 _t.sleep(0.03)
             except Exception as _e:
-                try: log("[lock] ⚠ 取锁异常,退化为无锁继续(并发读改写可能丢增量): %s" % _e)  # 原来此路径静默退化,不可观测
+                # ★M6:非 EEXIST/Permission 的 os.open 失败(EMFILE 句柄耗尽/ENOSPC 磁盘满等)多为【瞬时】——
+                #   原来立即退化无锁 → 并发读改写丢增量(碰 card-pool/账本=丢用次/扣款计数)。改:deadline 内重试,
+                #   只有超时仍失败才退化无锁并大声告警(保留"不阻塞主流程"的兜底,但尽量先等出一个真锁)。
+                if _t.time() <= end:
+                    _t.sleep(0.05)
+                    continue
+                try: log("[lock] ⚠ 取锁持续异常至超时,退化为无锁继续(并发读改写可能丢增量): %s" % _e)  # 原来此路径静默退化,不可观测
                 except Exception: pass
-                return self                         # 取锁异常不阻塞主流程(退化为无锁)
+                return self                         # 超时仍失败才退化无锁(不阻塞主流程)
 
     def __exit__(self, *a):
         try:

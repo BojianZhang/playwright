@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 const schema = require('./selectors-schema');
 
 const FILE = path.join(__dirname, '..', 'data', 'ui-selectors.json');
@@ -17,8 +18,7 @@ let _db = null;
 
 function _load() {
   if (_db) return _db;
-  try { const o = JSON.parse(fs.readFileSync(FILE, 'utf8')); _db = (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
-  catch (_e) { _db = {}; }
+  const o = readJsonOr(FILE, {}, 'selectors-store'); _db = (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};   // ★H4:解析失败先备份 .corrupt
   return _db;
 }
 function _persist() {

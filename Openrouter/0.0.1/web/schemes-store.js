@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 
 const FILE = path.join(__dirname, '..', 'data', 'schemes.json');
 const NAME_MAX = 40;
@@ -51,10 +52,8 @@ const BUILTINS = [
 
 function _load() {
   if (_db) return _db;
-  try {
-    const o = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    _db = (o && o.schemes && Array.isArray(o.schemes.presets)) ? o : null;
-  } catch (_e) { _db = null; }
+  const o = readJsonOr(FILE, null, 'schemes-store');   // ★H4:解析失败先备份 .corrupt 再退 null,绝不被下次写入抹掉
+  _db = (o && o.schemes && Array.isArray(o.schemes.presets)) ? o : null;
   if (!_db) _db = { version: 1, schemes: { activeId: BUILTINS[0].id, presets: [] } };
   _seed();
   return _db;

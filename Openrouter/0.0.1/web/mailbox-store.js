@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 
 const FILE = path.join(__dirname, '..', 'data', 'mailbox-keys.json');
 let _list = null;
@@ -18,7 +19,7 @@ function _genId() { return 'mb' + Date.now().toString(36) + (_seq++).toString(36
 
 function _load() {
   if (_list) return _list;
-  try { const a = JSON.parse(fs.readFileSync(FILE, 'utf8')); _list = Array.isArray(a) ? a : []; } catch (_e) { _list = []; }
+  const a = readJsonOr(FILE, [], 'mailbox-store'); _list = Array.isArray(a) ? a : [];
   return _list;
 }
 function _persist() {

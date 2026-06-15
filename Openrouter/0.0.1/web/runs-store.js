@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 
 const RUNS_FILE = path.join(__dirname, '..', 'data', 'runs.json');
 const CAP = Number(process.env.OPENROUTER_RUNS_CAP) || 500; // 最多保留多少条(超出丢最旧)
@@ -20,12 +21,8 @@ let _runs = null; // 内存缓存(首次访问时从盘加载)
 
 function _load() {
   if (_runs) return _runs;
-  try {
-    const arr = JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8'));
-    _runs = Array.isArray(arr) ? arr : [];
-  } catch (_e) {
-    _runs = [];
-  }
+  const arr = readJsonOr(RUNS_FILE, [], 'runs-store');   // ★H4:解析失败先备份 .corrupt 再退空,绝不被下次写入抹掉
+  _runs = Array.isArray(arr) ? arr : [];
   return _runs;
 }
 

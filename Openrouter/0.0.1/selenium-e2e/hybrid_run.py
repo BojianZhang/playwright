@@ -507,13 +507,23 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 try:
                     pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
                     res["purchase"] = pr.get("result"); res["charged"] = amount if pr.get("result") == "success" else 0
+                    res["balance_after"] = pr.get("balance_after")   # ★M2:充值后真实余额回传(否则混合成功号 UI/台账恒显 null 余额,无法对账)
                     if pr.get("result") == "success":
                         save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
                 except Exception as _pe:
                     res["purchase"] = "error"; log("[混合] %s 补充值异常: %s" % (email, str(_pe)[:80]))
             elif do_purchase:
                 res["purchase"] = "success"; res["charged"] = 0; res["skipped_charge"] = True
-            if do_changepw and op_pw and not ((((prior or {}).get("stages") or {}).get("changepw") or {}).get("status") == "ok"):
+            _cpw_prior = ((((prior or {}).get("stages") or {}).get("changepw") or {}).get("status") == "ok")
+            # ★M1:CHANGEPW_REQUIRE_PURCHASE=on → 只在充值【确认成功】(或续跑已充 skipped_charge)才改邮箱密码;否则跳过保号
+            #   (拒付/未充的号留邮箱原密码,续跑仍能取 OTP)。镜像 pipeline.py:326;默认关 → 逐字节不变。
+            _cpw_req = (os.environ.get("CHANGEPW_REQUIRE_PURCHASE", "") or "").strip().lower() in ("1", "true", "on", "yes")
+            _cpw_block = do_purchase and _cpw_req and not ((res.get("purchase") == "success") or res.get("skipped_charge"))
+            if do_changepw and op_pw and not _cpw_prior and _cpw_block:
+                res["skipped_changepw"] = True
+                res["skipped_changepw_reason"] = "purchase-" + str(res.get("purchase") or "none")
+                log("[混合] %s 充值未确认成功(%s)+CHANGEPW_REQUIRE_PURCHASE=on → 跳过改密保号(可续跑取OTP)" % (email, res.get("purchase")))
+            elif do_changepw and op_pw and not _cpw_prior:
                 log_stage(slot, email, "changepw")
                 try:
                     cp_ok = firstmail.change_mailbox_password(email, mailbox_pw, op_pw, cfg.get("mail_key"))
@@ -674,6 +684,7 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                         pr = steps_billing.purchase(page, amount, cfg, manual_hcaptcha=False)
                         res["purchase"] = pr.get("result")
                         res["charged"] = amount if pr.get("result") == "success" else 0
+                        res["balance_after"] = pr.get("balance_after")   # ★M2:充值后真实余额回传(否则混合成功号 UI/台账恒显 null 余额,无法对账)
                         if pr.get("result") == "success":
                             save_progress(email, _stage=("charge", {"status": "ok", "at": time.strftime("%Y-%m-%d %H:%M:%S"), "amount": amount}))
                         log("[混合] %s 充值 $%s 结果=%s" % (email, amount, pr.get("result")))
@@ -816,9 +827,15 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
         #   · prior 已改过 → 跳过(旧密码已失效,再改必 fail)。复用 pipeline.py 同一函数与 changepw stage 语义。
         if success and do_changepw and op_pw:
             _cp_done = (((prior or {}).get("stages") or {}).get("changepw") or {}).get("status") == "ok"
+            # ★M1:CHANGEPW_REQUIRE_PURCHASE=on → 充值未确认成功(且非续跑已充)则跳过改密保号。镜像 pipeline.py:326;默认关 → 逐字节不变。
+            _cpw_req = (os.environ.get("CHANGEPW_REQUIRE_PURCHASE", "") or "").strip().lower() in ("1", "true", "on", "yes")
             if _cp_done:
                 res["steps"]["changepw"] = True
                 log("[混合] %s 已改密,跳过(防重复改密失败)" % email)
+            elif do_purchase and _cpw_req and not ((res.get("purchase") == "success") or res.get("skipped_charge")):
+                res["skipped_changepw"] = True
+                res["skipped_changepw_reason"] = "purchase-" + str(res.get("purchase") or "none")
+                log("[混合] %s 充值未确认成功(%s)+CHANGEPW_REQUIRE_PURCHASE=on → 跳过改密保号(可续跑取OTP)" % (email, res.get("purchase")))
             else:
                 log_stage(slot, email, "changepw")
                 try:

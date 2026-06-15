@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 
 const STATE_FILE = path.join(__dirname, '..', 'config', 'setup-state.json');
 
@@ -20,12 +21,8 @@ let _state = null; // 内存缓存(首次访问时从盘加载)
 
 function _load() {
   if (_state) return _state;
-  try {
-    const o = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    _state = (o && typeof o === 'object') ? o : {};
-  } catch (_e) {
-    _state = {};
-  }
+  const o = readJsonOr(STATE_FILE, {}, 'setup-store');   // ★H4:解析失败先备份 .corrupt 再退默认,绝不被下次写入抹掉
+  _state = (o && typeof o === 'object') ? o : {};
   return _state;
 }
 

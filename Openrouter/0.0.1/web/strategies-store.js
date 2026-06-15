@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 const { STAGES, DEFAULTS, KEYS } = require('./strategy-schema');
 
 const FILE = path.join(__dirname, '..', 'data', 'strategies.json');
@@ -22,12 +23,8 @@ function _genId() { return 'p' + Date.now().toString(36) + (_seq++).toString(36)
 
 function _load() {
   if (_db) return _db;
-  try {
-    const o = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    _db = (o && typeof o === 'object' && o.stages) ? o : { version: 1, stages: {} };
-  } catch (_e) {
-    _db = { version: 1, stages: {} };
-  }
+  const o = readJsonOr(FILE, null, 'strategies-store');   // ★H4:解析失败先备份 .corrupt 再退默认,绝不被下次写入抹掉
+  _db = (o && typeof o === 'object' && o.stages) ? o : { version: 1, stages: {} };
   _seed();
   return _db;
 }
