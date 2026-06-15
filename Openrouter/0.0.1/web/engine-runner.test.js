@@ -14,6 +14,27 @@ test('isSuccessRow: ok=true 或 steps.card===card-bound 都算成功', () => {
   assert.strictEqual(er.isSuccessRow({}), false);
 });
 
+test('isSuccessRow: 每个关键节点以是否真成功为基准(绑卡/充值失败即使 ok=true 也不算成功)', () => {
+  // ★用户实测病根:绑卡撞 hcaptcha 没绑成,但 pipeline 旧码 ok=true → 误算成功。现必须判失败。
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'ok', key: true, card: 'hcaptcha' } }), false, 'hcaptcha 没绑成→失败');
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'ok', key: true, card: 'server-error' } }), false);
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'ok', key: true, card: 'unknown' } }), false);
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'ok', card: 'declined' } }), false);
+  // 充值失败(pipeline:steps.purchase / hybrid:顶层 r.purchase)即使卡绑成也不算成功(do_purchase 开,待续跑补)
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { card: 'card-bound', purchase: 'declined' } }), false, 'pipeline 充值失败');
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { card: 'card-bound' }, purchase: 'error' }), false, 'hybrid 顶层 purchase 失败');
+  // 全成:卡绑成 + 充值成功 → 成功
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { card: 'card-bound', purchase: 'success' } }), true);
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { card: 'card-bound' }, purchase: 'success' }), true);
+  // ★不误伤:card-bound 是成功标尺 → 即使 steps.key=false(key 经网络钩子抓到/后补)也算成功(既有语义)
+  assert.strictEqual(er.isSuccessRow({ ok: false, steps: { auth: 'ok', key: false, card: 'card-bound' } }), true, 'card 绑成即成功,不被 key=false 误伤');
+  // 纯取key模式(无 card 步)ok=true 仍算成功(不误伤);changepw 失败不降级(收尾维护步)
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'ok', key: true } }), true, '纯取key成功不误伤');
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { card: 'card-bound', changepw: false } }), true, 'changepw 失败不影响绑卡成功');
+  // 注册失败一律失败
+  assert.strictEqual(er.isSuccessRow({ ok: true, steps: { auth: 'fail:FORM_NOT_FILLED' } }), false);
+});
+
 test('isNotAllowed: 三判据(not_allowed / auth以NOT_ALLOWED结尾 / banned)', () => {
   assert.strictEqual(er.isNotAllowed({ not_allowed: true }), true);
   assert.strictEqual(er.isNotAllowed({ steps: { auth: 'REGISTER_NOT_ALLOWED' } }), true);

@@ -344,7 +344,16 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             if ok:
                 _ck(checkpoint, email, "changepw", "ok")
 
-        res["ok"] = res["steps"].get("auth") == "ok" and res["steps"].get("key", True) is not False
+        # ★用户原则「每个关键节点都以是否成功为基准,其余均为失败」:原来只看 auth+key(不看 card/purchase)→
+        #   绑卡失败(hcaptcha/declined/server-error/unknown)却 ok=true 被误算成功(实测大量)。现按【已开启的关键节点逐级 gate】:
+        #   do_card 开 → 必须 card=='card-bound';do_purchase 开 → 必须 purchase=='success'。与 357-360 的 fail_stage 同判据(消除"ok=true 又 fail_stage=card"自相矛盾)。
+        #   注:changepw 是收尾维护步(失败不丢账号价值,可续跑补)→ 不纳入成功门,与 CHANGEPW_REQUIRE_PURCHASE 一致。纯取key模式(do_card 关)逐字节等价原逻辑。
+        _ok = res["steps"].get("auth") == "ok" and res["steps"].get("key", True) is not False
+        if opts.get("do_card"):
+            _ok = _ok and res["steps"].get("card") == "card-bound"
+        if opts.get("do_purchase"):
+            _ok = _ok and res["steps"].get("purchase") == "success"
+        res["ok"] = _ok
         # ★错误不做糊涂账:把"在哪一步、因为啥"失败浓缩成 fail_stage/fail_reason 两字段(按流程顺序取第一个没过的环节),
         #   UI/分析页直接显示,不用人肉拼 steps 字典。原始 steps/各 reason 字段照旧保留,这里只做归因汇总。
         try:

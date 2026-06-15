@@ -51,8 +51,22 @@ function readTail(file, fromLine, stats) {
     return out;
   } catch (_e) { return []; }
 }
-// Python 结果行:ok=true 或 steps.card=='card-bound' 视为成功
-function isSuccessRow(r) { return !!(r && (r.ok === true || (r.steps && r.steps.card === 'card-bound'))); }
+// Python 结果行成功判定 —— ★用户原则「每个【已运行的关键节点】都必须真成功,其余=失败」:
+//   原来只 `ok===true || card==='card-bound'`,会被上游(pipeline 旧码 ok=true 不看 card)污染的假成功行带歪
+//   ——绑卡失败(hcaptcha/declined/server-error/unknown)却 ok=true 被误算成功。这里【从 steps 逐节点 gate】:
+//   任一已运行的关键节点失败即判不成功,即时修正已写坏的历史行 + 防御未来任何引擎再写错 ok。
+//   节点:注册(auth)/取key(key,仅显式 false)/加卡(card)/充值(purchase:pipeline 写 steps.purchase、hybrid 写顶层 r.purchase,两处都查)。
+//   changepw 是收尾维护步(失败不丢账号价值)→ 不纳入,与 pipeline ok 口径一致。
+function isSuccessRow(r) {
+  if (!r) return false;
+  const s = r.steps || {};
+  if (s.auth != null && s.auth !== 'ok') return false;            // 注册失败(card-bound 行 auth 必为 ok,不误伤)
+  if (s.card != null && s.card !== 'card-bound') return false;    // ★加卡跑了却没绑成(hcaptcha/declined/server-error/unknown)→ 失败(用户实测病根)
+  const pur = (s.purchase != null) ? s.purchase : r.purchase;     // 充值:pipeline=steps.purchase / hybrid=顶层 r.purchase
+  if (pur != null && pur !== 'success') return false;             // 充值跑了却没成(do_purchase 开)→ 失败,待续跑补
+  return r.ok === true || s.card === 'card-bound';                // 通过所有已运行节点 + 确有产出
+  // 注:不拦 key=false —— 「加卡绑成但 steps.key=false(key 经网络钩子抓到/或后补)」是既有成功语义(card-bound 为成功标尺,见单测),拦了会误伤真绑成号。
+}
 
 // ★每 email 唯一化,且【成功恒胜失败】(success-wins),非 last-wins。这是「成功号不许再出现在失败里」的硬不变量。
 //   背景(实测病根):同一 job 内 AUTO_RETRY 会对失败号追加【第二行成功结果】(同 email/job_id,先 fail 后 success);
