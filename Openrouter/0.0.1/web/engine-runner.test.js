@@ -185,6 +185,28 @@ test('pyFailReason: 各失败态映射', () => {
   assert.strictEqual(er.pyFailReason({ not_allowed: true, steps: {} }), 'ACCOUNT_NOT_ALLOWED');
 });
 
+test('parseResultLine: 实时成功判定与最终 isSuccessRow 同口径(全套流程不在加卡那刻误判成功)', () => {
+  const P = (line) => er.parseResultLine(line);
+  // ★用户痛点:全套流程(do_purchase 开)——加卡绑成但充值 declined → 最终失败,实时也必须判失败(原来 ||cardBound 会闪成功)
+  assert.strictEqual(P("════ 结果 alice ok=false steps={'auth': 'ok', 'key': True, 'card': 'card-bound', 'purchase': 'declined'}").ok, false, 'card-bound 但充值declined → 失败');
+  // 只加卡(do_purchase 关):card-bound 即成功
+  assert.strictEqual(P("════ 结果 bob ok=true steps={'auth': 'ok', 'key': True, 'card': 'card-bound'}").ok, true);
+  // 选了加卡但只到 hcaptcha/declined/unknown(没绑成)→ 失败(即使 python 误写 ok=true 也按 steps 纠正)
+  assert.strictEqual(P("════ 结果 carol ok=true steps={'auth': 'ok', 'key': True, 'card': 'hcaptcha'}").ok, false, 'card=hcaptcha 即使 python ok=true 也判失败');
+  assert.strictEqual(P("════ 结果 dave ok=true steps={'auth': 'ok', 'key': True, 'card': 'unknown'}").ok, false);
+  // 注册失败 → 失败
+  assert.strictEqual(P("════ 结果 eve ok=false steps={'auth': 'fail:FORM_NOT_FILLED'}").ok, false);
+  // 纯取key模式(无 card 步)ok=true → 成功(不误伤)
+  assert.strictEqual(P("════ 结果 frank ok=true steps={'auth': 'ok', 'key': True}").ok, true);
+  // 充值成功 → 成功
+  assert.strictEqual(P("════ 结果 grace ok=true steps={'auth': 'ok', 'card': 'card-bound', 'purchase': 'success'}").ok, true);
+  // hybrid 行格式(steps 可能不在行内)→ 回退 python ok
+  assert.strictEqual(P("════ henry 结果 ok=true pw=...").ok, true);
+  assert.strictEqual(P("════ ivan 结果 ok=false pw=...").ok, false);
+  // 非结果行 → null
+  assert.strictEqual(P("[Selenium] 启动中…"), null);
+});
+
 test('reasonFromLine: 从 stdout 结果行提取真因(替代 see-log 占位)', () => {
   // run.py 行内含 Python repr 的 steps
   assert.strictEqual(er.reasonFromLine("════ 结果 alice ok=false steps={'auth': 'fail:FORM_NOT_FILLED'}"), 'fail:FORM_NOT_FILLED');

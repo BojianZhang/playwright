@@ -303,13 +303,27 @@ function writeBatchResults(jobId, successRows, failedRows, successTpl, failureTp
 // 实时成功判定必须与 isSuccessRow 对齐:ok=true 或 steps.card=='card-bound' 都算成功。
 // 否则实时面板只按 ok= 单判 → 「加卡绑成但没取到 Key」的号被流成 account-failed,
 // 与最终聚合/运行详情/结果聚合(card-bound 计成功)对不上,成功账号面板空着不回显。
+// ★实时成功判定必须与最终 isSuccessRow 同口径!原来 ok = (python ok) || cardBound,会把【加卡绑成但还没/没充成】
+//   的号在【实时计数】里当成功 —— 全套流程(do_purchase 开)时,这些号会在加卡那刻闪成"成功",而最终因充值
+//   declined 判失败 → 实时数 ≠ 最终数(用户痛点:"没走到最终流程还算成功")。改:从行内 steps 提 auth/card/purchase,
+//   按【每个已运行节点真成功】逐级 gate(与 isSuccessRow 完全一致,且无需知道 do_card/do_purchase——有该步信号就要求它过)。
 function parseResultLine(line) {
-  const cardBound = /['"]card['"]\s*:\s*['"]card-bound['"]/.test(line); // 行内 steps 是 Python repr(单引号)
   let m = line.match(/════\s*结果\s+(\S+?)\s+ok=(\w+)\s+steps=/);   // run.py:  ════ 结果 NAME ok=B steps=...
-  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) || cardBound };
-  m = line.match(/════\s+(\S+?)\s+结果\s+ok=(\w+)/);                // hybrid:  ════ NAME 结果 ok=B pw=...
-  if (m) return { name: m[1], ok: /^true$/i.test(m[2]) || cardBound };
-  return null;
+  if (!m) m = line.match(/════\s+(\S+?)\s+结果\s+ok=(\w+)/);        // hybrid:  ════ NAME 结果 ok=B pw=...
+  if (!m) return null;
+  const name = m[1];
+  const pyOk = /^true$/i.test(m[2]);
+  // 行内 steps 是 Python repr(单引号),按需提取关键节点结果(提不到=该步信号缺失→不据此判失败,回退 python ok)。
+  const _grab = (k) => { const g = line.match(new RegExp("['\"]" + k + "['\"]\\s*:\\s*['\"]([^'\"]+)['\"]")); return g ? g[1] : null; };
+  const auth = _grab('auth');
+  const card = _grab('card');
+  const purchase = _grab('purchase');
+  let ok;
+  if (auth && auth !== 'ok') ok = false;                       // 注册/登录没过
+  else if (card && card !== 'card-bound') ok = false;          // ★加卡跑了没绑成(hcaptcha/declined/unknown…)→ 失败
+  else if (purchase && purchase !== 'success') ok = false;     // ★充值跑了没成(declined…)→ 失败,不在加卡那刻误判成功
+  else ok = pyOk || card === 'card-bound';                     // 通过已运行节点 + 确有产出(card-bound 为成功标尺)
+  return { name, ok };
 }
 
 // 从 stdout 结果行尽力提取失败真因(run.py 行内含 Python repr 的 steps)→ 让实时 account-failed 事件带真因,
@@ -831,4 +845,4 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
   });
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, purchaseOutcome, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
+module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, purchaseOutcome, parseResultLine, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
