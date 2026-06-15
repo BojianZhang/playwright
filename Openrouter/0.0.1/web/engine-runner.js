@@ -345,6 +345,17 @@ function _clampConc(req, jobId) {
   return c;
 }
 
+// ★M4 修:split 两引擎【同时】各跑一组浏览器,若各自钳到 cap 则总数=2×cap → 撞穿 AdsPower 上限(批量
+//   session-deleted 根因)。设了 maxConcurrency 时,split 每引擎只给 floor(cap/2),保证两者之和 ≤ cap;
+//   没设上限=不限(老行为:每引擎跑请求并发)。返回【每引擎】并发数。
+function _splitPerEngineConc(req, jobId) {
+  const reqC = Math.max(1, Number(req) || 1);
+  let cap = 0;
+  try { cap = Number((require('./advanced-store').get() || {}).maxConcurrency) || 0; } catch (_e) { cap = 0; }
+  if (cap > 0) return Math.min(reqC, Math.max(1, Math.floor(cap / 2)));   // 两引擎之和 ≤ cap;且不超过请求
+  return reqC;   // 未设上限 → 不护 AdsPower(用户显式选择),每引擎跑请求并发
+}
+
 // UI 选项 → run.py 参数
 function seleniumArgs(accFile, pxFile, p, jobId) {
   const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(_clampConc(p.concurrency, jobId))];
@@ -545,10 +556,17 @@ async function spawnEngine(jobId, engine, payload, publish) {
   //   控制台看不到→用户以为按填的并发在跑)。spawnEngine 内只算/发一次,避免 selenium/hybridArgs 重复打日志。
   try {
     const _reqC = Math.max(1, Number(payload.concurrency) || 1);
-    const _clampedC = _clampConc(payload.concurrency, jobId);
-    if (_clampedC < _reqC) {
-      publish(jobId, 'log', `⚙ 并发已从 ${_reqC} 钳制到 ${_clampedC} 以保护 AdsPower(高级参数·并发硬上限 maxConcurrency)`
-        + (engine === 'split' ? `;split 两引擎各 ${_clampedC} = 共 ${_clampedC * 2}` : ''));
+    if (engine === 'split') {
+      // ★M4:split 每引擎 = _splitPerEngineConc(≤cap/2),两引擎之和 ≤ cap(不再 2×cap 撞穿 AdsPower)。
+      const _perE = _splitPerEngineConc(payload.concurrency, jobId);
+      if (_perE < _reqC) {
+        publish(jobId, 'log', `⚙ split 并发已钳制以保护 AdsPower:每引擎 ${_perE}、两引擎共 ${_perE * 2}(原请求每引擎 ${_reqC};高级参数·并发硬上限 maxConcurrency)`);
+      }
+    } else {
+      const _clampedC = _clampConc(payload.concurrency, jobId);
+      if (_clampedC < _reqC) {
+        publish(jobId, 'log', `⚙ 并发已从 ${_reqC} 钳制到 ${_clampedC} 以保护 AdsPower(高级参数·并发硬上限 maxConcurrency)`);
+      }
     }
   } catch (_e) { /* 提示失败不影响起 job */ }
 
@@ -563,15 +581,18 @@ async function spawnEngine(jobId, engine, payload, publish) {
       startLines.hybrid = countLines(RESULTS.hybrid);
       // 多引擎共屏:两进程各自 slot 都从 0 起会叠窗(layout.py 用 GRID_TOTAL/GRID_SLOT_OFFSET 统一网格)。
       // 各进程跑 concurrency 个 worker(slot 0..C-1)→ 共同 GRID_TOTAL=2C,A 偏移 0、B 偏移 C → 两组窗口不重叠。
-      const _c = _clampConc(payload.concurrency, jobId);   // 钳制后再算网格,保证窗口布局与实际 worker 数一致
+      // ★M4:用 split 专用钳制(每引擎 ≤ cap/2),两引擎之和才 ≤ AdsPower 上限;两 args 也用这个 _c 下发 --concurrency。
+      const _c = _splitPerEngineConc(payload.concurrency, jobId);
       // 跨引擎衔接开 → 第一轮【秒关/快速失败】:Selenium 组撞新版取key向导即弃(转混合)、混合组绑卡撞图片九宫格即弃(转纯Sel)。
       // 引擎专属标志,互不误伤;第二轮(衔接重试)用 base env 不注 → 最终引擎全力尝试。
       const _ho = payload.crossHandoff !== false;
       const envA = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: '0', ...(_ho ? { OPENROUTER_FAST_HANDOFF_KEY: '1' } : {}) };
       const envB = { ...env, GRID_TOTAL: String(_c * 2), GRID_SLOT_OFFSET: String(_c), ...(_ho ? { OPENROUTER_FAST_HANDOFF_CARD: '1' } : {}) };
+      // ★M4:给两 args 传【每引擎并发=_c】(split 专用钳制),否则 seleniumArgs/hybridArgs 内部各自钳到 cap → 总 2×cap。
+      const _pSplit = { ...payload, concurrency: _c };
       specs = [
-        { script: path.join(SELENIUM_DIR, 'run.py'), args: seleniumArgs(w.groupA.accFile, w.pxFile, payload, jobId), env: envA, label: '[引擎A·Selenium]', tag: '[A]', slotBase: 0 },
-        { script: path.join(SELENIUM_DIR, 'hybrid_run.py'), args: hybridArgs(w.groupB.accFile, w.pxFile, payload, jobId), env: envB, label: '[引擎B·混合]', tag: '[B]', slotBase: _c },
+        { script: path.join(SELENIUM_DIR, 'run.py'), args: seleniumArgs(w.groupA.accFile, w.pxFile, _pSplit, jobId), env: envA, label: '[引擎A·Selenium]', tag: '[A]', slotBase: 0 },
+        { script: path.join(SELENIUM_DIR, 'hybrid_run.py'), args: hybridArgs(w.groupB.accFile, w.pxFile, _pSplit, jobId), env: envB, label: '[引擎B·混合]', tag: '[B]', slotBase: _c },
       ];
       resultFiles = [RESULTS.selenium, RESULTS.hybrid];
       shared._splitPxFile = w.pxFile;   // 第二轮(跨引擎衔接)复用同一 proxies.txt(不重写代理)

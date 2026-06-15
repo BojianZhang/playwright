@@ -26,17 +26,27 @@ let flushTimer = null;
 function ensureLoaded() {
   if (ENTRIES) return;
   ENTRIES = [];
+  let raw;
+  try { raw = fs.readFileSync(LEDGER_FILE, 'utf8'); } catch (_e) { return; }   // 无文件 → 空台账(首次)
   try {
-    const arr = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf8'));
+    const arr = JSON.parse(raw);
     if (Array.isArray(arr)) ENTRIES = arr;
-  } catch (_e) { /* 无文件 → 空台账 */ }
+  } catch (e) {
+    // ★M5:解析失败【别静默丢账】——备份 .corrupt + 告警。否则下次写入直接 writeFileSync 抹掉损坏文件,
+    //   把本可人工抢救的充值记录永久丢掉(真金白银账目)。备份后按空台账继续,不阻断。
+    try { fs.renameSync(LEDGER_FILE, LEDGER_FILE + '.corrupt-' + Date.now()); } catch (_e2) { /* ignore */ }
+    try { console.error('[billing-ledger] 台账 JSON 解析失败 → 已备份 .corrupt,本次按空台账继续:', e && e.message); } catch (_e3) { /* ignore */ }
+  }
 }
 
 function flushNow() {
   flushTimer = null;
   try {
     fs.mkdirSync(path.dirname(LEDGER_FILE), { recursive: true });
-    fs.writeFileSync(LEDGER_FILE, JSON.stringify(ENTRIES, null, 2), 'utf8');
+    // ★M5:原子写(tmp+rename)。原来直接 writeFileSync,崩/被杀在写一半 → 台账 JSON 损坏(下次解析失败丢全账)。
+    const tmp = LEDGER_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(ENTRIES, null, 2), 'utf8');
+    fs.renameSync(tmp, LEDGER_FILE);   // rename 原子:要么旧全量、要么新全量,绝不半截
   } catch (e) { try { console.error('[billing-ledger] 落盘失败(台账可能丢账):', e && e.message); } catch (_e) { /* ignore */ } }
 }
 function scheduleFlush() {
