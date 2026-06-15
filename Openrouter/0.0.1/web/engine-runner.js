@@ -172,7 +172,10 @@ function purchaseOutcome(r) {
   const pur = (s.purchase != null) ? s.purchase : r.purchase;
   const charged = r.charged != null ? r.charged : (r.charge != null ? r.charge : null);
   if (r.skipped_charge) return { status: 'skipped', label: '已充值(续跑跳过)', amount: charged, reason: '' };
+  if (r.charge_dryrun) return { status: 'dry-run', label: '未真扣(dry-run)', amount: null, reason: '' };   // ★真实充值关:走到充值步没真扣
   if (pur === 'success' || (charged || 0) > 0) return { status: 'success', label: '成功', amount: charged, reason: '' };
+  if (pur === 'insufficient-funds') return { status: 'failed', label: '钱不够', amount: null, reason: '钱不够' };   // ★卡容量/并发闸拦下
+  if (pur === 'charge-test-capped') return { status: 'failed', label: '测试帽', amount: null, reason: '整批最多真充次数已满' };
   if (pur != null && pur !== 'success') return { status: 'failed', label: '失败', amount: null, reason: String(pur) };
   return { status: 'not-attempted', label: '未充值', amount: null, reason: '' };   // do_purchase 关 / 没走到充值阶段
 }
@@ -375,7 +378,13 @@ function seleniumArgs(accFile, pxFile, p, jobId) {
   const a = ['--accounts', accFile, '--proxies', pxFile, '--concurrency', String(_clampConc(p.concurrency, jobId))];
   a.push(p.doApiKey === false ? '--no-key' : '--do-key');
   if (p.doCard) a.push('--do-card');
-  if (p.doPurchase) { a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5))); }
+  if (p.doPurchase) {
+    a.push('--do-purchase', '--amount', String(Math.max(5, Number(p.amount) || 5)));
+    // ★充值容量闸:真实充值开 → --real-charge(真扣)+ --card-charge-gate(开卡余额账本:加卡照旧、充值步原子预留);
+    //   关 = 不下发 → run.py 走 dry-run(到充值步不真扣)。整批最多真充 N 次(0=不限不下发)。
+    if (p.realCharge) { a.push('--real-charge', '--card-charge-gate'); }
+    if (Number(p.chargeCount) > 0) a.push('--charge-count', String(Math.floor(Number(p.chargeCount))));
+  }
   // 统一密码=OpenRouter 登录密码:设了就下发(与混合 hybridArgs 的 --op-pw 同口径,不再被「改密」开关门控)。
   //   原来仅 (doChangePw && unifiedPassword) 才下发 → 用户设了统一密码但没开改密时,纯Sel 拿不到 unified_pw
   //   → run.py 里 op_pw 回退邮箱原密码 → 注册与回显(成功+失败号)都成原密码。--do-changepw 单独开关,目标已由 --unified-pw 带入。

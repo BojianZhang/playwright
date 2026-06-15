@@ -898,7 +898,12 @@ function handleDispatchRecent(res) { sendJson(res, 200, { dispatches: DISPATCHES
 
 // ── 卡池管理(受保护, /api/cards*) ─────────────────────────────────────────
 function handleCardsList(res) {
-  sendJson(res, 200, { cards: cardPool.snapshot(), available: cardPool.availableCount() });
+  sendJson(res, 200, { cards: cardPool.snapshot(), available: cardPool.availableCount(), totalBalance: cardPool.totalBalance() });
+}
+// GET /api/cards/capacity?amount= —— 按当前充值额算「卡总充值容量可真充 N 次」+ 总金额(控制台/卡池页读数)
+function handleCardsCapacity(res, query) {
+  const amount = Math.max(0.01, Number(query.get('amount')) || 5);
+  sendJson(res, 200, { amount, fundable: cardPool.fundableCount(amount), totalBalance: cardPool.totalBalance() });
 }
 async function handleCardsImport(req, res) {
   let body;
@@ -920,7 +925,8 @@ async function handleCardAction(req, res, action) {
   else if (action === 'remove') await cardPool.remove(id);
   else if (action === 'reset') await cardPool.resetCounters(id);
   else if (action === 'update') await cardPool.setMaxUses(id, Number(body.maxUses) || 1);
-  sendJson(res, 200, { ok: true, cards: cardPool.snapshot(), available: cardPool.availableCount() });
+  else if (action === 'set-charge') await cardPool.setCardCharge(id, { chargeCap: body.chargeCap, balance: body.balance, chargeConcurrency: body.chargeConcurrency });
+  sendJson(res, 200, { ok: true, cards: cardPool.snapshot(), available: cardPool.availableCount(), totalBalance: cardPool.totalBalance() });
 }
 
 // 充值台账(按邮箱记账)。
@@ -1821,7 +1827,9 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/results/delete') return void handleApiResultsDelete(req, res);
   if (req.method === 'POST' && pathname === '/api/results/clear') return void handleApiResultsClear(req, res);
   if (req.method === 'GET' && pathname === '/api/cards') return void handleCardsList(res);
+  if (req.method === 'GET' && pathname === '/api/cards/capacity') return void handleCardsCapacity(res, url.searchParams);
   if (req.method === 'POST' && pathname === '/api/cards/import') return void handleCardsImport(req, res);
+  if (req.method === 'POST' && pathname === '/api/cards/set-charge') return void handleCardAction(req, res, 'set-charge');
   if (req.method === 'POST' && pathname === '/api/cards/disable') return void handleCardAction(req, res, 'disable');
   if (req.method === 'POST' && pathname === '/api/cards/enable') return void handleCardAction(req, res, 'enable');
   if (req.method === 'POST' && pathname === '/api/cards/remove') return void handleCardAction(req, res, 'remove');
@@ -1928,6 +1936,8 @@ const onListening = () => {
   console.log(`[Openrouter Web] 控制台已启动: http://${HOST}:${PORT}  (本机: http://localhost:${PORT})`);
   // 回收上次进程崩溃/重启遗留的僵尸「运行中」(子进程随 server 一起死,不可能还在跑)。
   try { const _reaped = runsStore.reapStale(); if (_reaped) console.log(`🧹 已回收 ${_reaped} 条中断的僵尸运行(标记为 interrupted) —— 重提交同批账号即断点续跑`); } catch (_e) { /* ignore */ }
+  // ★回收上次崩溃遗留的【充值在飞预留】(进程崩了 reserveCharge 没 commit/release → 卡额度被永久占住)。10min 阈值只清真陈旧的。
+  try { Promise.resolve(cardPool.reapStaleInflight(600000)).then((r) => { if (r && r.reaped) console.log(`🧹 已回收 ${r.reaped} 笔陈旧的充值在飞预留(卡额度释放)`); }).catch(() => {}); } catch (_e) { /* ignore */ }
   if (ALLOW_IPS.length) console.log(`🔒 IP 白名单(+本机): ${ALLOW_IPS.join(', ')}${TRUST_PROXY ? ' [信任 X-Forwarded-For]' : ''}`);
   if (ALLOW_HOSTS.length) console.log(`🔒 域名白名单(+localhost): ${ALLOW_HOSTS.join(', ')}`);
 

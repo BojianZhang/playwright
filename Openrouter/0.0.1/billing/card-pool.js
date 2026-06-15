@@ -239,7 +239,11 @@ function upsertMany(cards) {
       } else {
         POOL.set(c.id, {
           id: c.id, last4: c.last4, number: c.number, expMonth: c.expMonth, expYear: c.expYear,
-          cvc: c.cvc, zip: c.zip || '', maxUses: c.maxUses, inUse: false, ...freshCounters(),
+          cvc: c.cvc, zip: c.zip || '', maxUses: c.maxUses, inUse: false,
+          // ★充值容量账本(全可选,默认 0=未跟踪=不限,逐字节不变);chargedTotal=累计真充、chargeInflight=并发在飞预留
+          chargeCap: Number(c.chargeCap) || 0, balance: Number(c.balance) || 0, chargeConcurrency: Number(c.chargeConcurrency) || 0,
+          chargedTotal: 0, chargeInflight: 0,
+          ...freshCounters(),
         });
         added += 1;
       }
@@ -350,7 +354,26 @@ function sanitize(c) {
     cooldownUntil: c.cooldownUntil || '',
     disabledReason: c.disabledReason || '',
     inUse: !!c.inUse,
+    // ★充值容量账本(UI 编辑/读数用)
+    chargeCap: c.chargeCap || 0, balance: c.balance || 0, chargeConcurrency: c.chargeConcurrency || 0,
+    chargedTotal: c.chargedTotal || 0, chargeInflight: c.chargeInflight || 0,
   };
+}
+
+// 这张卡按【当前充值额】的【总】容量:填了次数优先、否则按金额算、都没填=不限(Infinity)。
+function cardChargeCapacity(c, amount) {
+  const amt = Math.max(0.01, Number(amount) || 5);
+  if (Number(c.chargeCap) > 0) return Number(c.chargeCap);
+  if (Number(c.balance) > 0) return Math.floor(Number(c.balance) / amt);
+  return Infinity;   // 两者都没填 = 未跟踪 = 不限(旧行为)
+}
+// 这张卡【还能真充几次】(已扣已算):次数模式=chargeCap-已充;金额模式=floor(余额/充值额)(余额已在 commit 扣减,不再减 chargedTotal,
+//   否则双重计数);未跟踪=Infinity。reserveCharge/fundableCount 都用它,口径与 Python _card_charge_remaining 一致。
+function cardChargeRemaining(c, amount) {
+  const amt = Math.max(0.01, Number(amount) || 5);
+  if (Number(c.chargeCap) > 0) return Math.max(0, Number(c.chargeCap) - (Number(c.chargedTotal) || 0));
+  if (Number(c.balance) > 0) return Math.floor(Number(c.balance) / amt);
+  return Infinity;
 }
 
 /** 脱敏快照（供 UI / SSE）。 */
@@ -448,6 +471,97 @@ function setMaxUses(id, n) {
   }));
 }
 
+// ── 充值容量账本(用户编辑;充值步原子预留,并发安全)─────────────────────────
+// 编辑某卡的充值容量字段。改了次数/金额 = 声明【新预算】→ 重置 chargedTotal(可重新充满);只传部分字段则只改该部分。
+function setCardCharge(id, { chargeCap, balance, chargeConcurrency } = {}) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return null;
+    let capacityChanged = false;
+    if (chargeCap !== undefined) { c.chargeCap = Math.max(0, Number(chargeCap) || 0); capacityChanged = true; }
+    if (balance !== undefined) { c.balance = Math.max(0, Number(balance) || 0); capacityChanged = true; }
+    if (chargeConcurrency !== undefined) c.chargeConcurrency = Math.max(0, Number(chargeConcurrency) || 0);
+    if (capacityChanged) { c.chargedTotal = 0; c.chargeInflight = 0; }   // 新预算 → 计数清零(可重新充满),并清在飞
+    return sanitize(c);
+  }));
+}
+
+// ★原子预留一次充值额度(充值步真扣前调):容量够 且 同卡并发未满 → chargeInflight++ 返回 {ok:true};否则 {ok:false, reason}。
+//   未跟踪(无次数无金额)且未限并发 = 永远 ok(旧行为)。
+function reserveCharge(id, amount) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return { ok: false, reason: 'no-card' };
+    const rem = cardChargeRemaining(c, amount);              // 已扣已算的剩余次数(次数/金额两模式各自正确)
+    const inflight = Number(c.chargeInflight) || 0;
+    const remaining = (rem === Infinity) ? Infinity : (rem - inflight);   // 再减在飞预留 = 真正可占的名额
+    const concLimit = Number(c.chargeConcurrency) > 0 ? Number(c.chargeConcurrency) : Infinity;
+    if (remaining < 1) return { ok: false, reason: 'capacity' };          // 容量用尽(次数/金额不够)
+    if (inflight >= concLimit) return { ok: false, reason: 'concurrency' }; // 同卡并发已满
+    c.chargeInflight = inflight + 1;
+    c._inflightAt = Date.now();
+    return { ok: true };
+  }));
+}
+
+// 真扣【成功】后提交:chargedTotal++、balance 扣减(若按金额)、在飞 -1。
+function commitCharge(id, amount) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return null;
+    c.chargedTotal = (Number(c.chargedTotal) || 0) + 1;
+    if (Number(c.balance) > 0) c.balance = Math.max(0, Number(c.balance) - (Number(amount) || 0));
+    c.chargeInflight = Math.max(0, (Number(c.chargeInflight) || 0) - 1);
+    return sanitize(c);
+  }));
+}
+
+// 真扣【失败/异常/未发生】释放预留:在飞 -1(额度还回,不计 chargedTotal)。
+function releaseCharge(id) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c) return null;
+    c.chargeInflight = Math.max(0, (Number(c.chargeInflight) || 0) - 1);
+    return sanitize(c);
+  }));
+}
+
+// 回收【崩溃泄漏】的在飞预留:超 maxAgeMs 未提交/释放的卡,inflight 清零(防进程崩溃后额度被永久占住)。
+function reapStaleInflight(maxAgeMs) {
+  const age = (maxAgeMs == null || maxAgeMs === '') ? 600000 : Math.max(0, Number(maxAgeMs) || 0);   // 默认 10min;允许 0=立即回收
+  const now = Date.now();
+  return mutex(() => lockedWrite(() => {
+    let reaped = 0;
+    for (const c of POOL.values()) {
+      if ((Number(c.chargeInflight) || 0) > 0 && (!c._inflightAt || (now - c._inflightAt) >= age)) {
+        reaped += c.chargeInflight; c.chargeInflight = 0; delete c._inflightAt;
+      }
+    }
+    return { reaped };
+  }));
+}
+
+// 整池按当前充值额还能真充几次:Σ 各 active 卡 min(剩余绑定数, 剩余充值容量)。未跟踪卡 = 仅按绑定数计。
+function fundableCount(amount) {
+  ensureLoaded();
+  let n = 0;
+  for (const c of POOL.values()) {
+    if (c.status !== 'active') continue;
+    const bindLeft = Math.max(0, (c.maxUses || 1) - (c.usedCount || 0));
+    const rem = cardChargeRemaining(c, amount);
+    const chargeLeft = (rem === Infinity) ? bindLeft : rem;
+    n += Math.min(bindLeft, chargeLeft);
+  }
+  return n;
+}
+// 卡池总金额($,按金额跟踪的卡求和;UI 读数)
+function totalBalance() {
+  ensureLoaded();
+  let s = 0;
+  for (const c of POOL.values()) s += Number(c.balance) || 0;
+  return Math.round(s * 100) / 100;
+}
+
 /** 重置某张卡的使用计数/状态（重新可用）。 */
 function resetCounters(id) {
   return mutex(() => lockedWrite(() => {
@@ -533,5 +647,14 @@ module.exports = {
   clear,
   availableCount,
   stats,
+  // ★充值容量账本(每卡次数/金额/并发 + 原子预留)
+  setCardCharge,
+  reserveCharge,
+  commitCharge,
+  releaseCharge,
+  reapStaleInflight,
+  fundableCount,
+  totalBalance,
+  cardChargeCapacity,
   _POOL_FILE: POOL_FILE,
 };

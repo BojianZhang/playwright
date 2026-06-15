@@ -15,7 +15,7 @@ const STAGES = ['key', 'card', 'charge'];
 const DEFAULTS = {
   key: { apiKeyName: '', apiKeyExpiration: 'No expiration' },
   card: { cardMaxUses: '10', maxCardTries: '3' },
-  charge: { topUpAmount: '5' },
+  charge: { topUpAmount: '5', realCharge: 'off', chargeCount: '0' },
 };
 
 // 写入白名单 = 默认 opts 的键集合。

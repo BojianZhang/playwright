@@ -493,6 +493,169 @@ def mark_card_result(card, result):
         _atomic_write_json(paths.POOL_FILE, pool)
 
 
+# ── 充值容量账本 + 充值步原子预留(与 Node billing/card-pool.js 同字段、同一把文件锁,并发安全)─────
+#   字段:chargeCap(充值次数)/balance(金额$)/chargeConcurrency(同卡并发上限)/chargedTotal(已真充)/chargeInflight(在飞预留)
+def _card_charge_capacity(c, amount):
+    """这张卡按当前充值额的【总】容量:次数优先 / 否则按金额算 / 都没填=inf。与 Node cardChargeCapacity 同口径。"""
+    amt = max(0.01, float(amount or 5))
+    try:
+        if float(c.get("chargeCap") or 0) > 0:
+            return int(float(c.get("chargeCap")))
+        if float(c.get("balance") or 0) > 0:
+            return int(float(c.get("balance")) // amt)
+    except Exception:
+        pass
+    return float("inf")
+
+
+def _card_charge_remaining(c, amount):
+    """这张卡【还能真充几次】(已扣已算):次数模式=chargeCap-已充;金额模式=floor(余额/充值额)(余额已在 commit 扣减,
+       不再减 chargedTotal,否则双重计数);未跟踪=inf。与 Node cardChargeRemaining 同口径。"""
+    amt = max(0.01, float(amount or 5))
+    try:
+        if float(c.get("chargeCap") or 0) > 0:
+            return max(0, int(float(c.get("chargeCap"))) - int(c.get("chargedTotal") or 0))
+        if float(c.get("balance") or 0) > 0:
+            return int(float(c.get("balance")) // amt)
+    except Exception:
+        pass
+    return float("inf")
+
+
+def get_card_capacity(card_id, amount):
+    """只读:该卡按 amount 还能真充几次(容量 - 已充);未跟踪 → inf。卡不存在 → 0。"""
+    if not card_id:
+        return 0
+    try:
+        with open(paths.POOL_FILE, encoding="utf-8") as _f:
+            pool = json.load(_f)
+    except Exception:
+        return 0
+    for c in (pool if isinstance(pool, list) else []):
+        if (c.get("id") or c.get("number")) == card_id:
+            return _card_charge_remaining(c, amount)
+    return 0
+
+
+def reserve_charge(card_id, amount):
+    """★充值步真扣【前】原子预留一次额度。返回 (True, "") / (False, reason)。
+       未跟踪(无次数无金额)且未限并发 = 永远 True(默认逐字节不变)。reason∈ no-card/capacity/concurrency。"""
+    if not card_id:
+        return (False, "no-card")
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+        try:
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
+        except Exception:
+            return (False, "no-pool")
+        for c in pool:
+            if (c.get("id") or c.get("number")) != card_id:
+                continue
+            rem = _card_charge_remaining(c, amount)   # 已扣已算的剩余次数(次数/金额两模式各自正确)
+            inflight = int(c.get("chargeInflight") or 0)
+            remaining = float("inf") if rem == float("inf") else (rem - inflight)
+            conc_limit = int(c.get("chargeConcurrency") or 0) or float("inf")
+            if remaining < 1:
+                return (False, "capacity")
+            if inflight >= conc_limit:
+                return (False, "concurrency")
+            c["chargeInflight"] = inflight + 1
+            c["_inflightAt"] = int(time.time() * 1000)   # 与 Node Date.now() 同单位(ms),供 reap 用
+            # 写失败【返回 False 不抛】→ 视为预留失败【不真扣】(安全方向:宁可不充也不在没持久化预留下真扣)。
+            if not _atomic_write_json(paths.POOL_FILE, pool):
+                log("[卡][充值] ⚠ reserve 落盘失败 → 视为预留失败、本号不真扣(安全): %s" % card_id)
+                return (False, "write-fail")
+            return (True, "")
+        return (False, "no-card")
+
+
+def commit_charge(card_id, amount):
+    """真扣【成功】后提交:chargedTotal++、balance 按金额扣、在飞 -1。落盘失败【告警】不静默(真金白银去重凭证)。"""
+    if not card_id:
+        return
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+        try:
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
+        except Exception:
+            log("[卡][充值] ⚠ commit 读卡池失败,容量账本可能不准: %s" % card_id)
+            return
+        for c in pool:
+            if (c.get("id") or c.get("number")) != card_id:
+                continue
+            c["chargedTotal"] = int(c.get("chargedTotal") or 0) + 1
+            if float(c.get("balance") or 0) > 0:
+                c["balance"] = max(0, round(float(c.get("balance")) - float(amount or 0), 2))
+            c["chargeInflight"] = max(0, int(c.get("chargeInflight") or 0) - 1)
+            break
+        # ★_atomic_write_json 失败【返回 False 不抛】→ 必须查返回值告警(真金白银去重凭证)。
+        #   失败=chargedTotal/balance 未持久化(真扣已发生)→ 该卡容量账本可能多算 1 次,reap 也救不回这次漏计。
+        if not _atomic_write_json(paths.POOL_FILE, pool):
+            log("[卡][充值] ⚠⚠ commit 落盘失败 → 卡 %s 的 chargedTotal/balance 未持久化,容量账本可能多算 1 次(真扣已发生,请人工核对该卡余额)" % card_id)
+
+
+def release_charge(card_id):
+    """真扣【失败/异常/未发生】释放预留:在飞 -1(额度还回,不计 chargedTotal)。"""
+    if not card_id:
+        return
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+        try:
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
+        except Exception:
+            return
+        for c in pool:
+            if (c.get("id") or c.get("number")) != card_id:
+                continue
+            c["chargeInflight"] = max(0, int(c.get("chargeInflight") or 0) - 1)
+            break
+        # 写失败【返回 False 不抛】→ 告警。预留没释放干净也不致命:reap_stale_inflight 会兜底回收(只是该卡暂少 1 个名额)。
+        if not _atomic_write_json(paths.POOL_FILE, pool):
+            log("[卡][充值] ⚠ release 落盘失败,预留可能未释放(将由 reap 兜底回收,该卡暂少 1 名额): %s" % card_id)
+
+
+def reap_stale_inflight(max_age_ms=600000):
+    """回收崩溃泄漏的在飞预留:超 max_age_ms 未提交/释放的卡 inflight 清零。返回回收数。"""
+    age = 600000 if max_age_ms is None else max(0, int(max_age_ms))
+    now = int(time.time() * 1000)
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+        try:
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
+        except Exception:
+            return 0
+        reaped = 0
+        for c in pool:
+            inflight = int(c.get("chargeInflight") or 0)
+            at = c.get("_inflightAt")
+            if inflight > 0 and (not at or (now - int(at)) >= age):
+                reaped += inflight
+                c["chargeInflight"] = 0
+                c.pop("_inflightAt", None)
+        if reaped:
+            if not _atomic_write_json(paths.POOL_FILE, pool):
+                log("[卡][充值] ⚠ reap 落盘失败,在飞预留未清(下次启动会再试)")
+        return reaped
+
+
+def fundable_count(amount):
+    """整池按当前充值额还能真充几次:Σ active 卡 min(剩余绑定数, 剩余充值容量)。未跟踪卡=仅按绑定数计。与 Node fundableCount 同口径。"""
+    try:
+        with open(paths.POOL_FILE, encoding="utf-8") as _f:
+            pool = json.load(_f)
+    except Exception:
+        return 0
+    n = 0
+    for c in (pool if isinstance(pool, list) else []):
+        if c.get("status") != "active":
+            continue
+        bind_left = max(0, int(c.get("maxUses") or 1) - int(c.get("usedCount") or 0))
+        rem = _card_charge_remaining(c, amount)
+        charge_left = bind_left if rem == float("inf") else rem
+        n += min(bind_left, charge_left)
+    return n
+
+
 def list_active_cards():
     """给页面内卡片面板用:列出所有 active 且有余次的卡的【展示字段】(不含 PAN,安全)。
        返回 [{id,last4,bin,bound,used,max}, …](按已绑次数倒序,再按段)。"""
@@ -557,4 +720,6 @@ __all__ = [
     "_hcaptcha_file", "load_hcaptcha_hits", "mark_hcaptcha",
     "_bad_mailbox_file", "load_bad_mailboxes", "is_bad_mailbox", "mark_bad_mailbox",
     "mark_card_result", "list_active_cards", "get_card_by_id",
+    # 充值容量账本 + 原子预留
+    "get_card_capacity", "reserve_charge", "commit_charge", "release_charge", "reap_stale_inflight", "fundable_count",
 ]

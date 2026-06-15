@@ -9,8 +9,10 @@ export interface CardRow {
   successCount: number; declineCount: number;
   firstUsedAt?: string; lastUsedAt?: string; lastResult?: string; lastError?: string;
   cooldownUntil?: string; disabledReason?: string; inUse?: boolean;
+  // 充值容量账本(填了次数按次数 / 填了金额按金额算;同卡并发上限;已真充次数 / 在飞预留)
+  chargeCap?: number; balance?: number; chargeConcurrency?: number; chargedTotal?: number; chargeInflight?: number;
 }
-export interface CardsResp { cards: CardRow[]; available: number; }
+export interface CardsResp { cards: CardRow[]; available: number; totalBalance?: number; }
 
 export interface LedgerEntry { at: string; email: string; result: string; charged: number; cardLast4?: string; jobId?: string; error?: string; }
 export interface LedgerSummary {
@@ -24,7 +26,7 @@ export interface AccountRow {
   email: string; createdAt?: string; updatedAt?: string;
   registered?: boolean; apiKey?: string; apiKeyName?: string;
   passwordChanged?: boolean; billingStatus?: string; charged?: number; balanceAfter?: number | null;
-  purchaseStatus?: 'success' | 'failed' | 'skipped' | 'not-attempted'; purchaseReason?: string;   // 充值结果(明确成功/失败/已充跳过/未充值)
+  purchaseStatus?: 'success' | 'failed' | 'skipped' | 'not-attempted' | 'dry-run'; purchaseReason?: string;   // 充值结果(成功/失败/已充跳过/未充值/dry-run未真扣)
   cardLast4?: string; exitIp?: string; blacklisted?: boolean; blacklistReason?: string;
   durationSec?: number | null;   // 单号端到端耗时(秒)
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;

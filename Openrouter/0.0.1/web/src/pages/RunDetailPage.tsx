@@ -211,11 +211,12 @@ export default function RunDetailPage() {
 }
 
 // 充值结果列:明确 成功(+金额)/ 失败(带真因)/ 已充跳过 / 未充值,消除「charged=$0」的歧义。
-const PURCHASE_LABEL: Record<string, string> = { success: '成功', failed: '失败', skipped: '已充跳过', 'not-attempted': '未充值' };
+const PURCHASE_LABEL: Record<string, string> = { success: '成功', failed: '失败', skipped: '已充跳过', 'not-attempted': '未充值', 'dry-run': '未真扣' };
 function renderPurchase(a: AccountRow) {
   const ps = a.purchaseStatus;
   if (ps === 'success') return <span className="kbadge ok">成功{a.charged ? ' $' + a.charged : ''}</span>;
-  if (ps === 'failed') return <span className="kbadge fail" title={a.purchaseReason || ''}>失败{a.purchaseReason ? '·' + a.purchaseReason : ''}</span>;
+  if (ps === 'dry-run') return <span className="kbadge info" title="真实充值关:走到充值步未真点 Purchase(dry-run 测全流程)">未真扣·dry-run</span>;
+  if (ps === 'failed') return <span className="kbadge fail" title={a.purchaseReason || ''}>{a.purchaseReason ? a.purchaseReason : '失败'}</span>;
   if (ps === 'skipped') return <span className="kbadge neutral" title="续跑检测到已充值,跳过(防重复扣款)">已充·跳过</span>;
   if (ps === 'not-attempted') return <span className="kbadge neutral" title="本次未启用充值(do_purchase 关)或未走到充值阶段">未充值</span>;
   return <span className="mono">{a.charged != null ? '$' + a.charged : '—'}</span>;   // 老结果行无 purchaseStatus → 回退原显示

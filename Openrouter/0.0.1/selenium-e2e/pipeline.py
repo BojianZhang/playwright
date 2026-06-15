@@ -130,11 +130,19 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
     # 不写这个字段 → web 回退成原密码,导致「设了统一密码/改密成功后 当前密码仍显示原密码」。
     res = {"email": email, "ok": False, "steps": {}, "timings": {}, "password": op_pw}
     t_start = time.perf_counter()   # 整号端到端耗时(秒),与混合 hybrid_run 对齐 → 详情/分析能看每号慢在哪
+    # ★逐步耗时:每进一个新阶段就把【上一阶段】的秒数落进 res["timings"](排查哪步慢可优化)。finally 里 _mark_stage(None) 收尾。
+    _clk = {"name": None, "t": t_start}
+    def _mark_stage(name):
+        now = time.perf_counter()
+        if _clk["name"]:
+            try: res["timings"][_clk["name"]] = round(now - _clk["t"], 1)
+            except Exception: pass
+        _clk["name"] = name; _clk["t"] = now
     env_id = None
     driver = None
     patcher = None
     try:
-        log_stage(slot, email, "env")
+        log_stage(slot, email, "env"); _mark_stage("env")
         env_id, port, proxy = _acquire_browser(proxies, start_idx, group_id,
                                                "sel-" + email.split("@")[0][:18])
         res["env_id"] = env_id
@@ -164,7 +172,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         page = common.Page(driver)
         page.goto(common.KEYS_URL, wait=2)
 
-        log_stage(slot, email, "auth")
+        log_stage(slot, email, "auth"); _mark_stage("auth")
         auth = steps_auth.register_or_login(page, email, op_pw, mailbox_pw, cfg,
                                             registered=bool(acct.get("registered")))   # 已注册号(历史auth=ok)→直接登录,不再点注册
         res["steps"]["auth"] = auth
@@ -183,7 +191,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
 
         prior_key = acct.get("prior_key") or (acct.get("prior") or {}).get("api_key")
         if opts.get("do_key", True):
-            log_stage(slot, email, "key")
+            log_stage(slot, email, "key"); _mark_stage("key")
             # ★止血#1:已取到过 key(prior 有 api_key)→ 直接复用,绝不重新建 key。
             #   原来无条件 get_api_key() → 同邮箱在新版向导重复建 key(白跑+留孤儿key)。这是"第二次还创建KEY"的根因。
             #   【只看 prior_key 存在,不再 AND stages.key】:老 checkpoint 只有 api_key 没 stages 子树时,
@@ -256,7 +264,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             log("[流程] %s 取key失败 → 跳过加卡/充值/改密(不给无key废号浪费卡,留着重试)" % email)
 
         if opts.get("do_card") and _bill_ok:
-            log_stage(slot, email, "card")
+            log_stage(slot, email, "card"); _mark_stage("card")
         if opts.get("do_card") and _bill_ok and _prior_done(acct, "card"):
             # ★已绑卡(prior stages.card=ok)→ 跳过加卡,省一整段绑卡(还避免冷却/换卡冲突)。
             res["steps"]["card"] = "card-bound"
@@ -304,19 +312,69 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         #   + run.py 从 results.jsonl 还原的 acct["charged"](账号跑完才写,与 checkpoint 互补)。任一为真即跳过,
         #   绝不重复扣款(真金白银,不可回滚)。单靠 stages.charge 会假阴性 → 重复扣。
         if opts.get("do_purchase") and _bill_ok:
-            log_stage(slot, email, "charge")
+            log_stage(slot, email, "charge"); _mark_stage("charge")
         if opts.get("do_purchase") and _bill_ok and (_prior_done(acct, "charge") or acct.get("charged")):
             res["steps"]["purchase"] = "success"
             res["skipped_charge"] = True
             res["charged"] = opts.get("amount", 5)   # 已充过(续跑跳过):结果行仍带金额,账号页/聚合页回显(不重复扣款)
             log("[续跑] %s 已充值,跳过(防重复扣款)" % email)
         elif opts.get("do_purchase") and _bill_ok:
-            r = steps_billing.purchase(page, opts.get("amount", 5), cfg, opts.get("manual_hcaptcha", True))
-            res["steps"]["purchase"] = r.get("result")
-            res["balance_after"] = r.get("balance_after")
-            if r.get("result") == "success":
-                res["charged"] = opts.get("amount", 5)   # ★充值额进结果行(供 UI/台账回显;之前漏写=账号页显示 $0)
-                _ck(checkpoint, email, "charge", "ok", amount=opts.get("amount", 5), balance_after=r.get("balance_after"))
+            _amt = opts.get("amount", 5)
+            if not opts.get("real_charge"):
+                # ★真实充值开关【关】= dry-run:走到充值步但【不真点 Purchase】(测全流程零成本)。不设 steps.purchase →
+                #   等价 card-bound 成功(与 do_purchase 关同口径)。标 charge_dryrun 以示"到了充值未真扣"。
+                res["charge_dryrun"] = True
+                log("[充值] dry-run(未开真实充值):走到充值步不真点 Purchase、不扣款 — %s" % email)
+            else:
+                _cid = res.get("card_id")
+                _gate = opts.get("card_charge_gate")
+                _try_batch = opts.get("try_batch_charge")
+                _reserved = False
+                _do_real = True
+                # ① 容量账本【原子预留】(够 + 同卡并发未满 才放行;未跟踪卡永远放行=旧行为)
+                if _gate:
+                    try:
+                        _ok, _reason = common.reserve_charge(_cid, _amt)
+                    except Exception:
+                        _ok, _reason = True, ""   # 预留异常不拦正常充值(安全:退回旧行为)
+                    if _ok:
+                        _reserved = True
+                    else:
+                        _rmap = {"capacity": "卡容量用尽", "concurrency": "同卡并发已满", "no-card": "无绑卡", "no-pool": "卡池读失败", "write-fail": "卡池落盘失败(安全起见不真扣)"}
+                        res["steps"]["purchase"] = "insufficient-funds"
+                        res["fail_stage"] = "charge"; res["fail_reason"] = "钱不够:" + _rmap.get(_reason, str(_reason))
+                        _do_real = False
+                        log("[充值] %s 预留失败(%s)→ 钱不够,不真扣,END" % (email, _reason))
+                # ② 整批最多真充 N 次【测试帽】(reserve 成功后才占名额,避免预留失败也烧帽)
+                if _do_real and _try_batch and not _try_batch():
+                    if _reserved:
+                        try: common.release_charge(_cid)
+                        except Exception: pass
+                    res["steps"]["purchase"] = "charge-test-capped"
+                    res["fail_stage"] = "charge"; res["fail_reason"] = "整批已达最多真充次数(测试帽)"
+                    _do_real = False
+                    log("[充值] %s 整批真充已达上限(测试帽)→ 不真扣,END" % email)
+                # ③ 真实充值(steps_billing.purchase 真实时序一行不改)
+                if _do_real:
+                    try:
+                        r = steps_billing.purchase(page, _amt, cfg, opts.get("manual_hcaptcha", True))
+                        res["steps"]["purchase"] = r.get("result")
+                        res["balance_after"] = r.get("balance_after")
+                        if r.get("result") == "success":
+                            res["charged"] = _amt   # ★充值额进结果行(供 UI/台账回显)
+                            if _reserved:
+                                try: common.commit_charge(_cid, _amt)   # 真扣成功 → 提交:chargedTotal++/balance 扣/在飞-1
+                                except Exception: pass
+                            _ck(checkpoint, email, "charge", "ok", amount=_amt, balance_after=r.get("balance_after"))
+                        else:
+                            if _reserved:
+                                try: common.release_charge(_cid)   # 没充成 → 还预留额度(不计 chargedTotal)
+                                except Exception: pass
+                    except Exception:
+                        if _reserved:
+                            try: common.release_charge(_cid)   # 异常也还额度,绝不泄漏在飞
+                            except Exception: pass
+                        raise
 
         # ★【CHANGEPW_REQUIRE_PURCHASE=on】只在充值【确认成功】才改邮箱密码(用户选:最严)。
         #   默认空=关=与现状逐字节一致(取到 key 即改密,与充值结果无关)。
@@ -332,7 +390,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                     res["skipped_changepw_reason"] = "purchase-" + str(res["steps"].get("purchase") or "none")
                     log("[拒付/未成功] %s 充值=%s → 跳过改密(保号可干净重试)" % (email, res["steps"].get("purchase")))
         if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _cpw_gate:
-            log_stage(slot, email, "changepw")
+            log_stage(slot, email, "changepw"); _mark_stage("changepw")
         if opts.get("do_changepw") and opts.get("unified_pw") and _bill_ok and _cpw_gate and _prior_done(acct, "changepw"):
             # ★止血#3:已改密(prior stages.changepw=ok)→ 跳过。旧邮箱密码已失效,再改必 fail。
             res["steps"]["changepw"] = True
@@ -352,7 +410,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         _ok = res["steps"].get("auth") == "ok" and res["steps"].get("key", True) is not False
         if opts.get("do_card"):
             _ok = _ok and res["steps"].get("card") == "card-bound"
-        if opts.get("do_purchase"):
+        # ★只有【真实充值开】才把"充值成功"纳入成功门;dry-run(real_charge 关)= 走到充值步不真扣 →
+        #   不要求 purchase==success,等价 card-bound 成功(与 isSuccessRow 同口径,实时/最终一致)。
+        if opts.get("do_purchase") and opts.get("real_charge"):
             _ok = _ok and res["steps"].get("purchase") == "success"
         res["ok"] = _ok
         # ★错误不做糊涂账:把"在哪一步、因为啥"失败浓缩成 fail_stage/fail_reason 两字段(按流程顺序取第一个没过的环节),
@@ -360,7 +420,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         #   ★归因逻辑抽到 common.attribute_failure(单一来源,与混合引擎共用,杜绝漂移);对纯Sel输入与原内联块逐字节等价(见 test_attribution.py)。
         try:
             _fs, _fr = common.attribute_failure(res.get("steps"), opts, res)
-            if _fs:
+            if _fs and not res.get("fail_stage"):   # 充值步已显式标了(钱不够/测试帽)→ 保留更细的真因,不被泛化覆盖
                 res["fail_stage"] = _fs
                 res["fail_reason"] = _fr
         except Exception:
@@ -374,6 +434,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         return res
     finally:
         try:
+            _mark_stage(None)   # 收尾:把最后一个进行中阶段的耗时落进 timings(再写 total)
             res["timings"]["total"] = round(time.perf_counter() - t_start, 1)   # 整号端到端耗时(秒);finally 覆盖所有 return 路径
         except Exception:
             pass

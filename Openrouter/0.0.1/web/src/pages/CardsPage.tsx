@@ -20,6 +20,16 @@ export default function CardsPage() {
   const by = (s: string) => cards.filter((c) => c.status === s).length;
   const okSum = cards.reduce((n, c) => n + (c.successCount || 0), 0);
   const declSum = cards.reduce((n, c) => n + (c.declineCount || 0), 0);
+  // 充值容量读数:总金额 + 按 $5 参考充值额「还能真充几次」(填了次数按次数 / 填了金额按金额 / 未跟踪按绑定数)
+  const CAP_AMT = 5;
+  const totalBalance = data?.totalBalance ?? cards.reduce((n, c) => n + (c.balance || 0), 0);
+  const fundable = cards.filter((c) => c.status === 'active').reduce((n, c) => {
+    const bindLeft = Math.max(0, (c.maxUses || 1) - (c.usedCount || 0));
+    const cap = (c.chargeCap || 0) > 0 ? (c.chargeCap || 0) : ((c.balance || 0) > 0 ? Math.floor((c.balance || 0) / CAP_AMT) : Infinity);
+    const chargeLeft = cap === Infinity ? bindLeft : Math.max(0, cap - (c.chargedTotal || 0));
+    return n + Math.min(bindLeft, chargeLeft);
+  }, 0);
+  const tracked = cards.some((c) => (c.chargeCap || 0) > 0 || (c.balance || 0) > 0);
   const segs: Seg[] = [
     { label: '可用', value: by('active'), colorVar: '--success' },
     { label: '用尽', value: by('exhausted'), colorVar: '--warn' },
@@ -43,7 +53,7 @@ export default function CardsPage() {
           <Kpi icon="card" label="总卡数" value={cards.length} sub={`可用 ${by('active')}`} />
           <Kpi icon="okcircle" label="累计成功" value={okSum} tone="ok" sub={`被拒 ${declSum}`} />
           <Kpi icon="alert" label="用尽 / 禁用" value={`${by('exhausted')} / ${by('disabled')}`} tone="warn" />
-          <Kpi icon="xcircle" label="被拒卡" value={by('declined')} sub="declined 状态" />
+          <Kpi icon="card" label="充值容量" value={tracked ? `可充 ${fundable}` : '未跟踪'} sub={tracked ? `总金额 $${totalBalance}(按 $${CAP_AMT} 估)` : '卡未填次数/金额'} />
         </div>
         <section className="card">
           <div className="card-head"><span className="idx c-green">▤</span><h3>卡状态分布</h3><span className="head-hint">点击查看明细</span></div>

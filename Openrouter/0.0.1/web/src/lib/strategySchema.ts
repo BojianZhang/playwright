@@ -43,6 +43,10 @@ export const STRATEGY_SCHEMA: Record<PresetStage, StrategyField[]> = {
   ],
   charge: [
     { key: 'topUpAmount', label: '充值金额', hint: '美元 · 最低 5', type: 'number', default: '5', min: 5, step: 1 },
+    { key: 'realCharge', label: '真实充值(真扣款)', hint: '关=整批走到充值步但不真点 Purchase(测全流程零成本);开=真扣(受卡容量/同卡并发闸)', type: 'select', default: 'off', options: [
+      { value: 'off', label: '关 · 走到充值不真扣(dry-run 测试)' }, { value: 'on', label: '开 · 真实扣款(受卡充值容量闸)' },
+    ] },
+    { key: 'chargeCount', label: '整批最多真充次数', hint: '安全帽:整批最多真扣 N 次,达 N 就停真扣(其余号到充值步标"测试帽");0=不限', type: 'number', default: '0', min: 0, step: 1 },
   ],
 };
 

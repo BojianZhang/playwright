@@ -257,6 +257,8 @@ export default function ConsolePage() {
       unifiedPassword: unifiedPwd.trim(),
       doApiKey: stages.key, doCard: stages.card, doPurchase: stages.charge, doChangePw: stages.pwd && pwdGateOk,
       amount: Math.max(5, Number(chg.topUpAmount) || 5), cardMaxUses: Number(card.cardMaxUses) || 10,
+      // 充值容量闸:真实充值开关(开=真扣,受卡容量/并发)+ 整批最多真充次数(0=不限)。开真扣即开卡余额账本闸。
+      realCharge: String(chg.realCharge) === 'on', chargeCount: Math.max(0, num(chg.chargeCount, 0)),
       solveHcaptcha: eng.solveHcaptcha,
       maxRotations: num(eng.maxRotations, 3), cooldownHours: num(eng.cooldownHours, 3), maxReopen: num(eng.maxReopen, 3),
       cardDeadline: num(eng.cardDeadline, 0), solveFutileCap: eng.solveFutileCap, maxHcaptchaCardSwaps: eng.maxHcaptchaCardSwaps,

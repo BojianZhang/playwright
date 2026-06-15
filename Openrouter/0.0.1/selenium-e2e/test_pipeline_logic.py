@@ -242,6 +242,53 @@ def test_recovery_should_retry():
         recovery.reset_cache()
 
 
+def test_charge_capacity_ledger():
+    """卡充值容量账本(原子预留/提交/释放/容量+并发闸/fundable):与 Node billing/card-pool.js 同口径。"""
+    import common
+    from common import paths
+    d = tempfile.mkdtemp(prefix="orcardchg_")
+    pf = os.path.join(d, "card-pool.json")
+    json.dump([
+        {"id": "k1", "number": "4111111111111111", "last4": "1111", "maxUses": 10, "usedCount": 0, "status": "active", "chargeCap": 2, "chargedTotal": 0, "chargeInflight": 0, "balance": 0, "chargeConcurrency": 0},
+        {"id": "k2", "number": "4222222222222222", "last4": "2222", "maxUses": 10, "usedCount": 0, "status": "active", "chargeCap": 0, "chargedTotal": 0, "chargeInflight": 0, "balance": 20, "chargeConcurrency": 2},
+    ], open(pf, "w"))
+    _bak = paths.POOL_FILE
+    paths.POOL_FILE = pf
+    try:
+        # 容量算法:k1 次数=2;k2 金额20/充值额5=4
+        check("get_card_capacity k1=2", common.get_card_capacity("k1", 5) == 2)
+        check("get_card_capacity k2=4(20/5)", common.get_card_capacity("k2", 5) == 4)
+        # 预留:k1 cap=2 → 两次 ok 第三次 capacity 拒
+        check("reserve1 ok", common.reserve_charge("k1", 5)[0] is True)
+        check("reserve2 ok", common.reserve_charge("k1", 5)[0] is True)
+        r3 = common.reserve_charge("k1", 5)
+        check("reserve3 拒(capacity)", r3[0] is False and r3[1] == "capacity")
+        # commit 一次 → chargedTotal1 inflight1;release 一次 → inflight0
+        common.commit_charge("k1", 5)
+        common.release_charge("k1")
+        _p = {c["id"]: c for c in json.load(open(pf))}
+        check("k1 commit:chargedTotal1 inflight0", _p["k1"]["chargedTotal"] == 1 and _p["k1"]["chargeInflight"] == 0)
+        # k2 金额扣减 + 同卡并发=2(第3个并发预留拒)
+        check("k2 conc1 ok", common.reserve_charge("k2", 5)[0] is True)
+        check("k2 conc2 ok", common.reserve_charge("k2", 5)[0] is True)
+        rc = common.reserve_charge("k2", 5)
+        check("k2 conc3 拒(concurrency)", rc[0] is False and rc[1] == "concurrency")
+        common.commit_charge("k2", 5)
+        _p = {c["id"]: c for c in json.load(open(pf))}
+        check("k2 金额扣:20-5=15", _p["k2"]["balance"] == 15)
+        # reap 立即回收剩余在飞
+        common.reap_stale_inflight(0)
+        _p = {c["id"]: c for c in json.load(open(pf))}
+        check("reap 后无在飞", _p["k1"]["chargeInflight"] == 0 and _p["k2"]["chargeInflight"] == 0)
+        # fundable:k1 cap2-charged1=1(min 绑定10)、k2 cap4-charged1=3 → 共4
+        check("fundable_count=4", common.fundable_count(5) == 4)
+        # 未跟踪卡:预留永远 ok
+        json.dump([{"id": "u1", "number": "4222222222222222", "last4": "2222", "maxUses": 10, "usedCount": 0, "status": "active"}], open(pf, "w"))
+        check("未跟踪卡预留恒 ok", all(common.reserve_charge("u1", 5)[0] for _ in range(20)))
+    finally:
+        paths.POOL_FILE = _bak
+
+
 TESTS = [
     test_prior_done,
     test_save_progress_stage_merge,
@@ -250,6 +297,7 @@ TESTS = [
     test_acquire_browser_proxy_scoring,
     test_attribution_helper,
     test_recovery_should_retry,
+    test_charge_capacity_ledger,
 ]
 
 

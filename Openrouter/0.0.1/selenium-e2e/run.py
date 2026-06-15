@@ -85,6 +85,12 @@ def main():
     ap.add_argument("--do-card", action="store_true", help="加卡")
     ap.add_argument("--do-purchase", action="store_true", help="充值")
     ap.add_argument("--amount", type=int, default=5, help="充值金额(美元, 默认5)")
+    # ★充值容量闸(全默认关=逐字节不变):real-charge 真扣 / card-charge-gate 开卡容量账本(充值步原子预留) /
+    #   charge-count 整批最多真充 N 次(测试帽,0=不限) / limit-by-capacity 按卡总容量自动限批
+    ap.add_argument("--real-charge", action="store_true", help="真实充值(真点 Purchase 扣款);不传=dry-run 走到充值步不真扣")
+    ap.add_argument("--card-charge-gate", action="store_true", help="开卡充值容量账本闸(充值步原子预留:容量不够/同卡并发满→钱不够 END 不扣)")
+    ap.add_argument("--charge-count", type=int, default=0, help="整批最多真充 N 次(测试帽);0=不限")
+    ap.add_argument("--limit-by-capacity", action="store_true", help="按卡总充值容量自动限批(够几个跑几个)")
     ap.add_argument("--do-changepw", action="store_true", help="改邮箱密码(需 --unified-pw)")
     ap.add_argument("--unified-pw", default="", help="统一密码(OpenRouter 密码 + 改密目标)")
     ap.add_argument("--key-name", default=None)
@@ -179,12 +185,28 @@ def main():
     if _reused:
         log("阶段续跑:%d 个号已有 key,重跑将复用(不重复建 key)" % _reused)
 
+    # ★整批最多真充 N 次(测试帽):跨 worker 线程安全计数。真扣【前】(reserve 成功后)调一次占名额,达 N 即拒。
+    _charge_lock = threading.Lock()
+    _charge_used = [0]
+    def try_batch_charge():
+        n = max(0, int(args.charge_count or 0))
+        if n <= 0:
+            return True   # 0=不限
+        with _charge_lock:
+            if _charge_used[0] >= n:
+                return False
+            _charge_used[0] += 1
+            return True
+
     opts = {
         "cfg": cfg, "do_key": (not args.no_key), "do_card": args.do_card,
         "do_purchase": args.do_purchase, "amount": args.amount,
         "do_changepw": args.do_changepw, "unified_pw": args.unified_pw or None,
         "key_name": args.key_name, "manual_hcaptcha": not args.auto_hcaptcha_only,
         "delete_env": not args.no_delete_env,
+        # 充值容量闸:real_charge 真扣 / card_charge_gate 开容量账本预留 / charge_count 测试帽 / 批级真充计数回调
+        "real_charge": args.real_charge, "card_charge_gate": args.card_charge_gate,
+        "charge_count": max(0, int(args.charge_count or 0)), "try_batch_charge": try_batch_charge,
     }
 
     write_lock = threading.Lock()                 # 并发写 results.jsonl 加锁,防多 worker 交错
@@ -201,6 +223,24 @@ def main():
             log("跳过已完成 %s" % _a["email"])
     pending = [(i, acct) for i, acct in enumerate(accounts)
                if acct["email"] not in done and not common.is_bad_mailbox(acct["email"], bad_mb)]
+
+    # ★充值容量读数 + 可选自动限批(只在 real_charge+do_purchase+gate 开时)。先回收上次崩溃遗留的在飞预留。
+    if args.real_charge and args.do_purchase and args.card_charge_gate:
+        try:
+            _reaped = common.reap_stale_inflight()
+            if _reaped:
+                log("[充值] 回收上次遗留的在飞预留 %d 笔(卡额度释放)" % _reaped)
+        except Exception:
+            pass
+        try:
+            _fundable = common.fundable_count(args.amount)
+            log("[充值] 卡总充值容量:按 $%d 还能真充 %d 次(待跑 %d 个号)" % (args.amount, _fundable, len(pending)))
+            if args.limit_by_capacity and _fundable < len(pending):
+                _before = len(pending)
+                pending = pending[:max(0, _fundable)]
+                log("[充值] --limit-by-capacity:卡容量只够 %d 个 → 本批从 %d 砍到 %d 个(够几个跑几个)" % (_fundable, _before, len(pending)))
+        except Exception as _e:
+            log("[充值] 容量读数失败(不影响跑): %s" % str(_e)[:80])
 
     def worker(i, acct):
         slot = slot_q.get()                       # 占一个网格槽位(决定本号窗口在屏幕哪格)

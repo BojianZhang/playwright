@@ -91,6 +91,8 @@ function categoryOf(blame) {
   if (blame.stage === 'F.取Key') return 'detect';   // 取Key找不到入口/判不出结果 → 可改代码捞回
   // 加卡 与 充值 都按 detail 细分(declined=环境卡/server-error=Radar/hcaptcha/unknown=检测)
   if (blame.stage === 'D.加卡' || blame.stage === 'E.加卡放弃' || blame.stage === 'G.充值') {
+    // ★充值容量闸的自家结果(钱不够/测试帽)不是外部失败,别误归 Radar/卡环境 → 归"其它/可控配置"
+    if (d.includes('钱不够') || d.includes('insufficient') || d.includes('测试帽') || d.includes('test-capped')) return 'other';
     if (d.includes('unknown') || d.includes('fill-fail')) return 'detect';
     if (d.includes('declined')) return 'cardenv';
     if (d.includes('hcaptcha')) return 'hcaptcha';

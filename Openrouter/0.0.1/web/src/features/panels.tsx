@@ -39,6 +39,20 @@ export function PoolTab() {
       <input className="cell-num" type="number" min={1} max={100} defaultValue={c.maxUses}
         onBlur={(e) => { const v = Math.max(1, Math.min(100, Math.floor(Number(e.target.value)) || 1)); if (v !== c.maxUses) act('update', { id: c.id, maxUses: v }); }} />
     ) },
+    // 充值容量账本:充值次数 / 金额(填哪个用哪个,次数优先)/ 同卡并发上限。改了即重置「已充」(新预算可重新充满)。
+    { key: 'chargeCap', label: '充值次数', sortAccessor: (c) => c.chargeCap || 0, render: (c) => (
+      <input className="cell-num" type="number" min={0} max={9999} defaultValue={c.chargeCap || 0} title="这张卡能真充几次;0=不按次数。与「金额」二选一,填了次数优先"
+        onBlur={(e) => { const v = Math.max(0, Math.floor(Number(e.target.value)) || 0); if (v !== (c.chargeCap || 0)) act('set-charge', { id: c.id, chargeCap: v }); }} />
+    ) },
+    { key: 'balance', label: '金额$', sortAccessor: (c) => c.balance || 0, render: (c) => (
+      <input className="cell-num" type="number" min={0} max={99999} step={0.01} defaultValue={c.balance || 0} title="卡上真实有多少钱;系统按 floor(金额/充值额) 算能充几次。0=不按金额"
+        onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== (c.balance || 0)) act('set-charge', { id: c.id, balance: v }); }} />
+    ) },
+    { key: 'chargeConcurrency', label: '同卡并发', sortAccessor: (c) => c.chargeConcurrency || 0, defaultHidden: true, render: (c) => (
+      <input className="cell-num" type="number" min={0} max={99} defaultValue={c.chargeConcurrency || 0} title="同一时间最多几个号在这张卡上充值;0=不限"
+        onBlur={(e) => { const v = Math.max(0, Math.floor(Number(e.target.value)) || 0); if (v !== (c.chargeConcurrency || 0)) act('set-charge', { id: c.id, chargeConcurrency: v }); }} />
+    ) },
+    { key: 'chargedTotal', label: '已充', className: 'mono', align: 'right', defaultHidden: true, sortAccessor: (c) => c.chargedTotal || 0, render: (c) => <span title={`已真充 ${c.chargedTotal || 0} 次 · 在飞预留 ${c.chargeInflight || 0}`}>{c.chargedTotal || 0}{(c.chargeInflight || 0) > 0 ? ` (+${c.chargeInflight})` : ''}</span> },
     { key: 'usedCount', label: '已用', className: 'mono', align: 'right', sortAccessor: (c) => c.usedCount, render: (c) => c.usedCount },
     { key: 'remaining', label: '剩余', className: 'mono', align: 'right', sortAccessor: (c) => c.remaining, render: (c) => <b>{c.remaining}</b> },
     { key: 'successCount', label: '成功', className: 'mono', align: 'right', sortAccessor: (c) => c.successCount, cellStyle: { color: 'var(--success)' }, render: (c) => c.successCount },
