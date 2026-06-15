@@ -440,6 +440,20 @@ def register(page, email, op_password, mailbox_pw, cfg):
     if _is_target(em):
         log("[注册] 成功，已登录 %s" % em)
         return "ok"
+    # ★实测 _reg_unconfirmed.png:验证链接已开(到这=已开,否则上面 VERIFY_LINK 返回),但浏览器落到【登出/Sign in 页】
+    #   ——账号其实已注册+已验证,只差没保持登录(Clerk 会话没落地)。前面已 3 次 detect_session 确认非登录态,
+    #   直接用 email+op_password【登一次】把号救回(号已存在,不重注册、不重验证)。登录失败再判 UNCONFIRMED(不比现在差);
+    #   NOT_ALLOWED 透传给编排登记永久跳过。仅对本会到 UNCONFIRMED 的号生效,不碰成功快路径。
+    _lr = None
+    try:
+        _lr = login(page, email, op_password, mailbox_pw, cfg)
+    except Exception as _le:
+        log("[注册] 验证后直登异常(忽略,判 UNCONFIRMED): %s" % str(_le)[:80])
+    if _lr == "ok":
+        log("[注册] 验证后会话登出 → 用凭证直登成功,救回 %s" % email)
+        return "ok"
+    if _lr and "NOT_ALLOWED" in _lr:
+        return _lr
     _diag(page, "unconfirmed")
     return "fail:REGISTER_UNCONFIRMED"
 

@@ -1,7 +1,7 @@
 {
   "fixcZipDeadline": "10",
   "zipRetry": "0",
-  "maxConcurrency": "20",
+  "maxConcurrency": "10",
   "fastMode": "on",
   "changepwRequirePurchase": "on"
 }
