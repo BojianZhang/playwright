@@ -1020,6 +1020,8 @@ def get_api_key(page, name=None, expiration="No expiration", on_key=None, on_cha
         #   可见文本输入数、页面文案头。下批据此精修(改 name_visible 检测 vs 改导航/点击)。
         _nk_diag = _newkey_fail_diag(page)
         log("[取Key] 创建弹窗没打开(已等dashboard稳+滚动入视+6轮重试仍没开) diag=%s" % str(_nk_diag)[:200])
+        try: page.shot("_key_newkey_fail.png")   # ★存 DOM 截图(配合 diag),下批据此判【真没开 vs 开了误报】再精修
+        except Exception: pass
         return {"ok": False, "key": None, "name": key_name, "reason": "NEWKEY_DIALOG_NOT_OPENED",
                 "key_diag": _nk_diag, "key_capture_diag": _key_capture_diag(page)}
     # 【乱写修复】不能用裸 input[placeholder*=name](会命中 dashboard 的 'Search by name...' 搜索框→把 key 名打进搜索框)。

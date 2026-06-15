@@ -36,15 +36,49 @@ def _set_value(page, css, value):
 
 
 def _check(page, css):
+    # 勾选复选框(同意条款)。★实测 LEGAL_NOT_CHECKED:表单已填好但勾不上 —— Clerk 的真 input(#legalAccepted-field)
+    #   常被自定义样式框遮住/隐藏 → 原 `if el.is_displayed()` 直接跳过从不点击,或 el.click() 在 React 受控框上不生效。
+    #   现:① 先 scrollIntoView(防 below-fold 点不中)+ 常规点击;② 仍没勾上 → 点关联 <label for> + 用 native checked
+    #   setter 派发 click/input/change(React 受控复选框正解,与本文件 _fill_native 同套路)。只在【没勾上】时动,勾上即 no-op。
     from selenium.webdriver.common.by import By
     try:
         for el in page.d.find_elements(By.CSS_SELECTOR, css):
+            try:
+                if el.is_selected():
+                    return True
+            except Exception:
+                pass
+            try:
+                page.d.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            except Exception:
+                pass
             if el.is_displayed() and not el.is_selected():
                 try:
                     el.click()
                 except Exception:
-                    page.d.execute_script("arguments[0].click()", el)
-                return True
+                    try: page.d.execute_script("arguments[0].click()", el)
+                    except Exception: pass
+            # 兜底:真 input 被隐藏 / React 没认上一击 → 点 label + native setter 派发事件(幂等:已勾上则 JS 内直接 return)
+            try:
+                page.d.execute_script(r"""
+                    var inp=arguments[0]; if(inp.checked) return;
+                    var id=inp.id; var lab=id?document.querySelector('label[for="'+id+'"]'):null;
+                    if(lab){ try{ lab.click(); }catch(e){} }
+                    if(!inp.checked){
+                      var set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'checked').set;
+                      set.call(inp,true);
+                      inp.dispatchEvent(new Event('click',{bubbles:true}));
+                      inp.dispatchEvent(new Event('input',{bubbles:true}));
+                      inp.dispatchEvent(new Event('change',{bubbles:true}));
+                    }
+                """, el)
+            except Exception:
+                pass
+            try:
+                if el.is_selected():
+                    return True
+            except Exception:
+                pass
     except Exception:
         pass
     return False
