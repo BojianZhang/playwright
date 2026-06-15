@@ -128,6 +128,10 @@ export interface Overview {
 export interface StrategyPreset { id: string; name: string; builtin?: boolean; opts: Record<string, string | boolean>; }
 export interface StageStrategy { activeId: string; presets: StrategyPreset[]; }
 export interface StrategiesResp { version: number; stages: Record<string, StageStrategy>; }
+// 失败恢复策略(单一全局命名空间 + 多预设)
+export interface RecoveryPreset { id: string; name: string; builtin?: boolean; opts: Record<string, string | boolean>; }
+export interface RecoveryGroup { activeId: string; presets: RecoveryPreset[]; }
+export interface RecoveryResp { version: number; recovery: RecoveryGroup; }
 
 // 失败分析(/api/analytics):漏斗 / 环节失败排名 / 智能分类+建议 / 资源战绩 / 错误分布 / 趋势。
 export interface AnalyticsBucket { label: string; value: number; }

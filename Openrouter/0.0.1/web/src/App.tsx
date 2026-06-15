@@ -22,6 +22,7 @@ import EngineConfigPage from './pages/EngineConfigPage';
 import AdvancedPage from './pages/AdvancedPage';
 import ElementsPage from './pages/ElementsPage';
 import StrategiesPage from './pages/StrategiesPage';
+import RecoveryStrategiesPage from './pages/RecoveryStrategiesPage';
 import HealthPage from './pages/HealthPage';
 import CardsPage from './pages/CardsPage';
 import AccountsPage from './pages/AccountsPage';
@@ -43,6 +44,7 @@ const NAV: NavGroup[] = [
     { to: '/flow', label: '执行流程', icon: 'arrow' },
     { to: '/engine-config', label: '引擎配置', icon: 'sliders' },
     { to: '/strategies', label: '环节策略', icon: 'activity' },
+    { to: '/recovery', label: '失败恢复', icon: 'refresh' },
     { to: '/advanced', label: '高级参数', icon: 'sliders' },
     { to: '/elements', label: '元素维护', icon: 'search' },
     { to: '/runs', label: '运行历史', icon: 'history' },
@@ -166,6 +168,7 @@ export default function App() {
           <Route path="/flow" element={<FlowPage />} />
           <Route path="/engine-config" element={<EngineConfigPage />} />
           <Route path="/strategies" element={<StrategiesPage />} />
+          <Route path="/recovery" element={<RecoveryStrategiesPage />} />
           <Route path="/advanced" element={<AdvancedPage />} />
           <Route path="/elements" element={<ElementsPage />} />
           <Route path="/runs" element={<RunsPage />} />

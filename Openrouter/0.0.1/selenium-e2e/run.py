@@ -258,6 +258,7 @@ def main():
         args.proxy_offset += 1
         # 重算 done/registered/charged(口径同初始扫描;这里【不受 --no-resume 清空】——必须跳过本批已成功的号)
         _done2, _reg2, _chg2 = set(), set(), set()
+        _fs2 = {}   # email → 最近一条结果行的 fail_stage(Stage 1B 归因)→ 给恢复策略按类型决定是否重试
         if os.path.exists(res_file):
             with open(res_file, "r", encoding="utf-8") as _rf:
                 for _ln in _rf:
@@ -266,6 +267,8 @@ def main():
                     except Exception:
                         continue
                     _st = (_rr.get("steps") or {})
+                    if _rr.get("fail_stage"):
+                        _fs2[_rr.get("email")] = _rr.get("fail_stage")   # 取最近一行(同号多行后写覆盖)
                     if _st.get("auth") == "ok":
                         _reg2.add(_rr.get("email"))
                     if _st.get("purchase") == "success" or (_rr.get("charged") or 0) > 0:   # AR-1:向导充值第二信号
@@ -300,8 +303,14 @@ def main():
                 _reg2.add(_em0)
         _bad2 = common.load_bad_mailboxes()
         _retry_pending = []
+        _skip_by_policy = 0
         for _i, _acct in enumerate(accounts):
             if _acct["email"] in _done2 or common.is_bad_mailbox(_acct["email"], _bad2):
+                continue
+            # ★恢复策略(可配):按该号失败类型(fail_stage)决定是否参与本轮重试。默认全 True=现状重试所有非完成号;
+            #   只有用户在「恢复策略」页把某类型(注册/取Key/加卡/充值)配成 off 才跳过。歧义态早已计入 _done2(RETRY-CARD-01)不到这。
+            if not common.recovery.should_retry(_fs2.get(_acct["email"])):
+                _skip_by_policy += 1
                 continue
             # 刷新该号 resume 状态:注册过→直登不重注册、充过→不重扣、有key→复用不重建(防重复劳动/扣款)
             if _acct["email"] in _reg2:
@@ -314,6 +323,8 @@ def main():
                 if _rec.get("api_key"):
                     _acct["prior_key"] = _rec["api_key"]
             _retry_pending.append((_i, _acct))
+        if _skip_by_policy:
+            log("自动重试:按恢复策略跳过 %d 个号(其失败类型被配成「不重试」)" % _skip_by_policy)
         if not _retry_pending:
             log("自动重试:无失败号待重试 → 结束")
             break

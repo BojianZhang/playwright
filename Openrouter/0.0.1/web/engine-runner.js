@@ -431,6 +431,15 @@ function buildEnv(p) {
     const _nRetry = Number(p.autoRetryTimes);
     env.AUTO_RETRY_FAILED_TIMES = String(Number.isFinite(_nRetry) && _nRetry > 0 ? Math.min(_nRetry, 5) : 1);
   }
+  // ★失败恢复策略(Stage 2):全局激活预设 → 引擎可覆盖(payload.recoveryOverride,与上面"引擎覆盖全局"同序)→
+  //   合成单个 OPENROUTER_RECOVERY_JSON,run.py AUTO_RETRY 按 fail_stage 决定各失败类型是否重试。
+  //   默认全 'on' = 现状重试所有非永久失败,逐字节等价(Python 侧没配/解析失败也退默认全重试)。
+  try {
+    let _recOpts = require('./recovery-store').activeOpts();
+    if (p.recoveryOverride && typeof p.recoveryOverride === 'object') _recOpts = { ..._recOpts, ...p.recoveryOverride };   // 引擎覆盖(可选,空=用全局)
+    const _recJson = require('./recovery-schema').recoveryEnvJson(_recOpts);
+    if (_recJson && _recJson !== '{"retry":{}}') env.OPENROUTER_RECOVERY_JSON = _recJson;
+  } catch (_e) { /* 恢复策略可选:读失败不注 → Python 退默认全重试,不影响跑 */ }
   return env;
 }
 

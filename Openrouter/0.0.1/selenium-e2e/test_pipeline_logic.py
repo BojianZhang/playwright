@@ -204,6 +204,44 @@ def test_attribution_helper():
           af({"auth": "ok", "key": False, "card": "declined"}, OPTS, {}) == ("key", "key-not-captured"))
 
 
+def test_recovery_should_retry():
+    """失败恢复策略 common.recovery.should_retry:默认全 True(现状逐字节不变)、配 off 才跳、坏 JSON 退默认、
+       未知/无归因类型默认重试(不因归因缺失漏跑)。"""
+    from common import recovery
+    _bak = os.environ.get("OPENROUTER_RECOVERY_JSON")
+    try:
+        # ① 没注入 → 全部重试(= 现状"重试所有非完成号")
+        os.environ.pop("OPENROUTER_RECOVERY_JSON", None)
+        recovery.reset_cache()
+        for ft in ("register", "key", "card", "charge", "whatever", None, ""):
+            check("默认重试 %r" % ft, recovery.should_retry(ft) is True)
+        # ② 配 card/charge off → 这两类跳过,其余仍默认重试
+        os.environ["OPENROUTER_RECOVERY_JSON"] = '{"retry":{"retryCard":"off","retryCharge":"off"}}'
+        recovery.reset_cache()
+        check("card off→不重试", recovery.should_retry("card") is False)
+        check("charge off→不重试", recovery.should_retry("charge") is False)
+        check("register 没配→默认重试", recovery.should_retry("register") is True)
+        check("key 没配→默认重试", recovery.should_retry("key") is True)
+        check("未知类型→默认重试(归因缺失不漏跑)", recovery.should_retry("xyz") is True)
+        # ③ 坏 JSON / 空 retry → 安全退默认全重试
+        os.environ["OPENROUTER_RECOVERY_JSON"] = "not-json{"
+        recovery.reset_cache()
+        check("坏JSON→默认重试", recovery.should_retry("card") is True)
+        os.environ["OPENROUTER_RECOVERY_JSON"] = '{"retry":{}}'
+        recovery.reset_cache()
+        check("空retry→默认重试", recovery.should_retry("charge") is True)
+        # ④ on 显式 → 重试(与默认一致)
+        os.environ["OPENROUTER_RECOVERY_JSON"] = '{"retry":{"retryCard":"on"}}'
+        recovery.reset_cache()
+        check("card on→重试", recovery.should_retry("card") is True)
+    finally:
+        if _bak is None:
+            os.environ.pop("OPENROUTER_RECOVERY_JSON", None)
+        else:
+            os.environ["OPENROUTER_RECOVERY_JSON"] = _bak
+        recovery.reset_cache()
+
+
 TESTS = [
     test_prior_done,
     test_save_progress_stage_merge,
@@ -211,6 +249,7 @@ TESTS = [
     test_diversify_proxies,
     test_acquire_browser_proxy_scoring,
     test_attribution_helper,
+    test_recovery_should_retry,
 ]
 
 

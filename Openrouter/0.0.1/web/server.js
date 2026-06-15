@@ -38,6 +38,7 @@ const configRw = require('./config-rw');
 const strategiesStore = require('./strategies-store');
 const schemesStore = require('./schemes-store');
 const engineConfigStore = require('./engine-config-store');
+const recoveryStore = require('./recovery-store');
 const advancedStore = require('./advanced-store');
 const selectorsStore = require('./selectors-store');
 const selectorsSchema = require('./selectors-schema');
@@ -1244,6 +1245,36 @@ async function handleStrategiesActive(req, res) {
     sendJson(res, 200, { ok: true, ...r });
   } catch (e) { sendJson(res, STRATEGY_ERR[e.code] || 500, { error: e.code || 'ACTIVE_FAILED' }); }
 }
+// ── 失败恢复策略(单一全局命名空间·多预设):读 / 存 / 删 / 设激活 ──────────────────
+const RECOVERY_ERR = { NO_PRESET: 404, BUILTIN_LOCKED: 409 };
+function handleRecoveryGet(res) {
+  try { sendJson(res, 200, recoveryStore.getAll()); }
+  catch (e) { sendJson(res, 500, { error: 'RECOVERY_READ_FAILED', message: String(e && e.message) }); }
+}
+async function handleRecoverySave(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try {
+    const r = recoveryStore.savePreset({ id: body.id, name: body.name, opts: body.opts });
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, RECOVERY_ERR[e.code] || 500, { error: e.code || 'SAVE_FAILED' }); }
+}
+async function handleRecoveryDelete(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try {
+    const r = recoveryStore.deletePreset(String(body.id || ''));
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, RECOVERY_ERR[e.code] || 500, { error: e.code || 'DELETE_FAILED' }); }
+}
+async function handleRecoveryActive(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  try {
+    const r = recoveryStore.setActive(String(body.id || ''));
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (e) { sendJson(res, RECOVERY_ERR[e.code] || 500, { error: e.code || 'ACTIVE_FAILED' }); }
+}
 // ── 执行方案(整套"怎么跑"命名预设):读 / 存 / 删 / 设激活 ──────────────────
 const SCHEME_ERR = { NO_PRESET: 404, BUILTIN_LOCKED: 409 };
 function handleSchemesGet(res) {
@@ -1695,7 +1726,7 @@ process.on('uncaughtException', (err) => { try { console.error('[uncaughtExcepti
 // Python/浏览器占代理与句柄);然后关闭 server 退出。幂等(_shuttingDown 防重入)。
 let _shuttingDown = false;
 function flushAllStores() {
-  for (const [name, fn] of [['account', accountStore.flushNow], ['billing', billingLedger.flushNow], ['policy', policyStore.flushNow], ['error-log', errorLog.flushNow]]) {
+  for (const [name, fn] of [['account', accountStore.flushNow], ['billing', billingLedger.flushNow], ['policy', policyStore.flushNow], ['error-log', errorLog.flushNow], ['recovery', recoveryStore.flushNow]]) {
     try { if (typeof fn === 'function') fn(); } catch (e) { try { console.error(`[shutdown] ${name} 刷盘失败:`, e && e.message); } catch (_e) { /* ignore */ } }
   }
 }
@@ -1802,6 +1833,10 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/strategies/save') return void handleStrategiesSave(req, res);
   if (req.method === 'POST' && pathname === '/api/strategies/delete') return void handleStrategiesDelete(req, res);
   if (req.method === 'POST' && pathname === '/api/strategies/active') return void handleStrategiesActive(req, res);
+  if (req.method === 'GET' && pathname === '/api/recovery') return void handleRecoveryGet(res);
+  if (req.method === 'POST' && pathname === '/api/recovery/save') return void handleRecoverySave(req, res);
+  if (req.method === 'POST' && pathname === '/api/recovery/delete') return void handleRecoveryDelete(req, res);
+  if (req.method === 'POST' && pathname === '/api/recovery/active') return void handleRecoveryActive(req, res);
   if (req.method === 'GET' && pathname === '/api/schemes') return void handleSchemesGet(res);
   if (req.method === 'POST' && pathname === '/api/schemes/save') return void handleSchemesSave(req, res);
   if (req.method === 'POST' && pathname === '/api/schemes/delete') return void handleSchemesDelete(req, res);
