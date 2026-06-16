@@ -22,6 +22,7 @@ export const ADV_FIELDS: AdvField[] = [
   { key: 'mailVerifyAttempts', env: 'MAIL_VERIFY_ATTEMPTS', label: '验证轮询次数/轮', hint: '每轮读验证链接的轮询次数(默认12);总耗≈重发轮数×本值×间隔+Resend≈196s,调小更快放弃', type: 'number', scope: 'selenium', group: '邮箱验证', def: '12' },
   { key: 'mailVerifyCycles', env: 'MAIL_VERIFY_CYCLES', label: '重发轮数', hint: '读不到就点 Resend 重发再轮询的轮数(默认3);设 1=只读一轮不重发=最快失败', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
   { key: 'mailVerifyInterval', env: 'MAIL_VERIFY_INTERVAL', label: '轮询间隔(秒)', hint: '每次读链接之间隔秒数(默认3)', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
+  { key: 'mailVerifyDeadline', env: 'MAIL_VERIFY_DEADLINE', label: '邮箱验证总死线(秒) ★砍长尾', hint: '整段邮箱验证超过这么多秒还没拿到链接就快速放弃,砍掉收不到信的 200-517s 长尾、把并发槽让给别的号。留空=关=不限(老流程逐字节不变)。建议 90~120 试', type: 'number', scope: 'selenium', group: '邮箱验证', def: '' },
   // ── 加卡 / Fix C 核(纯Selenium + 混合 都走)──
   { key: 'fixcSuccessHold', env: 'FIXC_SUCCESS_HOLD', label: '绑成展示停留(秒)', hint: '绑成后停留几秒让你看到再走;无人值守设 0 更快', type: 'number', scope: 'both', group: '加卡', def: '4' },
   { key: 'fixcZipDeadline', env: 'FIXC_ZIP_DEADLINE', label: 'ZIP重试死线(秒)', hint: 'declined 换 ZIP 重试同一张卡的总上限', type: 'number', scope: 'both', group: '加卡', def: '60' },
@@ -34,6 +35,7 @@ export const ADV_FIELDS: AdvField[] = [
   { key: 'selPageloadTimeout', env: 'SEL_PAGELOAD_TIMEOUT', label: '页面加载超时(秒)', hint: 'Selenium set_page_load_timeout;慢代理可调大;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selScriptTimeout', env: 'SEL_SCRIPT_TIMEOUT', label: '脚本执行超时(秒)', hint: 'Selenium set_script_timeout;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selPageloadStrategy', env: 'SEL_PAGELOAD_STRATEGY', label: '页面加速(加载策略)', hint: '让脚本更早去找元素:eager=不等图片/子资源加载完(DOM 就绪即放行,推荐);none=导航一开始就放行(最激进,靠显式等元素兜底)。留空=normal(等整页加载完)。★零反检测风险,不屏蔽资源', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'eager', 'none'] },
+  { key: 'adsQuotaFailfast', env: 'ADS_QUOTA_FAILFAST', label: 'AdsPower 配额满快速失败', hint: 'on=建环境报「环境数达上限(302)」时立即失败,不再换 5 个代理空耗、也不误把好代理标退役,并提示先删环境/关「跑完保留环境」。留空=关=老流程(逐个代理重试)', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'on'] },
   { key: 'adsMaxLaunch', env: 'ADS_MAX_LAUNCH', label: 'AdsPower开浏览器并发上限', hint: '本地 API 开浏览器的限频;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'envScreenRes', env: 'ENV_SCREEN_RES', label: '环境分辨率', hint: '如 1280_720;留空=代码默认', type: 'text', scope: 'both', group: '驱动环境', def: '' },
   // ── 卡池(两套共用,载卡时 ledger 读)──
