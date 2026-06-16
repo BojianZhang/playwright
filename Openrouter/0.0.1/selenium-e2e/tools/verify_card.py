@@ -19,7 +19,8 @@ def g(p, t=60, retries=5):
     last = None
     for i in range(retries):
         try:
-            return json.loads(NOPROXY.open(urllib.request.Request(API + p, headers=_ADS_HDR), timeout=t).read())
+            with NOPROXY.open(urllib.request.Request(API + p, headers=_ADS_HDR), timeout=t) as r:
+                return json.loads(r.read())   # with 确保连接关闭,不泄漏 fd(FH-002)
         except Exception as e:
             last = e; time.sleep(3)
     raise SystemExit("AdsPower 不通: %s" % last)
@@ -45,7 +46,8 @@ from selenium.webdriver.common.by import By
 
 major = ""
 try:
-    info = json.loads(urllib.request.urlopen("http://127.0.0.1:%s/json/version" % port, timeout=5).read())
+    with urllib.request.urlopen("http://127.0.0.1:%s/json/version" % port, timeout=5) as resp:   # with 关连接,不泄漏 fd(FH-003)
+        info = json.loads(resp.read())
     major = info.get("Browser", "").split("/")[-1].split(".")[0]
 except Exception:
     pass

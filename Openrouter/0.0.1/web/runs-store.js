@@ -131,10 +131,29 @@ function get(jobId) {
   return _load().find((r) => r.jobId === jobId) || null;
 }
 
+// 历史「恢复跑」战绩(粗粒度·总体,非按原因):遍历 resumedFrom 非空的【已终态】行汇总 success/total。
+//   可选 profileId 过滤(本次/某套恢复方案的战绩,匹配 params.configSnapshot.recoveryProfileId)。
+//   ★诚实约束:runs.json 只有逐 job 汇总(无逐号逐失败原因)→ 只能给总体成功率,绝不假装按原因。
+//   success/total(不是 success/(success+failed))→ 把「未完整/被中断」也计入分母,不夸大恢复成效。
+function resumedSuccessRate(profileId) {
+  const runs = _load();
+  let runsN = 0, total = 0, success = 0;
+  for (const r of runs) {
+    if (!r || !r.resumedFrom) continue;
+    if (r.status === 'running') continue;   // 没跑完不计入战绩
+    if (profileId && (((r.params || {}).configSnapshot || {}).recoveryProfileId !== profileId)) continue;
+    runsN += 1;
+    total += Number(r.total) || 0;
+    success += Number(r.success) || 0;
+  }
+  const pct = total > 0 ? Math.round((success / total) * 100) : null;
+  return { runs: runsN, total, success, pct };
+}
+
 function clear() {
   _runs = [];
   _persist();
   return true;
 }
 
-module.exports = { start, finish, fail, reapStale, list, get, clear, _RUNS_FILE: RUNS_FILE };
+module.exports = { start, finish, fail, reapStale, list, get, clear, resumedSuccessRate, _RUNS_FILE: RUNS_FILE };

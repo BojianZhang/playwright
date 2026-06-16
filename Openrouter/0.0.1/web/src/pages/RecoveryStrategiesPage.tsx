@@ -3,7 +3,7 @@
 //   歧义态不重绑、号被拒/坏邮箱永久跳过 = 固定铁律,只读展示。需在「引擎配置/控制台」开启「自动重试失败号」此页才生效。
 import { Link } from 'react-router-dom';
 import { Icon } from '../lib/icons';
-import { RECOVERY_FIELDS, RECOVERY_FIXED_RULES } from '../lib/recoverySchema';
+import { RECOVERY_ALL_FIELDS, RECOVERY_FIXED_RULES } from '../lib/recoverySchema';
 import { useRecovery } from '../features/console/useRecovery';
 import RecoveryEditor from '../features/console/RecoveryEditor';
 
@@ -19,12 +19,11 @@ export default function RecoveryStrategiesPage() {
     <main className="page">
       <div className="page-head">
         <h1>失败恢复策略</h1>
-        <p>按<b>失败类型</b>配置<b>自动重试</b>时哪些类型参与重跑(可多套命名预设、一键切换激活)。依赖运行结果里已归因好的
-          <b>失败环节</b>(注册/取Key/加卡/充值)。换卡张数 / ZIP / 人机验证策略在
-          <Link to="/advanced" style={{ color: 'var(--primary-text)' }}>高级参数</Link>与
-          <Link to="/engine-config" style={{ color: 'var(--primary-text)' }}>引擎配置</Link>里,这里不重复。
-          需先在<Link to="/engine-config" style={{ color: 'var(--primary-text)' }}>引擎配置</Link>/<Link to="/console" style={{ color: 'var(--primary-text)' }}>控制台</Link>开启
-          <b>「自动重试失败号」</b>,本页策略才生效。</p>
+        <p>一套<b>恢复方案</b> = <b>重试参与度</b>(各失败类型要不要重跑)+ <b>恢复动作</b>(换IP轮数 / ZIP重试 / 换卡策略 / 人机换卡)。
+          可多套命名预设、一键切换激活。依赖运行结果里已归因好的<b>失败环节</b>(注册/取Key/加卡/充值)。
+          <b>恢复动作</b>在<Link to="/runs" style={{ color: 'var(--primary-text)' }}>运行详情</Link>的「批量恢复」里按失败主因自动推荐对应方案;
+          <b>重试参与度</b>需先在<Link to="/engine-config" style={{ color: 'var(--primary-text)' }}>引擎配置</Link>/<Link to="/console" style={{ color: 'var(--primary-text)' }}>控制台</Link>开启
+          <b>「自动重试失败号」</b>才生效。</p>
       </div>
 
       <section className="card">
@@ -46,7 +45,7 @@ export default function RecoveryStrategiesPage() {
             <>
               <div style={{ marginBottom: 10, fontSize: 12, color: 'var(--text-3)' }}>
                 共 <b style={{ color: 'var(--text-1)' }}>{presetCount}</b> 套预设 · 当前激活:<b style={{ color: 'var(--success)' }}>{activeName || '…'}</b> ·
-                含 <b style={{ color: 'var(--text-1)' }}>{RECOVERY_FIELDS.length}</b> 项可调参数
+                含 <b style={{ color: 'var(--text-1)' }}>{RECOVERY_ALL_FIELDS.length}</b> 项可调参数(重试参与度 + 恢复动作)
               </div>
               <RecoveryEditor />
             </>

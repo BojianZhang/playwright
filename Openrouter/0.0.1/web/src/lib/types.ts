@@ -74,7 +74,7 @@ export interface JobDoneEvt { jobId: string; total: number; success: number; fai
 // 运行历史 + 总览(期2)
 export interface RunParams { mode?: string; concurrency?: number; count?: number; billingAction?: string; doApiKey?: boolean; doPasswordChange?: boolean; topUpAmount?: number; headed?: boolean; browserProvider?: string; engine?: string; doCard?: boolean; doPurchase?: boolean; solveHcaptcha?: string;
   // 配置快照:本次跑用的激活引擎预设/执行方案/高级参数(server.js handleApiRun 写入,可溯源)
-  configSnapshot?: { advanced?: Record<string, unknown>; enginePresetId?: string | null; engineOpts?: Record<string, unknown> | null; schemeId?: string | null } | null; }
+  configSnapshot?: { advanced?: Record<string, unknown>; enginePresetId?: string | null; engineOpts?: Record<string, unknown> | null; schemeId?: string | null; recoveryProfileId?: string | null; recoveryProfileName?: string | null } | null; }
 export interface RunSummary {
   jobId: string; nodeId: string; engine?: string; status: 'running' | 'finished' | 'error' | 'interrupted';
   startedAt: number; finishedAt: number | null; durationMs: number | null;
@@ -139,7 +139,9 @@ export interface StrategiesResp { version: number; stages: Record<string, StageS
 // 失败恢复策略(单一全局命名空间 + 多预设)
 export interface RecoveryPreset { id: string; name: string; builtin?: boolean; opts: Record<string, string | boolean>; }
 export interface RecoveryGroup { activeId: string; presets: RecoveryPreset[]; }
-export interface RecoveryResp { version: number; recovery: RecoveryGroup; }
+// 历史「恢复跑」总体战绩(粗粒度,弹窗诚实展示)
+export interface ResumedStats { runs: number; total: number; success: number; pct: number | null; }
+export interface RecoveryResp { version: number; recovery: RecoveryGroup; resumedStats?: ResumedStats | null; }
 
 // 失败分析(/api/analytics):漏斗 / 环节失败排名 / 智能分类+建议 / 资源战绩 / 错误分布 / 趋势。
 export interface AnalyticsBucket { label: string; value: number; }

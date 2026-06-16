@@ -422,7 +422,8 @@ function handleEvents(req, res, query) {
   safeWrite(`event: connected\ndata: ${JSON.stringify({ jobId })}\n\n`);
   // 重放:client 连上前(任务启动瞬间)或断线重连(Last-Event-ID)期间漏掉的事件补发,避免启动日志/进度丢。
   // 同步执行(getBuffered→subscribe 之间无 await,不会有 publish 插入),并对已重放的 seq 去重,既不漏也不重。
-  const lastId = Number(req.headers['last-event-id'] || query.get('lastEventId') || 0) || 0;
+  let lastId = Number(req.headers['last-event-id'] || query.get('lastEventId') || 0) || 0;
+  if (!Number.isSafeInteger(lastId) || lastId < 0) lastId = 0;   // RTE-7:坏/负/越界 Last-Event-ID 退 0(从头重放),不把异常值喂进 seq 比较
   let lastReplayed = lastId;
   try {
     for (const evt of eventBus.getBuffered(jobId, lastId)) {
@@ -623,8 +624,13 @@ async function handleApiAggregate(req, res) {
   try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
   // 请求里的 hosts 与服务端配置的 cluster.hosts 合并去重 → 中心机配好后无需手填。
   const bodyHosts = Array.isArray(body.hosts) ? body.hosts : [];
-  // 合并:请求传入 + 配置 cluster.hosts + 动态注册的在线子机。只保留合法 http(s) 地址(rte-3:防把任意串喂给 fetch)。
-  const hosts = [...new Set([...bodyHosts, ...loadClusterHosts(), ...getActivePeers().map((p) => p.url)].map((h) => String(h).trim()).filter(Boolean))].filter(validHttpUrl);
+  // ★RTE-11(SSRF):body.hosts 来自客户端,只接受【已在可信集群名单内】(配置 cluster.hosts + 在线注册 peer)的地址;
+  //   否则可让本机带 AUTH_TOKEN 去 fetch 任意内网端点(169.254.169.254 / 127.0.0.1:6379 …)= SSRF 探测 + 令牌外泄。
+  //   与 handleDispatch 同信任模型(_allowedDispatchBases)。配置/在线 peer 本身仍无条件保留(可信源)。
+  const trustedBases = _allowedDispatchBases();
+  const safeBodyHosts = bodyHosts.map((h) => String(h).trim()).filter(Boolean).filter((h) => trustedBases.has(_normBase(h)));
+  // 合并:请求传入(已过白名单) + 配置 cluster.hosts + 动态注册的在线子机。只保留合法 http(s) 地址(rte-3:防把任意串喂给 fetch)。
+  const hosts = [...new Set([...safeBodyHosts, ...loadClusterHosts(), ...getActivePeers().map((p) => p.url)].map((h) => String(h).trim()).filter(Boolean))].filter(validHttpUrl);
   const includeLocal = body.includeLocal !== false;
   const dedupeMode = body.dedupe || 'email+apiKey'; // 默认每个 邮箱+Key 一行(同邮箱多 key 不丢)
   const all = [];
@@ -1150,12 +1156,19 @@ function launchPythonJob(engine, sliced, proxies, payload, resumedFrom) {
     try {
       const ec = require('./engine-config-store');
       const en = (((ec.getAll() || {}).engines) || {})[engine] || {};
+      // 恢复方案溯源:批量恢复弹窗选的方案(payload.recoveryProfile*)优先;普通跑回退【全局激活】的恢复预设。
+      let recProfileId = payload.recoveryProfileId || null, recProfileName = payload.recoveryProfileName || null;
+      if (!recProfileId) {
+        try { const _rec = require('./recovery-store').getAll().recovery; const _a = _rec.presets.find((p) => p.id === _rec.activeId); if (_a) { recProfileId = _a.id; recProfileName = _a.name; } } catch (_e3) { /* 快照失败不致命 */ }
+      }
       configSnapshot = {
         advanced: require('./advanced-store').get() || {},
         enginePresetId: en.activeId || null,
         // ★按值快照引擎opts(不只存 activeId 指针)→ 预设后续被编辑也能溯源【当时真正跑的参数】。
         engineOpts: (typeof ec.activeOpts === 'function') ? ec.activeOpts(engine) : null,
         schemeId: (((require('./schemes-store').getAll() || {}).schemes) || {}).activeId || null,
+        recoveryProfileId: recProfileId,
+        recoveryProfileName: recProfileName,
       };
     } catch (_e2) { /* 快照失败不影响起 job */ }
     runsStore.start({
@@ -1186,6 +1199,9 @@ function rebuildResumeFromDetail(srcJobId) {
   let d = null;
   try { d = engineRunner.readDetail(srcJobId); } catch (_e) { d = null; }
   if (!d) return null;
+  // ★从 per-job 详情快照取引擎(writeDetail 写在顶层 d.engine):manifest 已清的老批次靠它定引擎,
+  //   否则 sourceEngine 链取不到、split 老批次更会丢分流识别 → 续跑被 BAD_ENGINE 挡掉。
+  const detailEngine = (['selenium', 'hybrid', 'split'].includes(d.engine)) ? d.engine : null;
   const rows = [].concat(d.failed || [], d.incomplete || []);
   // 永久态(banned/坏邮箱/not_allowed)不重建;无任何可用密码的行也跳过(登不回去,徒劳重试浪费配额)。
   const recoverable = rows.filter((r) => r && r.email && !r.blacklisted && r.status !== 'banned' && r.status !== 'bad-mailbox'
@@ -1198,7 +1214,7 @@ function rebuildResumeFromDetail(srcJobId) {
   const logins = recoverable.map((r) => String(r.password || '').trim());
   const origs = recoverable.map((r) => String(r.originalPassword || '').trim());
   if (logins.every(Boolean) && new Set(logins).size === 1 && !origs.includes(logins[0])) unifiedPassword = logins[0];
-  return { accountsRaw, proxiesRaw: String(proxyStore.activeLines() || ''), manifest: null, splitHint: false, unifiedPassword, rebuilt: true };
+  return { accountsRaw, proxiesRaw: String(proxyStore.activeLines() || ''), manifest: null, engine: detailEngine, splitHint: detailEngine === 'split', unifiedPassword, rebuilt: true };
 }
 
 // POST /api/run/resume —— 「续跑这批 / 批量恢复」:读源 job 残留输入(accounts.txt/proxies.txt/job.json)→ 强制 resume → 新起一个 job。
@@ -1218,7 +1234,7 @@ async function handleApiRunResume(req, res) {
   // 引擎来源:manifest → runs 行 engine → runs 行 params.engine
   const pick = (v) => (['selenium', 'hybrid', 'split'].includes(v) ? v : null);
   // 源任务引擎(manifest → runs 行 → runs.params → split 自动识别 A/B 文件);请求可显式带 engine(前端从详情页 summary 带来)。
-  const sourceEngine = pick(base.engine) || pick(row && row.engine) || pick(row && row.params && row.params.engine) || (inp.splitHint ? 'split' : null);
+  const sourceEngine = pick(base.engine) || pick(inp.engine) || pick(row && row.engine) || pick(row && row.params && row.params.engine) || (inp.splitHint ? 'split' : null);
   const reqEngine = pick(body && body.engine);
   // ★防重复扣款:恢复必须用【源引擎】。各引擎结果文件独立(results.jsonl vs hybrid_results.jsonl),换引擎会读不到 charged 集
   //   → 已扣款的号被当成没扣过、二次扣款。请求显式指定且与源不一致 → 直接拒绝,不瞎跑。
@@ -1245,6 +1261,9 @@ async function handleApiRunResume(req, res) {
     const _z = Number(ro.zipRetry);
     if (ro.zipRetry !== undefined && ro.zipRetry !== '' && Number.isFinite(_z) && _z >= 0) payload.zipRetry = _z;
     if (ro.autoRetryFailed) { payload.autoRetryFailed = true; const _t = Number(ro.autoRetryTimes); if (Number.isFinite(_t) && _t > 0) payload.autoRetryTimes = _t; }
+    // ★恢复方案可溯源(纯元数据,buildEnv 不消费、不进 env/recovery JSON):记下本次恢复用的方案 id/名 → configSnapshot。
+    if (ro.recoveryProfileId !== undefined) payload.recoveryProfileId = String(ro.recoveryProfileId || '').slice(0, 40);
+    if (ro.recoveryProfileName !== undefined) payload.recoveryProfileName = String(ro.recoveryProfileName || '').slice(0, 40);
   }
   let accounts = parseAccounts(payload.accountsRaw);
   const proxies = parseProxies(payload.proxiesRaw);
@@ -1329,8 +1348,13 @@ async function handleStrategiesActive(req, res) {
 // ── 失败恢复策略(单一全局命名空间·多预设):读 / 存 / 删 / 设激活 ──────────────────
 const RECOVERY_ERR = { NO_PRESET: 404, BUILTIN_LOCKED: 409 };
 function handleRecoveryGet(res) {
-  try { sendJson(res, 200, recoveryStore.getAll()); }
-  catch (e) { sendJson(res, 500, { error: 'RECOVERY_READ_FAILED', message: String(e && e.message) }); }
+  try {
+    const base = recoveryStore.getAll();
+    // 附带历史「恢复跑」总体战绩(粗粒度,弹窗诚实展示;失败不阻断主数据)。
+    let resumedStats = null;
+    try { resumedStats = runsStore.resumedSuccessRate(); } catch (_e) { resumedStats = null; }
+    sendJson(res, 200, { ...base, resumedStats });
+  } catch (e) { sendJson(res, 500, { error: 'RECOVERY_READ_FAILED', message: String(e && e.message) }); }
 }
 async function handleRecoverySave(req, res) {
   let body;
@@ -1506,7 +1530,7 @@ function pingAdspower(apiBase, apiKey) {
     }
     const t0 = Date.now(); let done = false;
     const finish = (obj) => { if (done) return; done = true; resolve({ apiBase: base, latencyMs: Date.now() - t0, ...obj }); };
-    const r = lib.get(url, { headers }, (resp) => { let s = ''; resp.on('data', (d) => { s += d; if (s.length > 4096) resp.destroy(); }); resp.on('end', () => finish({ ok: resp.statusCode === 200, status: resp.statusCode, body: s.slice(0, 300) })); });
+    const r = lib.get(url, { headers }, (resp) => { let s = ''; resp.on('data', (d) => { s += d; if (s.length > 4096) resp.destroy(); }); resp.on('end', () => finish({ ok: resp.statusCode === 200, status: resp.statusCode, body: s.slice(0, 300) })); resp.on('error', (e) => finish({ ok: false, error: String(e && e.message) })); });   // RTE-5:响应流也挂 error,否则 socket 中途断 resp 抛未处理 'error' 崩进程
     r.setTimeout(6000, () => { try { r.destroy(); } catch (_e) { /* */ } finish({ ok: false, error: 'TIMEOUT' }); });
     r.on('error', (e) => finish({ ok: false, error: String(e && e.message) }));
   });

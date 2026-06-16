@@ -14,7 +14,8 @@ const path = require('path');
 const { readJsonOr } = require('./json-safe');
 const { DEFAULTS, KEYS } = require('./recovery-schema');
 
-const FILE = path.join(__dirname, '..', 'data', 'recovery-strategies.json');
+// 默认落盘 data/recovery-strategies.json;OPENROUTER_RECOVERY_FILE 可覆盖(仅测试用,绝不碰生产盘)。
+const FILE = process.env.OPENROUTER_RECOVERY_FILE || path.join(__dirname, '..', 'data', 'recovery-strategies.json');
 const NAME_MAX = 40;
 
 let _db = null;   // 内存缓存
@@ -30,16 +31,31 @@ function _load() {
   return _db;
 }
 
-// 缺失/空 → seed 一个 builtin「默认」预设(全重试 = 现状)。
+// 内置「恢复方案」(失败感知预设):retry.* 全继承默认(全重试,逐字节等价),只在【动作】字段上有别。
+//   r_default 必须排第一且 activeId 默认指它(= 现状逐字节不变)。新增方案是给批量恢复弹窗按主因自动推荐 + 用户复用。
+const BUILTIN_PRESETS = [
+  { id: 'r_default', name: '默认(全部重试)', opts: { ...DEFAULTS } },
+  { id: 'r_swap_env', name: '换环境(充值拒付)', opts: { ...DEFAULTS, zipRetry: '3', ipRounds: '2' } },
+  { id: 'r_swap_card', name: '换卡(余额不足/人机)', opts: { ...DEFAULTS, cardStrategy: 'spread', swapOnHcaptcha: 'on', ipRounds: '1' } },
+  { id: 'r_swap_ip', name: '换 IP(取Key/注册)', opts: { ...DEFAULTS, ipRounds: '3' } },
+];
+
+// 缺失/空 → seed 全部内置方案;已有 → 幂等补齐缺失的内置(按 id),绝不动 activeId / 已有预设的 opts。
 function _seed() {
   const rec = _db.recovery;
   let changed = false;
   if (!rec.presets || !Array.isArray(rec.presets) || !rec.presets.length) {
-    _db.recovery = { activeId: 'r_default', presets: [{ id: 'r_default', name: '默认(全部重试)', builtin: true, opts: { ...DEFAULTS } }] };
+    _db.recovery = { activeId: 'r_default', presets: BUILTIN_PRESETS.map((b) => ({ id: b.id, name: b.name, builtin: true, opts: { ...b.opts } })) };
     changed = true;
-  } else if (!rec.presets.find((p) => p.id === rec.activeId)) {
-    rec.activeId = rec.presets[0].id;
-    changed = true;
+  } else {
+    // 幂等迁移:老安装只有 r_default → 补齐新内置方案(不重排、不改 activeId、不碰已存在预设)
+    for (const b of BUILTIN_PRESETS) {
+      if (!rec.presets.find((p) => p.id === b.id)) {
+        rec.presets.push({ id: b.id, name: b.name, builtin: true, opts: { ...b.opts } });
+        changed = true;
+      }
+    }
+    if (!rec.presets.find((p) => p.id === rec.activeId)) { rec.activeId = rec.presets[0].id; changed = true; }
   }
   if (changed) _persist();
 }

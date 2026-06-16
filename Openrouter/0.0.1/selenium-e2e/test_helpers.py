@@ -319,7 +319,41 @@ def test_grid_min_size():
     os.environ.pop("SCREEN_W", None); os.environ.pop("SCREEN_H", None)
 
 
+def test_recovery_should_retry():
+    """失败恢复策略门(common.recovery.should_retry):默认全 True(逐字节不变);只有显式 off 才拦;
+    坏 JSON/未知 stage → 默认重试;★动作字段(ipRounds 等)对 Python 不可见(只读 retry.*)。"""
+    rec = common.recovery
+
+    def _set(env):
+        if env is None:
+            os.environ.pop("OPENROUTER_RECOVERY_JSON", None)
+        else:
+            os.environ["OPENROUTER_RECOVERY_JSON"] = env
+        rec.reset_cache()
+
+    # ① 无 env → 所有失败类型默认重试(现状)
+    _set(None)
+    check("无策略→register/key/card/charge 全默认重试", all(rec.should_retry(s) for s in ("register", "key", "card", "charge")))
+    # ② 显式把 charge 关掉 → 只 charge 不重试,其余仍重试
+    _set('{"retry":{"retryCharge":"off"}}')
+    check("retryCharge=off → charge 不重试", rec.should_retry("charge") is False)
+    check("retryCharge=off → card 仍重试", rec.should_retry("card") is True)
+    # ③ 未知/缺失 stage → 默认重试(不因归因缺失漏跑)
+    _set('{"retry":{"retryCard":"off"}}')
+    check("未知 stage → 默认重试", rec.should_retry("chrge_typo") is True)
+    check("retryCard=off → card 不重试", rec.should_retry("card") is False)
+    # ④ 坏 JSON → 默认全重试(解析失败退现状)
+    _set("{not valid json")
+    check("坏 JSON → 默认重试", all(rec.should_retry(s) for s in ("register", "card", "charge")))
+    # ⑤ ★动作字段对 Python 不可见:顶层混入 ipRounds/zipRetry 不影响 retry 判定(只读 retry.*)
+    _set('{"retry":{"retryCharge":"off"},"ipRounds":"3","zipRetry":"2"}')
+    check("动作字段不污染 retry 判定(charge 仍 off)", rec.should_retry("charge") is False)
+    check("动作字段不污染 retry 判定(register 仍 on)", rec.should_retry("register") is True)
+    _set(None)
+
+
 TESTS = [
+    test_recovery_should_retry,
     test_is_banned_reason,
     test_bad_mailbox,
     test_card_captcha_disable,

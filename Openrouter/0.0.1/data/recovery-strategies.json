@@ -13,6 +13,51 @@
           "retryCard": "on",
           "retryCharge": "on"
         }
+      },
+      {
+        "id": "r_swap_env",
+        "name": "换环境(充值拒付)",
+        "builtin": true,
+        "opts": {
+          "retryRegister": "on",
+          "retryKey": "on",
+          "retryCard": "on",
+          "retryCharge": "on",
+          "ipRounds": "2",
+          "zipRetry": "3",
+          "cardStrategy": "",
+          "swapOnHcaptcha": ""
+        }
+      },
+      {
+        "id": "r_swap_card",
+        "name": "换卡(余额不足/人机)",
+        "builtin": true,
+        "opts": {
+          "retryRegister": "on",
+          "retryKey": "on",
+          "retryCard": "on",
+          "retryCharge": "on",
+          "ipRounds": "1",
+          "zipRetry": "",
+          "cardStrategy": "spread",
+          "swapOnHcaptcha": "on"
+        }
+      },
+      {
+        "id": "r_swap_ip",
+        "name": "换 IP(取Key/注册)",
+        "builtin": true,
+        "opts": {
+          "retryRegister": "on",
+          "retryKey": "on",
+          "retryCard": "on",
+          "retryCharge": "on",
+          "ipRounds": "3",
+          "zipRetry": "",
+          "cardStrategy": "",
+          "swapOnHcaptcha": ""
+        }
       }
     ]
   }

@@ -1,5 +1,5 @@
 // 失败恢复策略编辑器:薄封装 PresetEditor —— 提供 recoverySchema 字段 + useRecovery 动作(单一全局命名空间)。
-import { RECOVERY_FIELDS, recoveryDefaults } from '../../lib/recoverySchema';
+import { RECOVERY_ALL_FIELDS, recoveryDefaults } from '../../lib/recoverySchema';
 import { useRecovery } from './useRecovery';
 import PresetEditor, { type PresetActions } from './PresetEditor';
 
@@ -15,7 +15,7 @@ export default function RecoveryEditor() {
 
   return (
     <PresetEditor
-      group={group} fields={RECOVERY_FIELDS} defaults={recoveryDefaults()} actions={actions} resetKey="recovery"
+      group={group} fields={RECOVERY_ALL_FIELDS} defaults={recoveryDefaults()} actions={actions} resetKey="recovery"
       presetLabel="恢复预设" newName="新恢复策略"
       emptyHint="无可调参数。"
     />

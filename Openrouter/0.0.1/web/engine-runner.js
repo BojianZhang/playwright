@@ -287,7 +287,12 @@ function classifyIncomplete(email, state) {
 function writeDetail(jobId, engine, successRows, failedRows, incompleteRows) {
   try {
     fs.mkdirSync(DETAILS_DIR, { recursive: true });
-    fs.writeFileSync(path.join(DETAILS_DIR, jobId + '.json'), JSON.stringify({ jobId, engine, success: successRows.slice(0, 5000), failed: failedRows.slice(0, 5000), incomplete: (incompleteRows || []).slice(0, 5000) }));
+    // 原子写(tmp+rename,对齐 billing-ledger/runs-store):进程中途死/磁盘满不会写出半截 JSON
+    //   → readDetail 解析失败返 null 丢整份详情(WDT-1)。
+    const file = path.join(DETAILS_DIR, jobId + '.json');
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ jobId, engine, success: successRows.slice(0, 5000), failed: failedRows.slice(0, 5000), incomplete: (incompleteRows || []).slice(0, 5000) }));
+    fs.renameSync(tmp, file);
     return { ok: true };
   } catch (e) { return { ok: false, error: String(e && e.message) }; }   // 失败不再静默(be-8):返回给调用方告警
 }
@@ -301,15 +306,25 @@ function renderTpl(tpl, row) {
 }
 // 写 Node 同款 batch-results 文件 → /download、/api/results、聚合页 对 Python 任务也生效
 function writeBatchResults(jobId, successRows, failedRows, successTpl, failureTpl) {
+  const tmps = [];   // 已写出的 .tmp(失败时清理,不留孤儿半套)
   try {
     fs.mkdirSync(NODE_RESULTS_DIR, { recursive: true });
     const jsonl = (arr) => (arr.length ? arr.map((r) => JSON.stringify(r)).join('\n') + '\n' : '');
-    fs.writeFileSync(path.join(NODE_RESULTS_DIR, `${jobId}-success.jsonl`), jsonl(successRows));
-    fs.writeFileSync(path.join(NODE_RESULTS_DIR, `${jobId}-failed.jsonl`), jsonl(failedRows));
-    fs.writeFileSync(path.join(NODE_RESULTS_DIR, `${jobId}-success.txt`), successRows.map((r) => renderTpl(successTpl, r)).join('\n'));
-    fs.writeFileSync(path.join(NODE_RESULTS_DIR, `${jobId}-failed.txt`), failedRows.map((r) => renderTpl(failureTpl, r)).join('\n'));
+    // ★WBR-1 原子落地:4 个文件先全写 .tmp(任一失败整体不落地,不留半套结果),再逐个 rename。
+    //   先前顺序 writeFileSync,中途崩/盘满会留下 1~3 个文件 → 下载/详情/聚合页看到不一致的残缺结果。
+    const writes = [
+      [`${jobId}-success.jsonl`, jsonl(successRows)],
+      [`${jobId}-failed.jsonl`, jsonl(failedRows)],
+      [`${jobId}-success.txt`, successRows.map((r) => renderTpl(successTpl, r)).join('\n')],
+      [`${jobId}-failed.txt`, failedRows.map((r) => renderTpl(failureTpl, r)).join('\n')],
+    ];
+    for (const [name, data] of writes) { const f = path.join(NODE_RESULTS_DIR, name); const t = f + '.tmp'; fs.writeFileSync(t, data); tmps.push([t, f]); }
+    for (const [t, f] of tmps) fs.renameSync(t, f);
     return { ok: true };
-  } catch (e) { return { ok: false, error: String(e && e.message) }; }   // 失败不再静默(be-8):磁盘满时让调用方告警,而非假"完成"
+  } catch (e) {
+    for (const [t] of tmps) { try { fs.unlinkSync(t); } catch (_e) { /* ignore */ } }
+    return { ok: false, error: String(e && e.message) };   // 失败不再静默(be-8):磁盘满时让调用方告警,而非假"完成"
+  }
 }
 
 // stdout 单号结果行解析(run.py / hybrid 两种格式)

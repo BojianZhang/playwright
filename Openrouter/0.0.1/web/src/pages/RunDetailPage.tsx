@@ -1,5 +1,5 @@
 // 单次运行下钻:汇总 + 成功账号表 + 失败原因表 + 下载/复制。数据 /api/runs/detail。
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost } from '../lib/api';
@@ -12,6 +12,8 @@ import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow, FailedReco
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
 import { Modal } from '../components/Modal';
 import { DECLINE_LABEL } from '../lib/labels';   // ★单一来源(原本地副本,与 panels/Diagnose 三处重复)
+import { useRecovery } from '../features/console/useRecovery';
+import { recoveryResumeOptions } from '../lib/recoverySchema';
 
 const PY_ENGINES = ['selenium', 'hybrid', 'split'];
 
@@ -25,8 +27,13 @@ export default function RunDetailPage() {
   const [recoverOpen, setRecoverOpen] = useState(false);
   const [recZip, setRecZip] = useState(3);        // declined/加卡 时 ZIP 重试次数
   const [recSwapHc, setRecSwapHc] = useState(true); // hCaptcha 时换卡
-  const [recRounds, setRecRounds] = useState(1);    // 自动重试轮数
+  const [recRounds, setRecRounds] = useState(1);    // 自动重试轮数(每轮换出口 IP)
+  const [recCardStrategy, setRecCardStrategy] = useState(''); // 换卡策略(由所选方案带,无独立旋钮)
+  const [selProfileId, setSelProfileId] = useState('');       // 选中的恢复方案 id(空=用自动推荐)
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['run-detail', jobId], queryFn: () => apiGet<RunDetailResp>(`/api/runs/detail?jobId=${encodeURIComponent(jobId)}`, true), refetchInterval: (q) => (q.state.data?.summary?.status === 'running' ? 5000 : false) });
+  const { data: recData } = useRecovery();   // 恢复方案预设(全局缓存)+ 历史恢复战绩
+  const recPresets = recData?.recovery?.presets || [];
+  const resumedStats = recData?.resumedStats || null;
   const s = data?.summary;
   const success = data?.success || [];
   const failed = data?.failed || [];
@@ -56,6 +63,9 @@ export default function RunDetailPage() {
 
   // ── 失败列表「按原因批量恢复」──────────────────────────────────────────
   const isPy = !!s && PY_ENGINES.includes(s.engine || '');   // 有失败/未完整即可恢复(不再限 interrupted/error;输入已保留/可按明细重建)
+  // 每行 reasonInfo 只算一次(按邮箱缓存):分组/选择/分类列复用,避免每渲染多次重复计算
+  const riByEmail = useMemo(() => { const m = new Map<string, ReasonInfo>(); for (const a of failed) { if (a.email) m.set(a.email, reasonInfo(a)); } return m; }, [failed]);
+  const riOf = (a: FailedRecord): ReasonInfo => (a.email && riByEmail.get(a.email)) || reasonInfo(a);
   const toggleFail = (email: string) => setSelFailed((p) => { const n = new Set(p); if (n.has(email)) n.delete(email); else n.add(email); return n; });
   // 点原因 chip = 整组切换选中(全选则取消,否则全加)
   const selectReason = (emails: string[]) => setSelFailed((p) => { const n = new Set(p); const all = emails.every((e) => n.has(e)); emails.forEach((e) => { if (all) n.delete(e); else n.add(e); }); return n; });
@@ -64,19 +74,37 @@ export default function RunDetailPage() {
   // 失败行按恢复原因分组(chips + 弹窗用),按组大小降序
   const reasonGroups = (() => {
     const m = new Map<string, { info: ReasonInfo; emails: string[] }>();
-    for (const a of failed) { if (!a.email) continue; const info = reasonInfo(a); const g = m.get(info.key) || { info, emails: [] }; g.emails.push(a.email); m.set(info.key, g); }
+    for (const a of failed) { if (!a.email) continue; const info = riOf(a); const g = m.get(info.key) || { info, emails: [] }; g.emails.push(a.email); m.set(info.key, g); }
     return Array.from(m.values()).sort((x, y) => y.emails.length - x.emails.length);
   })();
   const selectedRows = failed.filter((a) => a.email && selFailed.has(a.email));
-  const selectedRecoverable = selectedRows.filter((a) => reasonInfo(a).recoverable);
+  const selectedRecoverable = selectedRows.filter((a) => riOf(a).recoverable);
   // 选中行的原因分布(弹窗里逐组诚实标注)
   const selectedGroups = (() => {
     const m = new Map<string, { info: ReasonInfo; n: number }>();
-    for (const a of selectedRows) { const info = reasonInfo(a); const g = m.get(info.key) || { info, n: 0 }; g.n += 1; m.set(info.key, g); }
+    for (const a of selectedRows) { const info = riOf(a); const g = m.get(info.key) || { info, n: 0 }; g.n += 1; m.set(info.key, g); }
     return Array.from(m.values()).sort((x, y) => y.n - x.n);
   })();
-  const selHasCharge = selectedRecoverable.some((a) => reasonInfo(a).key.startsWith('charge'));
-  const selHasHc = selectedRecoverable.some((a) => reasonInfo(a).key === 'card:hcaptcha');
+  const selHasCharge = selectedRecoverable.some((a) => riOf(a).key.startsWith('charge'));
+  const selHasHc = selectedRecoverable.some((a) => riOf(a).key === 'card:hcaptcha');
+  // 选中失败的【主因】→ 推荐恢复方案(已是恢复跑则升一档「加力」);用户在下拉里另选则用其选择
+  const dominantKey = selectedGroups.length ? selectedGroups[0].info.key : '';
+  const isEscalation = !!s?.resumedFrom;   // 本次详情本身就是一次恢复跑 → 再恢复=加力
+  const recommendedProfileId = dominantKey ? (isEscalation ? (ESCALATE_PROFILE[RECOMMEND_PROFILE(dominantKey)] || RECOMMEND_PROFILE(dominantKey)) : RECOMMEND_PROFILE(dominantKey)) : '';
+  const chosenProfile = recPresets.find((p) => p.id === selProfileId) || recPresets.find((p) => p.id === recommendedProfileId) || null;
+
+  // 打开弹窗(或选中主因变化)→ 自动推荐方案;用户没手动改过才跟随推荐
+  useEffect(() => { if (recoverOpen) setSelProfileId(recommendedProfileId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [recoverOpen, recommendedProfileId]);
+  // 所选方案 → 预填旋钮(动作字段 → recoverOptions 同口径);用户仍可手调,手调优先
+  useEffect(() => {
+    if (!chosenProfile) return;
+    const ro = recoveryResumeOptions(chosenProfile.opts);
+    setRecRounds(ro.autoRetryTimes != null ? ro.autoRetryTimes : 0);
+    setRecZip(ro.zipRetry != null ? ro.zipRetry : 0);
+    setRecSwapHc(ro.solveHcaptcha === 'swap');
+    setRecCardStrategy(ro.cardStrategy || '');
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [chosenProfile?.id]);
 
   async function recover() {
     if (resuming) return;
@@ -86,6 +114,8 @@ export default function RunDetailPage() {
     if (selHasCharge && recZip > 0) recoverOptions.zipRetry = recZip;
     if (selHasHc && recSwapHc) recoverOptions.solveHcaptcha = 'swap';
     if (recRounds > 0) { recoverOptions.autoRetryFailed = true; recoverOptions.autoRetryTimes = recRounds; }
+    if (recCardStrategy) recoverOptions.cardStrategy = recCardStrategy;   // 换卡策略(方案带;仅对未绑卡号选新卡有效)
+    if (chosenProfile) { recoverOptions.recoveryProfileId = chosenProfile.id; recoverOptions.recoveryProfileName = chosenProfile.name; }   // 可溯源
     setResuming(true);
     try {
       const d = await apiPost<StartJobResp>('/api/run/resume', { jobId, engine: s?.engine, onlyEmails: emails, recoverOptions });
@@ -144,6 +174,7 @@ export default function RunDetailPage() {
                 </span>
               )}
               {s.resumedFrom && <span className="err-chip">续跑自 <b className="mono">{String(s.resumedFrom).slice(-10)}</b></span>}
+              {s.resumedFrom && s.params?.configSnapshot?.recoveryProfileName && <span className="err-chip" title="本次恢复跑采用的恢复方案(可溯源)">恢复方案 <b>{s.params.configSnapshot.recoveryProfileName}</b></span>}
               {s.error && <span className="err-chip code">异常 <b>{trunc(s.error, 40)}</b></span>}
             </div>
           </section>
@@ -198,7 +229,7 @@ export default function RunDetailPage() {
               )}
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="现密码=OpenRouter 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.password || a.originalPassword || ''}`).join('\n'))}>复制 邮箱:密码</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="原密码=账号原始/邮箱密码" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '拒付码', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.declineCode || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '恢复动作', '人机模式', '拒付码', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', actionClassOf(riOf(a)), a.failClass || '', a.declineCode || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -225,18 +256,18 @@ export default function RunDetailPage() {
                 <table className="tbl">
                   <thead><tr>
                     {isPy && <th style={{ width: 28 }}><input type="checkbox" checked={allFailEmails.length > 0 && allFailEmails.every((e) => selFailed.has(e))} onChange={toggleAllFail} title="全选/全不选" /></th>}
-                    <th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>拒付码</th><th>试</th><th>出口/代理</th><th>现密码</th>
+                    <th>邮箱</th><th>原因</th><th>阶段</th><th title="基于失败原因建议的恢复动作(换环境/换卡/换IP);原 hcap_mode 移到悬停">恢复动作</th><th>拒付码</th><th>试</th><th>出口/代理</th><th>现密码</th>
                   </tr></thead>
                   <tbody>
                     {failed.slice(0, RENDER_CAP).map((a, i) => {
-                      const ri = reasonInfo(a);
+                      const ri = riOf(a);
                       return (
                       <tr key={i} className={'is-banned' + (a.email && selFailed.has(a.email) ? ' is-selected' : '')}>
                         {isPy && <td><input type="checkbox" disabled={!ri.recoverable} checked={!!(a.email && selFailed.has(a.email))} onChange={() => a.email && toggleFail(a.email)} title={ri.recoverable ? '选中以批量恢复' : '永久态,不可恢复'} /></td>}
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--danger)' }}>{a.reason}</td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.stage || '—'}</td>
-                        <td className="mono" style={{ color: 'var(--text-3)' }}>{a.failClass || '—'}</td>
+                        <td className="mono" style={{ color: ri.recoverable ? 'var(--primary-text)' : 'var(--text-3)' }} title={'恢复动作建议(基于失败原因)' + (a.failClass ? '\n人机模式(hcap_mode):' + a.failClass : '')}>{actionClassOf(ri)}</td>
                         <td className="mono" style={{ color: a.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : ''}>{a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : '—'}</td>
                         <td className="mono">{a.attempts ?? '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }} title={a.proxy}>{a.proxy ? String(a.proxy).split(':').slice(0, 2).join(':') : '—'}</td>
@@ -291,10 +322,10 @@ export default function RunDetailPage() {
       )}
 
       {/* 批量恢复确认弹窗:逐组诚实标注(declined 多为风控·争取不保证 / insufficient_funds 卡可能没钱)+ 恢复参数 */}
-      <Modal open={recoverOpen} onClose={() => { if (!resuming) setRecoverOpen(false); }} size="md" title={`批量恢复 · ${selectedRecoverable.length} 个号`} icon="refresh"
+      <Modal open={recoverOpen} onClose={() => { if (!resuming) { setRecoverOpen(false); setSelProfileId(''); } }} size="md" title={`批量恢复 · ${selectedRecoverable.length} 个号`} icon="refresh"
         foot={(
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, width: '100%' }}>
-            <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={() => setRecoverOpen(false)}>取消</button>
+            <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={() => { setRecoverOpen(false); setSelProfileId(''); }}>取消</button>
             <button className="btn btn-primary btn-sm" disabled={resuming || !selectedRecoverable.length} onClick={recover}>{resuming ? '发起中…' : `确认恢复 ${selectedRecoverable.length} 个`}</button>
           </div>
         )}>
@@ -302,6 +333,29 @@ export default function RunDetailPage() {
           <div style={{ fontSize: 12, lineHeight: 1.6, background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>
             断点续跑:已完成环节(注册/取Key/绑卡)自动跳过、<b>不重复扣费</b>;只重做失败的那步。
             保持源引擎 <b>{s?.engine}</b>(跨引擎换会绕过同引擎的防双扣门)。
+          </div>
+          {/* ★恢复方案:按选中失败的主因自动推荐一套重试流程,可改;一套方案=一条流程 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexWrap: 'wrap' }}>
+              <b>恢复方案</b>
+              <select value={selProfileId || (chosenProfile ? chosenProfile.id : '')} onChange={(e) => setSelProfileId(e.target.value)} style={{ minWidth: 200 }}>
+                {recPresets.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === recommendedProfileId ? ' · 推荐' : ''}</option>)}
+              </select>
+              {chosenProfile && chosenProfile.id === recommendedProfileId && <span className="kbadge ok" style={{ fontSize: 11 }}>已按主因自动选</span>}
+              {isEscalation && <span className="kbadge warn" style={{ fontSize: 11 }} title="本次详情本身是一次恢复跑,仍有失败 → 自动升一档加力(换IP→换环境→换卡)">加力再恢复</span>}
+            </label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className="z-hint">流程:</span>
+              {recRounds > 0 && <span className="err-chip">换出口IP×{recRounds}</span>}
+              {selHasCharge && recZip > 0 && <span className="err-chip">ZIP重试×{recZip}</span>}
+              {recCardStrategy && <span className="err-chip">换卡·{recCardStrategy}</span>}
+              {selHasHc && recSwapHc && <span className="err-chip">人机换卡(swap)</span>}
+              {!(recRounds > 0 || (selHasCharge && recZip > 0) || recCardStrategy || (selHasHc && recSwapHc)) && <span className="z-hint">原样重试(不加动作)</span>}
+              <Link to="/recovery" style={{ fontSize: 12, color: 'var(--primary-text)', marginLeft: 'auto' }}>管理方案</Link>
+            </div>
+            {resumedStats && resumedStats.runs > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>历史:恢复跑 <b>{resumedStats.runs}</b> 批 · 成功率 ~<b>{resumedStats.pct != null ? resumedStats.pct + '%' : '—'}</b>(总体·非按原因,仅供参考)</div>
+            )}
           </div>
           {/* 选中行的原因分布 + 逐组诚实标注 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -390,4 +444,21 @@ function reasonInfo(a: FailedRecord): ReasonInfo {
   if (stage === 'register') return { key: 'register', label: '注册失败', recoverable: true, note: '换IP重试。' };
   if (stage === 'changepw') return { key: 'changepw', label: '改密失败', recoverable: true, note: '邮箱密钥/旧密码问题,重试或个案看。' };
   return { key: stage || 'other', label: stage || '其它', recoverable: true, note: '重试争取。' };
+}
+
+// ── 失败主因 → 推荐恢复方案(批量恢复弹窗自动选)──────────────────────────────
+//   与后端内置方案 id 对齐(recovery-store.js BUILTIN_PRESETS)。
+const RECOMMEND_PROFILE = (reasonKey: string): string => {
+  if (reasonKey === 'charge:insufficient_funds' || reasonKey === 'card:hcaptcha') return 'r_swap_card';
+  if (reasonKey.startsWith('charge') || reasonKey === 'card') return 'r_swap_env';
+  return 'r_swap_ip';   // key / register / changepw / other → 换IP
+};
+// 「加力再恢复」:已是一次恢复跑仍失败 → 升一档(换IP→换环境→换卡)
+const ESCALATE_PROFILE: Record<string, string> = { r_swap_ip: 'r_swap_env', r_swap_env: 'r_swap_card', r_swap_card: 'r_swap_card' };
+// 方案 → 失败表「分类」列显示的简短【恢复动作】(替代误导的 hcap_mode)
+const PROFILE_SHORT: Record<string, string> = { r_swap_env: '换环境', r_swap_card: '换卡', r_swap_ip: '换IP', r_default: '重试' };
+// 一条失败行的恢复动作类(分类列):不可恢复→「不可恢复」,否则按推荐方案给简短动作
+function actionClassOf(ri: ReasonInfo): string {
+  if (!ri.recoverable) return '不可恢复';
+  return PROFILE_SHORT[RECOMMEND_PROFILE(ri.key)] || '重试';
 }
