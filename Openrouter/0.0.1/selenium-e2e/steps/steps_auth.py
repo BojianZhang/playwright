@@ -485,7 +485,7 @@ def login(page, email, op_password, mailbox_pw, cfg):
         # OpenRouter 直接封禁/拒绝该邮箱 → 上报 NOT_ALLOWED,编排层会登记并永久跳过
         log("[登录] %s 被 OpenRouter 拒绝(not allowed to access this application)" % email)
         return "fail:NOT_ALLOWED"
-    if any(s in t for s in ["couldn't find", "no account", "not found", "isn't right", "incorrect", "password is incorrect"]):
+    if any(s in t for s in ["couldn't find", "no account", "not found", "isn't right", "incorrect", "password is incorrect", "invalid credentials"]):
         # 密码不对/无账号 → 【就地返回】,不再白解 Turnstile + 等 OTP(那是纯浪费 2captcha 余额 + 干耗墙钟,
         #   账号根本进不去)。模糊文案("isn't right")保守归为密码错(不致永久跳过);明确"找不到账号"归 NO_ACCOUNT。
         if "incorrect" in t or "isn't right" in t:
