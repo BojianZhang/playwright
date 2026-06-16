@@ -33,6 +33,7 @@ export const ADV_FIELDS: AdvField[] = [
   { key: 'maxConcurrency', env: 'OPENROUTER_MAX_CONCURRENCY', label: '并发硬上限 ★', hint: '防 AdsPower 批量掉线:任何 job 的每进程并发超过它都自动钳到它(无论控制台填多少),设一次以后都生效。留空=不限。建议先 4~6,稳了(无 session-deleted)再逐步往上加', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selPageloadTimeout', env: 'SEL_PAGELOAD_TIMEOUT', label: '页面加载超时(秒)', hint: 'Selenium set_page_load_timeout;慢代理可调大;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selScriptTimeout', env: 'SEL_SCRIPT_TIMEOUT', label: '脚本执行超时(秒)', hint: 'Selenium set_script_timeout;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
+  { key: 'selPageloadStrategy', env: 'SEL_PAGELOAD_STRATEGY', label: '页面加速(加载策略)', hint: '让脚本更早去找元素:eager=不等图片/子资源加载完(DOM 就绪即放行,推荐);none=导航一开始就放行(最激进,靠显式等元素兜底)。留空=normal(等整页加载完)。★零反检测风险,不屏蔽资源', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'eager', 'none'] },
   { key: 'adsMaxLaunch', env: 'ADS_MAX_LAUNCH', label: 'AdsPower开浏览器并发上限', hint: '本地 API 开浏览器的限频;留空=代码默认', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'envScreenRes', env: 'ENV_SCREEN_RES', label: '环境分辨率', hint: '如 1280_720;留空=代码默认', type: 'text', scope: 'both', group: '驱动环境', def: '' },
   // ── 卡池(两套共用,载卡时 ledger 读)──

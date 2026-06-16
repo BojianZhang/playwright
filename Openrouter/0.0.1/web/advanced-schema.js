@@ -38,6 +38,8 @@ const FIELDS = [
   { key: 'maxConcurrency', env: 'OPENROUTER_MAX_CONCURRENCY', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selPageloadTimeout', env: 'SEL_PAGELOAD_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selScriptTimeout', env: 'SEL_SCRIPT_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
+  // ── 页面加速:Selenium 加载策略(eager/none),脚本更早可操作元素;留空=normal 不变;零反检测风险 ──
+  { key: 'selPageloadStrategy', env: 'SEL_PAGELOAD_STRATEGY', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'eager', 'none'] },
   { key: 'adsMaxLaunch', env: 'ADS_MAX_LAUNCH', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'envScreenRes', env: 'ENV_SCREEN_RES', type: 'text', scope: 'both', group: '驱动环境', def: '' },
   // ── 卡池(两套共用,载卡时 ledger 读)──────────────────────────────────────
