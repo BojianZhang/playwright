@@ -1,13 +1,2 @@
-// 统一 KPI 卡(各资源页报表区复用)。
-import { type ReactNode } from 'react';
-import { Icon } from '../lib/icons';
-
-export function Kpi({ icon, label, value, sub, tone }: { icon: string; label: string; value: ReactNode; sub?: ReactNode; tone?: 'ok' | 'info' | 'warn' }) {
-  return (
-    <div className={'card kpi' + (tone ? ' ' + tone : '')}>
-      <div className="kpi-label"><Icon name={icon} />{label}</div>
-      <div className="kpi-num">{value}</div>
-      {sub != null && <div className="kpi-sub">{sub}</div>}
-    </div>
-  );
-}
+// ⟦去重 shim⟧ 规范实现在 shared-web-ui/components/Kpi.tsx;勿改。export* 透传具名导出。
+export * from '@shared/components/Kpi';

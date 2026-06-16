@@ -12,7 +12,10 @@ export default defineConfig({
   base: '/',
   publicDir: false,
   resolve: {
-    alias: { '@': path.resolve(__dirname, 'src') },
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+      '@shared': path.resolve(__dirname, '../../../shared-web-ui'),
+    },
   },
   build: {
     outDir: 'public',
@@ -31,6 +34,7 @@ export default defineConfig({
     },
   },
   server: {
+    fs: { allow: [path.resolve(__dirname, '../../..')] }, // dev server 可读 sibling 的 shared-web-ui
     port: 5173,
     strictPort: false,
     proxy: {
