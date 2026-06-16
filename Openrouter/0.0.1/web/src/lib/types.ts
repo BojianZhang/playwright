@@ -85,9 +85,10 @@ export interface RunSummary {
   resumedFrom?: string | null; // 续跑来源 jobId(普通提交为 null)
 }
 export interface RunsResp { nodeId: string; runs: RunSummary[]; }
-export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; purchaseStatus?: string; purchaseReason?: string; declineCode?: string; cardLast4?: string; blacklisted?: boolean; blacklistReason?: string; durationSec?: number | null; timings?: Record<string, number> | null; }
+export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; purchaseStatus?: string; purchaseReason?: string; declineCode?: string; cardLast4?: string; blacklisted?: boolean; blacklistReason?: string; durationSec?: number | null; timings?: Record<string, number> | null; recovered?: boolean; recoveredBy?: string; }
 // 未完整/未运行号(第三桶):本批无结果且历史回填不到 → 逐号标原因(可只续跑这些)
-export interface IncompleteRow { email: string; password?: string; status: 'banned' | 'bad-mailbox' | 'incomplete' | 'not-run'; reason: string; }
+// recovered/recoveredBy:后续续跑已把该号救回成功(server 对账标注)→ UI 显「已续跑恢复」、不再当待续跑
+export interface IncompleteRow { email: string; password?: string; status: 'banned' | 'bad-mailbox' | 'incomplete' | 'not-run'; reason: string; recovered?: boolean; recoveredBy?: string; }
 export interface RunDetailResp { jobId: string; summary: RunSummary | null; success: AccountRow[]; failed: FailedRecord[]; incomplete?: IncompleteRow[]; }
 // 设置中心 + 健康(期4)
 export interface ConfigView {

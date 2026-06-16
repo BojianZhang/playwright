@@ -1086,14 +1086,45 @@ function readFailedRecords(jobId) {
 function handleApiRuns(res, query) {
   sendJson(res, 200, { nodeId: NODE_ID, runs: runsStore.list(Number(query.get('limit')) || 50) });
 }
+// 续跑对账:历史运行是不可变快照(其 incomplete/failed 是当时的状态)。后续「续跑/恢复」会另起新 run
+//   (runs-store 记 resumedFrom 指回源 run)。下钻原 run 详情时,沿 resumedFrom 链找出所有续跑 run、
+//   收集它们【成功】的邮箱 → 原 run 里被救回的号标 recovered,UI 不再当「还要续跑」(回写更新)。
+function _resumeRecoveredEmails(jobId) {
+  const map = new Map(); // email(小写) -> 救回它的续跑 jobId
+  try {
+    const runs = runsStore.list(500) || [];
+    const byId = new Map(runs.map((r) => [r.jobId, r]));
+    const chainHitsJob = (r) => {            // r 的 resumedFrom 链是否经过 jobId(支持续跑的续跑)
+      let from = r.resumedFrom; const seen = new Set();
+      while (from && !seen.has(from)) { if (from === jobId) return true; seen.add(from); from = (byId.get(from) || {}).resumedFrom; }
+      return false;
+    };
+    for (const r of runs) {
+      if (!r || !r.jobId || !r.resumedFrom || !chainHitsJob(r)) continue;
+      let succ = [];
+      try { const d = engineRunner.readDetail(r.jobId); succ = (d && d.success) || readJobRecords(r.jobId) || []; } catch (_e) { succ = []; }
+      for (const s of (Array.isArray(succ) ? succ : [])) {
+        const em = String((s && (s.email || s.name)) || '').trim().toLowerCase();
+        if (em) map.set(em, r.jobId);
+      }
+    }
+  } catch (_e) { /* 对账失败不致命:退回原始快照,绝不让下钻 500 */ }
+  return map;
+}
 // GET /api/runs/detail?jobId= —— 单次下钻:Python 引擎读 per-job 详情快照(data/run-details/),Node 读 batch-results。
 function handleApiRunsDetail(res, query) {
   const jobId = query.get('jobId') || '';
   if (!/^job-[\w-]+$/.test(jobId)) { sendJson(res, 400, { error: 'BAD_JOB_ID' }); return; }
   const summary = runsStore.get(jobId);
   const detail = engineRunner.readDetail(jobId);   // Python(selenium/hybrid/split)引擎:per-job 快照
-  if (detail) { sendJson(res, 200, { jobId, summary, success: detail.success || [], failed: detail.failed || [], incomplete: detail.incomplete || [] }); return; }
-  sendJson(res, 200, { jobId, summary, success: readJobRecords(jobId), failed: readFailedRecords(jobId), incomplete: [] });
+  const recovered = _resumeRecoveredEmails(jobId);
+  const annotate = (list) => (Array.isArray(list) ? list : []).map((e) => {
+    const em = String((e && (e.email || e.name)) || '').trim().toLowerCase();
+    const by = em && recovered.get(em);
+    return by ? Object.assign({}, e, { recovered: true, recoveredBy: by }) : e;
+  });
+  if (detail) { sendJson(res, 200, { jobId, summary, success: detail.success || [], failed: annotate(detail.failed || []), incomplete: annotate(detail.incomplete || []) }); return; }
+  sendJson(res, 200, { jobId, summary, success: readJobRecords(jobId), failed: annotate(readFailedRecords(jobId)), incomplete: [] });
 }
 async function handleApiRunsClear(res) {
   await runsStore.clear();
