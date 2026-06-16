@@ -8,6 +8,7 @@ import json
 import time
 import re
 import threading
+import urllib.error
 import urllib.request
 
 try:
@@ -19,6 +20,7 @@ except Exception:
 # 127.0.0.1（不是 local.adspower.net）：后者不在系统代理绕过名单，开了本地代理(VPN/clash)会被转走→502。
 API_BASE = os.environ.get("OPENROUTER_ADSPOWER_API", "http://127.0.0.1:50325")
 _NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 强制不走系统代理
+_REQUESTS_GO_CACHE = {"loaded": False, "module": None, "session": None, "session_cls": None}
 # AdsPower 鉴权令牌(本机网关一般无需 → 默认空,不加头;指向远程/带鉴权网关时,web 经 engine-runner
 # 注入 OPENROUTER_ADSPOWER_TOKEN)。头名/前缀可覆盖以适配不同网关(默认 Authorization: Bearer <token>)。
 ADS_TOKEN = (os.environ.get("OPENROUTER_ADSPOWER_TOKEN", "") or "").strip()
@@ -89,16 +91,150 @@ def digits(s):
     return "".join(ch for ch in str(s if s is not None else "") if ch.isdigit())
 
 
-def http_post_json(url, body, headers=None, timeout=30):
-    """通用 POST JSON（走不走代理都用本机 → 不走系统代理，直连，与 Node fetch 行为一致）。
-       用于 firstmail / 2captcha 等外网 API。"""
+class HttpPostError(RuntimeError):
+    def __init__(self, status, body, url):
+        self.status = int(status or 0)
+        self.code = self.status
+        self.body = body or ""
+        self.url = url
+        RuntimeError.__init__(self, "HTTP %s %s" % (self.status, self.body[:140]))
+
+
+def _flag_off(v):
+    return str(v or "").strip().lower() in ("0", "false", "off", "no", "none", "disabled")
+
+
+def _load_requests_go():
+    if _flag_off(os.environ.get("OPENROUTER_REQUESTS_GO") or os.environ.get("REQUESTS_GO")):
+        return None
+    if not _REQUESTS_GO_CACHE["loaded"]:
+        try:
+            import requests_go as rg
+        except Exception:
+            rg = None
+        _REQUESTS_GO_CACHE["module"] = rg
+        _REQUESTS_GO_CACHE["loaded"] = True
+    return _REQUESTS_GO_CACHE["module"]
+
+
+def requests_go_available():
+    return _load_requests_go() is not None
+
+
+def http_client_name():
+    return "requests-go" if requests_go_available() else "urllib"
+
+
+def _requests_go_session(rg):
+    session_cls = getattr(rg, "Session", None)
+    if session_cls is None:
+        return None
+    if _REQUESTS_GO_CACHE.get("session") is None or _REQUESTS_GO_CACHE.get("session_cls") is not session_cls:
+        session = session_cls()
+        try:
+            session.trust_env = False
+        except Exception:
+            pass
+        _REQUESTS_GO_CACHE["session"] = session
+        _REQUESTS_GO_CACHE["session_cls"] = session_cls
+    return _REQUESTS_GO_CACHE.get("session")
+
+
+def _requests_go_tls_kwargs(rg):
+    mode = os.environ.get("OPENROUTER_REQUESTS_GO_TLS") or os.environ.get("REQUESTS_GO_TLS") or "TLS_CHROME_LATEST"
+    if _flag_off(mode) or str(mode).strip().lower() in ("default", "plain"):
+        return {}
+    names = []
+    raw = str(mode).strip()
+    if raw:
+        names.extend([raw, raw.upper()])
+    low = raw.lower()
+    if low in ("", "1", "true", "on", "yes", "chrome", "latest", "chrome_latest"):
+        names.extend(["TLS_CHROME_LATEST", "TLS_CHROME"])
+    seen = set()
+    modules = [rg]
+    try:
+        import importlib
+        for modname in ("requests_go.tls_config", "requests_go.tls", "requests_go.config"):
+            try:
+                modules.append(importlib.import_module(modname))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        for mod in modules:
+            val = getattr(mod, name, None)
+            if val is not None:
+                return {"tls_config": val}
+    return {}
+
+
+def _response_text(resp, url):
+    status = int(getattr(resp, "status_code", getattr(resp, "status", 0)) or 0)
+    text = getattr(resp, "text", None)
+    if text is None:
+        data = getattr(resp, "content", b"")
+        if isinstance(data, bytes):
+            text = data.decode("utf-8", "replace")
+        else:
+            text = str(data or "")
+    if status >= 400:
+        raise HttpPostError(status, text, url)
+    return status, text
+
+
+def _urllib_post_text(url, body, headers, timeout):
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with _NOPROXY.open(req, timeout=timeout) as r:
+            status = getattr(r, "status", None) or r.getcode()
+            text = r.read().decode("utf-8", "replace")
+        return int(status or 0), text
+    except urllib.error.HTTPError as e:
+        try:
+            text = e.read().decode("utf-8", "replace")
+        except Exception:
+            text = ""
+        raise HttpPostError(e.code, text, url)
+
+
+def http_post_text(url, body, headers=None, timeout=30):
     h = {"Content-Type": "application/json", "accept": "application/json"}
     if headers:
         h.update(headers)
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=h, method="POST")
-    with _NOPROXY.open(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+    rg = _load_requests_go()
+    if rg is not None:
+        kwargs = {"json": body, "headers": h, "timeout": timeout}
+        kwargs.update(_requests_go_tls_kwargs(rg))
+        session = _requests_go_session(rg)
+        try:
+            if session is not None:
+                resp = session.post(url, **kwargs)
+            else:
+                resp = rg.post(url, **kwargs)
+            return _response_text(resp, url)
+        except TypeError:
+            if "tls_config" not in kwargs:
+                raise
+            kwargs.pop("tls_config", None)
+            if session is not None:
+                resp = session.post(url, **kwargs)
+            else:
+                resp = rg.post(url, **kwargs)
+            return _response_text(resp, url)
+    return _urllib_post_text(url, body, h, timeout)
+
+
+def http_post_json(url, body, headers=None, timeout=30):
+    """通用 POST JSON（走不走代理都用本机 → 不走系统代理，直连，与 Node fetch 行为一致）。
+       用于 firstmail / 2captcha 等外网 API。"""
+    _, text = http_post_text(url, body, headers=headers, timeout=timeout)
+    return json.loads(text)
 
 
 def _atomic_write_json(path, data):
@@ -217,6 +353,7 @@ __all__ = [
     "CREDITS_URL", "KEYS_URL", "SIGNUP_URL", "SIGNIN_URL",
     "NUM", "EXP", "CVC", "ZIP",
     "RE_502", "RE_DECL", "RE_OK", "RE_NEEDPHONE", "RE_HCAPTCHA",
-    "set_log_prefix", "log", "log_stage", "fast_mode", "digits", "http_post_json",
+    "set_log_prefix", "log", "log_stage", "fast_mode", "digits",
+    "HttpPostError", "http_client_name", "requests_go_available", "http_post_text", "http_post_json",
     "_atomic_write_json", "_FileLock", "_file_lock",
 ]

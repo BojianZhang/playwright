@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import common
 from common import ads_call, ads_get, log
+from common.fingerprint_bridge import build_adspower_fingerprint_config
 
 
 def load_proxies(path):
@@ -126,6 +127,17 @@ def _random_fingerprint(proxy=None):
     """每建一个环境就生成一套【随机指纹】:随机 UA/分辨率/CPU核数/内存 + canvas/webgl/audio/媒体设备
        全部开噪声(AdsPower 给每个 profile 唯一噪声种子 → 这些向量逐环境不同)。
        时区/语言跟代理 IP 走(美区),WebRTC 走代理防真实 IP 泄漏。"""
+    shared_fp, _summary = build_adspower_fingerprint_config(
+        proxy=proxy,
+        seed="%s:%s:%s" % (
+            proxy.get("host", "") if proxy else "no-proxy",
+            proxy.get("port", "") if proxy else "",
+            int(time.time() // 21600),
+        ),
+        screen_resolution=FIXED_RES,
+    )
+    if shared_fp:
+        return shared_fp
     return {
         "automatic_timezone": "1",                       # 时区跟代理 IP geo
         "language": ["en-US", "en"],

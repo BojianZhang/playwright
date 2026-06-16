@@ -7,6 +7,7 @@ import time
 import urllib.request
 
 from .base import log
+from .fingerprint_bridge import inject_shared_fingerprint
 from .osnative import IS_MAC   # macOS 上 byte-patch 后须 ad-hoc 重签名,否则 Apple Silicon 拒绝执行
 
 # 隐身脚本(Page.addScriptToEvaluateOnNewDocument 在页面脚本前注入,每次导航生效):
@@ -180,6 +181,7 @@ def attach_chrome(port, driver_path="", retries=8, delay=4):
                     d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS})
                 except Exception as _e:
                     log("[stealth] 注入隐身脚本失败(忽略): %s" % str(_e)[:50])
+            inject_shared_fingerprint(d, "openrouter:%s" % port)
             return d
         except Exception as e:
             last = e

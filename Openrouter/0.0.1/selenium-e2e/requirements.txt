@@ -14,5 +14,6 @@
 
 selenium>=4.20            # WebDriver + Selenium Manager(自动取 chromedriver)
 websocket-client>=1.7     # 原生 CDP 连接(Fix C / cdp_raw.py / cdp_fetch.py)
+requests-go>=1.0.9        # Chrome TLS/JA3 HTTP client for external APIs(firstmail/captcha); urllib fallback if absent
 pyautogui>=0.9.54         # OS 级坐标点击兜底(Fix B / osinput);macOS 需辅助功能授权
 pygetwindow>=0.0.9 ; platform_system == "Windows"   # Fix B 提前台(仅 Windows;macOS 走 osascript)

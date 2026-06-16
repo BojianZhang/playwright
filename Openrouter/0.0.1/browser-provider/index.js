@@ -53,7 +53,16 @@ async function createRuntime(name, envId, opts = {}) {
   if (!started || !started.ok) { const e = new Error((started && started.error) || `${name}:START_FAILED`); e._provider = true; throw e; }
   let rt;
   try {
-    rt = await base.connectRuntime(started.ws, { windowLayout, log, ipSource: name });
+    rt = await base.connectRuntime(started.ws, {
+      windowLayout,
+      log,
+      ipSource: name,
+      proxy: opts?.proxy || null,
+      account: opts?.account || null,
+      runtime: opts?.runtime || {},
+      browserIdentity: opts?.browserIdentity || null,
+      identity: opts?.identity || null,
+    });
   } catch (e) {
     await p.stop(envId).catch(() => {}); // 连接失败兜底停环境(provider-agnostic，放编排器)
     e._provider = true;

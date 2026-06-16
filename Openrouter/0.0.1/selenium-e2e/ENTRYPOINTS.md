@@ -11,7 +11,7 @@ selenium-e2e/
   services/   外部服务(AdsPower环境/验证码/邮箱/CDP)
   tools/      运营工具(独立跑,~18 个)
   scratch/    开发探针(已归档,见 scratch/README.md)
-  test_helpers.py   *.md   state/   data 软链
+  test_helpers.py  test_fingerprint.py   *.md   state/   data 软链
 ```
 
 ## 入口 · 跑业务流程(在 selenium-e2e/ 下直接 `python <名>.py`)
@@ -41,6 +41,7 @@ selenium-e2e/
 `import_cards`/`disable_cards`/`reactivate_cards`(卡增删启停) `block_bin`(拉黑BIN) `proxy_score`(代理评分)
 `cleanup_envs`(清环境) `flag_accounts`(标号) `report_b3d`(报表) `fixc_probe`(CDP探针)
 `addcard`/`purchase`/`verify_card`(独立加卡/充值/核验) `卡查询`
+`fingerprint_check`(指纹自测/验收:用 Fingerprint Pro 验 AdsPower 随机指纹是否唯一+稳定,走原生CDP不污染 bot/tampering;**不是**指纹生成器、过它≠过Radar)
 
 > 每个工具顶部有 path shim,且按 `__file__` 定位 state/data 的已锚定到 selenium-e2e/(移动后路径不变)。
 

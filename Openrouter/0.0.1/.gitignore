@@ -15,6 +15,7 @@ data/error-log.json
 data/runs.json
 data/run-details/
 data/_runs_tmp/
+data/batch-results/
 
 # 临时 UI 测试产物
 _uitest*.png
