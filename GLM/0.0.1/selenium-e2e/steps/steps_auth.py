@@ -602,21 +602,46 @@ def _open_zai_menu(page):
     return False
 
 
-def _widen_window_for_login(page, w=None):
-    """★放宽浏览器窗口,让 z.ai 响应式导航栏完整展开、露出「Login」——窄窗口下导航收成 ☰ 汉堡、Login 被藏进去,
-       是 oauth_login_click 大量失败的真因(用户实证:100%缩放只剩☰、80%才露出 Login;且取key只能从点 Login 进)。
-       放宽窗口 = 等效缩放到 80%,让导航过响应式断点。对后续滑块无害(滑块读 getBoundingClientRect CSS 像素 + CDP Input
-       同坐标系,放宽后读新坐标一致)。返回是否做了放宽。"""
+def _login_btn_visible(page):
+    """z.ai/subscribe 顶部导航里【Login 按钮是否真的可见】(窄窗口会收进 ☰ 汉堡 → 不可见)。
+       只认顶部(top<200)、文本恰为 login/sign in/登录 的可见按钮/链接。"""
     try:
-        w = int(w or os.environ.get("OAUTH_WIDEN_PX", "1400") or 1400)
-        sz = page.d.get_window_size()
-        if int(sz.get("width") or 0) >= w:
-            return False
-        page.d.set_window_size(w, int(sz.get("height") or 900))
-        log("[取Key] 窗口太窄(%spx)导航收成☰藏了Login → 放宽到 %dpx 露出 Login" % (sz.get("width"), w))
-        return True
+        return bool(page.js(r"""return (function(){
+          try{
+            var els=document.querySelectorAll('button,a,[role=button]');
+            for(var i=0;i<els.length;i++){var e=els[i];
+              var t=((e.innerText||e.textContent||'')+'').trim().toLowerCase();
+              if(/^(login|log in|sign in|登录)$/.test(t)){
+                var r=e.getBoundingClientRect();
+                if(r.width>0&&r.height>0&&r.top>=0&&r.top<200) return true;}}
+            return false;
+          }catch(_){return false;}
+        })();"""))
+    except Exception:
+        return False
+
+
+def _widen_window_for_login(page):
+    """★放宽浏览器窗口让 z.ai 响应式导航栏展开、露出「Login」——窄窗口导航收成 ☰ 把 Login 藏进去,是 oauth_login_click
+       大量失败的真因(用户实证:100%缩放只剩☰、80%才露 Login;取key只能点 Login 进)。
+       ★不【猜】固定 px(用户:屏幕分辨率实时变化):逐档放宽 [1280,1600,1920],每档检查 Login 是否真出现、出现即停
+       (env OAUTH_WIDEN_PX 可指定单一宽度)。对后续滑块无害(滑块读 getBoundingClientRect CSS 像素 + CDP Input 同坐标系)。
+       返回 Login 最终是否可见。"""
+    try:
+        if _login_btn_visible(page):
+            return True
+        h = int((page.d.get_window_size() or {}).get("height") or 900)
+        env_w = (os.environ.get("OAUTH_WIDEN_PX", "") or "").strip()
+        widths = [int(env_w)] if env_w.isdigit() else [1280, 1600, 1920]
+        for w in widths:
+            page.d.set_window_size(w, h); time.sleep(0.9)
+            if _login_btn_visible(page):
+                log("[取Key] 窗口放宽到 %dpx → 导航展开、Login 已露出" % w)
+                return True
+        log("[取Key] 放宽到 %dpx 仍没露出 Login(可能不在导航栏)" % widths[-1])
+        return _login_btn_visible(page)
     except Exception as e:
-        log("[取Key] 放宽窗口失败: %s" % str(e)[:60]); return False
+        log("[取Key] 放宽窗口异常: %s" % str(e)[:60]); return False
 
 
 def enter_apikey_oauth(page, email, op_pw, mailbox_pw, cfg, on_node=None):
@@ -694,7 +719,8 @@ def enter_apikey_oauth(page, email, op_pw, mailbox_pw, cfg, on_node=None):
         # ★一劳永逸(用户定):①屏幕分辨率/窗口宽度【实时变化】→导航时常收成☰把Login藏起→点不到;
         #   ②取key【只能从点 Login 进】——goto 裸/auth 或 manage-apikey 只到【普通登录/注册页】,建不了 z.ai OAuth 会话→死循环。
         #   做法:先【放宽窗口】(抗分辨率变化,让导航恒定展开露出 Login)再点;点不到再进☰菜单点。
-        _widen_window_for_login(page); time.sleep(0.8)
+        # 放宽窗口并【验证 Login 已露出】,验证通过就立刻点(中间不留空档,防"窗口又变小把 Login 收回去")
+        _widen_window_for_login(page)
         _login_ok = page.click_text(sel("zai_login", "Login", "Log in", "Sign in", "登录"), 5)
         if not _login_ok and "/auth" not in (page.url() or ""):
             if _open_zai_menu(page):
