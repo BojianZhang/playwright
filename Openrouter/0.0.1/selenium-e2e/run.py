@@ -110,6 +110,10 @@ def main():
     # 【开关 OPENROUTER_LAUNCH_STAGGER 秒】并发错峰启动间隔:>0 时按它错开每个号的启动,让它们不在同一时刻
     #   齐步撞上加卡 85s / 邮箱验证等待(治"一批页面同时不干活")。留空/0=用 min(gap,3) 老行为(逐字节不变)。
     _launch_stagger = max(0.0, float(os.environ.get("OPENROUTER_LAUNCH_STAGGER", "0") or 0))
+    # 【ADS_QUOTA_FAILFAST=on 整批即停】一旦有号撞 AdsPower「环境数达上限」,后续号都会同样失败 →
+    #   置标志让剩余号直接跳过、不再逐个空跑(先去删环境/关「跑完保留环境」再重跑)。默认关=逐字节不变。
+    _quota_failfast = os.environ.get("ADS_QUOTA_FAILFAST", "") == "on"
+    _quota_full = threading.Event()
     args.concurrency = max(1, args.concurrency)   # 负/0 并发 → ThreadPoolExecutor 直接报错
 
     cfg = common.load_config()
@@ -255,10 +259,18 @@ def main():
     def worker(i, acct):
         slot = slot_q.get()                       # 占一个网格槽位(决定本号窗口在屏幕哪格)
         try:
-            start_idx = (i + args.proxy_offset) % len(proxies)
-            log("════ [%d/%d] %s （代理从池中第 %d 个起 offset=%d，失败自动轮换，窗口槽位 %d/%d）════" % (
-                i + 1, len(accounts), acct["email"], start_idx, args.proxy_offset, slot, conc))
-            r = pipeline.run_account(acct, proxies, start_idx, group_id, opts, slot=slot, slots_total=conc, checkpoint=save_progress)
+            if _quota_failfast and _quota_full.is_set():
+                # 本批已有号撞 AdsPower 配额满 → 剩余号不再尝试(都会同样失败),直接记跳过、释放槽位。
+                log("════ [%d/%d] %s 跳过:本批已遇 AdsPower 配额满,剩余号直接跳过(先删环境/关「跑完保留环境」再跑)════" % (
+                    i + 1, len(accounts), acct["email"]))
+                r = {"email": acct["email"], "ok": False, "reason": "ADS_QUOTA_FULL:本批配额满,未尝试(剩余号跳过)", "stage": "env", "steps": {}}
+            else:
+                start_idx = (i + args.proxy_offset) % len(proxies)
+                log("════ [%d/%d] %s （代理从池中第 %d 个起 offset=%d，失败自动轮换，窗口槽位 %d/%d）════" % (
+                    i + 1, len(accounts), acct["email"], start_idx, args.proxy_offset, slot, conc))
+                r = pipeline.run_account(acct, proxies, start_idx, group_id, opts, slot=slot, slots_total=conc, checkpoint=save_progress)
+                if _quota_failfast and "ADS_QUOTA_FULL" in str(r.get("reason", "")):
+                    _quota_full.set()   # 标记本批配额满 → 后续号走上面的跳过分支,整批快速收尾
             r["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             if args.job_id:
                 r["job_id"] = args.job_id   # web 按 job 隔离取结果(同引擎并发不串号)
