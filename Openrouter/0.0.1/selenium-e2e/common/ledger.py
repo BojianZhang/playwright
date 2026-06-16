@@ -493,33 +493,76 @@ def mark_card_result(card, result):
         _atomic_write_json(paths.POOL_FILE, pool)
 
 
+def note_decline_code(card_id, code, amount=0):
+    """充值【被拒】后把具体拒付码记到卡上(lastDeclineCode);★绝不动 declineCount/不冷却/不禁卡(那是 mark_card_result
+       对【绑卡】拒付的职责)—— 充值拒付多为环境/风控,不应据此累计禁掉能正常绑卡的卡。
+       仅当 code==insufficient_funds(卡真没钱)且开关 CARD_ZERO_BALANCE_ON_INSUFFICIENT 开 → 才【禁用】该卡(status=disabled
+       从可用池剔除;★不清零 balance——置 0 会让金额约束变 ∞,enable 后反成无限可充);默认关 → 只记录,不擅自改用户填的余额/状态。
+       与 Node card-pool.js noteDeclineCode 同口径。"""
+    if not card_id or not code:
+        return
+    import datetime
+    zero_on_insuff = (os.environ.get("CARD_ZERO_BALANCE_ON_INSUFFICIENT", "") or "").strip().lower() in ("1", "true", "on", "yes")
+    with _CARD_LOCK, _file_lock(paths.POOL_FILE):
+        try:
+            with open(paths.POOL_FILE, encoding="utf-8") as _f:
+                pool = json.load(_f)
+        except Exception:
+            return
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        for c in pool:
+            if (c.get("id") or c.get("number")) != card_id:
+                continue
+            c["lastDeclineCode"] = str(code)
+            c["lastDeclineAt"] = now
+            if code == "insufficient_funds" and zero_on_insuff:
+                # ★只【禁用】不清零 balance:置 balance=0 会让金额约束变 Infinity(未跟踪),一旦人工 enable() 该卡反而成"无限可充"
+                #   → 留着原 balance,禁用即从可用池剔除;人工 enable 后金额约束仍在,可据实改余额。
+                c["status"] = "disabled"
+                c["disabledReason"] = "insufficient_funds"
+                c["disabledAt"] = now
+                log("[卡] ••%s 充值拒付=余额不足 → 禁用该卡(CARD_ZERO_BALANCE_ON_INSUFFICIENT;余额不清零,enable 后金额约束仍在)" % (str(c.get("last4") or "")[-4:]))
+            break
+        _atomic_write_json(paths.POOL_FILE, pool)
+
+
 # ── 充值容量账本 + 充值步原子预留(与 Node billing/card-pool.js 同字段、同一把文件锁,并发安全)─────
 #   字段:chargeCap(充值次数)/balance(金额$)/chargeConcurrency(同卡并发上限)/chargedTotal(已真充)/chargeInflight(在飞预留)
 def _card_charge_capacity(c, amount):
-    """这张卡按当前充值额的【总】容量:次数优先 / 否则按金额算 / 都没填=inf。与 Node cardChargeCapacity 同口径。"""
+    """这张卡按当前充值额的【总】容量:次数与金额【双约束取 min】(钱优先=钱不够时钱赢);都没填=inf。与 Node cardChargeCapacity 同口径。"""
     amt = max(0.01, float(amount or 5))
+    by_count = float("inf")
+    by_money = float("inf")
     try:
         if float(c.get("chargeCap") or 0) > 0:
-            return int(float(c.get("chargeCap")))
-        if float(c.get("balance") or 0) > 0:
-            return int(float(c.get("balance")) // amt)
+            by_count = int(float(c.get("chargeCap")))
     except Exception:
-        pass
-    return float("inf")
+        by_count = float("inf")
+    try:
+        if float(c.get("balance") or 0) > 0:
+            by_money = int(float(c.get("balance")) // amt)
+    except Exception:
+        by_money = float("inf")
+    return min(by_count, by_money)   # 两者都没填 → min(inf,inf)=inf = 未跟踪 = 不限(旧行为)
 
 
 def _card_charge_remaining(c, amount):
-    """这张卡【还能真充几次】(已扣已算):次数模式=chargeCap-已充;金额模式=floor(余额/充值额)(余额已在 commit 扣减,
-       不再减 chargedTotal,否则双重计数);未跟踪=inf。与 Node cardChargeRemaining 同口径。"""
+    """这张卡【还能真充几次】(已扣已算):次数剩余=chargeCap-已充;金额剩余=floor(余额/充值额)(余额已在 commit 扣减,
+       不再减 chargedTotal,否则双重计数)。两者【双约束取 min】(钱优先=钱不够时钱赢);未跟踪=inf。与 Node cardChargeRemaining 同口径。"""
     amt = max(0.01, float(amount or 5))
+    by_count = float("inf")
+    by_money = float("inf")
     try:
         if float(c.get("chargeCap") or 0) > 0:
-            return max(0, int(float(c.get("chargeCap"))) - int(c.get("chargedTotal") or 0))
-        if float(c.get("balance") or 0) > 0:
-            return int(float(c.get("balance")) // amt)
+            by_count = max(0, int(float(c.get("chargeCap"))) - int(c.get("chargedTotal") or 0))
     except Exception:
-        pass
-    return float("inf")
+        by_count = float("inf")
+    try:
+        if float(c.get("balance") or 0) > 0:
+            by_money = int(float(c.get("balance")) // amt)
+    except Exception:
+        by_money = float("inf")
+    return min(by_count, by_money)
 
 
 def get_card_capacity(card_id, amount):
@@ -724,7 +767,7 @@ __all__ = [
     "_CARD_LOCK", "_bin_of", "_read_bin_usage", "_bin_today", "_save_bin_usage", "load_card",
     "_hcaptcha_file", "load_hcaptcha_hits", "mark_hcaptcha",
     "_bad_mailbox_file", "load_bad_mailboxes", "is_bad_mailbox", "mark_bad_mailbox",
-    "mark_card_result", "list_active_cards", "get_card_by_id",
+    "mark_card_result", "note_decline_code", "list_active_cards", "get_card_by_id",
     # 充值容量账本 + 原子预留
     "get_card_capacity", "reserve_charge", "commit_charge", "release_charge", "reap_stale_inflight", "fundable_count",
 ]

@@ -355,7 +355,7 @@ async function handleStartJob(req, res) {
   if (_pwConflict) { sendJson(res, 409, { error: 'DUPLICATE_SUBMIT', message: `相同账号批次已在运行中(jobId …${String(_pwConflict).slice(-10)}),已挡掉重复提交防重复扣费;等它结束或用「续跑这批」。` }); return; }
 
   // jobId 含节点标识 → 文件名 <jobId>-success.txt 跨机器不会重复。
-  const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;   // 6字节随机(48bit)防集群同名节点+同毫秒撞 jobId → 结果文件互覆盖丢数据(NODE-001)
   _batchInflight.set(_pwBatchKey, jobId);
 
   // 运行历史:登记一条 running(参数摘要,不含密钥/明文凭证)。job 跑完(runJob 返回 summary)更新为 finished。
@@ -934,8 +934,16 @@ async function handleCardAction(req, res, action) {
   let body;
   try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
   const id = String(body.id || '');
-  // clear 不需要 id
+  // clear / set-many 不需要单卡 id
   if (action === 'clear') { await cardPool.clear(); sendJson(res, 200, { ok: true, cards: cardPool.snapshot(), available: cardPool.availableCount() }); return; }
+  if (action === 'set-many') {
+    // ★批量设值:body.ids[] + 任意 maxUses/chargeCap/balance/chargeConcurrency(空=不改);一次锁内整批写。
+    const ids = Array.isArray(body.ids) ? body.ids.map((x) => String(x || '')).filter(Boolean) : [];
+    if (!ids.length) { sendJson(res, 400, { error: 'NO_IDS', message: '未选中任何卡' }); return; }
+    const r = await cardPool.setMany(ids, { maxUses: body.maxUses, chargeCap: body.chargeCap, balance: body.balance, chargeConcurrency: body.chargeConcurrency });
+    sendJson(res, 200, { ok: true, updated: (r && r.updated) || 0, cards: cardPool.snapshot(), available: cardPool.availableCount(), totalBalance: cardPool.totalBalance() });
+    return;
+  }
   if (!id) { sendJson(res, 400, { error: 'MISSING_ID' }); return; }
   if (action === 'disable') await cardPool.disable(id);
   else if (action === 'enable') await cardPool.enable(id);
@@ -1124,7 +1132,7 @@ function launchPythonJob(engine, sliced, proxies, payload, resumedFrom) {
   const batchKey = _batchKey(engine, sliced);
   const conflict = _batchInflight.get(batchKey);
   if (conflict) return { duplicate: true, conflictJobId: conflict };
-  const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const jobId = `job-${NODE_ID}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;   // 6字节随机(48bit)防集群同名节点+同毫秒撞 jobId → 结果文件互覆盖丢数据(NODE-001)
   _batchInflight.set(batchKey, jobId);
   // 落 job.json:除账号/代理/卡文本外的完整参数,供「续跑这批」忠实重建(凭证在 accounts.txt/proxies.txt,不重复存)。
   try {
@@ -1169,22 +1177,55 @@ function launchPythonJob(engine, sliced, proxies, payload, resumedFrom) {
   return { jobId, accepted: sliced.length, engine };
 }
 
-// POST /api/run/resume —— 「续跑这批」:读源 job 残留输入(accounts.txt/proxies.txt/job.json)→ 强制 resume → 新起一个 job。
-// 仅对中断/异常(输入未被清理)的任务可用;正常跑完的任务输入已清,返回 404。
+// 批量恢复回退:源 job 临时输入已清(正常跑完的老批次)→ 从持久化 run-detail 重建可续跑输入。
+//   账号=失败+未完整记录(email + 邮箱密码);代理=当前代理池;run 参数=runs.json params(在 handler 里取)。
+// ★安全:resume=true 仍生效 → 已完成环节按 results.jsonl(按邮箱)跳过,不重复扣费/取key;银/坏邮箱/not_allowed 永久态不重建。
+// ★密码:accounts.txt 用邮箱密码(originalPassword 优先);若各记录的【现密码】统一且≠原密码(原批用了统一登录密码)→ 回填
+//   unifiedPassword 使 op_pw 与原批一致,否则改过 OpenRouter 登录密码的号登不回去。
+function rebuildResumeFromDetail(srcJobId) {
+  let d = null;
+  try { d = engineRunner.readDetail(srcJobId); } catch (_e) { d = null; }
+  if (!d) return null;
+  const rows = [].concat(d.failed || [], d.incomplete || []);
+  // 永久态(banned/坏邮箱/not_allowed)不重建;无任何可用密码的行也跳过(登不回去,徒劳重试浪费配额)。
+  const recoverable = rows.filter((r) => r && r.email && !r.blacklisted && r.status !== 'banned' && r.status !== 'bad-mailbox'
+    && String(r.originalPassword || r.password || '').trim());
+  if (!recoverable.length) return null;
+  const accountsRaw = recoverable.map((r) => `${r.email}:${String(r.originalPassword || r.password || '').trim()}`).join('\n');
+  // 仅当【全部】行都有现密码、统一、且都≠各自原密码(原批确用了统一登录密码)→ 才回填 unifiedPassword;
+  //   任一行缺现密码就不回填(避免把缺密码行误判成统一密码 → 用错密码登录,白耗尝试)。
+  let unifiedPassword = '';
+  const logins = recoverable.map((r) => String(r.password || '').trim());
+  const origs = recoverable.map((r) => String(r.originalPassword || '').trim());
+  if (logins.every(Boolean) && new Set(logins).size === 1 && !origs.includes(logins[0])) unifiedPassword = logins[0];
+  return { accountsRaw, proxiesRaw: String(proxyStore.activeLines() || ''), manifest: null, splitHint: false, unifiedPassword, rebuilt: true };
+}
+
+// POST /api/run/resume —— 「续跑这批 / 批量恢复」:读源 job 残留输入(accounts.txt/proxies.txt/job.json)→ 强制 resume → 新起一个 job。
+//   有失败/未完整的批次现【保留输入】(spawnEngine 收尾按 _keepInputsOnExit),故跑完仍可恢复;输入真被清(老批次)→ 从 run-detail 重建。
+//   失败列表「批量恢复」额外传 onlyEmails 子集 + recoverOptions(按原因选的动作 → buildEnv 注 env);★恢复保持源引擎(跨引擎换会绕过同引擎的防双扣门)。
 async function handleApiRunResume(req, res) {
   let body;
   try { body = await readJsonBody(req); } catch (err) { sendJson(res, 400, { error: err.message }); return; }
   const srcJobId = String((body && body.jobId) || '').trim();
   if (!srcJobId) { sendJson(res, 400, { error: 'MISSING_JOB_ID', message: '缺少 jobId' }); return; }
-  const inp = tempInputs.readResumeInputs(srcJobId);
-  if (!inp) { sendJson(res, 404, { error: 'NO_INPUTS', message: '该任务的输入已被清理(正常跑完的任务不保留输入),无法一键续跑;请到控制台重新提交账号。' }); return; }
+  let inp = tempInputs.readResumeInputs(srcJobId);
+  let rebuilt = false;
+  if (!inp) { inp = rebuildResumeFromDetail(srcJobId); rebuilt = !!inp; }   // 输入已清(老批次)→ 从 run-detail 重建(best-effort)
+  if (!inp) { sendJson(res, 404, { error: 'NO_INPUTS', message: '该任务的输入与历史明细都已清,无法恢复;请到控制台重新导入这些失败号。' }); return; }
   const row = runsStore.get(srcJobId);
   const base = inp.manifest || {};
   // 引擎来源:manifest → runs 行 engine → runs 行 params.engine
   const pick = (v) => (['selenium', 'hybrid', 'split'].includes(v) ? v : null);
-  // 引擎来源优先级:请求显式 engine(前端从详情页 summary 带来) → manifest → runs 行 → runs.params → split 自动识别(A/B 文件)
-  const engine = pick(body && body.engine) || pick(base.engine) || pick(row && row.engine)
-    || pick(row && row.params && row.params.engine) || (inp.splitHint ? 'split' : null);
+  // 源任务引擎(manifest → runs 行 → runs.params → split 自动识别 A/B 文件);请求可显式带 engine(前端从详情页 summary 带来)。
+  const sourceEngine = pick(base.engine) || pick(row && row.engine) || pick(row && row.params && row.params.engine) || (inp.splitHint ? 'split' : null);
+  const reqEngine = pick(body && body.engine);
+  // ★防重复扣款:恢复必须用【源引擎】。各引擎结果文件独立(results.jsonl vs hybrid_results.jsonl),换引擎会读不到 charged 集
+  //   → 已扣款的号被当成没扣过、二次扣款。请求显式指定且与源不一致 → 直接拒绝,不瞎跑。
+  if (reqEngine && sourceEngine && reqEngine !== sourceEngine) {
+    sendJson(res, 400, { error: 'ENGINE_MISMATCH', message: `恢复必须用源引擎 ${sourceEngine}(换引擎会绕过防重复扣款门);请用源引擎恢复。` }); return;
+  }
+  const engine = reqEngine || sourceEngine;
   if (!engine) { sendJson(res, 400, { error: 'BAD_ENGINE', message: '无法确定源任务引擎(可能是 Playwright 引擎或历史已清);可在请求中显式指定 engine 续跑' }); return; }
   // 无 manifest(早于本功能的老任务)→ 用 runs.json 精简 params 拼最小可用参数集
   const fallback = (!inp.manifest && row && row.params) ? {
@@ -1193,6 +1234,18 @@ async function handleApiRunResume(req, res) {
   } : {};
   // 续跑强制 resume=true(只跑没完成的、跳过已完成,绝不重复扣费);代理/账号用残留的真实输入。
   const payload = { ...base, ...fallback, engine, accountsRaw: inp.accountsRaw, proxiesRaw: inp.proxiesRaw, resume: true };
+  if (inp.unifiedPassword) payload.unifiedPassword = inp.unifiedPassword;   // 重建路径:回填统一登录密码(op_pw 与原批一致,否则登不回去)
+  // ★失败列表「批量恢复」:按原因选的动作(前端弹窗)→ 白名单合并进 payload,buildEnv 据此注 env(只认安全旋钮,绝不透传任意键)。
+  //   amount/真实充值/容量闸等碰钱开关【不】在此覆盖(沿用源批 manifest),恢复只调"怎么重试"不改"扣多少/扣不扣"。
+  const ro = (body && body.recoverOptions && typeof body.recoverOptions === 'object') ? body.recoverOptions : null;
+  if (ro) {
+    if (ro.recoveryOverride && typeof ro.recoveryOverride === 'object') payload.recoveryOverride = ro.recoveryOverride;   // 各失败类型是否重试
+    if (['on', 'off', 'random', 'solve', 'swap'].includes(String(ro.solveHcaptcha))) payload.solveHcaptcha = String(ro.solveHcaptcha);
+    if (['random', 'spread', 'concentrate'].includes(String(ro.cardStrategy))) payload.cardStrategy = String(ro.cardStrategy);
+    const _z = Number(ro.zipRetry);
+    if (ro.zipRetry !== undefined && ro.zipRetry !== '' && Number.isFinite(_z) && _z >= 0) payload.zipRetry = _z;
+    if (ro.autoRetryFailed) { payload.autoRetryFailed = true; const _t = Number(ro.autoRetryTimes); if (Number.isFinite(_t) && _t > 0) payload.autoRetryTimes = _t; }
+  }
   let accounts = parseAccounts(payload.accountsRaw);
   const proxies = parseProxies(payload.proxiesRaw);
   if (!accounts.length) { sendJson(res, 400, { error: 'NO_ACCOUNTS', message: '残留账号文件为空,无法续跑' }); return; }
@@ -1206,7 +1259,7 @@ async function handleApiRunResume(req, res) {
   }
   const r = launchPythonJob(engine, accounts, proxies, payload, srcJobId);
   if (r.duplicate) { sendJson(res, 409, { error: 'DUPLICATE_SUBMIT', message: `相同账号批次已在运行中(jobId …${String(r.conflictJobId).slice(-10)}),已挡掉重复续跑防重复扣费;等它结束后再试。` }); return; }
-  sendJson(res, 200, { ...r, resumedFrom: srcJobId });
+  sendJson(res, 200, { ...r, resumedFrom: srcJobId, rebuilt });
 }
 
 // POST /api/jobs/stop —— 杀 Python 引擎进程树(含 Playwright/浏览器);进程 close 后正常收口 job-done。
@@ -1491,6 +1544,16 @@ async function handleEndpointsTest(req, res) {
 
 // ── 诊断/排查:按 email/card/proxy/env 跨资源关联(只读)─────────────────────
 function _norm(s) { return String(s || '').trim().toLowerCase(); }
+// 诊断页【无搜索值时的默认落地视图】:最近活动(供一眼看到最近谁/哪张卡出问题,点行下钻)。
+// 不传 value 也有内容,不再是空页 dead-end。usage 列表 store 已按 mtime+size memo,30s 轮询不烧。
+function handleApiDiagnoseRecent(res, q) {
+  const limit = Math.min(1000, Math.max(1, Number(q.get('limit')) || 200));
+  let usage = [];
+  try { usage = usageStore.list(limit) || []; } catch (_e) { usage = []; }
+  let billing = [];
+  try { billing = (billingLedger.recent(limit) || []).filter((e) => e.result === 'declined'); } catch (_e) { billing = []; }   // recent() 不做 O(n) 聚合,30s 轮询不烧(PERF-1)
+  sendJson(res, 200, { usage, declines: billing });
+}
 function handleApiDiagnose(res, q) {
   const by = q.get('by') || 'email';
   const value = q.get('value') || '';
@@ -1733,8 +1796,11 @@ const ALLOW_HOSTS = (process.env.OPENROUTER_ALLOW_HOSTS ? toList(process.env.OPE
 const TRUST_PROXY = process.env.OPENROUTER_TRUST_PROXY === '1' || readSec('trustForwardedFor') === true;
 
 function ipToLong(ip) { return ip.split('.').reduce((a, o) => (((a << 8) + (parseInt(o, 10) & 255)) >>> 0), 0) >>> 0; }
+// ★RTE-4 安全:只有【配了 token/密码鉴权】时才信任 X-Forwarded-For。否则(IP 白名单是唯一关卡时)信任 XFF = 任意人伪造
+//   白名单 IP 即可绕过 → 强制改用真实 socket IP(不可伪造),白名单才真正有效。鉴权配了时 token 才是主关卡,XFF 仅用于日志/限速。
+const _TRUST_XFF = TRUST_PROXY && (!!AUTH_TOKEN || !!AUTH_USER);
 function clientIp(req) {
-  if (TRUST_PROXY && req.headers['x-forwarded-for']) return String(req.headers['x-forwarded-for']).split(',')[0].trim().replace(/^::ffff:/, '');
+  if (_TRUST_XFF && req.headers['x-forwarded-for']) return String(req.headers['x-forwarded-for']).split(',')[0].trim().replace(/^::ffff:/, '');
   return String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
 }
 function ipAllowed(req) {
@@ -1847,6 +1913,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && pathname === '/api/cards/capacity') return void handleCardsCapacity(res, url.searchParams);
   if (req.method === 'POST' && pathname === '/api/cards/import') return void handleCardsImport(req, res);
   if (req.method === 'POST' && pathname === '/api/cards/set-charge') return void handleCardAction(req, res, 'set-charge');
+  if (req.method === 'POST' && pathname === '/api/cards/set-many') return void handleCardAction(req, res, 'set-many');
   if (req.method === 'POST' && pathname === '/api/cards/disable') return void handleCardAction(req, res, 'disable');
   if (req.method === 'POST' && pathname === '/api/cards/enable') return void handleCardAction(req, res, 'enable');
   if (req.method === 'POST' && pathname === '/api/cards/remove') return void handleCardAction(req, res, 'remove');
@@ -1922,6 +1989,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/adspower/endpoints/remove') return void handleEndpointsRemove(req, res);
   if (req.method === 'POST' && pathname === '/api/adspower/endpoints/clear') return void handleEndpointsClear(res);
   if (req.method === 'POST' && pathname === '/api/adspower/endpoints/test') return void handleEndpointsTest(req, res);
+  if (req.method === 'GET' && pathname === '/api/diagnose/recent') return void handleApiDiagnoseRecent(res, url.searchParams);
   if (req.method === 'GET' && pathname === '/api/diagnose') return void handleApiDiagnose(res, url.searchParams);
   if (req.method === 'POST' && pathname === '/api/dispatch') return void handleDispatch(req, res);
   if (req.method === 'GET' && pathname === '/api/dispatch/recent') return void handleDispatchRecent(res);
@@ -1955,12 +2023,14 @@ const onListening = () => {
   try { const _reaped = runsStore.reapStale(); if (_reaped) console.log(`🧹 已回收 ${_reaped} 条中断的僵尸运行(标记为 interrupted) —— 重提交同批账号即断点续跑`); } catch (_e) { /* ignore */ }
   // ★回收上次崩溃遗留的【充值在飞预留】(进程崩了 reserveCharge 没 commit/release → 卡额度被永久占住)。10min 阈值只清真陈旧的。
   try { Promise.resolve(cardPool.reapStaleInflight(600000)).then((r) => { if (r && r.reaped) console.log(`🧹 已回收 ${r.reaped} 笔陈旧的充值在飞预留(卡额度释放)`); }).catch(() => {}); } catch (_e) { /* ignore */ }
+  // ★回收超龄的临时输入(批量恢复对有失败的批次保留了输入供复用,3 天 TTL 防无限堆积)。
+  try { const _rt = tempInputs.reapStaleTempInputs(); if (_rt) console.log(`🧹 已清理 ${_rt} 个超龄(>3天)的续跑临时输入目录`); } catch (_e) { /* ignore */ }
   if (ALLOW_IPS.length) console.log(`🔒 IP 白名单(+本机): ${ALLOW_IPS.join(', ')}${TRUST_PROXY ? ' [信任 X-Forwarded-For]' : ''}`);
   if (ALLOW_HOSTS.length) console.log(`🔒 域名白名单(+localhost): ${ALLOW_HOSTS.join(', ')}`);
   // ★B6a:危险组合告警——开了「信任 X-Forwarded-For」+ IP 白名单做访问控制,但【没配 token/密码】→ IP 白名单是【唯一关卡】,
   //   而 X-Forwarded-For 客户端可伪造 → 任意人伪造白名单 IP 即可绕过。务必同时配 OPENROUTER_AUTH_TOKEN(token 才是主关卡)。
   if (TRUST_PROXY && ALLOW_IPS.length && !AUTH_TOKEN && !AUTH_USER) {
-    console.warn('⚠⚠ [安全] 已开 TRUST_PROXY + IP白名单 但【未配 token/密码】→ X-Forwarded-For 可被伪造绕过 IP 白名单!请配 OPENROUTER_AUTH_TOKEN,或仅在【会清洗 XFF 的可信反代】后开 TRUST_PROXY。');
+    console.warn('⚠⚠ [安全] 已开 TRUST_PROXY + IP白名单 但【未配 token/密码】→ 为防 X-Forwarded-For 伪造绕过白名单,已【自动忽略 XFF、改用真实连接 IP 做白名单】。要让 XFF 生效(真在可信反代后),请配 OPENROUTER_AUTH_TOKEN。');
   }
 
   // 子机自动注册:配了中心机地址就启动时 + 每 30s 心跳上报,中心机自动聚合本机。

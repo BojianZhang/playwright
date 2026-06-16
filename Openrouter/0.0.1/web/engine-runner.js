@@ -24,6 +24,7 @@ const proxyStore = require('./proxy-store');
 const adspowerEndpointStore = require('./adspower-endpoint-store');
 const serviceKeys = require('./service-keys');
 const accountStore = require('../data/account-store');   // 把 Python 引擎结果(注册/key/充值/拉黑)桥接进账号台账,让账号页回显
+const billingLedger = require('../billing/billing-ledger');   // Python 引擎充值结果也写进充值台账(原只 Playwright 写)→ 诊断「充值记录」+ 台账「拒付原因分布」对 selenium/hybrid 生效
 
 const SELENIUM_DIR = path.join(__dirname, '..', 'selenium-e2e');
 const STATE_DIR = path.join(SELENIUM_DIR, 'state');
@@ -46,6 +47,10 @@ function readTail(file, fromLine, stats) {
     const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(fromLine);
     const out = [];
     let dropped = 0;
+    // ★解析失败的行【一律计 dropped】并由调用方告警 —— 绝不静默吞掉(曾试过"末尾无换行=并发半写→不计",但被 SIGKILL/磁盘错
+    //   截断的【永久坏行】同样无换行结尾 → 会被误当并发半写而静默丢失,无任何告警;不可接受。宁可对偶发并发半写多报一次,
+    //   也不放过真损坏。根因(并发写撕裂)已由 Python 端单次 os.write 原子追加整行根治,此处坏行已极罕见。
+    //   兜底:被丢行的账号不会消失——后面「未完整桶最终对账」会把不在成功/失败里的输入号收进未完整(可见可续跑)。
     for (const l of lines) { try { out.push(JSON.parse(l)); } catch (_e) { dropped += 1; } }
     if (stats && dropped) stats.dropped = (stats.dropped || 0) + dropped;
     return out;
@@ -196,7 +201,7 @@ function mapRow(r, accByEmail) {
     return ['success', { email: r.email, password: r.password || orig, originalPassword: orig, apiKey: r.api_key || '', apiKeyName: r.api_key_name || '', billingStatus: bestBillingStatus(r), charged: _charged, balanceAfter: r.balance_after != null ? r.balance_after : null, purchaseStatus: po.status, purchaseReason: po.reason, cardLast4: r.card_last4 || '', passwordChanged: !!(r.steps && r.steps.changepw), exitIp, proxy: r.proxy || '', durationSec, timings: _timings, createdAt: r.at || '' }];
   }
   // ★失败号也带【现密码=op_pw(统一密码优先)】+【原密码】,否则重跑这些号(尤其已注册的 key:false)拿不到能登录的密码。
-  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', durationSec, timings: _timings, createdAt: r.at || '' }];
+  return ['failed', { email: r.email, password: r.password || orig, originalPassword: orig, reason: pyFailReason(r), stage: r.fail_stage || (r.steps && (typeof r.steps.auth === 'string' ? 'auth' : (r.steps.purchase && r.steps.purchase !== 'success' ? 'charge' : (r.steps.card && r.steps.card !== 'card-bound' ? 'card' : (r.steps.key === false ? 'key' : (r.steps.pw === false ? 'register' : '')))))) || '', failClass: r.hcap_mode || '', declineCode: r.decline_code || '', cardLast4: r.card_last4 || '', attempts: r.crash_restarts != null ? r.crash_restarts : (r.reopen_count || 0), purchaseStatus: po.status, purchaseReason: po.reason, blacklisted: isNotAllowed(r), blacklistReason: isNotAllowed(r) ? 'ACCOUNT_NOT_ALLOWED' : '', proxy: r.proxy || '', durationSec, timings: _timings, createdAt: r.at || '' }];
 }
 
 const DETAILS_DIR = path.join(__dirname, '..', 'data', 'run-details');
@@ -571,9 +576,9 @@ function runSpec(jobId, spec, publish, shared) {
       try { rlOut.close(); rlErr.close(); } catch (_e) { /* ignore */ }
       procRegistry.unregister(jobId, child.pid);
       publish(jobId, 'log', `${spec.label}结束(code=${code}${signal ? ' signal=' + signal : ''})`);
-      // 仅非零退出(且非被信号杀=非用户主动停)才带 stderr 尾,正常结束不留(免噪声/省内存)。
-      const _crash = (typeof code === 'number' && code !== 0 && !signal);
-      shared.exits.push({ started: true, code, signal, label: spec.label, stderrTail: _crash ? errBuf.slice(-15) : [] });
+      // ★只要 stderr 有内容就带尾(不再仅限非零退出)——子进程退码 0 但 stderr 报了 import/init 错且 0 结果时,
+      //   原来 stderrTail 为空 → summary.error 拿不到真因、持久化诊断丢失(DEFECT-01)。有 stderr 才留,正常无 stderr 仍不留(省内存/免噪声)。
+      shared.exits.push({ started: true, code, signal, label: spec.label, stderrTail: errBuf.length ? errBuf.slice(-15) : [] });
       resolve();
     });
   });
@@ -583,6 +588,7 @@ function runSpec(jobId, spec, publish, shared) {
 // 返回 Promise<summary>(给 runsStore.finish)。
 async function spawnEngine(jobId, engine, payload, publish) {
   const startedAt = Date.now();
+  let _keepInputsOnExit = false;   // ★批量恢复:有失败/未完整 → 保留临时输入(原始账号·密码·代理),供运行详情「批量恢复」复用;全成功才清
   const env = buildEnv(payload);
   // 邮箱→原密码映射(结果行不含密码):流式 account-failed 带上它,前端「重跑(登录)」才能回填 email:密码,否则只剩 email: 空密码登不进。
   const shared = { engine, counters: { ok: 0, fail: 0 }, total: (payload.accounts || []).length, accByEmail: new Map((payload.accounts || []).map((a) => [a.email, a.password || ''])), accByLocal: new Map((payload.accounts || []).map((a) => [String(a.email || '').split('@')[0], a.password || ''])), unifiedPw: String(payload.unifiedPassword || '').trim(), seenResults: new Set() };
@@ -783,7 +789,8 @@ async function spawnEngine(jobId, engine, payload, publish) {
   //   运行详情「异常」chip 可见),不再只甩"见运行日志"(日志没持久化,等于查不到)。
   const _crashExit = exits.find((e) => e && e.stderrTail && e.stderrTail.length);
   const _tail = _crashExit ? _crashExit.stderrTail : [];
-  const crashError = (crashed && success === 0 && failed === 0)
+  // ★0 结果 且 有 stderr(即使退码 0)也按异常登记 → 把 stderr 真因持久化进 summary.error,不再因退码 0 丢诊断(DEFECT-01)。
+  const crashError = ((crashed || _tail.length) && success === 0 && failed === 0)
     ? ('Python 子进程异常退出(无结果,python 未安装/导入失败/启动报错?)'
        + (_tail.length ? ' ‖ stderr末尾:' + _tail.join(' ⏎ ').slice(0, 600) : ' ‖ 无 stderr 输出(可能根本没启动)'))
     : '';
@@ -794,10 +801,28 @@ async function spawnEngine(jobId, engine, payload, publish) {
     const host = (s) => String(s || '').split(':')[0];
     const usage = [
       ...successRows.map((v) => ({ jobId, engine, email: v.email, host: host(v.proxy), exitIp: v.exitIp || '', proxyId: pxByHost.get(host(v.proxy)) || '', cardLast4: v.cardLast4 || '', envId: '', endpoint: '', stage: 'done', ok: true, reason: '' })),
-      ...failedRows.map((v) => ({ jobId, engine, email: v.email, host: host(v.proxy), exitIp: '', proxyId: pxByHost.get(host(v.proxy)) || '', cardLast4: '', envId: '', endpoint: '', stage: v.stage || '', ok: false, reason: v.reason || '' })),
+      // ★失败行也带 cardLast4(mapRow 现已透出)→ 诊断「按卡末4」能看到这张卡的失败/拒付记录(原来硬编码 '' 导致按卡查不到失败)。
+      ...failedRows.map((v) => ({ jobId, engine, email: v.email, host: host(v.proxy), exitIp: '', proxyId: pxByHost.get(host(v.proxy)) || '', cardLast4: v.cardLast4 || '', envId: '', endpoint: '', stage: v.stage || '', ok: false, reason: v.reason || '' })),
     ];
     usageStore.recordMany(usage);
   } catch (_e) { /* 使用记录失败不致命 */ }
+  // ★把 Python 引擎的充值结果写进【充值台账】(原来只有 Playwright 写)→ 诊断页「充值记录」+ 台账「拒付原因分布」KPI 对 selenium/hybrid 也生效。
+  //   ★用 purchaseOutcome() 统一归类(与全局同口径)只记【本次真实充值事件】:
+  //     · po.status==='success'(已排除 skipped/dry-run/not-attempted)→ 记 success;
+  //     · po.status==='failed' 且 raw purchase==='declined'(真 Stripe 拒付,排除容量闸 insufficient-funds/测试帽 charge-test-capped)→ 记 declined+decline_code。
+  //   ★【关键】绝不用「charged>0」当 success 判据:续跑跳过充值的行(skipped_charge)会带着上次的 charged 金额 → 会把已充的号重复记成 success 虚增总充值(DEFECT-1/3)。
+  try {
+    for (const r of rows) {
+      const po = purchaseOutcome(r);   // success / failed / skipped / not-attempted / dry-run(已排除 skipped/dry-run 不记)
+      const pur = (r.steps && r.steps.purchase != null) ? r.steps.purchase : r.purchase;
+      if (po.status === 'success') {
+        const amt = po.amount != null ? po.amount : (r.charged != null ? r.charged : (r.charge || 0));
+        billingLedger.record({ email: r.email, result: 'success', charged: Number(amt) || 0, cardLast4: r.card_last4 || '', jobId, error: '' });
+      } else if (po.status === 'failed' && pur === 'declined') {
+        billingLedger.record({ email: r.email, result: 'declined', charged: 0, cardLast4: r.card_last4 || '', jobId, error: r.fail_reason || '', declineCode: r.decline_code || '' });
+      }
+    }
+  } catch (_e) { /* 台账写失败不致命 */ }
   // 结果落盘:失败不再静默(be-8)。tail 丢行(be-4)/落盘失败都告警到运行日志,
   // 避免前端看到"完成"却拿到残缺的下载/详情而毫无提示。
   if (_tailStats.dropped) publish(jobId, 'log', `⚠ 结果文件有 ${_tailStats.dropped} 行无法解析被跳过 —— 这些账号可能未计入结果(磁盘/编码/半写?)`);
@@ -813,10 +838,13 @@ async function spawnEngine(jobId, engine, payload, publish) {
   const summary = { jobId, total: shared.total, success, failed, incomplete: incompleteRows.length, durationMs: Date.now() - startedAt, engine, resultFiles, completenessPct, ...(partial ? { partial: true } : {}), ...(crashError ? { error: crashError } : {}) };
   if (partial) publish(jobId, 'log', `⚠ 结果可能未完整:${resultCount}/${shared.total}(${completenessPct}%)—— 某分流组/子进程疑似中途退出丢了部分账号结果,可用「续跑这批」补齐`);
   if (crashError) publish(jobId, 'log', crashError);
+  // ★有失败/未完整(或整批崩零结果)→ 保留输入,供运行详情「批量恢复/续跑」复用原始账号·密码·代理(格式零风险);全成功才清。
+  _keepInputsOnExit = (failed > 0) || (incompleteRows.length > 0) || resultCount < shared.total || !!crashError;
   publish(jobId, 'job-done', summary);
   return summary;
   } finally {
-    tempInputs.cleanup(jobId);   // ★ 不管 Promise.all/后处理是否抛错,临时输入文件都必清(rel-1)
+    // 全成功(无失败/未完整/不缺量/未崩)才清临时输入;否则保留供「批量恢复」(配套 reapStaleTempInputs TTL 防堆积)。
+    if (!_keepInputsOnExit) tempInputs.cleanup(jobId);
   }
 }
 

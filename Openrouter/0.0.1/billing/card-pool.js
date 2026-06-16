@@ -325,6 +325,7 @@ function report(id, outcome) {
     } else if (result === 'declined') {
       // declined 多是环境因素(AVS/ZIP·IP)→ 单次只【冷却不禁卡】;累到阈值(多会话都拒=真坏卡)才禁。对齐 common.py:663-679。
       c.declineCount += 1;
+      if (outcome && outcome.decline_code) c.lastDeclineCode = String(outcome.decline_code);   // 绑卡拒付的具体原因(insufficient_funds vs 风控)
       if (c.declineCount >= envInt('CARD_DECLINE_DISABLE_AT', 2)) {
         c.status = 'disabled'; c.disabledReason = 'declined'; c.disabledAt = now; // ★禁用写 'disabled'(不是 'declined'),与 Selenium 一致
       } else {
@@ -359,6 +360,7 @@ function sanitize(c) {
     lastError: c.lastError || '',
     cooldownUntil: c.cooldownUntil || '',
     disabledReason: c.disabledReason || '',
+    lastDeclineCode: c.lastDeclineCode || '',   // 最近一次拒付的具体原因(余额不足 vs 风控);卡池页提示用
     inUse: !!c.inUse,
     // ★充值容量账本(UI 编辑/读数用)
     chargeCap: c.chargeCap || 0, balance: c.balance || 0, chargeConcurrency: c.chargeConcurrency || 0,
@@ -366,20 +368,22 @@ function sanitize(c) {
   };
 }
 
-// 这张卡按【当前充值额】的【总】容量:填了次数优先、否则按金额算、都没填=不限(Infinity)。
+// 这张卡按【当前充值额】的【总】容量:次数与金额【双约束取 min】(钱优先=钱不够时钱赢);都没填=不限(Infinity)。
 function cardChargeCapacity(c, amount) {
   const amt = Math.max(0.01, Number(amount) || 5);
-  if (Number(c.chargeCap) > 0) return Number(c.chargeCap);
-  if (Number(c.balance) > 0) return Math.floor(Number(c.balance) / amt);
-  return Infinity;   // 两者都没填 = 未跟踪 = 不限(旧行为)
+  // ★byCount 用 Math.floor 取整(与 Python int(float(chargeCap)) 逐值对齐:次数是离散整数,绝不让 Node 留小数与 Py 漂移)
+  const byCount = Number(c.chargeCap) > 0 ? Math.floor(Number(c.chargeCap)) : Infinity;
+  const byMoney = Number(c.balance) > 0 ? Math.floor(Number(c.balance) / amt) : Infinity;
+  return Math.min(byCount, byMoney);   // 两者都没填 → min(∞,∞)=∞ = 未跟踪 = 不限(旧行为)
 }
-// 这张卡【还能真充几次】(已扣已算):次数模式=chargeCap-已充;金额模式=floor(余额/充值额)(余额已在 commit 扣减,不再减 chargedTotal,
-//   否则双重计数);未跟踪=Infinity。reserveCharge/fundableCount 都用它,口径与 Python _card_charge_remaining 一致。
+// 这张卡【还能真充几次】(已扣已算):次数剩余=chargeCap-已充;金额剩余=floor(余额/充值额)(余额已在 commit 扣减,不再减 chargedTotal,
+//   否则双重计数)。两者【双约束取 min】(钱优先=钱不够时钱赢);未跟踪=Infinity。reserveCharge/fundableCount 都用它,口径与 Python _card_charge_remaining 一致。
 function cardChargeRemaining(c, amount) {
   const amt = Math.max(0.01, Number(amount) || 5);
-  if (Number(c.chargeCap) > 0) return Math.max(0, Number(c.chargeCap) - (Number(c.chargedTotal) || 0));
-  if (Number(c.balance) > 0) return Math.floor(Number(c.balance) / amt);
-  return Infinity;
+  // ★byCount 两操作数各自 Math.floor 后相减(与 Python int(float(chargeCap)) - int(chargedTotal or 0) 逐值对齐,杜绝浮点漂移)
+  const byCount = Number(c.chargeCap) > 0 ? Math.max(0, Math.floor(Number(c.chargeCap)) - Math.floor(Number(c.chargedTotal) || 0)) : Infinity;
+  const byMoney = Number(c.balance) > 0 ? Math.floor(Number(c.balance) / amt) : Infinity;
+  return Math.min(byCount, byMoney);
 }
 
 /** 脱敏快照（供 UI / SSE）。 */
@@ -477,6 +481,36 @@ function setMaxUses(id, n) {
   }));
 }
 
+/** ★批量设值(一次文件锁内整批写,省 N 次取锁/落盘;257 张也是一次落盘)。
+ *  对 ids 里的每张卡,patch 里【出现且非空】的字段才改(空/undefined=不动该字段):
+ *   - maxUses:同 setMaxUses(并按用量重算 active/exhausted)
+ *   - chargeCap/balance/chargeConcurrency:同 setCardCharge(改了次数/金额=新预算→重置 chargedTotal/chargeInflight)
+ *  返回 { updated }。与逐张 setMaxUses/setCardCharge 同口径,只是合并到一次锁内。 */
+function setMany(ids, patch) {
+  return mutex(() => lockedWrite(() => {
+    const idset = new Set((ids || []).map((x) => String(x)));
+    const p = patch || {};
+    const has = (v) => v !== undefined && v !== null && v !== '';
+    let updated = 0;
+    for (const c of POOL.values()) {
+      if (!idset.has(String(c.id))) continue;
+      let touched = false; let capacityChanged = false;
+      if (has(p.maxUses)) {
+        c.maxUses = Math.max(1, Number(p.maxUses) || 1);
+        if (c.status === 'exhausted' && c.usedCount < c.maxUses) c.status = 'active';
+        else if (c.status === 'active' && c.usedCount >= c.maxUses) c.status = 'exhausted';
+        touched = true;
+      }
+      if (has(p.chargeCap)) { c.chargeCap = Math.max(0, Number(p.chargeCap) || 0); capacityChanged = true; touched = true; }
+      if (has(p.balance)) { c.balance = Math.max(0, Number(p.balance) || 0); capacityChanged = true; touched = true; }
+      if (has(p.chargeConcurrency)) { c.chargeConcurrency = Math.max(0, Number(p.chargeConcurrency) || 0); touched = true; }
+      if (capacityChanged) { c.chargedTotal = 0; c.chargeInflight = 0; }   // 新预算 → 计数清零(与 setCardCharge 同口径)
+      if (touched) updated += 1;
+    }
+    return { updated };
+  }));
+}
+
 // ── 充值容量账本(用户编辑;充值步原子预留,并发安全)─────────────────────────
 // 编辑某卡的充值容量字段。改了次数/金额 = 声明【新预算】→ 重置 chargedTotal(可重新充满);只传部分字段则只改该部分。
 function setCardCharge(id, { chargeCap, balance, chargeConcurrency } = {}) {
@@ -518,6 +552,24 @@ function commitCharge(id, amount) {
     c.chargedTotal = (Number(c.chargedTotal) || 0) + 1;
     if (Number(c.balance) > 0) c.balance = Math.max(0, Number(c.balance) - (Number(amount) || 0));
     c.chargeInflight = Math.max(0, (Number(c.chargeInflight) || 0) - 1);
+    return sanitize(c);
+  }));
+}
+
+// 充值【被拒】后把具体拒付码记到卡上(lastDeclineCode);★不动 declineCount/不冷却/不禁卡(那是 report 对【绑卡】拒付的职责)
+//   —— 充值拒付多为环境/风控,不应据此累计禁掉能正常绑卡的卡。仅当 insufficient_funds(卡真没钱)且
+//   CARD_ZERO_BALANCE_ON_INSUFFICIENT 开 → 【禁用】该卡(★不清零 balance:置 0 会让金额约束变 ∞,人工 enable 后反成"无限可充";
+//   留原余额→禁用即剔除可用池,enable 后金额约束仍在)。默认关 → 只记录。与 Python common/ledger.py note_decline_code 同口径。
+function noteDeclineCode(id, code, _amount) {
+  return mutex(() => lockedWrite(() => {
+    const c = POOL.get(id);
+    if (!c || !code) return null;
+    c.lastDeclineCode = String(code);
+    c.lastDeclineAt = new Date().toISOString();
+    const zeroOnInsuff = /^(1|true|on|yes)$/i.test(String(process.env.CARD_ZERO_BALANCE_ON_INSUFFICIENT || '').trim());
+    if (code === 'insufficient_funds' && zeroOnInsuff) {
+      c.status = 'disabled'; c.disabledReason = 'insufficient_funds'; c.disabledAt = c.lastDeclineAt;
+    }
     return sanitize(c);
   }));
 }
@@ -648,6 +700,7 @@ module.exports = {
   markDispatched,
   enable,
   setMaxUses,
+  setMany,
   resetCounters,
   remove,
   clear,
@@ -658,9 +711,11 @@ module.exports = {
   reserveCharge,
   commitCharge,
   releaseCharge,
+  noteDeclineCode,
   reapStaleInflight,
   fundableCount,
   totalBalance,
   cardChargeCapacity,
+  cardChargeRemaining,
   _POOL_FILE: POOL_FILE,
 };

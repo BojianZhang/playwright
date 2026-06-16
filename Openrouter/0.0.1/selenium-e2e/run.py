@@ -228,14 +228,17 @@ def main():
     pending = [(i, acct) for i, acct in enumerate(accounts)
                if acct["email"] not in done and not common.is_bad_mailbox(acct["email"], bad_mb)]
 
-    # ★充值容量读数 + 可选自动限批(只在 real_charge+do_purchase+gate 开时)。先回收上次崩溃遗留的在飞预留。
-    if args.real_charge and args.do_purchase and args.card_charge_gate:
+    # ★先回收上次崩溃/中断遗留的在飞预留:只要开了【容量闸】就可能有遗留(reserve 在 gate 开时就会发生,与 real_charge 无关)→
+    #   不再要求 real_charge+do_purchase 同时开,否则 dry-run/关真扣那批崩溃后的在飞预留永不回收、永久占住卡额度(DEFECT-05)。
+    if args.card_charge_gate:
         try:
             _reaped = common.reap_stale_inflight()
             if _reaped:
                 log("[充值] 回收上次遗留的在飞预留 %d 笔(卡额度释放)" % _reaped)
         except Exception:
             pass
+    # 充值容量读数 + 可选自动限批(只在 real_charge+do_purchase+gate 开时有意义)。
+    if args.real_charge and args.do_purchase and args.card_charge_gate:
         try:
             _fundable = common.fundable_count(args.amount)
             log("[充值] 卡总充值容量:按 $%d 还能真充 %d 次(待跑 %d 个号)" % (args.amount, _fundable, len(pending)))
@@ -257,9 +260,14 @@ def main():
             if args.job_id:
                 r["job_id"] = args.job_id   # web 按 job 隔离取结果(同引擎并发不串号)
             with write_lock:
-                with open(res_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                    f.flush(); os.fsync(f.fileno())   # 进程被 SIGKILL 也不丢末尾缓冲行(并发 append 结果)
+                # ★DEFECT-02:单次 os.write 原子追加(O_APPEND)整行 → 多个 job 的进程并发写【同一】results.jsonl 时,
+                #   读方(Node)绝不会读到本行的半截(buffered f.write 可能把大行拆成多次 write syscall → 被并发读到撕裂)。fsync 防 SIGKILL 丢尾。
+                _line = (json.dumps(r, ensure_ascii=False) + "\n").encode("utf-8")
+                _fd = os.open(res_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                try:
+                    os.write(_fd, _line); os.fsync(_fd)
+                finally:
+                    os.close(_fd)
             log("════ 结果 %s ok=%s steps=%s ════" % (acct["email"].split("@")[0], r.get("ok"), r.get("steps")))
             return r
         finally:

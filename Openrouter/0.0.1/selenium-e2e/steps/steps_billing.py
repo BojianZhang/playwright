@@ -692,6 +692,7 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
     #   ③ success 一旦判定就 break → res["charged"] 写得上(不再显示 0)+ 尽快进 changepw。declined/502 文案命中仍秒判。
     end = time.time() + float(os.environ.get("FIXC_PURCHASE_WAIT", "90") or 90)
     outcome = "unknown"
+    decline_code = ""   # ★被拒时分类出的具体原因(insufficient_funds=真没钱 / 其余=环境风控);供卡池决策与失败列表按原因恢复
     _last_reload = time.time()
     while time.time() < end:
         alert_txt = _accept_alert(page)
@@ -701,7 +702,10 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
         if RE_502.search(t):
             outcome = "server-error"; break
         if RE_DECL.search(t):
-            outcome = "declined"; break
+            outcome = "declined"
+            # 抓拒付具体原因(余额不足 vs 风控/通用),与 web/billing 同口径;RE_DECL 命中但没归到具体码 → 兜底 generic_decline,保证每个 declined 都有码
+            decline_code = common.classify_decline(t) or "generic_decline"
+            break
         bn = _balance(page)
         try:
             if bn and bal0 is not None and bn != bal0 and float(bn) > float(bal0 or 0):
@@ -730,5 +734,9 @@ def purchase(page, amount, cfg, manual_hcaptcha=True):
                 log("[充值] 末尾对账:余额 $%s→$%s 上涨,歧义终态(%s)升级为 success(防续跑重扣)" % (bal0, bal1, "unknown/502"))
         except Exception:
             pass
+    if outcome != "declined":
+        decline_code = ""   # 末尾若升级为 success(或非拒付终态)→ 清掉拒付码,不误带
+    if decline_code:
+        log("[充值] 拒付原因=%s" % decline_code)
     log("[充值] 结果=%s 余额 $%s → $%s (等待上限%ss)" % (outcome, bal0, bal1, os.environ.get("FIXC_PURCHASE_WAIT", "90")))
-    return {"result": outcome, "balance_before": bal0, "balance_after": bal1}
+    return {"result": outcome, "balance_before": bal0, "balance_after": bal1, "decline_code": decline_code}

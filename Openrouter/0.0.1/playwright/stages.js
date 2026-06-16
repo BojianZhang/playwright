@@ -41,6 +41,7 @@ const { fillAcross, humanPause } = require('../billing/card-fill/fill-primitive'
 const humanBehavior = require('../billing/card-fill/human-behavior');
 const { buildZipCandidates } = require('../billing/taxfree-zips');
 const { envInt } = require('../billing/env-tunables');
+const { classifyDecline } = require('../billing/decline-classify');
 
 const ok = (state, detail) => ({ success: true, state, reason: '', detail: detail || {} });
 const fail = (state, reason, detail) => ({ success: false, state, reason: reason || state, detail: detail || {} });
@@ -905,7 +906,8 @@ async function billing(ctx) {
   // 充值台账：每个账号终态记一条，避免糊涂账(哪个邮箱/哪张卡/多少钱/成败)。
   const recordBilling = async (result, charged, cardLast4, error) => {
     try {
-      await billingLedger.record({ email: account.email, result, charged: charged || 0, cardLast4: cardLast4 || '', jobId: context.jobId || '', error });
+      const declineCode = result === 'declined' ? (classifyDecline(error) || 'generic_decline') : '';   // 拒付具体原因(insufficient_funds vs 风控);兜底 generic_decline 保证每个 declined 有码
+      await billingLedger.record({ email: account.email, result, charged: charged || 0, cardLast4: cardLast4 || '', jobId: context.jobId || '', error, declineCode });
       context.onBilling && context.onBilling(billingLedger.summary(), { email: account.email, result, charged: charged || 0, cardLast4: cardLast4 || '' });
     } catch (_e) { /* ignore */ }
   };
@@ -1003,7 +1005,7 @@ async function billing(ctx) {
     }
     // 卡池计数(M7:maxUses=绑定数)：success=扣款成功 与 card-bound=仅加卡 都【计一次绑定用量】(与 Python ledger 对齐)；declined=冷却/累计禁卡。
     const repResult = outcome.result === 'card-bound' ? 'bound' : outcome.result;
-    await cardPool.report(card.id, { result: repResult, error: outcome.error });
+    await cardPool.report(card.id, { result: repResult, error: outcome.error, decline_code: repResult === 'declined' ? (classifyDecline(outcome.error) || 'generic_decline') : '' });
     pushCard(card.last4, outcome.result, outcome.error);
     lastResult = outcome.result;
 

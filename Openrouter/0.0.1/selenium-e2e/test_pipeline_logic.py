@@ -289,6 +289,63 @@ def test_charge_capacity_ledger():
         paths.POOL_FILE = _bak
 
 
+def test_classify_decline_parity():
+    """classify_decline:页面拒付文案 → decline_code。★必须与 billing/decline-classify.test.js 逐值一致(Node↔Py 同口径)。"""
+    from common import classify_decline
+    cases = [
+        ("Your card was declined. insufficient funds available", "insufficient_funds"),
+        ("Your card has insufficient funds", "insufficient_funds"),
+        ("security code is incorrect", "incorrect_cvc"),
+        ("Your card number is incorrect", "incorrect_number"),
+        ("Your card has expired", "expired_card"),
+        ("do not honor", "do_not_honor"),
+        ("your card is not supported", "card_not_supported"),
+        ("Your card was declined", "generic_decline"),
+        ("payment is processing", ""),
+        ("", ""),
+    ]
+    for text, code in cases:
+        check("classify_decline(%r)=%s" % (text[:24], code), classify_decline(text) == code)
+
+
+def test_charge_capacity_money_priority_min():
+    """钱优先(XOR→min):次数与金额双约束取 min。★必须与 Node billing/card-pool.test.js 同口径逐值对拍。"""
+    from common import ledger
+    INF = float("inf")
+    # _card_charge_capacity:与 Node cardChargeCapacity 同值
+    check("cap 次数3紧→3", ledger._card_charge_capacity({"chargeCap": 3, "balance": 100}, 5) == 3)
+    check("cap ★钱优先 钱6紧→6", ledger._card_charge_capacity({"chargeCap": 10, "balance": 30}, 5) == 6)
+    check("cap 只金额 20/5=4", ledger._card_charge_capacity({"balance": 20}, 5) == 4)
+    check("cap floor 22/5=4", ledger._card_charge_capacity({"balance": 22}, 5) == 4)
+    check("cap 只次数=5", ledger._card_charge_capacity({"chargeCap": 5}, 5) == 5)
+    check("cap 都没填=inf", ledger._card_charge_capacity({}, 5) == INF)
+    # _card_charge_remaining:扣已充后取 min,与 Node cardChargeRemaining 同值
+    check("rem ★钱优先 min(10,6)=6", ledger._card_charge_remaining({"chargeCap": 10, "chargedTotal": 0, "balance": 30}, 5) == 6)
+    check("rem 次数剩6=钱6→6", ledger._card_charge_remaining({"chargeCap": 10, "chargedTotal": 4, "balance": 30}, 5) == 6)
+    check("rem 次数剩2紧→2", ledger._card_charge_remaining({"chargeCap": 10, "chargedTotal": 8, "balance": 30}, 5) == 2)
+    check("rem 次数用尽→0(虽有钱)", ledger._card_charge_remaining({"chargeCap": 10, "chargedTotal": 10, "balance": 30}, 5) == 0)
+    check("rem 未跟踪=inf", ledger._card_charge_remaining({}, 5) == INF)
+
+
+def test_charge_reserve_money_priority():
+    """钱优先(min)在原子预留处生效:次数松(10)但钱紧($10@$5=2 次)→ 第3次按钱拒(capacity)。"""
+    import common
+    from common import paths
+    d = tempfile.mkdtemp(prefix="orchgmix_")
+    pf = os.path.join(d, "card-pool.json")
+    json.dump([{"id": "mix1", "number": "4111111111111111", "last4": "1111", "maxUses": 100, "usedCount": 0, "status": "active", "chargeCap": 10, "chargedTotal": 0, "chargeInflight": 0, "balance": 10, "chargeConcurrency": 0}], open(pf, "w"))
+    _bak = paths.POOL_FILE
+    paths.POOL_FILE = pf
+    try:
+        check("mix get_card_capacity=2(钱紧)", common.get_card_capacity("mix1", 5) == 2)
+        check("mix reserve1 ok", common.reserve_charge("mix1", 5)[0] is True)
+        check("mix reserve2 ok", common.reserve_charge("mix1", 5)[0] is True)
+        r3 = common.reserve_charge("mix1", 5)
+        check("mix reserve3 拒(capacity·钱只够2次)", r3[0] is False and r3[1] == "capacity")
+    finally:
+        paths.POOL_FILE = _bak
+
+
 def test_reserve_charge_fail_closed_on_degraded_lock():
     """F1:跨进程文件锁退化为无锁(_held=False)时 reserve_charge 必须 fail-closed
        (返回 (False,'lock-degraded'),绝不在无锁下真扣 → 防并发超容量/超扣)。"""
@@ -327,6 +384,9 @@ TESTS = [
     test_attribution_helper,
     test_recovery_should_retry,
     test_charge_capacity_ledger,
+    test_classify_decline_parity,
+    test_charge_capacity_money_priority_min,
+    test_charge_reserve_money_priority,
     test_reserve_charge_fail_closed_on_degraded_lock,
 ]
 

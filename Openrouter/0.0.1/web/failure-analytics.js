@@ -75,7 +75,7 @@ function classifyBlame(r) {
 // ── 智能分类层:6+ 类,带"是否外部不可控" + 一句优化建议 ──
 const CATEGORIES = {
   radar:    { name: '外部·Stripe Radar 审核', external: true,  advice: 'server-error=Save 卡在 Saving 未放行(约一半抽签),502=后端拒绑。换更干净的住宅 IP、降并发、拉长冷却;代码层面无解。' },
-  cardenv:  { name: '外部·卡/环境(declined/AVS)', external: true,  advice: 'declined 多是 ZIP/AVS/IP 环境因素而非卡坏。换卡源、确认 ZIP 重试在跑、查卡质量。' },
+  cardenv:  { name: '外部·卡/环境(declined/余额不足)', external: true,  advice: 'insufficient_funds=卡真没钱→换卡或核对卡池余额;其余 declined 多是 ZIP/AVS/IP 环境因素而非卡坏→换卡源、确认 ZIP 重试在跑。' },
   hcaptcha: { name: '外部·hCaptcha', external: true,  advice: '多为隐形企业框,2Captcha 硬解常无效。用「只点框 → 过不去换卡/切IP」(swap),别烧 2Captcha。' },
   infra:    { name: '基建(代理/AdsPower/浏览器)', external: false, advice: '代理不可达、AdsPower 不稳、浏览器会话崩。测代理连通、查 AdsPower、适当降并发。' },
   auth:     { name: '注册/登录(部分可改代码)', external: false, advice: 'REGISTER_UNCONFIRMED=重注册已存在号(查"已注册直登"覆盖);API_KEY_MODAL/SIGNIN=取Key/登录时序。' },
@@ -91,10 +91,15 @@ function categoryOf(blame) {
   if (blame.stage === 'F.取Key') return 'detect';   // 取Key找不到入口/判不出结果 → 可改代码捞回
   // 加卡 与 充值 都按 detail 细分(declined=环境卡/server-error=Radar/hcaptcha/unknown=检测)
   if (blame.stage === 'D.加卡' || blame.stage === 'E.加卡放弃' || blame.stage === 'G.充值') {
-    // ★充值容量闸的自家结果(钱不够/测试帽)不是外部失败,别误归 Radar/卡环境 → 归"其它/可控配置"
-    if (d.includes('钱不够') || d.includes('insufficient') || d.includes('测试帽') || d.includes('test-capped')) return 'other';
+    // ★真·Stripe 拒付(fail_reason=declined:<code>)优先细分:insufficient_funds=卡真没钱(可换卡)、其余=风控(换IP争取)。
+    //   注意要【先】判 declined,再判容量闸的"钱不够/insufficient-funds(连字符)",否则真拒付的 insufficient_funds 会被误当容量闸归 other。
+    if (d.includes('declined')) {
+      if (d.includes('insufficient')) return 'cardenv';   // declined:insufficient_funds=余额不足/卡环境 → 建议换卡
+      return 'radar';                                      // do_not_honor / generic_decline / 通用拒付 → 多为 Stripe 风控
+    }
+    // ★充值容量闸的自家结果(钱不够/测试帽/insufficient-funds 连字符)不是外部失败,别误归 Radar/卡环境 → 归"其它/可控配置"
+    if (d.includes('钱不够') || d.includes('insufficient-funds') || d.includes('测试帽') || d.includes('test-capped')) return 'other';
     if (d.includes('unknown') || d.includes('fill-fail')) return 'detect';
-    if (d.includes('declined')) return 'cardenv';
     if (d.includes('hcaptcha')) return 'hcaptcha';
     if (d.includes('server-error') || d.includes('card-deadline') || d.includes('502') || d.includes('no-good-proxy')) return 'radar';
     return d.includes('charge') ? 'cardenv' : 'radar';   // 充值未明 → 多为卡/环境

@@ -8,8 +8,10 @@ import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { fmtDateTime, fmtDuration, trunc } from '../lib/parse';
-import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow } from '../lib/types';
+import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow, FailedRecord } from '../lib/types';
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
+import { Modal } from '../components/Modal';
+import { DECLINE_LABEL } from '../lib/labels';   // ★单一来源(原本地副本,与 panels/Diagnose 三处重复)
 
 const PY_ENGINES = ['selenium', 'hybrid', 'split'];
 
@@ -18,7 +20,13 @@ export default function RunDetailPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const [resuming, setResuming] = useState(false);
-  const { data, isLoading } = useQuery({ queryKey: ['run-detail', jobId], queryFn: () => apiGet<RunDetailResp>(`/api/runs/detail?jobId=${encodeURIComponent(jobId)}`, true), refetchInterval: (q) => (q.state.data?.summary?.status === 'running' ? 5000 : false) });
+  // 失败列表「按原因批量恢复」:多选(按邮箱)+ 恢复弹窗 + 恢复参数。
+  const [selFailed, setSelFailed] = useState<Set<string>>(new Set());
+  const [recoverOpen, setRecoverOpen] = useState(false);
+  const [recZip, setRecZip] = useState(3);        // declined/加卡 时 ZIP 重试次数
+  const [recSwapHc, setRecSwapHc] = useState(true); // hCaptcha 时换卡
+  const [recRounds, setRecRounds] = useState(1);    // 自动重试轮数
+  const { data, isLoading, isError, error } = useQuery({ queryKey: ['run-detail', jobId], queryFn: () => apiGet<RunDetailResp>(`/api/runs/detail?jobId=${encodeURIComponent(jobId)}`, true), refetchInterval: (q) => (q.state.data?.summary?.status === 'running' ? 5000 : false) });
   const s = data?.summary;
   const success = data?.success || [];
   const failed = data?.failed || [];
@@ -46,6 +54,49 @@ export default function RunDetailPage() {
     } finally { setResuming(false); }
   }
 
+  // ── 失败列表「按原因批量恢复」──────────────────────────────────────────
+  const isPy = !!s && PY_ENGINES.includes(s.engine || '');   // 有失败/未完整即可恢复(不再限 interrupted/error;输入已保留/可按明细重建)
+  const toggleFail = (email: string) => setSelFailed((p) => { const n = new Set(p); if (n.has(email)) n.delete(email); else n.add(email); return n; });
+  // 点原因 chip = 整组切换选中(全选则取消,否则全加)
+  const selectReason = (emails: string[]) => setSelFailed((p) => { const n = new Set(p); const all = emails.every((e) => n.has(e)); emails.forEach((e) => { if (all) n.delete(e); else n.add(e); }); return n; });
+  const allFailEmails = failed.map((a) => a.email || '').filter(Boolean);
+  const toggleAllFail = () => setSelFailed((p) => (allFailEmails.every((e) => p.has(e)) ? new Set() : new Set(allFailEmails)));
+  // 失败行按恢复原因分组(chips + 弹窗用),按组大小降序
+  const reasonGroups = (() => {
+    const m = new Map<string, { info: ReasonInfo; emails: string[] }>();
+    for (const a of failed) { if (!a.email) continue; const info = reasonInfo(a); const g = m.get(info.key) || { info, emails: [] }; g.emails.push(a.email); m.set(info.key, g); }
+    return Array.from(m.values()).sort((x, y) => y.emails.length - x.emails.length);
+  })();
+  const selectedRows = failed.filter((a) => a.email && selFailed.has(a.email));
+  const selectedRecoverable = selectedRows.filter((a) => reasonInfo(a).recoverable);
+  // 选中行的原因分布(弹窗里逐组诚实标注)
+  const selectedGroups = (() => {
+    const m = new Map<string, { info: ReasonInfo; n: number }>();
+    for (const a of selectedRows) { const info = reasonInfo(a); const g = m.get(info.key) || { info, n: 0 }; g.n += 1; m.set(info.key, g); }
+    return Array.from(m.values()).sort((x, y) => y.n - x.n);
+  })();
+  const selHasCharge = selectedRecoverable.some((a) => reasonInfo(a).key.startsWith('charge'));
+  const selHasHc = selectedRecoverable.some((a) => reasonInfo(a).key === 'card:hcaptcha');
+
+  async function recover() {
+    if (resuming) return;
+    const emails = selectedRecoverable.map((a) => a.email || '').filter(Boolean);
+    if (!emails.length) { toast.push('没有可恢复的选中号(永久态已排除)', 'err'); return; }
+    const recoverOptions: Record<string, unknown> = { recoveryOverride: { retryRegister: 'on', retryKey: 'on', retryCard: 'on', retryCharge: 'on' } };
+    if (selHasCharge && recZip > 0) recoverOptions.zipRetry = recZip;
+    if (selHasHc && recSwapHc) recoverOptions.solveHcaptcha = 'swap';
+    if (recRounds > 0) { recoverOptions.autoRetryFailed = true; recoverOptions.autoRetryTimes = recRounds; }
+    setResuming(true);
+    try {
+      const d = await apiPost<StartJobResp>('/api/run/resume', { jobId, engine: s?.engine, onlyEmails: emails, recoverOptions });
+      toast.push(`已发起批量恢复 · 接受 ${d.accepted} 个号${d.rebuilt ? '(输入已清→按明细重建)' : ''}`, 'ok');
+      setRecoverOpen(false); setSelFailed(new Set());
+      navigate(`/console?attach=${encodeURIComponent(d.jobId)}&total=${d.accepted || 0}&engine=${encodeURIComponent(d.engine || s?.engine || 'selenium')}`);
+    } catch (e) {
+      toast.push('批量恢复失败:' + ((e as Error).message || '未知'), 'err');
+    } finally { setResuming(false); }
+  }
+
   return (
     <main className="page">
       <div className="zone">
@@ -59,7 +110,9 @@ export default function RunDetailPage() {
         )}
       </div>
 
-      {isLoading ? <div className="card card-pad"><div className="empty-note">加载中…</div></div> : !s ? (
+      {isLoading ? <div className="card card-pad"><div className="empty-note">加载中…</div></div> : isError ? (
+        <div className="card card-pad"><div className="empty-note" style={{ color: 'var(--danger)' }}>加载失败:{(error as Error)?.message || '接口错误'}(服务可能未启动/网络问题)—— 请「重启服务」或稍后重试。</div></div>
+      ) : !s ? (
         <div className="card card-pad"><div className="empty-note">未找到该任务的汇总(可能历史已清或 jobId 有误)。仍可查看下方 batch-results 明细(若有)。</div></div>
       ) : (
         <section className="card statbar" style={{ gridTemplateColumns: 'repeat(6,1fr)' }}>
@@ -138,29 +191,59 @@ export default function RunDetailPage() {
         <section className="card">
           <div className="card-head"><span className="idx c-amber"><Icon name="xcircle" size={12} /></span><h3>失败账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{failed.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+              {isPy && failed.length > 0 && (
+                <button className="btn btn-primary btn-sm" disabled={!selectedRecoverable.length || resuming} title="把选中的失败号按失败原因走专属恢复流程重跑(换卡/换IP/ZIP重试等);断点续跑,已完成环节自动跳过、防重复扣费" onClick={() => setRecoverOpen(true)}>
+                  <Icon name="refresh" size={13} />批量恢复{selectedRecoverable.length ? `(${selectedRecoverable.length})` : ''}
+                </button>
+              )}
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="现密码=OpenRouter 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.password || a.originalPassword || ''}`).join('\n'))}>复制 邮箱:密码</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="原密码=账号原始/邮箱密码" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '拒付码', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.declineCode || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
+          {/* 按原因分组 chips:点一组=一键选中该组(再点取消);用于「选中所有 declined / 所有 hCaptcha」批量恢复 */}
+          {isPy && failed.length > 0 && reasonGroups.length > 0 && (
+            <div className="panel-sec" style={{ paddingTop: 8, paddingBottom: 0, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+              <span className="z-hint">按原因选:</span>
+              {reasonGroups.map((g) => {
+                const on = g.emails.every((e) => selFailed.has(e));
+                return (
+                  <button key={g.info.key} className={'err-chip' + (on ? ' is-active' : '')} title={g.info.note + (g.info.recoverable ? '' : ' (不可恢复,点选无效)')} disabled={!g.info.recoverable}
+                    style={{ cursor: g.info.recoverable ? 'pointer' : 'not-allowed', opacity: g.info.recoverable ? 1 : 0.5, border: on ? '1px solid var(--primary)' : undefined }}
+                    onClick={() => g.info.recoverable && selectReason(g.emails)}>
+                    {g.info.label} <b>{g.emails.length}</b>
+                  </button>
+                );
+              })}
+              {selFailed.size > 0 && <button className="btn btn-ghost btn-sm" onClick={() => setSelFailed(new Set())}>清除选择({selFailed.size})</button>}
+            </div>
+          )}
           <div className="panel-sec" style={{ paddingTop: 8 }}>
             {!failed.length ? <div className="empty-note">无失败账号。</div> : (
               <div className="tbl-wrap" style={{ maxHeight: 460 }}>
                 <table className="tbl">
-                  <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th><th>现密码</th></tr></thead>
+                  <thead><tr>
+                    {isPy && <th style={{ width: 28 }}><input type="checkbox" checked={allFailEmails.length > 0 && allFailEmails.every((e) => selFailed.has(e))} onChange={toggleAllFail} title="全选/全不选" /></th>}
+                    <th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>拒付码</th><th>试</th><th>出口/代理</th><th>现密码</th>
+                  </tr></thead>
                   <tbody>
-                    {failed.slice(0, RENDER_CAP).map((a, i) => (
-                      <tr key={i} className="is-banned">
+                    {failed.slice(0, RENDER_CAP).map((a, i) => {
+                      const ri = reasonInfo(a);
+                      return (
+                      <tr key={i} className={'is-banned' + (a.email && selFailed.has(a.email) ? ' is-selected' : '')}>
+                        {isPy && <td><input type="checkbox" disabled={!ri.recoverable} checked={!!(a.email && selFailed.has(a.email))} onChange={() => a.email && toggleFail(a.email)} title={ri.recoverable ? '选中以批量恢复' : '永久态,不可恢复'} /></td>}
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--danger)' }}>{a.reason}</td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.stage || '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }}>{a.failClass || '—'}</td>
+                        <td className="mono" style={{ color: a.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : ''}>{a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : '—'}</td>
                         <td className="mono">{a.attempts ?? '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }} title={a.proxy}>{a.proxy ? String(a.proxy).split(':').slice(0, 2).join(':') : '—'}</td>
                         <td className="mono" style={{ color: 'var(--primary-text)', cursor: a.password ? 'pointer' : 'default' }} title={'现密码=当前 OpenRouter 登录密码(设了统一密码就是它)' + (a.password ? '·点击复制' : '') + (a.originalPassword && a.originalPassword !== a.password ? '\n原密码:' + a.originalPassword : '')} onClick={() => a.password && copy(a.password)}>{a.password ? trunc(a.password, 16) : '—'}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
                 {failed.length > RENDER_CAP && <div className="empty-note">仅显示前 {RENDER_CAP} / 共 {failed.length} 行(防卡顿)——完整数据请用上方「.csv」「.txt」下载。</div>}
@@ -178,7 +261,7 @@ export default function RunDetailPage() {
             <div className="card-head"><span className="idx c-amber"><Icon name="alert" size={12} /></span><h3>未完整 / 未运行 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{incomplete.length}</span></h3>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span className="z-hint">这些号本批没产出结果(被中断/并发没排到/丢结果),已逐号标明原因</span>
-                {canResume && resumableEmails.length > 0 && (
+                {isPy && resumableEmails.length > 0 && (
                   <button className="btn btn-primary btn-sm" disabled={resuming} onClick={() => resume(resumableEmails)} title={`只把这 ${resumableEmails.length} 个【可恢复】的未完整号续跑(banned/坏邮箱永久态不重跑);已完成的环节自动跳过、防重复扣费`}>
                     <Icon name="refresh" size={13} />{resuming ? '续跑中…' : `只续跑未完整(${resumableEmails.length})`}
                   </button>
@@ -206,6 +289,51 @@ export default function RunDetailPage() {
           </section>
         </>
       )}
+
+      {/* 批量恢复确认弹窗:逐组诚实标注(declined 多为风控·争取不保证 / insufficient_funds 卡可能没钱)+ 恢复参数 */}
+      <Modal open={recoverOpen} onClose={() => { if (!resuming) setRecoverOpen(false); }} size="md" title={`批量恢复 · ${selectedRecoverable.length} 个号`} icon="refresh"
+        foot={(
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, width: '100%' }}>
+            <button className="btn btn-ghost btn-sm" disabled={resuming} onClick={() => setRecoverOpen(false)}>取消</button>
+            <button className="btn btn-primary btn-sm" disabled={resuming || !selectedRecoverable.length} onClick={recover}>{resuming ? '发起中…' : `确认恢复 ${selectedRecoverable.length} 个`}</button>
+          </div>
+        )}>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 12, lineHeight: 1.6, background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>
+            断点续跑:已完成环节(注册/取Key/绑卡)自动跳过、<b>不重复扣费</b>;只重做失败的那步。
+            保持源引擎 <b>{s?.engine}</b>(跨引擎换会绕过同引擎的防双扣门)。
+          </div>
+          {/* 选中行的原因分布 + 逐组诚实标注 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {selectedGroups.map((g) => (
+              <div key={g.info.key} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 }}>
+                <span className={'kbadge ' + (g.info.recoverable ? 'warn' : 'neutral')} style={{ minWidth: 96, textAlign: 'center', flexShrink: 0 }}>{g.info.label} {g.n}</span>
+                <span style={{ color: g.info.recoverable ? 'var(--text-2)' : 'var(--text-3)' }}>{g.info.recoverable ? g.info.note : g.info.note + '(不计入恢复)'}</span>
+              </div>
+            ))}
+          </div>
+          {/* 恢复参数 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+            {selHasCharge && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                ZIP 重试次数(declined 多为 AVS/ZIP)
+                <input type="number" min={0} max={12} value={recZip} onChange={(e) => setRecZip(Math.max(0, Math.min(12, Number(e.target.value) || 0)))} style={{ width: 64 }} />
+              </label>
+            )}
+            {selHasHc && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <input type="checkbox" checked={recSwapHc} onChange={(e) => setRecSwapHc(e.target.checked)} />
+                hCaptcha 时换卡(swap,隐形框硬解常无效)
+              </label>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              自动重试轮数(每轮换出口 IP)
+              <input type="number" min={0} max={5} value={recRounds} onChange={(e) => setRecRounds(Math.max(0, Math.min(5, Number(e.target.value) || 0)))} style={{ width: 64 }} />
+            </label>
+          </div>
+          {selHasCharge && <div style={{ fontSize: 12, color: 'var(--text-3)', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>⚠ 充值 declined 多为 Stripe 风控/环境因素,换卡+换IP 也<b>未必能成,这是争取不是保证</b>;若是「余额不足」请换卡或核对卡池余额。</div>}
+        </div>
+      </Modal>
     </main>
   );
 }
@@ -240,3 +368,26 @@ const INCOMPLETE_BADGE: Record<string, JSX.Element> = {
   incomplete: <span className="kbadge warn">中途中断</span>,
   'not-run': <span className="kbadge warn">未跑到</span>,
 };
+
+// ── 失败原因分组(失败列表「按原因批量恢复」用)──────────────────────────────
+interface ReasonInfo { key: string; label: string; recoverable: boolean; note: string }
+// 把一条失败行归到「恢复原因组」+ 诚实标注(哪些争取/哪些无效)。stage + decline_code 细分。
+function reasonInfo(a: FailedRecord): ReasonInfo {
+  const stage = a.stage || '';
+  const dc = a.declineCode || '';
+  const reason = String(a.reason || '');
+  if (a.blacklisted || /not[_-]?allowed|banned/i.test(reason)) return { key: 'banned', label: '号被拒(永久)', recoverable: false, note: 'OpenRouter 永久拒该号,恢复无效(已自动排除)。' };
+  if (stage === 'charge') {
+    if (dc === 'insufficient_funds') return { key: 'charge:insufficient_funds', label: '充值·余额不足', recoverable: true, note: '卡可能真没钱 → 换卡或核对卡池余额;同卡再试多半仍不足。' };
+    if (dc) return { key: 'charge:' + dc, label: '充值·' + (DECLINE_LABEL[dc] || dc), recoverable: true, note: '多为 Stripe 风控/环境 → 换卡+换IP+ZIP 重试【争取,非保证】。' };
+    return { key: 'charge:declined', label: '充值·拒付', recoverable: true, note: '多为 Stripe 风控/环境 → 换卡+换IP 重试【争取,非保证】。' };
+  }
+  if (stage === 'card') {
+    if (/hcaptcha/i.test(reason) || a.failClass === 'swap' || a.failClass === 'solve') return { key: 'card:hcaptcha', label: '加卡·hCaptcha', recoverable: true, note: '隐形框硬解常无效 → 换卡(swap)重试。' };
+    return { key: 'card', label: '加卡失败', recoverable: true, note: '换IP/换卡重试可救回一部分。' };
+  }
+  if (stage === 'key') return { key: 'key', label: '取 Key 失败', recoverable: true, note: '换IP重试(本次保持源引擎,跨引擎换会绕过防双扣门)。' };
+  if (stage === 'register') return { key: 'register', label: '注册失败', recoverable: true, note: '换IP重试。' };
+  if (stage === 'changepw') return { key: 'changepw', label: '改密失败', recoverable: true, note: '邮箱密钥/旧密码问题,重试或个案看。' };
+  return { key: stage || 'other', label: stage || '其它', recoverable: true, note: '重试争取。' };
+}

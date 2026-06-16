@@ -22,6 +22,41 @@
 #   - 不做异常(exception)归因 —— 那是调用方在 except 分支里另记 fail_stage="exception"。
 # ═══════════════════════════════════════════════════════════════════════
 import os
+import re as _re
+
+
+# ── Stripe 拒付原因分类(页面拒付文案 → 结构化 decline_code)────────────────────
+# 背景:系统原来把所有拒付塌成一个 "declined",分不清「卡真没钱(insufficient_funds)」与
+#   「环境/风控(do_not_honor / generic_decline)」→ 无法据此走对的恢复流程(没钱该换卡、风控该换IP)。
+# ★诚实约束:Stripe Radar 风控拦截在页面上几乎只显示通用 "Your card was declined.",文字层面【无法】
+#   与普通 generic_decline 区分 → 本函数对这类只给 generic_decline,【绝不】假装识别出 radar_block。
+# ★必须与 web/decline-classify.js classifyDecline 逐枚举同口径(同序同码),改一处必同步另一处。
+_DECL_PATTERNS = [
+    ("insufficient_funds", _re.compile(r"insufficient funds|insufficient balance", _re.I)),
+    ("incorrect_cvc",      _re.compile(r"security code is (?:incorrect|invalid)|incorrect (?:cvc|cvv)|invalid (?:cvc|cvv)", _re.I)),
+    ("incorrect_number",   _re.compile(r"card number is (?:incorrect|invalid)|incorrect card number|invalid card number", _re.I)),
+    ("expired_card",       _re.compile(r"card (?:has )?expired|expired card|card is expired|expired card number", _re.I)),
+    ("do_not_honor",       _re.compile(r"do not honou?r", _re.I)),
+    ("card_not_supported", _re.compile(r"card (?:type )?(?:is )?not supported|your card is not supported", _re.I)),
+    ("generic_decline",    _re.compile(r"card was declined|payment (?:failed|was declined)|could not complete|\bdeclined\b", _re.I)),
+]
+
+
+def classify_decline(text):
+    """页面拒付文案 → decline_code ∈ insufficient_funds / incorrect_cvc / incorrect_number /
+       expired_card / do_not_honor / card_not_supported / generic_decline;没匹配到拒付返回 ""。
+       匹配顺序【具体→通用】:最关键的 insufficient_funds 是很具体的短语,优先且不易误命中。
+       ★与 web/decline-classify.js 同口径,改一处必同步另一处。"""
+    try:
+        t = str(text or "")
+        if not t:
+            return ""
+        for code, rx in _DECL_PATTERNS:
+            if rx.search(t):
+                return code
+        return ""
+    except Exception:
+        return ""
 
 
 def _changepw_require_purchase():

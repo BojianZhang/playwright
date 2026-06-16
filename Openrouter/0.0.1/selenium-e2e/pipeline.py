@@ -381,6 +381,12 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                             _charge_resolved = True
                             _ck(checkpoint, email, "charge", "ok", amount=_amt, balance_after=r.get("balance_after"))
                         else:
+                            _dc = r.get("decline_code") or ""
+                            if r.get("result") == "declined" and _dc:
+                                res["decline_code"] = _dc   # 拒付具体原因(insufficient_funds=真没钱 / 其余=环境风控);供失败列表按原因恢复
+                                if _cid:
+                                    try: common.note_decline_code(_cid, _dc, _amt)   # 记到卡上(lastDeclineCode;insufficient_funds 可选禁用)
+                                    except Exception: pass
                             if _reserved:
                                 try: common.release_charge(_cid)   # 没充成 → 还预留额度(不计 chargedTotal)
                                 except Exception: pass
@@ -439,6 +445,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             if _fs and not res.get("fail_stage"):   # 充值步已显式标了(钱不够/测试帽)→ 保留更细的真因,不被泛化覆盖
                 res["fail_stage"] = _fs
                 res["fail_reason"] = _fr
+            # 充值拒付:把具体拒付码并入 fail_reason 便于一眼区分(declined:insufficient_funds vs declined:generic_decline)
+            if res.get("fail_stage") == "charge" and res.get("decline_code") and str(res.get("fail_reason") or "") in ("declined", "None", ""):
+                res["fail_reason"] = "declined:" + str(res.get("decline_code"))
         except Exception:
             pass
         return res

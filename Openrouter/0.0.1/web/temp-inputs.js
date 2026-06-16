@@ -69,6 +69,27 @@ function cleanup(jobId) {
   try { fs.rmSync(path.join(TMP_BASE, jobId), { recursive: true, force: true }); } catch (_e) { /* ignore */ }
 }
 
+// ★批量恢复保留了【有失败的批次】的输入(供运行详情复用原始账号·密码·代理)→ 配套 TTL 回收防无限堆积。
+// 按目录 mtime 判龄,超 maxAgeMs(默认 3 天)的整目录删除。返回回收个数。server 启动时调一次。
+function reapStaleTempInputs(maxAgeMs) {
+  const ttl = (maxAgeMs == null || maxAgeMs === '') ? 3 * 24 * 3600 * 1000 : Math.max(0, Number(maxAgeMs) || 0);
+  let reaped = 0;
+  try {
+    const now = Date.now();
+    for (const name of fs.readdirSync(TMP_BASE)) {
+      const d = path.join(TMP_BASE, name);
+      try {
+        const st = fs.statSync(d);
+        if (st.isDirectory() && (now - st.mtimeMs) >= ttl) { fs.rmSync(d, { recursive: true, force: true }); reaped += 1; }
+      } catch (_e) { /* 单目录异常不影响其它 */ }
+    }
+  } catch (e) {
+    // ENOENT = TMP_BASE 还没建(没东西可清,正常);其它错(权限/挂载丢失)= 清理静默失败→输入会无限堆积,必须告警让运维可见。
+    if (e && e.code !== 'ENOENT') { try { console.warn(`[temp-inputs] reapStaleTempInputs 访问 ${TMP_BASE} 失败 → 续跑临时输入可能堆积: ${e.message}`); } catch (_e2) { /* */ } }
+  }
+  return reaped;
+}
+
 // 提交时把"非账号/代理"的完整任务参数落一份 job.json，供日后「续跑这批」忠实重建
 // (accountsRaw/proxiesRaw 不写进来——它们就在 accounts.txt/proxies.txt，避免重复存凭证)。
 function writeManifest(jobId, manifest) {
@@ -98,4 +119,4 @@ function readResumeInputs(jobId) {
   return { accountsRaw, proxiesRaw: rd('proxies.txt'), manifest, splitHint };
 }
 
-module.exports = { write, writeSplit, writeSubset, cleanup, writeManifest, readResumeInputs, TMP_BASE };
+module.exports = { write, writeSplit, writeSubset, cleanup, reapStaleTempInputs, writeManifest, readResumeInputs, TMP_BASE };

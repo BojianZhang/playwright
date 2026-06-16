@@ -8,8 +8,8 @@ export interface AdvField {
   type: 'number' | 'text' | 'select'; scope: AdvScope; group: string;
   def: string; options?: string[];
 }
-export const SCOPE_LABEL: Record<AdvScope, string> = { selenium: '纯Selenium', hybrid: '混合', both: '两套共用' };
-export const SCOPE_COLOR: Record<AdvScope, string> = { selenium: '#2563eb', hybrid: '#7c3aed', both: '#0d9488' };
+// scope 标签/颜色与元素维护共用 → 单一来源 lib/labels(re-export 保持 SCOPE_* 导入名不变)。
+export { SCOPE_LABEL, SCOPE_COLOR } from './labels';
 
 export const ADV_FIELDS: AdvField[] = [
   // ── 提速总开关(默认关=与现状逐字节一致)──

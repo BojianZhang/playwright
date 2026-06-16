@@ -16,7 +16,12 @@ const fs = require('fs');
 const path = require('path');
 const { createMutex } = require('../../../shared-batch-orchestration/mutex');
 
-const LEDGER_FILE = path.join(__dirname, '..', 'data', 'billing-ledger.json');
+// 默认 data/billing-ledger.json;OPENROUTER_BILLING_LEDGER_FILE 可覆盖(仅供单测指向临时文件,不污染生产)。默认行为不变。
+const LEDGER_FILE = process.env.OPENROUTER_BILLING_LEDGER_FILE || path.join(__dirname, '..', 'data', 'billing-ledger.json');
+// ★活动台账封顶 CAP 条(内存+主文件);溢出的最旧整批 append 到 .archive.jsonl(真金白银历史不丢,但不再载入内存)。
+//   防长期运行 ENTRIES 无界膨胀 + summary() O(n) 越扫越慢(DEFECT-2)。可用 env 覆盖(单测/特殊场景)。
+const CAP = Math.max(1000, Number(process.env.OPENROUTER_BILLING_CAP) || 20000);
+const ARCHIVE_FILE = LEDGER_FILE.replace(/\.json$/, '') + '.archive.jsonl';
 const mutex = createMutex();
 
 /** @type {Array<object>|null} */
@@ -57,7 +62,7 @@ function scheduleFlush() {
 
 /**
  * 记录一条充值终态。
- * @param {object} e { email, result:'success'|'declined'|'no-card'|'no-address', charged, cardLast4, jobId, error, at }
+ * @param {object} e { email, result:'success'|'declined'|'no-card'|'no-address', charged, cardLast4, jobId, error, declineCode, at }
  * @returns {Promise<object>} 写入的条目
  */
 function record(e) {
@@ -71,11 +76,28 @@ function record(e) {
       cardLast4: e.cardLast4 || '',
       jobId: e.jobId || '',
       error: e.error ? String(e.error).slice(0, 160) : '',
+      declineCode: e.declineCode ? String(e.declineCode).slice(0, 48) : '',   // 拒付具体原因(insufficient_funds vs 风控);供按原因分析/恢复
     };
     ENTRIES.push(entry);
+    _trimIfNeeded();
     scheduleFlush();
     return entry;
   });
+}
+
+// 封顶:只在内存+主文件保留最近 CAP 条;溢出最旧的整批 append 到 .archive.jsonl(历史可追溯,不进内存)。
+function _trimIfNeeded() {
+  if (ENTRIES.length <= CAP) return;
+  const drop = ENTRIES.splice(0, ENTRIES.length - CAP);
+  try { fs.appendFileSync(ARCHIVE_FILE, drop.map((x) => JSON.stringify(x)).join('\n') + '\n', 'utf8'); }
+  catch (e) { try { console.warn('[billing-ledger] 归档溢出条目失败(内存已截断防膨胀):', e && e.message); } catch (_e) { /* */ } }
+}
+
+// 最近 N 条明细(★不做任何聚合扫描)→ 诊断页 30s 轮询用,避免 summary() 的 O(n) 全量聚合(PERF-1)。
+function recent(n = 200) {
+  ensureLoaded();
+  const k = Math.max(1, Number(n) || 200);
+  return ENTRIES.slice(-k).reverse();   // 最近的在前
 }
 
 /**
@@ -86,9 +108,11 @@ function summary(recentN = 200) {
   ensureLoaded();
   const byResult = {};
   const byCard = {};
+  const byDeclineCode = {};   // 拒付原因分布:诊断「充值全 declined」到底是没钱(insufficient_funds)还是被风控(其余)
   let totalCharged = 0;
   for (const e of ENTRIES) {
     byResult[e.result] = (byResult[e.result] || 0) + 1;
+    if (e.result === 'declined' && e.declineCode) byDeclineCode[e.declineCode] = (byDeclineCode[e.declineCode] || 0) + 1;
     if (e.result === 'success') {
       totalCharged += e.charged;
       const k = e.cardLast4 || '—';
@@ -107,6 +131,7 @@ function summary(recentN = 200) {
     totalCharged,
     byResult,
     byCard,
+    byDeclineCode,
     entries,
   };
 }
@@ -120,4 +145,4 @@ function clear() {
   });
 }
 
-module.exports = { record, summary, clear, flushNow, _LEDGER_FILE: LEDGER_FILE };
+module.exports = { record, summary, recent, clear, flushNow, _LEDGER_FILE: LEDGER_FILE };

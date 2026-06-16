@@ -11,6 +11,6 @@ export interface SelectorStep {
 }
 export interface SelectorsResp { steps: SelectorStep[]; values: Record<string, string>; }
 
-export const SEL_SCOPE_LABEL: Record<string, string> = { selenium: '纯Selenium', hybrid: '混合', both: '两套共用' };
-export const SEL_SCOPE_COLOR: Record<string, string> = { selenium: '#2563eb', hybrid: '#7c3aed', both: '#0d9488' };
+// scope 标签/颜色与高级参数共用 → 单一来源 lib/labels(re-export 保持 SEL_SCOPE_* 导入名不变)。
+export { SCOPE_LABEL as SEL_SCOPE_LABEL, SCOPE_COLOR as SEL_SCOPE_COLOR } from './labels';
 export const SEL_KIND_LABEL: Record<string, string> = { css: 'CSS 选择器', text: '文本匹配' };

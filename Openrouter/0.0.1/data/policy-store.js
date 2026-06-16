@@ -27,10 +27,16 @@ let flushTimer = null;
 function ensureLoaded() {
   if (OVERRIDES) return;
   OVERRIDES = {};
+  let raw;
+  try { raw = fs.readFileSync(POLICY_FILE, 'utf8'); } catch (_e) { return; }   // 无文件=正常首启,不备份
   try {
-    const obj = JSON.parse(fs.readFileSync(POLICY_FILE, 'utf8'));
+    const obj = JSON.parse(raw);
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) OVERRIDES = obj;
-  } catch (_e) { /* 无文件 → 空 */ }
+  } catch (e) {
+    // ★文件存在却解析失败=损坏 → 备份 .corrupt 留底再以空起,杜绝下次 flush 用空对象原子覆盖、永久丢策略覆盖(DEFECT-1 类同款守卫)。
+    try { fs.renameSync(POLICY_FILE, POLICY_FILE + '.corrupt-' + Date.now()); } catch (_e2) { /* */ }
+    try { console.error('[policy-store] policy.json 解析失败 → 已备份 .corrupt,本次按空覆盖继续:', e && e.message); } catch (_e3) { /* */ }
+  }
 }
 function flushNow() {
   flushTimer = null;

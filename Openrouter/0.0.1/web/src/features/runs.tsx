@@ -1,5 +1,7 @@
 // 运行历史共享件:状态徽章 + 计费动作标签。
 import type { RunSummary } from '../lib/types';
+import { ENGINE_LABEL, BILLING_ACTION_LABEL } from '../lib/labels';
+export { ENGINE_LABEL, BILLING_ACTION_LABEL };   // ★单一来源 lib/labels re-export(既有 `from '../features/runs'` 导入路径不变)
 
 export function RunStatus({ status, partial, completenessPct }: { status: RunSummary['status']; partial?: boolean; completenessPct?: number }) {
   if (status === 'finished' && partial) return <span className="kbadge warn" title="结果可能未完整:某分流组/子进程疑似中途退出丢了部分账号结果 —— 可「续跑这批」补齐">⚠ 未完整{completenessPct != null ? ` ${completenessPct}%` : ''}</span>;
@@ -10,11 +12,6 @@ export function RunStatus({ status, partial, completenessPct }: { status: RunSum
   return <span className="kbadge neutral">{status}</span>;
 }
 
-export const BILLING_ACTION_LABEL: Record<string, string> = {
-  none: '仅取Key', address: '绑地址', card: '加卡', charge: '充值',
-};
-
-export const ENGINE_LABEL: Record<string, string> = { playwright: 'Playwright', selenium: 'Selenium', hybrid: '混合', split: '两引擎' };
 export function EngineBadge({ engine }: { engine?: string }) {
   const e = engine || 'playwright';
   const cls = e === 'playwright' ? 'neutral' : e === 'split' ? 'warn' : 'info';

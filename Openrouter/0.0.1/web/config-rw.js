@@ -28,7 +28,17 @@ const ARRAY_FIELDS = new Set(['cluster.hosts', 'security.allowIps', 'security.al
 const BOOL_FIELDS = new Set(['captcha.enabled', 'security.gateStatic', 'security.trustForwardedFor']);
 const NUM_FIELDS = new Set(['mailbox.apiTimeoutMs', 'captcha.solveTimeoutMs']);
 
-function loadJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_e) { return {}; } }
+function loadJson(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) {
+    // ★文件【存在却损坏】(非缺失)→ 备份 .corrupt(固定名,不刷屏)再退 {}。否则 writeLocal 会把 {}+新补丁原子写回 config.local.json
+    //   → 静默丢光其它配置/密钥(token/captcha/mailbox key…)。缺失(ENOENT)=正常,不备份。与 address/proxy/account-store 同款守卫。
+    if (e && e.code !== 'ENOENT') {
+      try { fs.copyFileSync(file, file + '.corrupt'); console.error('[config-rw] ' + file + ' 解析失败,已备份 .corrupt 并按空配置继续:', e.message); } catch (_e2) { /* 备份失败也不卡死 */ }
+    }
+    return {};
+  }
+}
 function deepMerge(a, b) {
   const out = Array.isArray(a) ? a.slice() : { ...a };
   for (const k of Object.keys(b || {})) {

@@ -45,7 +45,7 @@ export function useJobStream(handlers: JobStreamHandlers = {}) {
   const hRef = useRef(handlers); hRef.current = handlers;
 
   const log = useCallback((msg: string, cls?: 'ln-ok' | 'ln-fail') => {
-    setState((s) => ({ ...s, logs: [...s.logs.slice(-400), { ts: nowTs(), msg, cls }] }));
+    setState((s) => ({ ...s, logs: [...s.logs.slice(-199), { ts: nowTs(), msg, cls }] }));   // 仅供展示(MonitorPanel 直接渲染,不再 slice)→ 状态即封顶 200,省热路径每帧重切
   }, []);
 
   const close = useCallback(() => {
@@ -80,12 +80,12 @@ export function useJobStream(handlers: JobStreamHandlers = {}) {
     });
     es.addEventListener('account-success', (e) => {
       const d = J(e as MessageEvent) || {};
-      setState((s) => ({ ...s, counters: { ...s.counters, ok: s.counters.ok + 1 }, okLines: [...s.okLines.slice(-1999), d.rendered || JSON.stringify(d.raw || {})] }));
+      setState((s) => ({ ...s, counters: { ...s.counters, ok: s.counters.ok + 1 }, okLines: [...s.okLines.slice(-199), d.rendered || JSON.stringify(d.raw || {})] }));   // 展示用,封顶 200(下载走后端 /download,非此数组)
       hRef.current.onAccountSuccess?.();
     });
     es.addEventListener('account-failed', (e) => {
       const d: AccountFailedEvt = J(e as MessageEvent) || {};
-      setState((s) => ({ ...s, counters: { ...s.counters, fail: s.counters.fail + 1 }, failLines: [...s.failLines.slice(-1999), d.rendered || `${d.email || ''} | ${d.reason || ''}`], failed: [...s.failed.slice(-1999), d] }));
+      setState((s) => ({ ...s, counters: { ...s.counters, fail: s.counters.fail + 1 }, failLines: [...s.failLines.slice(-199), d.rendered || `${d.email || ''} | ${d.reason || ''}`], failed: [...s.failed.slice(-1999), d] }));   // failLines 展示封顶 200;★failed 保留 1999(喂「重跑登录」requeue 需全量)
       log(`✗ ${d.email || ''} → ${d.reason || ''} (${d.failClass || ''})`, 'ln-fail');
       hRef.current.onAccountFailed?.();
     });

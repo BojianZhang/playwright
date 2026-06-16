@@ -16,7 +16,7 @@ export const SEL_STAGE_LABELS: Record<string, string> = { env: '建环境/接管
 export const DEF_TPL_OK = '{{email}}:{{password}} | key:{{apiKey}} | 原密码:{{originalPassword}} | 改密:{{passwordChanged}} | billing:{{billingStatus}} ${{charged}} | card:{{cardLast4}} | ip:{{exitIp}}';
 export const DEF_TPL_FAIL = '{{email}}:{{password}} | X{{stage}} | {{reason}} | 试{{attempts}}次';
 
-export const ENGINE_LABEL: Record<string, string> = { playwright: 'Playwright', selenium: 'Selenium', hybrid: '混合', split: '两引擎随机' };
+export { ENGINE_LABEL } from '../../lib/labels';   // ★单一来源 lib/labels(原本地 split='两引擎随机' 与 runs.tsx '两引擎' 不一致 → 统一 '两套分流')
 export const ENGINE_LIST: { key: Engine; label: string; sub: string }[] = [
   { key: 'playwright', label: 'Playwright(内置)', sub: '最快上手 · 无需额外软件,先用这个' },
   { key: 'selenium', label: 'Selenium', sub: '需本机 AdsPower + 代理 · 跑完整流程' },
@@ -29,7 +29,12 @@ export function Arrow() { return <span className="p-arrow"><Icon name="chevron" 
 
 // locked=锁定态:渲染成 .stage.locked(默认光标、不可点),用于"该引擎下此步被流水线强制/不支持、不可单独开关"。
 export function Chip({ on, charge, dim, locked, title, onClick, children }: { on: boolean; charge?: boolean; dim?: boolean; locked?: boolean; title?: string; onClick?: () => void; children: React.ReactNode }) {
-  return <div className={'stage' + (on ? ' on' : '') + (charge ? ' charge' : '') + (locked ? ' locked' : '')} style={dim ? { opacity: 0.5 } : undefined} title={title} onClick={locked ? undefined : onClick}><span className="schk"><Icon name="check" size={10} /></span>{children}</div>;
+  const clickable = !locked && !!onClick;   // 可点的开关 chip → 当作 button:可 Tab 聚焦 + Enter/Space 触发(键盘也能开关步骤)
+  return <div className={'stage' + (on ? ' on' : '') + (charge ? ' charge' : '') + (locked ? ' locked' : '')} style={dim ? { opacity: 0.5 } : undefined} title={title}
+    role={clickable ? 'button' : undefined} tabIndex={clickable ? 0 : undefined} aria-pressed={clickable ? on : undefined}
+    onClick={clickable ? onClick : undefined}
+    onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick!(); } } : undefined}>
+    <span className="schk"><Icon name="check" size={10} /></span>{children}</div>;
 }
 
 export function Field({ name, hint, children }: { name: string; hint?: string; children: React.ReactNode }) {

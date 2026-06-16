@@ -6,11 +6,12 @@ import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '../lib/api';
 import { Icon } from '../lib/icons';
 import { DataTable, type Column } from '../components/DataTable';
+import { DECLINE_LABEL as DECLINE_LABEL_D } from '../lib/labels';   // ★单一来源(原本地副本,与 panels/RunDetail 三处重复)
 
 type By = 'email' | 'card' | 'proxy' | 'env';
 interface UsageRow { at: number; jobId: string; engine: string; email: string; host: string; exitIp: string; proxyId: string; cardLast4: string; envId: string; stage: string; ok: boolean; reason: string }
 interface ErrRow { at: string; email: string; stage: string; reason: string; action: string; attempt: number; jobId: string }
-interface BillRow { at: string; email: string; result: string; charged: number; cardLast4: string; error: string }
+interface BillRow { at: string; email: string; result: string; charged: number; cardLast4: string; declineCode?: string; error: string }
 interface DiagResp {
   by: By; value: string;
   account?: Record<string, unknown> | null;
@@ -47,6 +48,7 @@ const BILL_COLS: Column<BillRow>[] = [
   { key: 'cardLast4', label: '卡', className: 'mono', render: (r) => r.cardLast4 ? '••••' + r.cardLast4 : '—' },
   { key: 'charged', label: '金额', className: 'mono', align: 'right', render: (r) => r.charged ? '$' + r.charged : '—' },
   { key: 'result', label: '结果', render: (r) => r.result === 'success' ? <span className="kbadge ok">成功</span> : <span className="kbadge fail">{r.result}</span> },
+  { key: 'declineCode', label: '拒付原因', className: 'mono', exportValue: (r) => r.declineCode || '', render: (r) => r.declineCode ? <span style={{ color: r.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={DECLINE_LABEL_D[r.declineCode] || r.declineCode}>{DECLINE_LABEL_D[r.declineCode] || r.declineCode}</span> : '—' },
   { key: 'error', label: '错误', className: 'mono', cellStyle: { color: 'var(--danger)' }, render: (r) => r.error || '—' },
 ];
 
@@ -65,6 +67,13 @@ export default function DiagnosePage() {
     enabled: !!value,
     refetchInterval: 30000,   // 取证查看页,每次后端全量扫 usage.jsonl;5s→30s(react-query 页面隐藏即暂停,手动改查询也会立刷)
   });
+  // ★无搜索值时的默认落地:最近活动(不再空页 dead-end)。点任意行的 账号/卡/代理/环境 即下钻排查。
+  const { data: recent, isLoading: recentLoading } = useQuery({
+    queryKey: ['diagnose-recent'],
+    queryFn: () => apiGet<{ usage: UsageRow[]; declines: BillRow[] }>('/api/diagnose/recent?limit=200', true),
+    enabled: !value,
+    refetchInterval: 30000,
+  });
 
   function submit(e: React.FormEvent) { e.preventDefault(); setSp({ by: byInput, value: valInput.trim() }); }
   const acc = (data?.account || null) as Record<string, string | number | boolean> | null;
@@ -78,12 +87,38 @@ export default function DiagnosePage() {
           <select className="dt-filter" style={{ width: 160 }} value={byInput} onChange={(e) => setByInput(e.target.value as By)}>
             {(['email', 'card', 'proxy', 'env'] as By[]).map((b) => <option key={b} value={b}>按 {BY_LABEL[b]}</option>)}
           </select>
-          <div className="search-box" style={{ flex: 1, minWidth: 240 }}><Icon name="search" size={14} /><input placeholder={`输入${BY_LABEL[byInput]}…`} value={valInput} onChange={(e) => setValInput(e.target.value)} /></div>
+          <div className="search-box" style={{ flex: '1 1 320px', maxWidth: 560 }}><Icon name="search" size={14} /><input placeholder={`输入${BY_LABEL[byInput]}…`} value={valInput} onChange={(e) => setValInput(e.target.value)} /></div>
           <button className="btn btn-primary" type="submit"><Icon name="search" size={14} />查</button>
         </form>
       </section>
 
-      {!value && <div className="card card-pad" style={{ marginTop: 16 }}><div className="empty-note">输入要排查的目标。也可从 账号/卡池/代理 等页点「🔍 诊断」跳进来。</div></div>}
+      {!value && (
+        <>
+          <div className="section-gap" />
+          {/* 拒付速览:最近被拒的卡(点卡末4 下钻看这张卡的完整链路)——直奔「充值全 declined」排查 */}
+          {!!(recent?.declines?.length) && (
+            <section className="card">
+              <div className="eb-top"><span className="idx c-amber">⚑</span><h3>最近拒付 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{recent!.declines.length}</span></h3><span className="head-hint">点卡末4 看这张卡的完整链路;余额不足=换卡,其余多为风控</span></div>
+              <div style={{ padding: '12px 18px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {recent!.declines.slice(0, 40).map((b, i) => (
+                  <Link key={i} className={'kbadge ' + (b.declineCode === 'insufficient_funds' ? 'fail' : 'neutral')} to={b.cardLast4 ? `/diagnose?by=card&value=${b.cardLast4}` : `/diagnose?by=email&value=${encodeURIComponent(b.email)}`}
+                    title={`${b.email}${b.declineCode ? ' · ' + (DECLINE_LABEL_D[b.declineCode] || b.declineCode) : ''} · ${fmt(b.at)}`}>
+                    {b.cardLast4 ? '••••' + b.cardLast4 : b.email}{b.declineCode ? ' · ' + (DECLINE_LABEL_D[b.declineCode] || b.declineCode) : ''}
+                  </Link>
+                ))}
+              </div>
+            </section>
+          )}
+          <div className="section-gap" />
+          <section className="card">
+            <div className="eb-top"><span className="idx c-green">▥</span><h3>最近活动</h3><span className="head-hint">点任意行的 账号 / 卡 / 代理 / 环境 即下钻排查它的完整链路</span></div>
+            <DataTable rows={recent?.usage || []} columns={USAGE_COLS} rowKey={(_r, i) => i} getRowClass={(r) => r.ok ? undefined : 'is-banned'} initialSort={{ key: 'at', dir: 'desc' }} maxHeight={460} loading={recentLoading}
+              emptyText="还没有任何运行记录(跑过批次后这里会显示最近活动,点行可下钻)。" exportName="diagnose-recent" columnSettings={{ tableId: 'diag-recent' }}
+              search={{ keys: [(r) => r.email, (r) => r.stage, (r) => r.reason, (r) => r.host, (r) => r.cardLast4], placeholder: '搜索 账号 / 阶段 / 错误 / 卡 / 代理…' }}
+              filters={[{ key: 'ok', label: '结果', accessor: (r) => r.ok ? 'ok' : 'fail', options: [{ value: 'ok', label: '成功' }, { value: 'fail', label: '失败' }] }, { key: 'engine', label: '引擎', accessor: (r) => r.engine || '—', options: [...new Set((recent?.usage || []).map((r) => r.engine || '—'))].map((s) => ({ value: s, label: s }))} ]} />
+          </section>
+        </>
+      )}
 
       {value && (
         <>

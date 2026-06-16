@@ -9,16 +9,18 @@ export interface CardRow {
   successCount: number; declineCount: number;
   firstUsedAt?: string; lastUsedAt?: string; lastResult?: string; lastError?: string;
   cooldownUntil?: string; disabledReason?: string; inUse?: boolean;
+  lastDeclineCode?: string;   // 最近一次拒付原因(insufficient_funds=卡真没钱 / do_not_honor·generic_decline=风控)
   // 充值容量账本(填了次数按次数 / 填了金额按金额算;同卡并发上限;已真充次数 / 在飞预留)
   chargeCap?: number; balance?: number; chargeConcurrency?: number; chargedTotal?: number; chargeInflight?: number;
 }
 export interface CardsResp { cards: CardRow[]; available: number; totalBalance?: number; }
 
-export interface LedgerEntry { at: string; email: string; result: string; charged: number; cardLast4?: string; jobId?: string; error?: string; }
+export interface LedgerEntry { at: string; email: string; result: string; charged: number; cardLast4?: string; jobId?: string; error?: string; declineCode?: string; }
 export interface LedgerSummary {
   total: number; success: number; declined: number; totalCharged: number;
   returned?: number; truncated?: boolean;   // entries 是「最近 returned 条 / 共 total」;truncated=列表被截断(KPI 仍按全量算)
   byResult?: Record<string, number>; byCard?: Record<string, { count: number; charged: number }>;
+  byDeclineCode?: Record<string, number>;   // 拒付原因分布(insufficient_funds vs 风控 …)→ 诊断「充值全 declined」是没钱还是被风控
   entries: LedgerEntry[];
 }
 
@@ -53,7 +55,7 @@ export interface ClusterResp { nodeId: string; hosts: string[]; peers: ClusterPe
 export interface AggregateSource { source: string; count: number; ok: boolean; error?: string; }
 export interface AggregateResp { total: number; count: number; sources: AggregateSource[]; accounts: AccountRow[]; }
 
-export interface StartJobResp { jobId: string; accepted: number; engine?: string; resumedFrom?: string; }
+export interface StartJobResp { jobId: string; accepted: number; engine?: string; resumedFrom?: string; rebuilt?: boolean; }
 
 // SSE 事件 payload(对照 job-runner publish)。
 export interface WorkerUpdate { workerId: number; status?: string; stage?: string; account?: string; }
@@ -83,7 +85,7 @@ export interface RunSummary {
   resumedFrom?: string | null; // 续跑来源 jobId(普通提交为 null)
 }
 export interface RunsResp { nodeId: string; runs: RunSummary[]; }
-export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; purchaseStatus?: string; purchaseReason?: string; durationSec?: number | null; }
+export interface FailedRecord extends AccountFailedEvt { proxy?: string; createdAt?: string; purchaseStatus?: string; purchaseReason?: string; declineCode?: string; cardLast4?: string; blacklisted?: boolean; blacklistReason?: string; durationSec?: number | null; timings?: Record<string, number> | null; }
 // 未完整/未运行号(第三桶):本批无结果且历史回填不到 → 逐号标原因(可只续跑这些)
 export interface IncompleteRow { email: string; password?: string; status: 'banned' | 'bad-mailbox' | 'incomplete' | 'not-run'; reason: string; }
 export interface RunDetailResp { jobId: string; summary: RunSummary | null; success: AccountRow[]; failed: FailedRecord[]; incomplete?: IncompleteRow[]; }

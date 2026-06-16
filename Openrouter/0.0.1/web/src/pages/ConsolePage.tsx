@@ -21,6 +21,11 @@ import { activeOpts } from '../lib/strategySchema';
 import { engineActiveOpts } from '../lib/engineSchema';
 import { BILL_CHAIN, DEF_TPL_OK, DEF_TPL_FAIL, ENGINE_LABEL, Chip, Arrow, type Stage, type Engine } from '../features/console/shared';
 
+// ★引擎值校验(CONV-001):URL 参数/后端返回的 engine 是不可信字符串,直接 as Engine 会让异常值(损坏/旧数据)
+//   静默漏进 runEngine → 误触发 Python/Playwright 分支逻辑。统一过白名单,非法值回退 'selenium'。
+const VALID_ENGINES: Engine[] = ['playwright', 'selenium', 'hybrid', 'split'];
+function asEngine(v: unknown): Engine { return (VALID_ENGINES as string[]).includes(String(v)) ? (v as Engine) : 'selenium'; }
+
 // 方案详情(只读):把选中方案的"怎么跑"摊开给用户看 —— 引擎 + 执行顺序(引擎感知) + 并发/数量/模式/浏览器/资源池。
 // 解决"选了方案看不到它到底跑哪些步、下一步是哪步,没法判断正不正常";Chip/Arrow 与向导第3步「执行流程」同款,只读不可点。
 function SchemeDetail({ cfg }: { cfg: SchemeCfg }) {
@@ -207,7 +212,7 @@ export default function ConsolePage() {
     if (!attach) return;
     attachedRef.current = true;
     const total = Number(searchParams.get('total')) || 0;
-    const eng = (searchParams.get('engine') || 'selenium') as Engine;
+    const eng = asEngine(searchParams.get('engine'));
     setJobId(attach); setRunEngine(eng); runningRef.current = true;
     stream.start(attach, total);
     setRunHint({ html: `已接管续跑任务 <b>${escapeHtml(attach.slice(-14))}</b>(引擎 <b>${escapeHtml(ENGINE_LABEL[eng] || eng)}</b>)· 运行中 —— 实时进度见下方。断点续跑会自动跳过已完成的号。` });
@@ -235,7 +240,7 @@ export default function ConsolePage() {
           const r = await apiGet<{ runs: { jobId: string; total?: number }[] }>('/api/runs', true);
           total = (r.runs || []).find((x) => x.jobId === job.jobId)?.total || 0;
         } catch { /* total 缺省 0 不致命:worker 面板与逐号成败事件照常流,只是进度分母先为 0 */ }
-        const eng = (job.engine || 'selenium') as Engine;
+        const eng = asEngine(job.engine);
         setJobId(job.jobId); setRunEngine(eng); runningRef.current = true;
         stream.start(job.jobId, total);
         setRunHint({ html: `检测到正在运行的任务 <b>${escapeHtml(job.jobId.slice(-14))}</b>(引擎 <b>${escapeHtml(ENGINE_LABEL[eng] || eng)}</b>)→ 已自动接管实时进度(刷新页面不再丢失)。` });

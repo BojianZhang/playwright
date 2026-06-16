@@ -52,6 +52,7 @@ function _rotate() {
       const tmp = FILE + '.tmp';
       fs.writeFileSync(tmp, keep.map((e) => JSON.stringify(e)).join('\n') + '\n');
       fs.renameSync(tmp, FILE);
+      _cache = null;   // 轮转后显式清缓存(别只依赖 mtime+size 检测,防个别文件系统 rename 后 mtime 不变误用旧缓存,CACHE-4)
     }
   } catch (_e) { /* ignore */ }
 }

@@ -28,10 +28,17 @@ let flushTimer = null;
 function ensureLoaded() {
   if (STATE) return;
   STATE = {};
+  let raw;
+  try { raw = fs.readFileSync(ACCOUNTS_FILE, 'utf8'); } catch (_e) { return; }   // 无文件=正常首启,不备份
   try {
-    const obj = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+    const obj = JSON.parse(raw);
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) STATE = obj;
-  } catch (_e) { /* 无文件 → 空状态 */ }
+  } catch (e) {
+    // ★文件存在却解析失败=损坏(断电/磁盘满中途)→ 先备份 .corrupt 留底再以空起,杜绝下次 flush 用空对象原子覆盖、
+    //   永久抹掉【全部账号台账】(注册/Key/账单/拉黑——本 store 最关键)。与 address/proxy/error-log 同款守卫(DEFECT-1 类)。
+    try { fs.renameSync(ACCOUNTS_FILE, ACCOUNTS_FILE + '.corrupt-' + Date.now()); } catch (_e2) { /* 备份失败也不卡死 */ }
+    try { console.error('[account-store] accounts.json 解析失败 → 已备份 .corrupt,本次按空台账继续:', e && e.message); } catch (_e3) { /* */ }
+  }
 }
 
 function flushNow() {

@@ -3,6 +3,9 @@
 // 覆盖的都是本会话反复出过 bug 的"承重"纯函数:成功判定 / 拉黑判定 / 跨引擎衔接 / 结果行映射 / 失败真因。
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const er = require('./engine-runner');
 
 test('isSuccessRow: ok=true 或 steps.card===card-bound 都算成功', () => {
@@ -228,4 +231,27 @@ test('reasonFromLine: 从 stdout 结果行提取真因(替代 see-log 占位)', 
   assert.strictEqual(er.reasonFromLine('════ dave 结果 ok=false pw=...'), 'see-log');
   // card-bound 是成功态,不应被当失败真因
   assert.notStrictEqual(er.reasonFromLine("steps={'card': 'card-bound'}"), 'card:card-bound');
+});
+
+test('readTail: 完整行全收;★任何解析失败行(中间损坏 或 末尾半截/截断)都计 dropped 让调用方告警,绝不静默吞(DEFECT-02)', () => {
+  const f = path.join(os.tmpdir(), `ertail-${process.pid}.jsonl`);
+  // 3 完整行 + 1 中间损坏行 + 末尾半截行(无换行结尾,可能是并发半写,也可能是 SIGKILL/磁盘截断的永久坏行 → 一律计 dropped)
+  fs.writeFileSync(f, [
+    JSON.stringify({ email: 'a@x.com', ok: true }),
+    JSON.stringify({ email: 'b@x.com', ok: false }),
+    '{bad json mid-file',                                  // 中间损坏行
+    JSON.stringify({ email: 'c@x.com', ok: true }),
+  ].join('\n') + '\n' + '{"email":"d@x.com","ok"', 'utf8');  // 末尾半截行,文件不以\n结尾
+  try {
+    const stats = { dropped: 0 };
+    const rows = er.readTail(f, 0, stats);
+    assert.deepStrictEqual(rows.map((r) => r.email), ['a@x.com', 'b@x.com', 'c@x.com'], '3 完整行全收');
+    assert.strictEqual(stats.dropped, 2, '中间损坏行 + 末尾半截行都计 dropped(可见告警,不静默丢)');
+    // 末行写完整后(合法 JSON + \n)→ 被正常收,dropped 只剩中间那条
+    fs.appendFileSync(f, ':true}\n', 'utf8');   // 接上 → {"email":"d@x.com","ok":true}
+    const s2 = { dropped: 0 };
+    const r2 = er.readTail(f, 0, s2);
+    assert.strictEqual(r2.length, 4, '末行写完整后被收(d@x.com)');
+    assert.strictEqual(s2.dropped, 1, '只剩中间损坏行计 1');
+  } finally { try { fs.unlinkSync(f); } catch (_e) { /* */ } }
 });

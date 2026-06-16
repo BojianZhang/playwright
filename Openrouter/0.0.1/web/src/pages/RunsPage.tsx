@@ -1,4 +1,5 @@
 // 运行历史列表:过往任务一览,点行下钻。数据 /api/runs。表格用通用 DataTable(排序/筛选/搜索/列设置)。
+import { useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPost } from '../lib/api';
@@ -23,7 +24,7 @@ const COLUMNS: Column<RunSummary>[] = [
   { key: 'incomplete', label: '未完整', className: 'mono', align: 'right', sortAccessor: (r) => r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed), exportValue: (r) => r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed), cellStyle: { color: 'var(--text-3)' }, render: (r) => (r.incomplete != null ? r.incomplete : Math.max(0, r.total - r.success - r.failed)) || 0 },
   { key: 'durationMs', label: '用时', className: 'mono', align: 'right', sortAccessor: (r) => r.durationMs || 0, exportValue: (r) => fmtDuration(r.durationMs), cellStyle: { color: 'var(--text-2)' }, render: (r) => fmtDuration(r.durationMs) },
   { key: 'status', label: '状态', sortAccessor: (r) => r.status, exportValue: (r) => RUN_STATUS_LABEL[r.status] || r.status, render: (r) => <RunStatus status={r.status} partial={r.partial} completenessPct={r.completenessPct} /> },
-  { key: 'jobId', label: 'jobId', className: 'mono', cellStyle: { color: 'var(--text-4)' }, render: (r) => <span title={r.jobId}>{r.jobId.slice(-10)}</span> },
+  { key: 'jobId', label: 'jobId', className: 'mono', cellStyle: { color: 'var(--text-4)' }, render: (r) => <span title={r.jobId}>…{r.jobId.slice(-10)}</span> },
 ];
 const FILTERS: FilterDef<RunSummary>[] = [
   { key: 'engine', label: '引擎', accessor: (r) => r.engine || 'playwright', options: Object.entries(ENGINE_LABEL).map(([value, label]) => ({ value, label })) },
@@ -37,11 +38,14 @@ export default function RunsPage() {
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['runs'], queryFn: () => apiGet<RunsResp>('/api/runs?limit=200', true), refetchInterval: 5000 });
   const runs = data?.runs || [];
 
-  const running = runs.filter((r) => r.status === 'running').length;
-  const accSuccess = runs.reduce((n, r) => n + (r.success || 0), 0);
-  const accFailed = runs.reduce((n, r) => n + (r.failed || 0), 0);
-  const accTotal = runs.reduce((n, r) => n + (r.total || 0), 0);
-  const rate = accTotal ? Math.round((accSuccess / accTotal) * 100) : 0;
+  // KPI 聚合:useMemo 只在 runs 变化时重算(原来每次渲染都 1×filter+3×reduce 全表;5s 轮询 + 200 行下白烧)。
+  const { running, accSuccess, accFailed, accTotal, rate } = useMemo(() => {
+    const running = runs.filter((r) => r.status === 'running').length;
+    const accSuccess = runs.reduce((n, r) => n + (r.success || 0), 0);
+    const accFailed = runs.reduce((n, r) => n + (r.failed || 0), 0);
+    const accTotal = runs.reduce((n, r) => n + (r.total || 0), 0);
+    return { running, accSuccess, accFailed, accTotal, rate: accTotal ? Math.round((accSuccess / accTotal) * 100) : 0 };
+  }, [runs]);
 
   return (
     <main className="page">

@@ -150,7 +150,7 @@ function EngineConfig() {
 // 多机派发:把这批账号拆给多台目标机各自跑(各用自己 AdsPower)。关=只本机。
 function MultiMachine() {
   const c = useConsole();
-  const { data } = useQuery({ queryKey: ['cluster'], queryFn: () => apiGet<{ nodeId: string; peers: { nodeId: string; url: string }[] }>('/api/cluster', true), enabled: c.useDispatch, refetchInterval: c.useDispatch ? 10000 : false });
+  const { data } = useQuery({ queryKey: ['cluster'], queryFn: () => apiGet<{ nodeId: string; peers: { nodeId: string; url: string }[] }>('/api/cluster', true), enabled: c.useDispatch, refetchInterval: c.useDispatch ? 30000 : false });   // 集群拓扑稳定(peer 注册一次/30s 心跳)→ 表单里 10s 太勤,放宽 30s
   const peers = data?.peers || [];
   const sel = c.dispatchTargets;
   const isSel = (url: string) => sel.some((t) => t.url === url);

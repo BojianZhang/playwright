@@ -25,9 +25,11 @@ export default function CardsPage() {
   const CAP_AMT = 5;
   const totalBalance = data?.totalBalance ?? cards.reduce((n, c) => n + (c.balance || 0), 0);
   const trackedActive = cards.filter((c) => c.status === 'active' && ((c.chargeCap || 0) > 0 || (c.balance || 0) > 0));
-  const chargeBudget = trackedActive.reduce((n, c) => n + (((c.chargeCap || 0) > 0)
-    ? Math.max(0, (c.chargeCap || 0) - (c.chargedTotal || 0))       // 次数模式:剩余 = 次数 − 已真充
-    : Math.floor((c.balance || 0) / CAP_AMT)), 0);                  // 金额模式:floor(余额 / 充值额)
+  const chargeBudget = trackedActive.reduce((n, c) => {
+    const byCount = (c.chargeCap || 0) > 0 ? Math.max(0, (c.chargeCap || 0) - (c.chargedTotal || 0)) : Infinity;   // 次数剩余 = 次数 − 已真充
+    const byMoney = (c.balance || 0) > 0 ? Math.floor((c.balance || 0) / CAP_AMT) : Infinity;                       // 金额剩余 = floor(余额 / 充值额)
+    return n + Math.min(byCount, byMoney);   // 次数与金额双约束取 min(钱优先=钱不够时钱赢);trackedActive 已保证至少填了一个,不会是 ∞
+  }, 0);
   const untrackedActive = cards.filter((c) => c.status === 'active' && !((c.chargeCap || 0) > 0 || (c.balance || 0) > 0)).length;
   const segs: Seg[] = [
     { label: '可用', value: by('active'), colorVar: '--success' },

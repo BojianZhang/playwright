@@ -85,11 +85,11 @@ export default function AnalysisPage() {
 
   const cardSegs: Seg[] = (() => {
     const m = new Map<string, number>();
-    for (const e of data?.engines || []) for (const s of e.cardStates) if (s.label !== '(未到加卡)') m.set(s.label, (m.get(s.label) || 0) + s.value);
+    for (const e of data?.engines || []) for (const s of e.cardStates || []) if (s.label !== '(未到加卡)') m.set(s.label, (m.get(s.label) || 0) + s.value);
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value, colorVar: CARD_COLOR[label] || '--text-4' }));
   })();
   const stageSegs: Seg[] = (data?.blameByStage || []).map((b) => ({ label: b.label.replace(/^[A-Z]\./, ''), value: b.value, colorVar: STAGE_COLOR[b.label[0]] || '--text-4' }));
-  const reasonSegs: Seg[] = (data?.errorLog.byReason || []).slice(0, 8).map((b, i) => ({ label: b.label, value: b.value, colorVar: ['--danger', '--warn', '--info', '--primary', '--primary-text', '--success', '--text-3', '--text-4'][i % 8] }));
+  const reasonSegs: Seg[] = (data?.errorLog?.byReason || []).slice(0, 8).map((b, i) => ({ label: b.label, value: b.value, colorVar: ['--danger', '--warn', '--info', '--primary', '--primary-text', '--success', '--text-3', '--text-4'][i % 8] }));
 
   return (
     <main className="page">

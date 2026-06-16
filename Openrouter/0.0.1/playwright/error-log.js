@@ -27,10 +27,16 @@ let flushTimer = null;
 function ensureLoaded() {
   if (ENTRIES) return;
   ENTRIES = [];
+  let raw;
+  try { raw = fs.readFileSync(ERROR_LOG_FILE, 'utf8'); } catch (_e) { return; }   // 无文件=正常首启,不备份
   try {
-    const arr = JSON.parse(fs.readFileSync(ERROR_LOG_FILE, 'utf8'));
+    const arr = JSON.parse(raw);
     if (Array.isArray(arr)) ENTRIES = arr;
-  } catch (_e) { /* 无文件 → 空 */ }
+  } catch (e) {
+    // ★文件存在却解析失败=损坏 → 先备份 .corrupt 留底再以空起,杜绝下次 flush 用空数组原子覆盖、永久丢审计日志(与 billing-ledger 同款守卫)。
+    try { fs.renameSync(ERROR_LOG_FILE, ERROR_LOG_FILE + '.corrupt-' + Date.now()); } catch (_e2) { /* 备份失败也不卡死 */ }
+    try { console.error('[error-log] error-log.json 解析失败 → 已备份 .corrupt,本次按空日志继续:', e && e.message); } catch (_e3) { /* */ }
+  }
 }
 function flushNow() {
   flushTimer = null;

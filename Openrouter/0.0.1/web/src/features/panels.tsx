@@ -9,10 +9,12 @@ import { shortTime } from '../lib/parse';
 import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
+import { Modal } from '../components/Modal';
 import type { AccountsResp, CardRow, CardsResp, ErrorSummary, LedgerSummary } from '../lib/types';
 import { DataTable, type Column, type FilterDef } from '../components/DataTable';
 import { RowMenu } from '../components/RowMenu';
 import { batchRun } from '../lib/batch';
+import { DECLINE_LABEL as DECLINE_LABEL_P } from '../lib/labels';   // ★单一来源(原本地副本,与 RunDetail/Diagnose 三处重复)
 
 const CARD_STATUS: Record<string, string> = { active: '可用', exhausted: '用尽', declined: '被拒', disabled: '已禁用', dispatched: '已下发' };
 const ERR_ACTION: Record<string, string> = { retry: '同代理重试', 'retry-new-proxy': '换代理重试', relogin: '重新登录', blacklist: '拉黑', abort: '放弃' };
@@ -22,10 +24,10 @@ const CHARGE_AMOUNT_EST = 5;
 function cardTracked(c: CardRow): boolean { return (c.chargeCap || 0) > 0 || (c.balance || 0) > 0; }
 function chargeRemaining(c: CardRow): number {
   const cap = c.chargeCap || 0;
-  if (cap > 0) return Math.max(0, cap - (c.chargedTotal || 0));          // 次数模式:cap - 已充
   const bal = c.balance || 0;
-  if (bal > 0) return Math.floor(bal / CHARGE_AMOUNT_EST);               // 金额模式:floor(余额/充值额)(余额已在 commit 扣减)
-  return Number.POSITIVE_INFINITY;                                       // 未跟踪=不限
+  const byCount = cap > 0 ? Math.max(0, cap - (c.chargedTotal || 0)) : Number.POSITIVE_INFINITY;  // 次数剩余:cap - 已充
+  const byMoney = bal > 0 ? Math.floor(bal / CHARGE_AMOUNT_EST) : Number.POSITIVE_INFINITY;       // 金额剩余:floor(余额/充值额)(余额已在 commit 扣减)
+  return Math.min(byCount, byMoney);   // 次数与金额双约束取 min(钱优先=钱不够时钱赢);都没填→不限
 }
 
 function SubHead({ children }: { children: React.ReactNode }) { return <div className="sub-head">{children}</div>; }
@@ -56,6 +58,33 @@ export function PoolTab() {
   const { data } = useQuery({ queryKey: ['cards'], queryFn: () => apiGet<CardsResp>('/api/cards', true) });
   const cards = data?.cards || [];
   const avail = data?.available ?? cards.filter((c) => c.status === 'active').length;
+  // ★批量设值弹窗:选中多张卡 → 一次性设 可用次数/充值次数/金额/同卡并发(留空=不改),一次落盘。
+  const [bsOpen, setBsOpen] = useState(false);
+  const [bsIds, setBsIds] = useState<string[]>([]);
+  const [bsClear, setBsClear] = useState<(() => void) | null>(null);
+  const [bsMaxUses, setBsMaxUses] = useState(''); const [bsCap, setBsCap] = useState('');
+  const [bsBal, setBsBal] = useState(''); const [bsConc, setBsConc] = useState('');
+  const [bsBusy, setBsBusy] = useState(false);
+  const openBatchSet = (sel: CardRow[], clear: () => void) => {
+    setBsIds(sel.map((c) => c.id)); setBsClear(() => clear);
+    setBsMaxUses(''); setBsCap(''); setBsBal(''); setBsConc(''); setBsOpen(true);
+  };
+  const applyBatchSet = async () => {
+    const patch: Record<string, number> = {};
+    if (bsMaxUses.trim() !== '') patch.maxUses = Math.max(1, Number(bsMaxUses) || 1);
+    if (bsCap.trim() !== '') patch.chargeCap = Math.max(0, Number(bsCap) || 0);
+    if (bsBal.trim() !== '') patch.balance = Math.max(0, Number(bsBal) || 0);
+    if (bsConc.trim() !== '') patch.chargeConcurrency = Math.max(0, Number(bsConc) || 0);
+    if (!Object.keys(patch).length) { toast.push('没填任何要改的值', 'err'); return; }
+    setBsBusy(true);
+    try {
+      const r = await apiPost<{ updated: number }>('/api/cards/set-many', { ids: bsIds, ...patch });
+      qc.invalidateQueries({ queryKey: ['cards'] });
+      toast.push(`已批量设值 ${r?.updated ?? bsIds.length} 张卡`, 'ok');
+      setBsOpen(false); if (bsClear) bsClear();
+    } catch (e) { toast.push('批量设值失败:' + ((e as Error).message || '未知'), 'err'); }
+    finally { setBsBusy(false); }
+  };
   const act = async (action: string, body?: unknown) => {
     try { await apiPost(`/api/cards/${action}`, body); qc.invalidateQueries({ queryKey: ['cards'] }); }
     catch (e) { toast.push(`操作失败:${(e as Error).message}`, 'err'); }
@@ -93,6 +122,15 @@ export function PoolTab() {
     { key: 'remaining', label: '剩余', className: 'mono', align: 'right', sortAccessor: (c) => c.remaining, render: (c) => <b>{c.remaining}</b> },
     { key: 'successCount', label: '成功', className: 'mono', align: 'right', sortAccessor: (c) => c.successCount, cellStyle: { color: 'var(--success)' }, render: (c) => c.successCount },
     { key: 'declineCount', label: '被拒', className: 'mono', align: 'right', sortAccessor: (c) => c.declineCount, cellStyle: { color: 'var(--danger)' }, render: (c) => c.declineCount },
+    // ★拒付原因(最近一次):insufficient_funds=卡真没钱→换卡;其余=风控→换IP。若填了余额却报余额不足=余额不准,标 ⚠。
+    { key: 'lastDeclineCode', label: '拒付原因', sortAccessor: (c) => c.lastDeclineCode || '', exportValue: (c) => c.lastDeclineCode || '', render: (c) => {
+      const dc = c.lastDeclineCode || '';
+      if (!dc) return <span style={{ color: 'var(--text-4)' }}>—</span>;
+      const mismatch = dc === 'insufficient_funds' && (c.balance || 0) > 0;
+      return <span className={'kbadge ' + (dc === 'insufficient_funds' ? 'fail' : 'warn')}
+        title={(DECLINE_LABEL_P[dc] || dc) + (mismatch ? ` · ⚠你填的余额 $${c.balance} 与「余额不足」矛盾,请核对卡实际余额` : (dc === 'insufficient_funds' ? ' · 卡真没钱,建议换卡' : ' · 多为风控,换IP再试'))}>
+        {DECLINE_LABEL_P[dc] || dc}{mismatch ? ' ⚠' : ''}</span>;
+    } },
     { key: 'lastUsedAt', label: '最近用', className: 'mono', cellStyle: { color: 'var(--text-3)' }, sortAccessor: (c) => c.lastUsedAt || '', render: (c) => shortTime(c.lastUsedAt) },
     { key: 'lastError', label: '最近错误', className: 'mono', defaultHidden: true, render: (c) => <span title={c.lastError || ''} style={{ color: c.lastError ? 'var(--danger)' : 'var(--text-4)' }}>{c.lastError ? String(c.lastError).slice(0, 22) : '—'}</span> },
     { key: 'actions', label: '操作', align: 'right', alwaysVisible: true, render: (c) => (
@@ -109,6 +147,7 @@ export function PoolTab() {
   const filters: FilterDef<CardRow>[] = [{ key: 'status', label: '状态', accessor: (c) => c.status, options: Object.entries(CARD_STATUS).map(([value, label]) => ({ value, label })) }];
 
   return (
+    <>
     <DataTable
       rows={cards}
       columns={columns}
@@ -121,6 +160,7 @@ export function PoolTab() {
       maxHeight={460}
       selectable
       batchActions={(sel, clear) => (<>
+        <button className="btn btn-primary btn-sm" title="给选中的卡一次性设 可用次数/充值次数/金额/同卡并发(留空=不改)" onClick={() => openBatchSet(sel, clear)}><Icon name="refresh" size={12} />批量设值</button>
         <button className="btn btn-ghost btn-sm" onClick={() => { sel.forEach((c) => act('enable', { id: c.id })); clear(); }}>启用</button>
         <button className="btn btn-ghost btn-sm" onClick={() => { sel.forEach((c) => act('disable', { id: c.id })); clear(); }}>禁用</button>
         <button className="btn btn-ghost btn-sm" onClick={() => { sel.forEach((c) => act('reset', { id: c.id })); clear(); }}>重置</button>
@@ -133,6 +173,33 @@ export function PoolTab() {
       </>}
       toolbarRight={<span className="cnt-pill">共 <b style={{ color: 'var(--text)' }}>{cards.length}</b> · 可用 <b style={{ color: 'var(--success)' }}>{avail}</b></span>}
     />
+    {/* ★批量设值弹窗:对选中的多张卡一次性设值(留空=不改);改充值次数/金额会重置该卡「已充」(新预算可重新充满)。 */}
+    <Modal open={bsOpen} onClose={() => { if (!bsBusy) setBsOpen(false); }} size="md" title={`批量设值 · ${bsIds.length} 张卡`}
+      foot={(
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, width: '100%' }}>
+          <button className="btn btn-ghost btn-sm" disabled={bsBusy} onClick={() => setBsOpen(false)}>取消</button>
+          <button className="btn btn-primary btn-sm" disabled={bsBusy} onClick={applyBatchSet}>{bsBusy ? '应用中…' : `应用到 ${bsIds.length} 张`}</button>
+        </div>
+      )}>
+      <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-2)', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px' }}>
+          只填【要改】的项,<b>留空=不动该项</b>。改了「充值次数 / 金额」会重置这些卡的「已充」计数(当作新预算,可重新充满)。
+        </div>
+        {([
+          { label: '可用次数(绑定上限)', val: bsMaxUses, set: setBsMaxUses, ph: '不改', hint: '这张卡最多绑几个号' },
+          { label: '充值次数', val: bsCap, set: setBsCap, ph: '不改', hint: '能真充几次;0=不按次数(与金额二选一,次数优先)' },
+          { label: '金额 $', val: bsBal, set: setBsBal, ph: '不改', hint: '卡上真实金额;按 floor(金额/充值额) 算能充几次' },
+          { label: '同卡并发', val: bsConc, set: setBsConc, ph: '不改', hint: '同一时间最多几个号在这张卡上充值;0=不限' },
+        ] as const).map((f) => (
+          <label key={f.label} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+            <span style={{ width: 150, flexShrink: 0 }} title={f.hint}>{f.label}</span>
+            <input type="number" min={0} value={f.val} placeholder={f.ph} onChange={(e) => f.set(e.target.value)} style={{ width: 120 }} />
+            <span style={{ color: 'var(--text-4)', fontSize: 11 }}>{f.hint}</span>
+          </label>
+        ))}
+      </div>
+    </Modal>
+    </>
   );
 }
 
@@ -157,16 +224,20 @@ export function LedgerTab() {
           <span className="kbadge info">总充值 ${data?.totalCharged || 0}</span>
           <span className="kbadge ok">成功 {data?.success || 0}</span>
           <span className="kbadge fail">被拒 {data?.declined || 0}</span>
+          {/* ★拒付原因分布(诊断「充值全 declined」是没钱还是风控):余额不足=换卡;其余=风控换IP。这是用户要的「不是空口白话」的依据。 */}
+          {data?.byDeclineCode && Object.keys(data.byDeclineCode).length > 0 && Object.entries(data.byDeclineCode).sort((a, b) => b[1] - a[1]).map(([code, n]) => (
+            <span key={code} className={'kbadge ' + (code === 'insufficient_funds' ? 'fail' : 'neutral')} title={code === 'insufficient_funds' ? '卡真没钱→换卡/核对余额' : '多为 Stripe 风控/环境→换IP·换卡争取'}>{DECLINE_LABEL_P[code] || code} {n}</span>
+          ))}
           {/* 诚实标注:KPI(总充值/成功/被拒)按【全量】算,但下方明细只列最近 N 条 → 别让用户以为只有这么多笔 */}
           <span className="cnt-pill">{data?.truncated ? <>最近 <b>{data?.returned}</b> / 共 <b>{data?.total}</b> 笔</> : <>共 <b>{data?.total || 0}</b> 笔</>}</span>
-          <button className="btn btn-ghost btn-sm" disabled={!entries.length} onClick={() => downloadCsv('billing', ['时间', '邮箱', '卡末4', '金额', '结果', '错误'], entries.map((e) => [shortTime(e.at), e.email, e.cardLast4 || '', e.charged || '', e.result, e.error || '']))}><Icon name="download" size={12} />导出</button>
+          <button className="btn btn-ghost btn-sm" disabled={!entries.length} onClick={() => downloadCsv('billing', ['时间', '邮箱', '卡末4', '金额', '结果', '拒付码', '错误'], entries.map((e) => [shortTime(e.at), e.email, e.cardLast4 || '', e.charged || '', e.result, e.declineCode || '', e.error || '']))}><Icon name="download" size={12} />导出</button>
           <button className="btn btn-danger-soft btn-sm" onClick={async () => { if (!confirm('清空充值台账?')) return; await apiPost('/api/billing/clear'); qc.invalidateQueries({ queryKey: ['billing'] }); toast.push('台账已清空', 'ok'); }}><Icon name="trash" size={12} />清空台账</button>
         </div>
       </SubHead>
       {!entries.length ? <div className="empty-note">暂无充值记录。</div> : (
         <div className="tbl-wrap" style={{ maxHeight: 460 }}>
           <table className="tbl">
-            <thead><tr><th>时间</th><th>邮箱</th><th>卡</th><th>金额</th><th>结果</th><th>错误</th></tr></thead>
+            <thead><tr><th>时间</th><th>邮箱</th><th>卡</th><th>金额</th><th>结果</th><th>拒付原因</th><th>错误</th></tr></thead>
             <tbody>
               {entries.map((e, i) => (
                 <tr key={i} className={e.result === 'declined' ? 'is-banned' : ''}>
@@ -175,6 +246,7 @@ export function LedgerTab() {
                   <td className="mono">{e.cardLast4 ? '•••• ' + e.cardLast4 : '—'}</td>
                   <td className="mono">{e.charged ? '$' + e.charged : '—'}</td>
                   <td>{BILL[e.result] || e.result}</td>
+                  <td className="mono" style={{ color: e.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : ''}>{e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : '—'}</td>
                   <td className="mono" style={{ color: e.error ? 'var(--danger)' : 'var(--text-4)' }} title={e.error || ''}>{e.error ? String(e.error).slice(0, 24) : '—'}</td>
                 </tr>
               ))}

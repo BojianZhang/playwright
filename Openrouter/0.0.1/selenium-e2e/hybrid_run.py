@@ -285,6 +285,12 @@ def _charge_with_gate(page, amount, cfg, manual_hcaptcha, card_id, card_charge_g
                 except Exception: pass
             _resolved = True
         else:
+            _dc = pr.get("decline_code") or ""
+            if pr.get("result") == "declined" and _dc:
+                res["decline_code"] = _dc   # 拒付具体原因(insufficient_funds=真没钱 / 其余=环境风控);供失败列表按原因恢复
+                if card_id:
+                    try: common.note_decline_code(card_id, _dc, amount)
+                    except Exception: pass
             if _reserved:
                 try: common.release_charge(card_id)
                 except Exception: pass
@@ -950,6 +956,9 @@ def run_account(acct, proxies, start_idx, group_id, op_pw, cfg, delete_env=True,
                 elif res.get("error"):
                     res["fail_stage"] = "exception"
                     res["fail_reason"] = str(res.get("error"))[:160]
+            # 充值拒付:把具体拒付码并入 fail_reason(declined:insufficient_funds vs declined:generic_decline),与 pipeline 同口径
+            if res.get("fail_stage") == "charge" and res.get("decline_code") and str(res.get("fail_reason") or "") in ("declined", "None", ""):
+                res["fail_reason"] = "declined:" + str(res.get("decline_code"))
         except Exception:
             pass
         log_stage(slot, email, "done", "done")
@@ -1123,6 +1132,14 @@ def main():
     pending = [(i, acct) for i, acct in enumerate(accounts)
                if acct["email"] not in done and acct["email"] not in banned and acct["email"] not in in_cooldown
                and not common.is_bad_mailbox(acct["email"], bad_mb)]
+    # ★回收上次崩溃/中断遗留的在飞充值预留(混合引擎原来从不回收 → 上次崩溃后卡额度被永久占住,后续号取不到该卡;DEFECT-05)。
+    if getattr(args, "card_charge_gate", False):
+        try:
+            _reaped = common.reap_stale_inflight()
+            if _reaped:
+                log("[充值] 回收上次遗留的在飞预留 %d 笔(卡额度释放)" % _reaped)
+        except Exception:
+            pass
     for em in (done & acct_emails):
         log("跳过已绑卡 %s" % em)
     for em in (banned & acct_emails):
@@ -1230,9 +1247,13 @@ def main():
         if args.job_id:
             r["job_id"] = args.job_id   # web 按 job 隔离取结果(同引擎并发不串号)
         with _WRITE_LOCK:
-            with open(res_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                f.flush(); os.fsync(f.fileno())   # 进程被 SIGKILL 也不丢末尾结果行
+            # ★DEFECT-02:单次 os.write 原子追加整行(O_APPEND)→ 多 job 进程并发写同一文件时读方不会读到半截行(与 run.py 同口径)。
+            _line = (json.dumps(r, ensure_ascii=False) + "\n").encode("utf-8")
+            _fd = os.open(res_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                os.write(_fd, _line); os.fsync(_fd)
+            finally:
+                os.close(_fd)
         log("════ %s 结果 ok=%s pw=%s key=%s 地址=%s 卡=%s ════" % (
             acct["email"].split("@")[0], r.get("ok"), (r.get("steps") or {}).get("pw"),
             (r.get("api_key") or "")[:14], r.get("billing_status"), (r.get("steps") or {}).get("card")))

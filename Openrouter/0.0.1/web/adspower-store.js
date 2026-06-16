@@ -11,13 +11,16 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readJsonOr } = require('./json-safe');
 
 const FILE = path.join(__dirname, '..', 'data', 'adspower.json');
 let _list = null;
 
 function _load() {
   if (_list) return _list;
-  try { const a = JSON.parse(fs.readFileSync(FILE, 'utf8')); _list = Array.isArray(a) ? a : []; } catch (_e) { _list = []; }
+  // ★用 readJsonOr:文件【损坏】时先备份 .corrupt 再退空,杜绝下一次 _persist() 用空数组原子覆盖、永久抹掉全部 envId(H4 同款守卫)。
+  const a = readJsonOr(FILE, [], 'adspower-store');
+  _list = Array.isArray(a) ? a : [];
   return _list;
 }
 function _persist() {
