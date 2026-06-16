@@ -19,17 +19,56 @@
 // - createBrowserRuntime           — 创建完整 browser + context + page 实例（主入口）
 // ═══════════════════════════════════════════════════════════════════════
 
-const { createRandomFingerprint, buildContextFingerprintOptions } = require('./fingerprint');
+const {
+  COUNTRY_GEO_PROFILES,
+  DEFAULT_BROWSER_IDENTITY_POLICY,
+  createRandomFingerprint,
+  createIdentityContext,
+  normalizeBrowserIdentityPolicy,
+  resolveGeoProfile,
+  buildContextFingerprintOptions,
+} = require('./fingerprint');
 const { normalizeBlockedResourceTypes, applyResourcePolicy } = require('./resource-policy');
+const {
+  buildFingerprintHardeningProfile,
+  buildFingerprintHardeningInitScript,
+  summarizeHardeningProfile,
+  applyFingerprintHardeningToContext,
+  buildCdpUserAgentOverride,
+} = require('./fingerprint-hardening');
+const {
+  buildAdsPowerFingerprintConfig,
+  buildAdsPowerFingerprintPayload,
+  normalizeProxyForRuntime,
+} = require('./adspower-fingerprint');
 const { applyWindowLayoutToLaunchOptions } = require('./window-runtime');
 const { buildLaunchOptions, createBrowserRuntime } = require('./create-browser-runtime');
+const {
+  applyConnectedRuntimeIdentity,
+  buildConnectedRuntimeIdentityError,
+} = require('./connected-runtime');
 
 module.exports = {
+  COUNTRY_GEO_PROFILES,
+  DEFAULT_BROWSER_IDENTITY_POLICY,
   createRandomFingerprint,
+  createIdentityContext,
+  normalizeBrowserIdentityPolicy,
+  resolveGeoProfile,
   buildContextFingerprintOptions,
+  buildFingerprintHardeningProfile,
+  buildFingerprintHardeningInitScript,
+  summarizeHardeningProfile,
+  applyFingerprintHardeningToContext,
+  buildCdpUserAgentOverride,
+  buildAdsPowerFingerprintConfig,
+  buildAdsPowerFingerprintPayload,
+  normalizeProxyForRuntime,
   normalizeBlockedResourceTypes,
   applyResourcePolicy,
   applyWindowLayoutToLaunchOptions,
   buildLaunchOptions,
   createBrowserRuntime,
+  applyConnectedRuntimeIdentity,
+  buildConnectedRuntimeIdentityError,
 };

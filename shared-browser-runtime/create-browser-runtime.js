@@ -20,6 +20,7 @@
 
 const { chromium } = require('playwright');
 const { buildContextFingerprintOptions } = require('./fingerprint');
+const { applyFingerprintHardeningToContext } = require('./fingerprint-hardening');
 const { applyResourcePolicy } = require('./resource-policy');
 const { applyWindowLayoutToLaunchOptions } = require('./window-runtime');
 
@@ -110,6 +111,35 @@ async function getBrowserRuntimeIp(context, options = {}) {
       await tempPage.close().catch(() => {});
     }
   }
+}
+
+async function clearContextStorageOnStart(context, page) {
+  const result = {
+    cookiesCleared: false,
+    storageCleared: false,
+    error: null,
+  };
+
+  try {
+    await context.clearCookies();
+    result.cookiesCleared = true;
+  } catch (error) {
+    result.error = String(error?.message || error || 'CLEAR_COOKIES_FAILED');
+  }
+
+  if (page && typeof page.evaluate === 'function') {
+    try {
+      await page.evaluate(() => {
+        try { window.localStorage && window.localStorage.clear(); } catch (_localStorageError) {}
+        try { window.sessionStorage && window.sessionStorage.clear(); } catch (_sessionStorageError) {}
+      });
+      result.storageCleared = true;
+    } catch (error) {
+      result.error = result.error || String(error?.message || error || 'CLEAR_STORAGE_FAILED');
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -209,13 +239,37 @@ async function createBrowserRuntime(options = {}) {
   const browser = await chromium.launch(launchOptions);
 
   // 随机指纹 + context 配置（viewport / locale / timezoneId / userAgent 等）
-  const { fingerprint, contextOptions } = buildContextFingerprintOptions(runtime, { windowLayout });
+  const { fingerprint, contextOptions } = buildContextFingerprintOptions(runtime, {
+    windowLayout,
+    proxy: options?.proxy || null,
+    account: options?.account || null,
+    browserIdentity: options?.browserIdentity || runtime?.browserIdentity || null,
+    identity: options?.identity || null,
+  });
   const context = await browser.newContext(contextOptions);
+  const hardeningRuntime = await applyFingerprintHardeningToContext(context, fingerprint, { runtime })
+    .catch((error) => ({
+      injected: false,
+      profile: fingerprint.hardening,
+      summary: {},
+      error: String(error?.message || error || 'FINGERPRINT_HARDENING_FAILED'),
+    }));
+  fingerprint.hardeningRuntime = hardeningRuntime;
+  fingerprint.summary.hardeningInjected = Boolean(hardeningRuntime.injected);
+  fingerprint.summary.hardeningError = hardeningRuntime.error || null;
 
   // 按策略拦截图片/媒体/字体等资源，减少网络开销。
   await applyResourcePolicy(context, options?.blockedResourceTypes);
 
   const page = await context.newPage();
+
+  const storageCleanup = fingerprint?.identity?.clearStorageOnStart
+    ? await clearContextStorageOnStart(context, page)
+    : {
+        cookiesCleared: false,
+        storageCleared: false,
+        error: null,
+      };
 
   // 浏览器实际 IP 检测：新开临时 page，访问 IP 查询接口，检测完立即关闭。
   // 这里的请求走的是 chromium.launch(launchOptions) 注入的 proxy，
@@ -246,12 +300,14 @@ async function createBrowserRuntime(options = {}) {
     fingerprint,
     launchOptions,
     contextOptions,
+    storageCleanup,
     ipCheck,
   };
 }
 
 module.exports = {
   buildLaunchOptions,
+  clearContextStorageOnStart,
   createBrowserRuntime,
   getBrowserRuntimeIp,
 };

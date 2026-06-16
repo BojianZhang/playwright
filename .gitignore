@@ -74,3 +74,7 @@ tests/test-*.spec.ts
 
 # Dreamina 历史运行数据归档(浏览器存储dump/结果,非源码,曾含已提交密钥)
 Dreamina/history/
+
+# 外部参考仓库的临时克隆(各自带 .git,仅供指纹研究参考,非本项目源码)
+.tmp-aws-builder-id/
+.tmp-r0chrome/
