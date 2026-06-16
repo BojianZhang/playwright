@@ -1,0 +1,56 @@
+# dreamina-profile-completion-profile 示例（带说明）
+
+```json
+{
+  "name": "DreaminaProfileCompletionStage",
+  "profileReady": {
+    "texts": [
+      "Year",
+      "Month",
+      "Day"
+    ],
+    "selectors": [
+      "button.lv_new_sign_in_panel_wide-birthday-next"
+    ]
+  },
+  "birthday": {
+    "yearSelectors": [
+      "input[placeholder='Year']"
+    ],
+    "monthSelectors": [
+      "input[placeholder='Month']"
+    ],
+    "daySelectors": [
+      "input[placeholder='Day']"
+    ],
+    "submitSelectors": [
+      "button.lv_new_sign_in_panel_wide-birthday-next"
+    ],
+    "submitTexts": [
+      "Next"
+    ]
+  },
+  "successSignals": {
+    "texts": [],
+    "selectors": []
+  },
+  "failureSignals": {
+    "inputInvalid": [
+      "invalid"
+    ],
+    "submitFailed": [
+      "Try again"
+    ],
+    "inlineErrors": [
+      "error",
+      "warning"
+    ]
+  },
+  "nextStageSignals": {
+    "postAuthReady": {
+      "texts": [],
+      "selectors": []
+    }
+  }
+}
+```

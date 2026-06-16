@@ -1,0 +1,71 @@
+{
+  "name": "DreaminaVerificationStage",
+  "verificationReady": {
+    "texts": [
+      "Resend code",
+      "Check your spam folder"
+    ],
+    "selectors": [
+      "input[maxlength='6']",
+      "input[autocomplete='one-time-code']"
+    ]
+  },
+  "codeInput": {
+    "selectors": [
+      "input[maxlength='6'][autocomplete='one-time-code']",
+      "input[autocomplete='one-time-code'][inputmode='numeric']",
+      ".verification_code_input-wrapper input[maxlength='6']",
+      ".verification_code_input-wrapper",
+      "[class*='verification_code_input-wrapper']",
+      ".verification_code_input-number-focus",
+      "[class*='verification_code_input-number-focus']"
+    ]
+  },
+  "successSignals": {
+    "texts": [],
+    "selectors": []
+  },
+  "failureSignals": {
+    "wrongCode": [
+      "Wrong verification code. Try again."
+    ],
+    "rateLimited": [
+      "Too many attempts"
+    ],
+    "rejected": [
+      "Couldn't sign up. Try again later.",
+      "Try again later"
+    ],
+    "existingAccount": [
+      "An account with this email already exists"
+    ],
+    "inlineErrors": [
+      "error",
+      "warning"
+    ]
+  },
+  "nextStageSignals": {
+    "profileCompletion": {
+      "titleTexts": [
+        "When’s your birthday?",
+        "When's your birthday?"
+      ],
+      "texts": [
+        "Year",
+        "Month",
+        "Day",
+        "Next"
+      ],
+      "selectors": [
+        "button.lv_new_sign_in_panel_wide-birthday-next",
+        "div.lv_new_sign_in_panel_wide-birthday-title",
+        "div.lv_new_sign_in_panel_wide-birthday-subtitle"
+      ]
+    }
+  },
+  "mailProvider": {
+    "firstmail": {
+      "apiKey": ""
+    }
+  }
+}

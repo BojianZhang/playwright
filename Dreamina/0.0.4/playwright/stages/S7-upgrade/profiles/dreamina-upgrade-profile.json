@@ -1,0 +1,58 @@
+{
+  "_comment": "S7 升级/选套餐静态规则（单一来源）。全部文本优先 + 多候选，抗第三方页面改版。tab/plan 默认值由 config.upgrade 决定，这里只放识别用的选择器与文案。",
+  "name": "dreamina",
+  "stage": "upgrade",
+
+  "octoClose": {
+    "_comment": "登录后可能弹出的 'Dreamina Octo is officially in beta' 弹窗——找其关闭(X)按钮。",
+    "anchorTexts": ["Dreamina Octo", "officially in beta", "Vibe creating"],
+    "closeSelectors": [
+      "button[aria-label=\"Close\"]",
+      "[data-testid=\"close\"]",
+      ".close-button-bXf1SB",
+      ".modal-close",
+      ".dialog-close",
+      ".popup-close",
+      "svg[class*=\"close\" i]"
+    ],
+    "closeTexts": ["Close", "Not now", "Maybe later", "Skip"]
+  },
+
+  "upgradeButton": {
+    "_comment": "左下角 Upgrade 入口。",
+    "selectors": [
+      "[class*=\"upgrade\" i] button",
+      "button[class*=\"upgrade\" i]",
+      "a[href*=\"upgrade\" i]"
+    ],
+    "texts": ["Upgrade"]
+  },
+
+  "modalReady": {
+    "_comment": "升级弹窗就绪信号：'Unleash the power of Dreamina' 标题 + 套餐卡片。",
+    "texts": ["Unleash the power of Dreamina", "Select a plan", "buy credits"],
+    "selectors": []
+  },
+
+  "tabTexts": {
+    "Yearly": ["Yearly"],
+    "Monthly": ["Monthly"],
+    "1-month": ["1-month", "1 month", "One-time", "1-Month"]
+  },
+
+  "planHeadingByPlan": {
+    "_comment": "按套餐名定位套餐卡片（卡片标题文本）。",
+    "Free": ["Free"],
+    "Basic": ["Basic"],
+    "Standard": ["Standard"],
+    "Advanced": ["Advanced"]
+  },
+
+  "ctaTexts": {
+    "_comment": "套餐卡片内的行动按钮文案候选（按 tab 不同：包月/年是 'Upgrade to X ...'，1-month 是 'Purchase'）。",
+    "templates": ["Upgrade to {plan} monthly", "Upgrade to {plan} yearly", "Upgrade to {plan}", "Purchase", "Get {plan}", "Choose {plan}"],
+    "generic": ["Purchase", "Upgrade", "Continue", "Subscribe", "Buy"]
+  },
+
+  "cashierUrlPattern": "cashier.pipopayment.us"
+}

@@ -1,0 +1,25 @@
+{
+  "name": "dreamina-0.0.4",
+  "version": "0.0.4",
+  "private": true,
+  "description": "Dreamina (CapCut) 账号自动化：注册→邮箱验证(firstmail)→生日→升级选套餐(S7)→收银台加卡支付(S8)。自包含包，架构对齐 Openrouter/0.0.1。",
+  "main": "playwright/Dreamina-register.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node web/server.js",
+    "web": "node web/server.js",
+    "batch": "node playwright/Dreamina-batch-runner.js",
+    "run": "node playwright/Dreamina-batch-runner.js",
+    "register": "node playwright/Dreamina-register.js",
+    "smoke": "node playwright/smoke-register.js --skip-preflight",
+    "profile:check": "node playwright/tools/check-profiles.js",
+    "state:check": "node account-state/state-doctor.js",
+    "result:check": "node account-state/result-doctor.js",
+    "doctor": "node account-state/state-doctor.js && node account-state/result-doctor.js",
+    "recycle": "node account-state/recycle-retry.js",
+    "test": "node --test \"playwright/tests/**/*.test.js\""
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

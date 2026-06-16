@@ -1,0 +1,28 @@
+# ── Dreamina 0.0.4 runtime data (machine-local, never commit) ──
+
+# 运行产物
+data/
+proxies.txt
+proxy-health.json
+
+# 账号状态数据（结构/工具入库，数据本身不入库）
+account-state/local-accounts.json
+account-state/registered-accounts.json
+account-state/blacklisted-accounts.json
+account-state/retry-accounts.json
+account-state/known-accounts.json
+
+# ★含明文卡号/CVV — 绝不入库
+data/card-pool.json
+data/billing-ledger.json
+
+# 密钥（firstmail / 验证码 / adspower token 等）
+config/config.local.json
+
+# 调试快照
+playwright/stages/**/log/
+playwright/stages/**/*.png
+*.log
+
+# 依赖
+node_modules/

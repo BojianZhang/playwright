@@ -1,0 +1,1838 @@
+﻿// ═══════════════════════════════════════════════════════════════════════
+// 运行内容层（RUNTIME CONTENT LAYER）— S4 Dreamina
+//
+// 文件定位：Dreamina/0.0.3/S4-profile-completion/profile-completion-adapter.js
+// 平台绑定：Dreamina（仅服务于 Dreamina 注册流程，非通用 adapter）
+//
+// 边界说明（BOUNDARY）：
+// ✅ 负责 —— 填写用户名/生日/昵称等资料，完成 Dreamina 注册后资料完善流程。
+// ✅ 负责 —— Dreamina 特有的 CSS 选择器、文案匹配、交互序列定义。
+// ✅ 负责 —— 从 profiles/ 加载当前阶段的 Dreamina 配置（profile JSON）。
+// ❌ 不负责 —— 阶段调度、重试策略、日志格式化（由框架层 shared-profile-completion/stages/profile-completion-submit.js 负责）。
+// ❌ 不负责 —— 跨阶段状态传递（由 Dreamina-register.js 主链持有并传入 options）。
+// ❌ 不负责 —— 任何非 Dreamina 平台的逻辑（Platform-specific, not reusable）。
+//
+// 被调用方：shared-profile-completion/stages/profile-completion-submit.js（框架层通过 options.profile-completion-adapter 或直接调用注入）
+// profiles：Dreamina/0.0.3/S4-profile-completion/profiles/
+// ═══════════════════════════════════════════════════════════════════════
+'use strict';
+
+/**
+ * Dreamina profile-completion adapter
+ *
+ * Layering:
+ * 1. profile load / visibility helpers
+ * 2. ready detection
+ * 3. birthday plan generation
+ * 4. birthday field read / fill helpers
+ * 5. dropdown / trigger interaction helpers
+ * 6. submit / snapshot / state-change helpers
+ * 7. confirm / classify
+ * 8. continuous-flow primary path
+ *
+ * Adapter boundary:
+ * - Own Dreamina-specific selectors, DOM interaction, trigger activation, dropdown selection, submit/confirm signals
+ * - Expose normalized stage-4 hooks for shared-profile-completion/stages/profile-completion-submit.js
+ *
+ * Adapter does NOT:
+ * - Own stage-level orchestration across S4 and later stages
+ * - Decide shared retry policy outside local helper attempts
+ * - Replace shared stage normalization / logging contracts
+ */
+
+// 引入文件系统模块，用来读取 Dreamina profile-completion profile JSON 配置文件。
+const path = require('path');
+const { isVisible, findFirstVisibleBySelectors, findFirstVisibleByTexts } = require('../../../lib/utils/locator');
+const { loadJsonProfileWithCache } = require('../../../lib/utils/profile');
+const { buildStepWaitList } = require('../../../lib/utils/timing');
+const { normalizeBirthdayYearRange, buildMonthVariants, buildSafeBirthdayDay } = require('../../../lib/utils/birthday');
+
+// 当前 Dreamina 第四阶段 profile 的固定文件路径。
+const DREAMINA_PROFILE_COMPLETION_PROFILE_PATH = path.join(__dirname, 'profiles', 'dreamina-profile-completion-profile.json');
+// profile 缓存引用，由 shared-utils/profile.js 的 loadJsonProfileWithCache 统一管理。
+const _profileCompletionCacheRef = { value: null };
+
+// -----------------------------------------------------------------------------
+// 基础工具层：profile load / visibility / first-visible helpers
+// -----------------------------------------------------------------------------
+
+/**
+ * 读取 Dreamina 第四阶段 profile。
+ *
+ * 作用：
+ * - 从 JSON 文件加载静态规则
+ * - 默认走内存缓存（通过 _profileCompletionCacheRef 持有）
+ * - 在需要时允许 forceReload 强制重新读取
+ */
+function loadDreaminaProfileCompletionProfile(options = {}) {
+  return loadJsonProfileWithCache(DREAMINA_PROFILE_COMPLETION_PROFILE_PATH, _profileCompletionCacheRef, options);
+}
+
+// isVisible / findFirstVisibleBySelectors / findFirstVisibleByTexts
+// 已迁移至 shared-utils/locator.js，通过顶部 require 引入，此处不再重复定义。
+
+
+// -----------------------------------------------------------------------------
+// ready 检测层：只判断是否进入 S4 可操作区，不负责填写/提交
+// -----------------------------------------------------------------------------
+
+/**
+ * 检测 Dreamina 第四阶段的强 selector ready 信号。
+ *
+ * 作用：
+ * - 这一层优先看结构信号，而不是文本
+ * - 结构信号通常更像“真的已经进入可填写 birthday 的阶段”
+ */
+async function detectDreaminaProfileCompletionReadyBySelector(page, profile) {
+  // 读取 profile 中定义的 profile-completion ready selector 列表。
+  const selectorHit = await findFirstVisibleBySelectors(page, profile?.profileReady?.selectors || []);
+  // 如果没有命中任何 selector，就返回统一未命中结构。
+  if (!selectorHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中 selector，就按强信号返回。
+  return {
+    ok: true,
+    source: 'selector',
+    value: selectorHit.selector,
+    strength: 'strong',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段的 birthday inputs 是否真正可达。
+ *
+ * 作用：
+ * - year / month / day 输入是否都可见，是第四阶段比纯文本更强的入口信号
+ * - 这一层用来减少“看到文本但其实表单还没完全 ready”的误判
+ */
+async function detectDreaminaBirthdayInputsReachable(page, profile) {
+  // 依次检测 year 输入是否可见。
+  const yearHit = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  // 依次检测 month 输入是否可见。
+  const monthHit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  // 依次检测 day 输入是否可见。
+  const dayHit = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+  // 检测 birthday next/submit 按钮是否可见。
+  const submitHit = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+
+  // 只要 year/month/day 都可见，就说明 birthday 面板基本已经可操作。
+  if (yearHit.ok && monthHit.ok && dayHit.ok) {
+    return {
+      ok: true,
+      source: 'profile-input',
+      value: [yearHit.selector, monthHit.selector, dayHit.selector, submitHit.ok ? submitHit.selector : ''].filter(Boolean).join(' | '),
+      strength: 'strong',
+    };
+  }
+
+  // 如果核心输入没齐，就返回未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段的文本 ready 信号。
+ *
+ * 作用：
+ * - 这一层承接 Year / Month / Day 之类的文本线索
+ * - 文本信号弱于结构信号，但仍然是有效的补充判断
+ */
+async function detectDreaminaProfileCompletionReadyByText(page, profile) {
+  // 读取 profile 中定义的 profile-completion ready 文本列表。
+  const textHit = await findFirstVisibleByTexts(page, profile?.profileReady?.texts || []);
+  // 如果没有命中任何文本，就返回统一未命中结构。
+  if (!textHit.ok) {
+    return {
+      ok: false,
+      source: '',
+      value: '',
+      strength: '',
+    };
+  }
+  // 如果命中文本，则按弱一些的信号返回。
+  return {
+    ok: true,
+    source: 'text',
+    value: textHit.text,
+    strength: 'weak',
+  };
+}
+
+/**
+ * 在单个等待步内执行一次 profile-completion ready 探测。
+ *
+ * 当前顺序：
+ * 1. 先查强 selector ready
+ * 2. 再查 birthday inputs 是否可达
+ * 3. 最后查文本 ready
+ */
+async function detectDreaminaProfileCompletionReadyOnce(page, profile, context = {}) {
+  // 先做 selector 级 ready 探测。
+  const selectorReady = await detectDreaminaProfileCompletionReadyBySelector(page, profile);
+  // 如果 selector 已命中，直接返回 selector 结果。
+  if (selectorReady.ok) return selectorReady;
+
+  // selector 没命中时，再补一轮 birthday inputs 可达性检查。
+  const inputsReady = await detectDreaminaBirthdayInputsReachable(page, profile);
+  // 如果 year/month/day 已经可达，就按强信号返回。
+  if (inputsReady.ok) return inputsReady;
+
+  // 最后再补一轮文本级 ready 探测。
+  const textReady = await detectDreaminaProfileCompletionReadyByText(page, profile);
+  // 如果文本命中，就返回文本 ready 结果。
+  if (textReady.ok) return textReady;
+
+  // 三层都没有命中时，返回统一未命中结构。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 等待 Dreamina profile-completion 阶段 ready。
+ *
+ * 当前补强后的步骤：
+ * 1. 读取第四阶段 profile
+ * 2. 构造 ready 检测等待步
+ * 3. 每个等待步内先查强 selector 信号
+ * 4. 如果强 selector 没命中，再查 birthday inputs 是否可达
+ * 5. 如果上面两层都没命中，再查弱文本信号
+ * 6. 一旦任意一步确认 ready，就立即返回
+ * 7. 所有等待步都没命中时，再统一返回 not-ready
+ */
+async function waitForDreaminaProfileCompletionReady(page, runtime = {}, context = {}) {
+  // 从上下文中取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 第一步：读取 Dreamina 第四阶段 profile，用来拿 ready selector/text/inputs 规则。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 第二步：构造 ready 检测等待步列表。
+  const steps = buildStepWaitList(0, Number(runtime?.profileCompletionPrimaryWaitMs || 300), Number(runtime?.profileCompletionSecondaryWaitMs || 900));
+
+  // 记录最后一次执行到的等待步。
+  let lastWaitStepMs = 0;
+  // 第三步：依次执行每个等待步。
+  for (const waitStepMs of steps) {
+    // 更新当前等待步记录。
+    lastWaitStepMs = waitStepMs;
+    // 如果当前等待步大于 0，则等待对应毫秒数。
+    if (waitStepMs > 0) await page.waitForTimeout(waitStepMs);
+
+    // 第四步：在当前等待步内执行一次完整 ready 探测。
+    const readyResult = await detectDreaminaProfileCompletionReadyOnce(page, profile, context);
+    // 如果当前等待步已经确认 ready，就直接返回成功结构。
+    if (readyResult.ok) {
+      if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | source=${readyResult.source} | value=${readyResult.value} | strength=${readyResult.strength} | waitStepMs=${waitStepMs}`);
+      return {
+        ok: true,
+        state: 'PROFILE_COMPLETION_READY',
+        source: readyResult.source,
+        value: readyResult.value,
+        strength: readyResult.strength,
+        waitStepMs,
+      };
+    }
+
+    // 如果当前等待步没命中 ready，也记录一条 miss 日志，便于后续判断是慢一拍还是根本没进到第四阶段。
+    if (typeof logInfo === 'function') logInfo(`dreamina.profileCompletion.ready | miss | waitStepMs=${waitStepMs}`);
+  }
+
+  // 所有等待步都没有命中 ready，则返回 not-ready。
+  return {
+    ok: false,
+    state: 'PROFILE_COMPLETION_NOT_READY',
+    source: '',
+    value: '',
+    strength: '',
+    waitStepMs: lastWaitStepMs,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// birthday plan 层：只生成计划，不操作页面
+// -----------------------------------------------------------------------------
+
+// normalizeBirthdayYearRange / buildMonthVariants / buildSafeBirthdayDay
+// 已迁移至 shared-utils/birthday.js，通过顶部 require 引入，此处不再重复定义。
+
+
+function buildDreaminaAdultBirthday(runtime = {}) {
+  const now = new Date();
+  const adultCutoff = new Date(now.getFullYear() - 18, now.getMonth(), now.getDate());
+  const { minYear, maxYear } = normalizeBirthdayYearRange({
+    birthdayMinYear: runtime?.birthdayMinYear || 1980,
+    birthdayMaxYear: Math.min(Number(runtime?.birthdayMaxYear || adultCutoff.getFullYear()), adultCutoff.getFullYear()),
+  });
+
+  const start = new Date(minYear, 0, 1);
+  const end = new Date(Math.min(maxYear, adultCutoff.getFullYear()), 11, 31);
+  const safeEnd = end > adultCutoff ? adultCutoff : end;
+  const rangeMs = Math.max(1, safeEnd.getTime() - start.getTime());
+  const randomDate = new Date(start.getTime() + Math.floor(Math.random() * rangeMs));
+
+  const year = String(randomDate.getFullYear());
+  const monthIndex = randomDate.getMonth() + 1;
+  const day = String(randomDate.getDate());
+  const monthVariants = buildMonthVariants(String(monthIndex));
+
+  return {
+    year,
+    month: monthVariants,
+    day,
+    isoDate: `${year}-${String(monthIndex).padStart(2, '0')}-${String(randomDate.getDate()).padStart(2, '0')}`,
+    ageQualified: randomDate.getTime() <= adultCutoff.getTime(),
+  };
+}
+
+// buildDreaminaMonthVariants / buildSafeBirthdayDay
+// 已迁移至 shared-utils/birthday.js。
+// buildDreaminaMonthVariants 已改名为 buildMonthVariants，
+// buildSafeBirthdayDay 保持同名，均通过顶部 require 引入。
+
+/**
+ * 生成 Dreamina 第四阶段资料填写计划。
+ *
+ * 当前补强后的目标：
+ * - 不只是“随便随机一个 birthday”
+ * - 而是先把第四阶段资料计划的边界、来源、字段结构稳定下来
+ */
+async function buildDreaminaProfileCompletionPlan(page, account, runtime = {}, context = {}) {
+  // 从上下文中读取日志函数；没有则保持 null。
+  const { logInfo = null, profileReady = null } = context;
+  const birthdayPlan = buildDreaminaAdultBirthday(runtime);
+  if (!birthdayPlan?.year || !birthdayPlan?.month?.fullName || !birthdayPlan?.day || !birthdayPlan?.ageQualified) {
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_PLAN_FAILED',
+      birthdayPlan: null,
+      source: 'runtime-random-plan',
+    };
+  }
+
+  if (typeof logInfo === 'function') {
+    logInfo(`dreamina.profileCompletion.plan | readyState=${profileReady?.state || 'NA'} | year=${birthdayPlan.year} | month=${birthdayPlan.month.fullName} | day=${birthdayPlan.day} | iso=${birthdayPlan.isoDate} | adult=${birthdayPlan.ageQualified ? 'Y' : 'N'}`);
+  }
+
+  // 返回统一计划结构。
+  return {
+    ok: true,
+    state: 'PROFILE_COMPLETION_PLAN_READY',
+    birthdayPlan,
+    source: 'runtime-random-plan',
+  };
+}
+
+// -----------------------------------------------------------------------------
+// birthday 字段读写层：year / month / day 的页面状态读取与单字段填写
+// -----------------------------------------------------------------------------
+
+/**
+ * 读取当前 birthday year 输入值。
+ *
+ * 作用：
+ * - 在填写前后读取 year 输入框当前值
+ * - 避免只看 fill/type 是否报错，而不看页面真实值
+ */
+async function readDreaminaBirthdayYearValue(page, profile) {
+  const roleLocator = page.getByRole('textbox', { name: 'Year' }).first();
+  if (await isVisible(roleLocator)) {
+    const currentValue = await roleLocator.inputValue().catch(() => '');
+    return {
+      ok: true,
+      selector: 'role:textbox[name="Year"]',
+      value: String(currentValue || '').trim(),
+      locator: roleLocator,
+    };
+  }
+
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      value: '',
+    };
+  }
+
+  const currentValue = await hit.locator.inputValue().catch(() => '');
+  return {
+    ok: true,
+    selector: hit.selector,
+    value: String(currentValue || '').trim(),
+    locator: hit.locator,
+  };
+}
+
+/**
+ * 填写 birthday year。
+ *
+ * 第一版真实能力目标：
+ * - 找到 year 输入控件
+ * - 清空旧值
+ * - 写入本轮 birthdayPlan.year
+ * - 读回 year 值确认是否真正写入成功
+ */
+async function readDreaminaBirthdayNextState(page, profile) {
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      visible: false,
+      enabled: false,
+      disabled: false,
+      selector: '',
+      text: '',
+    };
+  }
+
+  const disabledAttr = await hit.locator.getAttribute('disabled').catch(() => null);
+  const ariaDisabled = await hit.locator.getAttribute('aria-disabled').catch(() => null);
+  const enabled = await hit.locator.isEnabled().catch(() => false);
+  const text = String(await hit.locator.innerText().catch(() => '')).trim();
+
+  return {
+    visible: true,
+    enabled,
+    disabled: disabledAttr !== null || String(ariaDisabled || '').toLowerCase() === 'true' || !enabled,
+    selector: hit.selector,
+    text,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// dropdown / trigger helper 层：负责局部交互激活与 option 选择
+// 不负责 stage 成败归类，不负责跨阶段 orchestration
+// -----------------------------------------------------------------------------
+
+async function readDreaminaBirthdayTriggerState(page, kind, profile) {
+  const label = kind === 'day' ? 'Day' : 'Month';
+  const roleLocator = kind === 'day'
+    ? page.getByText('Day', { exact: true }).first()
+    : page.getByText('Month').first();
+
+  let locator = roleLocator;
+  let selector = `text:${label}`;
+  if (!(await isVisible(locator))) {
+    const fallbackHit = await findFirstVisibleBySelectors(page, kind === 'day' ? (profile?.birthday?.daySelectors || []) : (profile?.birthday?.monthSelectors || []));
+    locator = fallbackHit.locator;
+    selector = fallbackHit.selector || selector;
+  }
+
+  if (!locator || !(await isVisible(locator))) {
+    return {
+      ok: false,
+      kind,
+      text: '',
+      selector: '',
+      className: '',
+      role: '',
+      ariaExpanded: '',
+      ariaHaspopup: '',
+      opened: false,
+      active: false,
+      focused: false,
+      locator: null,
+    };
+  }
+
+  const text = String(await locator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+  const className = String(await locator.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+  const role = String(await locator.getAttribute('role').catch(() => '')).trim();
+  const ariaExpanded = String(await locator.getAttribute('aria-expanded').catch(() => '')).trim();
+  const ariaHaspopup = String(await locator.getAttribute('aria-haspopup').catch(() => '')).trim();
+  const focused = await locator.evaluate(node => node === document.activeElement).catch(() => false);
+  const panelVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+  const opened = ariaExpanded.toLowerCase() === 'true' || panelVisible.ok;
+  const active = opened || focused || /active|open|opened|focus/i.test(className);
+
+  return {
+    ok: true,
+    kind,
+    text,
+    selector,
+    className,
+    role,
+    ariaExpanded,
+    ariaHaspopup,
+    opened,
+    active,
+    focused,
+    locator,
+  };
+}
+
+/**
+ * 激活 birthday month/day trigger。
+ *
+ * 边界：
+ * - 只负责让 trigger 进入 opened / active / focused 之一的可操作态
+ * - 允许使用少量局部 click plans 做兼容性激活
+ * - 不负责真正选择 option，不负责判定 stage 成功
+ */
+function buildDreaminaRelativeClickPlans(locator = null, baseLabel = '') {
+  if (!locator) return [];
+  return [
+    { label: baseLabel, locator },
+    { label: `${baseLabel}-parent`, locator: locator.locator('xpath=..').first() },
+    { label: `${baseLabel}-grandparent`, locator: locator.locator('xpath=../..').first() },
+  ];
+}
+
+async function activateDreaminaBirthdayTrigger(page, kind, profile, context = {}) {
+  const { logInfo = null } = context;
+  const label = kind === 'day' ? 'Day' : 'Month';
+  const baseLocator = kind === 'day'
+    ? page.getByText('Day', { exact: true }).first()
+    : page.getByText('Month').first();
+
+  const clickPlans = [];
+  if (await isVisible(baseLocator)) {
+    clickPlans.push(...buildDreaminaRelativeClickPlans(baseLocator, 'text'));
+  }
+  const fallbackHit = await findFirstVisibleBySelectors(page, kind === 'day' ? (profile?.birthday?.daySelectors || []) : (profile?.birthday?.monthSelectors || []));
+  if (fallbackHit.ok && fallbackHit.locator) {
+    clickPlans.push({ label: 'selector', locator: fallbackHit.locator });
+  }
+
+  const attempts = [];
+  for (const plan of clickPlans) {
+    if (!plan.locator || !(await isVisible(plan.locator))) continue;
+    await plan.locator.hover().catch(() => {});
+    const clicked = await plan.locator.click({ timeout: 1200 }).then(() => true).catch(() => false);
+    if (!clicked) {
+      await plan.locator.click({ force: true, timeout: 1200 }).catch(() => {});
+    }
+    await page.waitForTimeout(220).catch(() => {});
+    const triggerState = await readDreaminaBirthdayTriggerState(page, kind, profile);
+    attempts.push({
+      mode: plan.label,
+      opened: Boolean(triggerState.opened),
+      active: Boolean(triggerState.active),
+      focused: Boolean(triggerState.focused),
+      selector: triggerState.selector,
+    });
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.activateTrigger | kind=${label} | mode=${plan.label} | opened=${triggerState.opened ? 'Y' : 'N'} | active=${triggerState.active ? 'Y' : 'N'} | focused=${triggerState.focused ? 'Y' : 'N'}`);
+    }
+    if (triggerState.opened || triggerState.active) {
+      return {
+        ok: true,
+        kind,
+        mode: plan.label,
+        triggerState,
+        panelVisible: Boolean(triggerState.opened),
+        stateChanged: true,
+        attempts,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    kind,
+    mode: '',
+    triggerState: await readDreaminaBirthdayTriggerState(page, kind, profile),
+    panelVisible: false,
+    stateChanged: false,
+    attempts,
+  };
+}
+
+async function fillDreaminaBirthdayYear(page, plan, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const profile = loadDreaminaProfileCompletionProfile();
+  const yearValue = String(plan?.birthdayPlan?.year || '').trim();
+
+  if (!yearValue) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: 'EMPTY_YEAR_PLAN',
+      stateChanged: null,
+    };
+  }
+
+  try {
+    const yearInput = page.getByRole('textbox', { name: 'Year' }).first();
+    const locator = await isVisible(yearInput) ? yearInput : (await readDreaminaBirthdayYearValue(page, profile)).locator;
+    if (!locator) {
+      return {
+        ok: false,
+        state: 'BIRTHDAY_YEAR_FILL_FAILED',
+        source: 'profile-input',
+        value: 'YEAR_INPUT_NOT_FOUND',
+        stateChanged: null,
+      };
+    }
+
+    const beforeState = await readDreaminaBirthdayYearValue(page, profile);
+    await locator.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(250).catch(() => {});
+    await locator.fill('').catch(() => {});
+    await page.waitForTimeout(120).catch(() => {});
+    await locator.fill(yearValue).catch(async () => {
+      await locator.type(yearValue, { delay: 70 }).catch(() => {});
+    });
+    await page.waitForTimeout(700).catch(() => {});
+
+    const afterState = await readDreaminaBirthdayYearValue(page, profile);
+    const nextState = await readDreaminaBirthdayNextState(page, profile);
+    const errorVisible = await findFirstVisibleByTexts(page, ['Enter a four digit number']);
+    const beforeValue = String(beforeState?.value || '').trim();
+    const afterValue = String(afterState?.value || '').trim();
+    const ok = afterValue === yearValue && !errorVisible.ok;
+    const stateChanged = afterValue !== beforeValue || nextState.enabled;
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.fillYear.ref | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${yearValue} | nextEnabled=${nextState.enabled ? 'Y' : 'N'} | yearError=${errorVisible.ok ? 'Y' : 'N'}`);
+    }
+
+    return {
+      ok,
+      state: ok ? 'BIRTHDAY_YEAR_FILLED' : 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: afterValue,
+      stateChanged,
+      nextState,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_YEAR_FILL_FAILED',
+      source: 'profile-input',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+    };
+  }
+}
+
+/**
+ * 读取当前 birthday month 输入值。
+ *
+ * 作用：
+ * - 在填写前后读取 month 输入框当前值
+ * - 避免只看 fill/type 是否报错，而不看页面真实值
+ */
+async function readDreaminaBirthdayMonthDisplayState(page, profile) {
+  const roleLocator = page.getByText('Month').first();
+  if (await isVisible(roleLocator)) {
+    const displayText = String(await roleLocator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    return {
+      ok: true,
+      selector: 'text:Month',
+      inputValue: '',
+      displayText,
+      placeholder: 'Month',
+      effectiveValue: /^month$/i.test(displayText) ? '' : displayText,
+      emptyState: /^month$/i.test(displayText) || !displayText,
+      locator: roleLocator,
+    };
+  }
+
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      inputValue: '',
+      displayText: '',
+      placeholder: '',
+      effectiveValue: '',
+      emptyState: true,
+      locator: null,
+    };
+  }
+
+  const inputValue = String(await hit.locator.inputValue().catch(() => '')).trim();
+  const placeholder = String(await hit.locator.getAttribute('placeholder').catch(() => '')).trim();
+  const displayText = String(await hit.locator.evaluate(node => {
+    const wrapper = node?.closest?.('.gate_birthday-picker, [class*="birthday-picker"], [class*="select"], [class*="picker"]') || node?.parentElement;
+    return String(wrapper?.textContent || node?.textContent || '');
+  }).catch(() => '')).replace(/\s+/g, ' ').trim();
+
+  const effectiveValue = inputValue || displayText;
+  const emptyState = !effectiveValue || /^month$/i.test(effectiveValue) || /^month$/i.test(placeholder);
+
+  return {
+    ok: true,
+    selector: hit.selector,
+    inputValue,
+    displayText,
+    placeholder,
+    effectiveValue,
+    emptyState,
+    locator: hit.locator,
+  };
+}
+
+async function readDreaminaBirthdayMonthValue(page, profile) {
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      value: '',
+      placeholder: '',
+      textContent: '',
+      ariaLabel: '',
+      role: '',
+      tagName: '',
+      className: '',
+      readMode: '',
+      interactionHints: { opensPicker: false, optionPanelVisible: false },
+    };
+  }
+
+  const currentValue = await hit.locator.inputValue().catch(() => '');
+  const textContent = String(await hit.locator.textContent().catch(() => '')).trim();
+  const placeholder = String(await hit.locator.getAttribute('placeholder').catch(() => '')).trim();
+  const ariaLabel = String(await hit.locator.getAttribute('aria-label').catch(() => '')).trim();
+  const role = String(await hit.locator.getAttribute('role').catch(() => '')).trim();
+  const tagName = String(await hit.locator.evaluate(node => String(node?.tagName || '')).catch(() => '')).trim();
+  const className = String(await hit.locator.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+  const optionPanelVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthOptionSelectors || []);
+  const displayState = await readDreaminaBirthdayMonthDisplayState(page, profile);
+
+  const normalizedInputValue = String(currentValue || '').trim();
+  const normalizedTextValue = String(textContent || '').trim();
+  const value = displayState.effectiveValue || normalizedInputValue || normalizedTextValue;
+  const readMode = displayState.effectiveValue ? 'display-state' : (normalizedInputValue ? 'input-value' : (normalizedTextValue ? 'text-content' : 'empty'));
+
+  return {
+    ok: true,
+    selector: hit.selector,
+    value,
+    placeholder,
+    textContent: normalizedTextValue,
+    ariaLabel,
+    role,
+    tagName,
+    className,
+    readMode,
+    interactionHints: {
+      opensPicker: /select|picker|dropdown|month/i.test(`${className} ${role} ${placeholder} ${ariaLabel}`),
+      optionPanelVisible: Boolean(optionPanelVisible?.ok),
+    },
+    displayState,
+    locator: hit.locator,
+  };
+}
+
+/**
+ * 填写 birthday month。
+ *
+ * 第一版真实能力目标：
+ * - 找到 month 输入控件
+ * - 清空旧值
+ * - 写入本轮 birthdayPlan.month
+ * - 读回 month 值确认是否真正写入成功
+ */
+async function fillDreaminaBirthdayMonth(page, plan, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const profile = loadDreaminaProfileCompletionProfile();
+  const targetMonth = String(plan?.birthdayPlan?.month?.fullName || '').trim();
+
+  if (!targetMonth) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_MONTH_FILL_FAILED',
+      source: 'profile-input',
+      value: 'EMPTY_MONTH_PLAN',
+      stateChanged: null,
+      mode: '',
+      attempts: [],
+    };
+  }
+
+  const beforeState = await readDreaminaBirthdayMonthValue(page, profile);
+  const attempts = [];
+  try {
+    const monthDropdown = page.getByText('Month').last();
+    if (await isVisible(monthDropdown)) {
+      await monthDropdown.click().catch(() => {});
+    } else if (beforeState?.locator) {
+      await beforeState.locator.click({ force: true }).catch(() => {});
+    }
+    await page.waitForTimeout(900).catch(() => {});
+
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', retried: false };
+    const roleOption = page.getByRole('option', { name: targetMonth }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = { ok: true, text: targetMonth, clickTarget: 'role-option', clickMode: 'click', retried: false };
+    } else {
+      const fallbackPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [targetMonth], logInfo);
+      optionPick = { ...fallbackPick, retried: false };
+    }
+
+    await page.waitForTimeout(1100).catch(() => {});
+    const afterState = await readDreaminaBirthdayMonthValue(page, profile);
+    const nextState = await readDreaminaBirthdayNextState(page, profile);
+    const effectiveValue = String(afterState?.displayState?.effectiveValue || afterState?.value || '').trim();
+    const displayMatched = effectiveValue.toLowerCase() === targetMonth.toLowerCase();
+    const ok = displayMatched || nextState.enabled;
+
+    attempts.push({
+      mode: 'reference-flow',
+      candidate: targetMonth,
+      beforeValue: String(beforeState?.displayState?.effectiveValue || beforeState?.value || ''),
+      afterValue: effectiveValue,
+      clickTarget: optionPick.clickTarget || '',
+      clickMode: optionPick.clickMode || '',
+      retried: false,
+      nextEnabled: Boolean(nextState?.enabled),
+      ok,
+    });
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.fillMonth.ref | before=${beforeState?.displayState?.effectiveValue || beforeState?.value || '[EMPTY]'} | after=${effectiveValue || '[EMPTY]'} | target=${targetMonth} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+    }
+
+    return {
+      ok,
+      state: ok ? 'BIRTHDAY_MONTH_FILLED' : 'BIRTHDAY_MONTH_FILL_FAILED',
+      source: 'profile-input',
+      value: effectiveValue,
+      stateChanged: effectiveValue !== String(beforeState?.displayState?.effectiveValue || beforeState?.value || '').trim() || optionPick.ok,
+      mode: 'reference-flow',
+      attempts,
+      nextState,
+      monthApplyResult: {
+        panelClosed: true,
+        displayMatched,
+        effectiveValue,
+        selected: displayMatched,
+        triggerActivated: true,
+        triggerMode: 'reference-flow',
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_MONTH_FILL_FAILED',
+      source: 'profile-input',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+      mode: 'reference-flow',
+      attempts,
+    };
+  }
+}
+
+/**
+ * 读取当前 birthday day 输入值。
+ *
+ * 作用：
+ * - 在填写前后读取 day 输入框当前值
+ * - 避免只看 fill/type 是否报错，而不看页面真实值
+ */
+/**
+ * 尝试从 Dreamina birthday dropdown 中选择一个 option。
+ *
+ * 维护提示：
+ * - 这是当前 adapter 的高复杂 helper 之一
+ * - 当前虽然名字带 month，但实际承担的是通用 dropdown option picker 角色，day 路径也会复用
+ * - 它只负责“候选 option 遍历 + 点击位点尝试 + selected/panel 状态确认”
+ * - 不要继续向这里叠加更重的 retry / recover / 阶段判断逻辑
+ */
+async function trySelectDreaminaBirthdayMonthOption(page, profile, monthCandidates = [], logInfo = null) {
+  const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
+  const normalizedCandidates = Array.isArray(monthCandidates)
+    ? monthCandidates.map(item => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  for (const selector of optionSelectors) {
+    const options = page.locator(selector);
+    const count = await options.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const option = options.nth(index);
+      const visible = await isVisible(option);
+      if (!visible) continue;
+      const text = String(await option.innerText().catch(() => '')).trim();
+      if (!text) continue;
+      if (!normalizedCandidates.includes(text.toLowerCase())) continue;
+
+      const exactTextLocators = [
+        option.locator(`text="${text}"`).first(),
+        option.getByText(text, { exact: true }).first(),
+      ];
+
+      const clickPlans = [];
+      for (const exactTextLocator of exactTextLocators) {
+        if (!(await isVisible(exactTextLocator))) continue;
+        clickPlans.push(...buildDreaminaRelativeClickPlans(exactTextLocator, 'exact-text'));
+      }
+      clickPlans.push({ label: 'content-text', locator: option.locator('.lv-select-option-content-text').first() });
+      clickPlans.push({ label: 'content', locator: option.locator('.lv-select-option-content').first() });
+      clickPlans.push({ label: 'option', locator: option });
+
+      for (const plan of clickPlans) {
+        if (!plan.locator || !(await isVisible(plan.locator))) continue;
+        await plan.locator.hover().catch(() => {});
+        const clicked = await plan.locator.click({ timeout: 1200 }).then(() => true).catch(() => false);
+        if (!clicked) {
+          await plan.locator.click({ force: true, timeout: 1200 }).catch(() => {});
+        }
+        await page.waitForTimeout(120).catch(() => {});
+        const selectedState = await readDreaminaDropdownOptionSelectedState(page, profile, text);
+        const panelStillVisible = await isVisible(option);
+        if (typeof logInfo === 'function') {
+          logInfo(`dreamina.profileCompletion.fillMonth.option | selector=${selector} | text=${text} | clickTarget=${plan.label} | selected=${selectedState.selected ? 'Y' : 'N'} | panelStillVisible=${panelStillVisible ? 'Y' : 'N'}`);
+        }
+        if (selectedState.selected || !panelStillVisible) {
+          return {
+            ok: true,
+            selector,
+            text,
+            clickTarget: plan.label,
+            clickMode: clicked ? 'hover-click' : 'force-click',
+            panelStillVisible,
+            selected: Boolean(selectedState.selected),
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        selector,
+        text,
+        clickTarget: 'option',
+        clickMode: 'no-selected-state',
+        panelStillVisible: true,
+        selected: false,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    selector: '',
+    text: '',
+    clickTarget: '',
+    clickMode: '',
+    panelStillVisible: false,
+    selected: false,
+  };
+}
+
+async function readDreaminaDropdownOptionSelectedState(page, profile, targetValue = '') {
+  const optionSelectors = profile?.birthday?.monthOptionSelectors || [];
+  const normalizedTarget = String(targetValue || '').trim().toLowerCase();
+  for (const selector of optionSelectors) {
+    const options = page.locator(selector);
+    const count = await options.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const option = options.nth(index);
+      const text = String(await option.innerText().catch(() => '')).trim();
+      if (!text || text.toLowerCase() !== normalizedTarget) continue;
+      const className = String(await option.evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+      const wrapperClass = String(await option.locator('[class*="selected"], .lv-select-option-wrapper-selected').first().evaluate(node => String(node?.className || '')).catch(() => '')).trim();
+      const selected = /selected|checked|active/i.test(`${className} ${wrapperClass}`);
+      return {
+        ok: true,
+        targetValue,
+        selected,
+        selector,
+        className,
+        wrapperClass,
+        matchedText: text,
+      };
+    }
+  }
+  return {
+    ok: false,
+    targetValue,
+    selected: false,
+    selector: '',
+    className: '',
+    wrapperClass: '',
+    matchedText: '',
+  };
+}
+
+async function readDreaminaBirthdayDayValue(page, profile) {
+  const roleLocator = page.getByText('Day', { exact: true }).first();
+  if (await isVisible(roleLocator)) {
+    const displayText = String(await roleLocator.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    return {
+      ok: true,
+      selector: 'text:Day',
+      value: /^day$/i.test(displayText) ? '' : displayText,
+      locator: roleLocator,
+    };
+  }
+
+  const hit = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+  if (!hit.ok || !hit.locator) {
+    return {
+      ok: false,
+      selector: '',
+      value: '',
+    };
+  }
+
+  const currentValue = await hit.locator.inputValue().catch(() => '');
+  return {
+    ok: true,
+    selector: hit.selector,
+    value: String(currentValue || '').trim(),
+    locator: hit.locator,
+  };
+}
+
+/**
+ * 填写 birthday day。
+ *
+ * 第一版真实能力目标：
+ * - 找到 day 输入控件
+ * - 清空旧值
+ * - 写入本轮 birthdayPlan.day
+ * - 读回 day 值确认是否真正写入成功
+ */
+async function fillDreaminaBirthdayDay(page, plan, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const profile = loadDreaminaProfileCompletionProfile();
+  const dayValue = String(plan?.birthdayPlan?.day || '').trim();
+
+  if (!dayValue) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_DAY_FILL_FAILED',
+      source: 'profile-input',
+      value: 'EMPTY_DAY_PLAN',
+      stateChanged: null,
+    };
+  }
+
+  const beforeState = await readDreaminaBirthdayDayValue(page, profile);
+  try {
+    const dayDropdown = page.getByText('Day', { exact: true }).last();
+    if (await isVisible(dayDropdown)) {
+      await dayDropdown.click().catch(() => {});
+    } else if (beforeState?.locator) {
+      await beforeState.locator.click({ force: true }).catch(() => {});
+    }
+    await page.waitForTimeout(900).catch(() => {});
+
+    let optionPick = { ok: false, text: '', clickTarget: '', clickMode: '', panelStillVisible: false, selected: false, retried: false };
+    const roleOption = page.getByRole('option', { name: dayValue, exact: true }).first();
+    if (await isVisible(roleOption)) {
+      await roleOption.click().then(() => {}).catch(async () => {
+        await roleOption.click({ force: true }).catch(() => {});
+      });
+      optionPick = {
+        ok: true,
+        text: dayValue,
+        clickTarget: 'role-option',
+        clickMode: 'click',
+        panelStillVisible: false,
+        selected: false,
+        retried: false,
+      };
+    } else {
+      optionPick = await trySelectDreaminaBirthdayMonthOption(page, profile, [dayValue], logInfo);
+    }
+
+    await page.waitForTimeout(1100).catch(() => {});
+    const afterState = await readDreaminaBirthdayDayValue(page, profile);
+    const nextState = await readDreaminaBirthdayNextState(page, profile);
+    const beforeValue = String(beforeState?.value || '').trim();
+    const afterValue = String(afterState?.value || '').trim();
+    const ok = afterValue === dayValue || nextState.enabled;
+
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.fillDay.ref | before=${beforeValue || '[EMPTY]'} | after=${afterValue || '[EMPTY]'} | target=${dayValue} | clickTarget=${optionPick.clickTarget || ''} | clickMode=${optionPick.clickMode || ''} | nextEnabled=${nextState.enabled ? 'Y' : 'N'}`);
+    }
+
+    return {
+      ok,
+      state: ok ? 'BIRTHDAY_DAY_FILLED' : 'BIRTHDAY_DAY_FILL_FAILED',
+      source: 'profile-input',
+      value: afterValue,
+      stateChanged: afterValue !== beforeValue || optionPick.ok,
+      mode: 'reference-flow',
+      attempts: [{
+        mode: 'reference-flow',
+        candidate: dayValue,
+        beforeValue,
+        afterValue,
+        optionMatched: optionPick.ok ? optionPick.text : '',
+        clickTarget: optionPick.clickTarget || '',
+        clickMode: optionPick.clickMode || '',
+        retried: false,
+        triggerActivated: true,
+        triggerMode: 'reference-flow',
+        selected: afterValue === dayValue,
+        nextEnabled: Boolean(nextState?.enabled),
+        ok,
+      }],
+      nextState,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      state: 'BIRTHDAY_DAY_FILL_FAILED',
+      source: 'profile-input',
+      value: error?.message || 'UNKNOWN',
+      stateChanged: false,
+      mode: 'reference-flow',
+      attempts: [],
+    };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// submit / snapshot / state-change 层：负责提交前后观察，不负责最终阶段归类
+// -----------------------------------------------------------------------------
+
+/**
+ * 读取第四阶段提交前后的轻量页面快照。
+ *
+ * 作用：
+ * - 给 submit 前后状态变化判断提供统一摘要
+ * - 避免一上来就引入复杂快照系统
+ */
+async function readDreaminaProfileCompletionSnapshot(page, profile) {
+  // 读取当前 year 输入值。
+  const yearState = await readDreaminaBirthdayYearValue(page, profile).catch(() => ({ value: '' }));
+  // 读取当前 month 输入值。
+  const monthState = await readDreaminaBirthdayMonthValue(page, profile).catch(() => ({ value: '' }));
+  // 读取当前 day 输入值。
+  const dayState = await readDreaminaBirthdayDayValue(page, profile).catch(() => ({ value: '' }));
+  // 检测 submit selector 是否可见。
+  const submitSelector = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  // 检测 post-auth-ready selector 是否可见。
+  const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.postAuthReady?.selectors || []);
+  // 检测阶段 4 失败提示文本是否可见。
+  const failureText = await findFirstVisibleByTexts(page, [
+    ...(profile?.failureSignals?.inputInvalid || []),
+    ...(profile?.failureSignals?.submitFailed || []),
+    ...(profile?.failureSignals?.inlineErrors || []),
+  ]);
+
+  // 返回轻量快照结构。
+  return {
+    yearValue: String(yearState?.value || '').trim(),
+    monthValue: String(monthState?.value || '').trim(),
+    dayValue: String(dayState?.value || '').trim(),
+    monthTagName: String(monthState?.tagName || '').trim(),
+    monthClassName: String(monthState?.className || '').trim(),
+    monthReadMode: String(monthState?.readMode || '').trim(),
+    nextEnabled: Boolean((await readDreaminaBirthdayNextState(page, profile)).enabled),
+    submitVisible: Boolean(submitSelector?.ok),
+    submitSelector: String(submitSelector?.selector || ''),
+    nextStageVisible: Boolean(nextStageSelector?.ok),
+    nextStageSelector: String(nextStageSelector?.selector || ''),
+    failureText: failureText?.ok ? String(failureText.text || '') : '',
+  };
+}
+
+/**
+ * 判断第四阶段 submit 前后是否发生了有意义状态变化。
+ *
+ * 作用：
+ * - 避免只看 click 是否报错
+ * - 改为看页面摘要是否出现推进迹象
+ */
+function detectDreaminaProfileCompletionStateChange(beforeSnapshot = {}, afterSnapshot = {}) {
+  // 如果下一阶段信号从不可见变为可见，说明提交后页面已经开始往 post-auth-ready 推进。
+  if (!beforeSnapshot?.nextStageVisible && afterSnapshot?.nextStageVisible) {
+    return {
+      changed: true,
+      reason: 'advanced-to-next-stage',
+      source: 'next-stage-signal',
+      strength: 'strong',
+    };
+  }
+
+  // 如果提交按钮从可见变为不可见，也通常意味着页面发生了推进或切屏。
+  if (beforeSnapshot?.submitVisible && !afterSnapshot?.submitVisible) {
+    return {
+      changed: true,
+      reason: 'submit-disappeared',
+      source: 'submit-visibility',
+      strength: 'medium',
+    };
+  }
+
+  // 如果 failureText 发生变化，说明页面对这次提交给出了新的反馈。
+  if (String(beforeSnapshot?.failureText || '') !== String(afterSnapshot?.failureText || '')) {
+    return {
+      changed: true,
+      reason: 'inline-error-appeared',
+      source: 'failure-text',
+      strength: String(afterSnapshot?.failureText || '').trim() ? 'strong' : 'weak',
+    };
+  }
+
+  // 如果 year / month / day 中任意一个值发生变化，说明表单自身状态发生了改变。
+  if (String(beforeSnapshot?.yearValue || '') !== String(afterSnapshot?.yearValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'year-value',
+      strength: 'medium',
+    };
+  }
+  if (String(beforeSnapshot?.monthValue || '') !== String(afterSnapshot?.monthValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'month-value',
+      strength: 'medium',
+    };
+  }
+  if (String(beforeSnapshot?.dayValue || '') !== String(afterSnapshot?.dayValue || '')) {
+    return {
+      changed: true,
+      reason: 'form-value-reset',
+      source: 'day-value',
+      strength: 'medium',
+    };
+  }
+
+  // 如果没有检测到任何可识别变化，则返回 no-observable-change。
+  return {
+    changed: false,
+    reason: 'no-observable-change',
+    source: 'snapshot-diff',
+    strength: 'none',
+  };
+}
+
+/**
+ * 提交 Dreamina profile-completion。
+ *
+ * 第一版真实能力目标：
+ * - 找到 next / submit 按钮
+ * - 记录 submit 前页面摘要
+ * - 执行 click
+ * - 记录 submit 后页面摘要
+ * - 根据摘要判断是否发生了有意义变化
+ */
+async function submitDreaminaProfileCompletion(page, runtime = {}, context = {}) {
+  // 从上下文中读取日志函数；没有则保持 null。
+  const { logInfo = null } = context;
+  // 读取 Dreamina 第四阶段 profile。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 优先通过 selector 找 submit / next 按钮。
+  const submitBySelector = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  // 如果 selector 没命中，再尝试通过文本找 submit / next 按钮。
+  const submitByText = submitBySelector.ok ? { ok: false, text: '', locator: null } : await findFirstVisibleByTexts(page, profile?.birthday?.submitTexts || []);
+
+  // 统一 submit 入口结构。
+  const submitTarget = submitBySelector.ok
+    ? { ok: true, source: 'selector', value: submitBySelector.selector, locator: submitBySelector.locator }
+    : submitByText.ok
+      ? { ok: true, source: 'text', value: submitByText.text, locator: submitByText.locator }
+      : { ok: false, source: '', value: '', locator: null };
+
+  // 如果 submit 入口都没找到，就直接失败。
+  if (!submitTarget.ok || !submitTarget.locator) {
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: 'selector',
+      value: 'SUBMIT_BUTTON_NOT_FOUND',
+      beforeSnapshot: null,
+      afterSnapshot: null,
+      stateChanged: null,
+    };
+  }
+
+  try {
+    // 先读取点击前的页面摘要。
+    const beforeSnapshot = await readDreaminaProfileCompletionSnapshot(page, profile);
+    // 执行点击，尽量触发 next / submit。
+    await submitTarget.locator.click({ force: true }).catch(() => submitTarget.locator.click().catch(() => {}));
+    // 给页面一小段时间消化点击动作。
+    await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
+    // 读取点击后的页面摘要。
+    const afterSnapshot = await readDreaminaProfileCompletionSnapshot(page, profile);
+    // 根据前后快照判断页面是否发生了有意义变化，并给出变化原因。
+    const stateChange = detectDreaminaProfileCompletionStateChange(beforeSnapshot, afterSnapshot);
+    // 保持原有布尔字段，兼容上层；同时在提交态 value 中补足变化原因。
+    const stateChanged = Boolean(stateChange.changed);
+    const submitValue = [submitTarget.value, stateChange.reason].filter(Boolean).join(' | ');
+
+    // 如果有日志函数，记录本轮 submit 摘要与变化类型。
+    if (typeof logInfo === 'function') {
+      logInfo(`dreamina.profileCompletion.submit | source=${submitTarget.source} | value=${submitTarget.value} | changeReason=${stateChange.reason} | changeSource=${stateChange.source} | changeStrength=${stateChange.strength} | beforeNext=${beforeSnapshot.nextStageVisible ? 'Y' : 'N'} | afterNext=${afterSnapshot.nextStageVisible ? 'Y' : 'N'} | beforeFailure=${beforeSnapshot.failureText || '[NONE]'} | afterFailure=${afterSnapshot.failureText || '[NONE]'}`);
+    }
+
+    // 返回统一 submit 结果结构。
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMITTED',
+      source: submitTarget.source,
+      value: submitValue,
+      beforeSnapshot,
+      afterSnapshot,
+      stateChanged,
+    };
+  } catch (error) {
+    // 如果 submit 过程抛异常，就按统一失败结构返回。
+    return {
+      ok: false,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: submitTarget.source || 'selector',
+      value: error?.message || 'UNKNOWN',
+      beforeSnapshot: null,
+      afterSnapshot: null,
+      stateChanged: false,
+    };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// confirm / classify 层：负责 S4 结果确认与 Dreamina 专属失败收口
+// -----------------------------------------------------------------------------
+
+/**
+ * 检测 Dreamina 是否已经进入 post-auth-ready。
+ *
+ * 作用：
+ * - 这是第四阶段成功的最强确认之一
+ * - 只确认“下一阶段是否可达”，不执行第五阶段稳定确认动作
+ */
+async function detectDreaminaPostAuthReady(page, profile, context = {}) {
+  // 优先通过结构性 selector 判断是否进入下一阶段。
+  const nextStageSelector = await findFirstVisibleBySelectors(page, profile?.nextStageSignals?.postAuthReady?.selectors || []);
+  // 如果 selector 命中，直接按强信号返回。
+  if (nextStageSelector.ok) {
+    return {
+      ok: true,
+      source: 'selector',
+      value: nextStageSelector.selector,
+      strength: 'strong',
+    };
+  }
+
+  // 如果 selector 没命中，再通过文本判断是否进入下一阶段。
+  const nextStageText = await findFirstVisibleByTexts(page, profile?.nextStageSignals?.postAuthReady?.texts || []);
+  // 如果文本命中，按弱一些的信号返回。
+  if (nextStageText.ok) {
+    return {
+      ok: true,
+      source: 'text',
+      value: nextStageText.text,
+      strength: 'weak',
+    };
+  }
+
+  // 再补一层第四阶段边界内允许的辅助成功信号：
+  // - birthday submit 按钮消失
+  // - year / month / day 输入都不可见
+  // 这只能作为“页面已经离开资料填写面板”的弱成功辅助，不等于第五阶段稳定完成。
+  const submitStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  const yearStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  const monthStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  const dayStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+
+  // 如果 birthday submit 与三个输入都已经不可见，可以视为“已离开第四阶段表单”的辅助成功信号。
+  if (!submitStillVisible.ok && !yearStillVisible.ok && !monthStillVisible.ok && !dayStillVisible.ok) {
+    return {
+      ok: true,
+      source: 'panel-disappeared',
+      value: 'birthday-form-hidden',
+      strength: 'weak',
+    };
+  }
+
+  // 当前没有确认进入下一阶段。
+  return {
+    ok: false,
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 检测 Dreamina 第四阶段提交后的明确失败信号。
+ *
+ * 作用：
+ * - 收口第四阶段里已经明确的失败语义
+ * - 优先减少 profile-completion-result-unknown 的比例
+ */
+async function detectDreaminaProfileCompletionFailureSignals(page, profile, context = {}) {
+  // 先检测 input invalid。
+  const inputInvalid = await findFirstVisibleByTexts(page, profile?.failureSignals?.inputInvalid || []);
+  // 如果 input invalid 命中，返回明确失败。
+  if (inputInvalid.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_INPUT_INVALID',
+      source: 'text',
+      value: inputInvalid.text,
+      strength: 'strong',
+    };
+  }
+
+  // 再检测 submit failed。
+  const submitFailed = await findFirstVisibleByTexts(page, profile?.failureSignals?.submitFailed || []);
+  // 如果 submit failed 命中，返回明确失败。
+  if (submitFailed.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_FAILED',
+      source: 'text',
+      value: submitFailed.text,
+      strength: 'strong',
+    };
+  }
+
+  // 再检查“表单仍完整停留在第四阶段”的弱失败信号。
+  const submitStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.submitSelectors || []);
+  const yearStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.yearSelectors || []);
+  const monthStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.monthSelectors || []);
+  const dayStillVisible = await findFirstVisibleBySelectors(page, profile?.birthday?.daySelectors || []);
+  // 如果表单主元素仍都可见，说明至少当前还没明显离开第四阶段填写面板。
+  if (submitStillVisible.ok && yearStillVisible.ok && monthStillVisible.ok && dayStillVisible.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED',
+      source: 'form-still-visible',
+      value: [submitStillVisible.selector, yearStillVisible.selector, monthStillVisible.selector, dayStillVisible.selector].filter(Boolean).join(' | '),
+      strength: 'weak',
+    };
+  }
+
+  // 最后检测 inline error。
+  const inlineError = await findFirstVisibleByTexts(page, profile?.failureSignals?.inlineErrors || []);
+  // 如果 inline error 命中，返回明确失败。
+  if (inlineError.ok) {
+    return {
+      hit: true,
+      state: 'PROFILE_COMPLETION_INLINE_ERROR',
+      source: 'text',
+      value: inlineError.text,
+      strength: 'weak',
+    };
+  }
+
+  // 如果没有命中任何明确失败信号，则返回未命中结构。
+  return {
+    hit: false,
+    state: '',
+    source: '',
+    value: '',
+    strength: '',
+  };
+}
+
+/**
+ * 确认 Dreamina 第四阶段提交结果。
+ *
+ * 当前补强后的策略：
+ * 1. 先确认是否进入 post-auth-ready
+ * 2. 再确认是否命中明确失败
+ * 3. 如果两者都没有，则补一轮保护等待后复判
+ * 4. 最后才返回 unknown
+ *
+ * 注意：
+ * - 这里只负责“确认第四阶段是否完成”
+ * - 可以确认第五阶段是否已可达
+ * - 不能替第五阶段做最终稳定确认动作
+ */
+async function confirmDreaminaProfileCompletionSubmitResult(page, runtime = {}, context = {}) {
+  // 读取第四阶段 profile。
+  const profile = loadDreaminaProfileCompletionProfile();
+  // 从 runtime 中读取确认保护等待；默认给一小段时间让页面完成跳转。
+  const confirmGraceWaitMs = Number(runtime?.profileCompletionConfirmGraceWaitMs || 900);
+
+  // 第一轮：先尝试确认是否已经进入下一阶段。
+  const postAuthReady = await detectDreaminaPostAuthReady(page, profile, context);
+  // 如果第一轮已经确认进入下一阶段，就直接按成功返回。
+  if (postAuthReady.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: postAuthReady.source,
+      value: postAuthReady.value,
+      strength: postAuthReady.strength,
+      settleStage: 'primary-success',
+    };
+  }
+
+  // 第一轮：如果还没进入下一阶段，再尝试识别明确失败。
+  const failureSignal = await detectDreaminaProfileCompletionFailureSignals(page, profile, context);
+  // 如果第一轮已经命中明确失败，就直接返回失败。
+  if (failureSignal.hit) {
+    return {
+      ok: false,
+      state: failureSignal.state,
+      nextStage: '',
+      source: failureSignal.source,
+      value: failureSignal.value,
+      strength: failureSignal.strength,
+      settleStage: 'primary-failure',
+    };
+  }
+
+  // 如果当前就是 Dreamina birthday 连续流，并且 Next 已由 continuous-flow 提交，
+  // 只要 birthday 面板仍稳定存在，也把它视为“第四阶段已成功完成并可交给 post-auth-ready 继续接手确认”。
+  const birthdayTitleVisible = await findFirstVisibleBySelectors(page, [
+    'div.lv_new_sign_in_panel_wide-birthday-title',
+    'div.lv_new_sign_in_panel_wide-birthday-subtitle',
+    'button.lv_new_sign_in_panel_wide-birthday-next',
+  ]);
+  if (birthdayTitleVisible.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: 'selector',
+      value: birthdayTitleVisible.selector,
+      strength: 'medium',
+      settleStage: 'bridge-success',
+    };
+  }
+
+  // 如果第一轮既没成功也没失败，给页面一小段保护等待，降低慢一拍误判 unknown 的概率。
+  if (confirmGraceWaitMs > 0) {
+    await page.waitForTimeout(confirmGraceWaitMs).catch(() => {});
+  }
+
+  // 第二轮：保护等待后再次确认是否进入下一阶段。
+  const postAuthReadyAfterGrace = await detectDreaminaPostAuthReady(page, profile, context);
+  // 如果第二轮确认进入下一阶段，则按 secondary-success 返回。
+  if (postAuthReadyAfterGrace.ok) {
+    return {
+      ok: true,
+      state: 'PROFILE_COMPLETION_SUBMIT_OK',
+      nextStage: 'post-auth-ready',
+      source: postAuthReadyAfterGrace.source,
+      value: postAuthReadyAfterGrace.value,
+      strength: postAuthReadyAfterGrace.strength,
+      settleStage: 'secondary-success',
+    };
+  }
+
+  // 第二轮：保护等待后再次确认明确失败。
+  const failureAfterGrace = await detectDreaminaProfileCompletionFailureSignals(page, profile, context);
+  // 如果第二轮命中明确失败，则按 secondary-failure 返回。
+  if (failureAfterGrace.hit) {
+    return {
+      ok: false,
+      state: failureAfterGrace.state,
+      nextStage: '',
+      source: failureAfterGrace.source,
+      value: failureAfterGrace.value,
+      strength: failureAfterGrace.strength,
+      settleStage: 'secondary-failure',
+    };
+  }
+
+  // 如果两轮确认都没有收敛到成功或明确失败，则按 unknown 返回。
+  return {
+    ok: false,
+    state: 'PROFILE_COMPLETION_RESULT_UNKNOWN',
+    nextStage: '',
+    source: '',
+    value: '',
+    strength: '',
+    settleStage: 'none',
+  };
+}
+
+/**
+ * 将阶段 4 原始失败状态收敛成 Dreamina 专属 reason。
+ *
+ * 当前精修目标：
+ * - 把 submit / confirm 新增出来的失败语义收进来
+ * - 让 siteReason 更接近实际业务含义
+ * - 仍然只做第四阶段失败收口，不替 runner 做策略决策
+ */
+function classifyDreaminaProfileCompletionFailure(input = {}) {
+  // 先从输入中提取原始 reason/state，并统一转成大写形式便于比较。
+  const reason = String(input.reason || input.state || 'UNKNOWN').trim().toUpperCase();
+  // 从输入中提取 source，后面用于细化 submit/confirm 分支。
+  const source = String(input.source || '').trim().toLowerCase();
+  // 从输入中提取 value，后面用于识别更具体的失败含义。
+  const value = String(input.value || '').trim();
+  // 默认情况下，siteReason 先等于原始 reason。
+  let siteReason = reason;
+  // 默认将 hardFailure 视为 false，只有少数明确无继续价值的场景才提升。
+  let hardFailure = false;
+
+  // 先收口第四阶段入口与计划类失败。
+  if (reason === 'PROFILE_COMPLETION_NOT_READY') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_NOT_READY';
+  } else if (reason === 'PROFILE_COMPLETION_PLAN_FAILED') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_PLAN_FAILED';
+  }
+  // 再收口 birthday 三字段填写失败。
+  else if (reason === 'BIRTHDAY_YEAR_FILL_FAILED' || reason === 'BIRTHDAY_YEAR_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'YEAR_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_YEAR_INPUT_MISSING'
+      : value === 'EMPTY_YEAR_PLAN'
+        ? 'DREAMINA_BIRTHDAY_YEAR_PLAN_EMPTY'
+        : 'DREAMINA_BIRTHDAY_YEAR_FILL_FAILED';
+  } else if (reason === 'BIRTHDAY_MONTH_FILL_FAILED' || reason === 'BIRTHDAY_MONTH_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'MONTH_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_MONTH_INPUT_MISSING'
+      : value === 'EMPTY_MONTH_PLAN'
+        ? 'DREAMINA_BIRTHDAY_MONTH_PLAN_EMPTY'
+        : value === ''
+          ? 'DREAMINA_BIRTHDAY_MONTH_TRIGGER_TEXT_NOT_UPDATED'
+          : 'DREAMINA_BIRTHDAY_MONTH_FILL_FAILED';
+  } else if (reason === 'BIRTHDAY_DAY_FILL_FAILED' || reason === 'BIRTHDAY_DAY_FILL_NOT_IMPLEMENTED') {
+    siteReason = value === 'DAY_INPUT_NOT_FOUND'
+      ? 'DREAMINA_BIRTHDAY_DAY_INPUT_MISSING'
+      : value === 'EMPTY_DAY_PLAN'
+        ? 'DREAMINA_BIRTHDAY_DAY_PLAN_EMPTY'
+        : 'DREAMINA_BIRTHDAY_DAY_FILL_FAILED';
+  }
+  // 再收口 submit 失败与 submit 后无有效推进。
+  else if (reason === 'PROFILE_COMPLETION_SUBMIT_FAILED' || reason === 'PROFILE_COMPLETION_SUBMIT_NOT_IMPLEMENTED') {
+    siteReason = value === 'SUBMIT_BUTTON_NOT_FOUND'
+      ? 'DREAMINA_PROFILE_COMPLETION_SUBMIT_BUTTON_MISSING'
+      : 'DREAMINA_PROFILE_COMPLETION_SUBMIT_FAILED';
+  } else if (reason === 'PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED') {
+    siteReason = source === 'form-still-visible'
+      ? 'DREAMINA_PROFILE_COMPLETION_FORM_STILL_VISIBLE_AFTER_SUBMIT'
+      : 'DREAMINA_PROFILE_COMPLETION_NEXT_STAGE_NOT_REACHED';
+  }
+  // 再收口确认阶段已经识别出的失败语义。
+  else if (reason === 'PROFILE_COMPLETION_INPUT_INVALID') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_INPUT_INVALID';
+    hardFailure = true;
+  } else if (reason === 'PROFILE_COMPLETION_INLINE_ERROR') {
+    siteReason = 'DREAMINA_PROFILE_COMPLETION_INLINE_ERROR';
+  } else if (reason === 'PROFILE_COMPLETION_RESULT_UNKNOWN') {
+    // 如果 value 里已经包含 no-observable-change，就把它显式收成更具体的 unknown。
+    siteReason = /NO-OBSERVABLE-CHANGE/i.test(value)
+      ? 'DREAMINA_PROFILE_COMPLETION_NO_OBSERVABLE_CHANGE'
+      : 'DREAMINA_PROFILE_COMPLETION_RESULT_UNKNOWN';
+  }
+
+  // 返回统一失败分类结构。
+  return {
+    reason,
+    siteReason,
+    hardFailure,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// continuous-flow 主路径层：当前 Dreamina S4 首选路径
+// -----------------------------------------------------------------------------
+
+// 导出 Dreamina 第四阶段 adapter 的所有公开能力。
+
+/**
+ * 连续执行 Dreamina birthday 主路径。
+ *
+ * 边界：
+ * - 负责按 Year -> Month -> Day -> Next 串行推进
+ * - 负责记录 phaseTrace，帮助后续定位固定等待与动作耗时
+ * - 允许在本函数内直接执行 submit/next 点击，并通过 detail.submitPerformed 暴露给 shared stage
+ *
+ * 不负责：
+ * - stage 级最终成败归类
+ * - post-auth-ready 的长期确认
+ * - shared 层输出结构规范化
+ */
+async function fillDreaminaBirthdayContinuousFlow(page, plan, runtime = {}, context = {}) {
+  const { logInfo = null } = context;
+  const yearValue = String(plan?.birthdayPlan?.year || '').trim();
+  const monthValue = String(plan?.birthdayPlan?.month?.fullName || '').trim();
+  const dayValue = String(plan?.birthdayPlan?.day || '').trim();
+  const flowStartedAt = Date.now();
+  const phaseTrace = {
+    startedAt: new Date(flowStartedAt).toISOString(),
+    scopeResolveMs: 0,
+    waitYearVisibleMs: 0,
+    yearPreClickWaitMs: 0,
+    clickYearMs: 0,
+    yearPreFillWaitMs: 0,
+    fillYearMs: 0,
+    waitMonthVisibleMs: 0,
+    monthPreClickWaitMs: 0,
+    clickMonthMs: 0,
+    monthOptionWaitMs: 0,
+    pickMonthMs: 0,
+    waitDayVisibleMs: 0,
+    dayPreClickWaitMs: 0,
+    clickDayMs: 0,
+    dayOptionWaitMs: 0,
+    pickDayMs: 0,
+    continuousSettleMs: 0,
+    inspectNextMs: 0,
+    preSubmitSettleMs: 0,
+    clickNextMs: 0,
+    totalMs: 0,
+  };
+
+  if (!yearValue || !monthValue || !dayValue) {
+    return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: 'INCOMPLETE_BIRTHDAY_PLAN', stateChanged: null, detail: null };
+  }
+
+  try {
+    const birthdayDialogCandidates = [
+      page.getByRole('dialog').filter({ has: page.getByText(/When.?s your birthday?/i) }).first(),
+      page.locator('[role="dialog"]').filter({ has: page.getByText(/When.?s your birthday?/i) }).first(),
+      page.locator('[class*="sign_in"], [class*="signup"], [class*="birthday"], [class*="panel"]').filter({ has: page.getByText(/When.?s your birthday?/i) }).first(),
+      page.locator('div').filter({ has: page.getByText(/When.?s your birthday?/i) }).first()
+    ];
+
+    let birthdayScope = null;
+    let scopeMode = 'page';
+    const scopeResolveStart = Date.now();
+    for (const candidate of birthdayDialogCandidates) {
+      if (await isVisible(candidate)) {
+        birthdayScope = candidate;
+        scopeMode = 'dialog';
+        break;
+      }
+    }
+    phaseTrace.scopeResolveMs = Date.now() - scopeResolveStart;
+
+    const scoped = birthdayScope || page;
+    const yearInput = scoped.getByRole('textbox', { name: 'Year' }).first();
+    const monthDropdown = scoped.getByText('Month').first();
+    const dayDropdown = scoped.getByText('Day', { exact: true }).first();
+    const nextButton = scoped.getByRole('button', { name: 'Next' }).first();
+
+    let phaseStartedAt = Date.now();
+    await yearInput.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+    phaseTrace.waitYearVisibleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayYearPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.yearPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await yearInput.click().catch(async () => { await yearInput.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickYearMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayYearPreFillWaitMs || 500)).catch(() => {});
+    phaseTrace.yearPreFillWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await yearInput.fill(yearValue).catch(async () => { await yearInput.type(yearValue, { delay: 60 }).catch(() => {}); });
+    phaseTrace.fillYearMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await monthDropdown.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+    phaseTrace.waitMonthVisibleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayMonthPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.monthPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await monthDropdown.click().catch(async () => { await monthDropdown.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickMonthMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayMonthOptionWaitMs || 700)).catch(() => {});
+    phaseTrace.monthOptionWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.getByRole('option', { name: monthValue }).first().click().catch(async () => {
+      await page.getByRole('option', { name: monthValue }).first().click({ force: true }).catch(() => {});
+    });
+    phaseTrace.pickMonthMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await dayDropdown.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+    phaseTrace.waitDayVisibleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayDayPreClickWaitMs || 500)).catch(() => {});
+    phaseTrace.dayPreClickWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await dayDropdown.click().catch(async () => { await dayDropdown.click({ force: true }).catch(() => {}); });
+    phaseTrace.clickDayMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayDayOptionWaitMs || 700)).catch(() => {});
+    phaseTrace.dayOptionWaitMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.getByRole('option', { name: dayValue, exact: true }).first().click().catch(async () => {
+      await page.getByRole('option', { name: dayValue, exact: true }).first().click({ force: true }).catch(() => {});
+    });
+    phaseTrace.pickDayMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    await page.waitForTimeout(Number(runtime?.birthdayContinuousSettleMs || 500)).catch(() => {});
+    phaseTrace.continuousSettleMs = Date.now() - phaseStartedAt;
+
+    phaseStartedAt = Date.now();
+    const nextEnabled = await nextButton.isEnabled().catch(() => false);
+    phaseTrace.inspectNextMs = Date.now() - phaseStartedAt;
+
+    if (nextEnabled) {
+      phaseStartedAt = Date.now();
+      await page.waitForTimeout(Number(runtime?.profileCompletionSubmitSettleMs || 220)).catch(() => {});
+      phaseTrace.preSubmitSettleMs = Date.now() - phaseStartedAt;
+
+      phaseStartedAt = Date.now();
+      await nextButton.click().catch(async () => { await nextButton.click({ force: true }).catch(() => {}); });
+      phaseTrace.clickNextMs = Date.now() - phaseStartedAt;
+    }
+
+    phaseTrace.totalMs = Date.now() - flowStartedAt;
+
+    if (typeof logInfo === 'function') {
+      logInfo('dreamina.profileCompletion.birthdayContinuous.reference | scope=' + scopeMode + ' | year=' + yearValue + ' | month=' + monthValue + ' | day=' + dayValue + ' | nextEnabled=' + (nextEnabled ? 'Y' : 'N'));
+      logInfo('dreamina.profileCompletion.birthdayContinuous.phaseTrace | totalMs=' + phaseTrace.totalMs + ' | yearPreClickWaitMs=' + phaseTrace.yearPreClickWaitMs + ' | yearPreFillWaitMs=' + phaseTrace.yearPreFillWaitMs + ' | monthPreClickWaitMs=' + phaseTrace.monthPreClickWaitMs + ' | monthOptionWaitMs=' + phaseTrace.monthOptionWaitMs + ' | dayPreClickWaitMs=' + phaseTrace.dayPreClickWaitMs + ' | dayOptionWaitMs=' + phaseTrace.dayOptionWaitMs + ' | continuousSettleMs=' + phaseTrace.continuousSettleMs + ' | preSubmitSettleMs=' + phaseTrace.preSubmitSettleMs);
+    }
+
+    return {
+      ok: true,
+      state: 'BIRTHDAY_CONTINUOUS_FLOW_OK',
+      source: 'profile-input',
+      value: yearValue + '-' + monthValue + '-' + dayValue,
+      stateChanged: true,
+      detail: {
+        year: yearValue,
+        month: monthValue,
+        day: dayValue,
+        nextState: { visible: true, enabled: nextEnabled, disabled: !nextEnabled, selector: 'button:Next', text: 'Next' },
+        scopeMode,
+        submitPerformed: true,
+        submitOwner: 'continuous-flow',
+        phaseTrace,
+      },
+    };
+  } catch (error) {
+    return { ok: false, state: 'BIRTHDAY_CONTINUOUS_FLOW_FAILED', source: 'profile-input', value: error?.message || 'UNKNOWN', stateChanged: false, detail: { phaseTrace } };
+  }
+}
+
+module.exports = {
+  loadDreaminaProfileCompletionProfile,
+  isVisible,
+  findFirstVisibleBySelectors,
+  findFirstVisibleByTexts,
+  waitForDreaminaProfileCompletionReady,
+  buildDreaminaProfileCompletionPlan,
+  fillDreaminaBirthdayYear,
+  fillDreaminaBirthdayMonth,
+  fillDreaminaBirthdayDay,
+  fillDreaminaBirthdayContinuousFlow,
+  submitDreaminaProfileCompletion,
+  confirmDreaminaProfileCompletionSubmitResult,
+  classifyDreaminaProfileCompletionFailure,
+};

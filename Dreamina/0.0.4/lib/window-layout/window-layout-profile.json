@@ -1,0 +1,92 @@
+{
+  "display": {
+    "workspaceWidth": 2560,
+    "workspaceHeight": 1440,
+    "taskbarReservedPx": 40,
+    "gap": 20,
+    "outerMargin": 28
+  },
+  "defaults": {
+    "layoutMode": "grid",
+    "minWindowWidth": 420,
+    "minWindowHeight": 320,
+    "preferredAspectRatio": 1.45,
+    "defaultScale": 1,
+    "defaultUsageRatio": 0.96,
+    "overflowPolicy": "paginate",
+    "maxAutoColumns": 5
+  },
+  "verificationBudgetByConcurrency": {
+    "default": {
+      "firstmailApiMaxPollAttempts": 6,
+      "waitMailIntervalMs": 2500,
+      "verificationRetryMaxAttempts": 3,
+      "verificationResendWaitMs": 1800
+    },
+    "4": {
+      "firstmailApiMaxPollAttempts": 10,
+      "waitMailIntervalMs": 3000,
+      "verificationRetryMaxAttempts": 3,
+      "verificationResendWaitMs": 2000
+    },
+    "6": {
+      "firstmailApiMaxPollAttempts": 12,
+      "waitMailIntervalMs": 3500,
+      "verificationRetryMaxAttempts": 3,
+      "verificationResendWaitMs": 2200
+    }
+  },
+  "proxyPolicyByConcurrency": {
+    "default": {
+      "workerStartStaggerMs": 0,
+      "connectivityTimeoutMs": 8000,
+      "primaryTargetTimeoutMs": 10000,
+      "secondaryTargetTimeoutMs": 8000,
+      "enableSecondaryTarget": true
+    },
+    "4": {
+      "workerStartStaggerMs": 1200,
+      "connectivityTimeoutMs": 10000,
+      "primaryTargetTimeoutMs": 12000,
+      "secondaryTargetTimeoutMs": 10000,
+      "enableSecondaryTarget": true
+    },
+    "6": {
+      "workerStartStaggerMs": 1800,
+      "connectivityTimeoutMs": 12000,
+      "primaryTargetTimeoutMs": 15000,
+      "secondaryTargetTimeoutMs": 12000,
+      "enableSecondaryTarget": true
+    }
+  },
+  "modes": {
+    "focus": {
+      "prioritizeReadability": true,
+      "allowOversize": true
+    },
+    "grid": {
+      "prioritizeBalance": true
+    },
+    "compact": {
+      "prioritizeDensity": true
+    },
+    "monitor": {
+      "prioritizeVisibilityOverOperability": true
+    }
+  },
+  "presets": {
+    "2": { "cols": 2, "rows": 1, "scale": 1.0, "mode": "focus" },
+    "3": { "cols": 3, "rows": 1, "scale": 0.95, "mode": "focus" },
+    "4": { "cols": 2, "rows": 2, "scale": 0.92, "mode": "focus", "usageRatio": 0.9, "gapOverride": 24, "outerMarginOverride": 36 },
+    "5": { "cols": 3, "rows": 2, "scale": 0.88, "mode": "grid" },
+    "6": { "cols": 3, "rows": 2, "scale": 0.85, "mode": "grid" },
+    "7": { "cols": 4, "rows": 2, "scale": 0.82, "mode": "grid" },
+    "8": { "cols": 4, "rows": 2, "scale": 0.8, "mode": "grid" },
+    "9": { "cols": 3, "rows": 3, "scale": 0.78, "mode": "compact" },
+    "10": { "cols": 4, "rows": 3, "scale": 0.75, "mode": "compact" },
+    "11": { "cols": 4, "rows": 3, "scale": 0.73, "mode": "compact" },
+    "12": { "cols": 4, "rows": 3, "scale": 0.72, "mode": "compact" },
+    "15": { "cols": 5, "rows": 3, "scale": 0.68, "mode": "compact" },
+    "20": { "cols": 5, "rows": 4, "scale": 0.62, "mode": "monitor" }
+  }
+}
