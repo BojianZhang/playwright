@@ -958,9 +958,40 @@ function buildBatchFingerprintSummary(input = null) {
     viewport: String(summary?.viewport || ''),
     locale: String(summary?.locale || ''),
     timezoneId: String(summary?.timezoneId || ''),
+    acceptLanguage: String(summary?.acceptLanguage || ''),
     colorScheme: String(summary?.colorScheme || ''),
     deviceScaleFactor: Number(summary?.deviceScaleFactor || 0),
     randomEnabled: Boolean(summary?.randomEnabled),
+    identityStable: Boolean(summary?.identityStable),
+    identityKey: String(summary?.identityKey || ''),
+    identityHash: String(summary?.identityHash || ''),
+    identitySeed: String(summary?.identitySeed || ''),
+    identityTtlBucket: summary?.identityTtlBucket === null || summary?.identityTtlBucket === undefined
+      ? null
+      : Number(summary.identityTtlBucket),
+    countryCode: String(summary?.countryCode || ''),
+    geoSource: String(summary?.geoSource || ''),
+    storagePolicy: String(summary?.storagePolicy || ''),
+  };
+}
+
+function resolveBrowserIdentityConfig(batchConfig = {}) {
+  const browserIdentity = batchConfig?.browserIdentity && typeof batchConfig.browserIdentity === 'object'
+    ? batchConfig.browserIdentity
+    : {};
+  const browserIdentityFromBrowser = batchConfig?.browser?.identity && typeof batchConfig.browser.identity === 'object'
+    ? batchConfig.browser.identity
+    : {};
+
+  return {
+    enabled: true,
+    stableByProxy: true,
+    stableFingerprintTtlMs: 6 * 60 * 60 * 1000,
+    alignGeoWithProxy: true,
+    includeAcceptLanguageHeader: true,
+    clearStorageOnStart: true,
+    ...browserIdentityFromBrowser,
+    ...browserIdentity,
   };
 }
 
@@ -1383,12 +1414,27 @@ function buildBatchOverviewLines(batchContext) {
 }
 
 async function createWorkerRuntime(options = {}) {
+  const batchConfig = options.batchConfig && typeof options.batchConfig === 'object' ? options.batchConfig : {};
+  const browserConfig = batchConfig.browser && typeof batchConfig.browser === 'object' ? batchConfig.browser : {};
+  const browserIdentity = resolveBrowserIdentityConfig(batchConfig);
   return await createDreaminaCliRuntime({
     proxy: options.proxy,
+    account: options.account || null,
     headed: options.headed,
     slowMo: options.slowMo,
     windowLayout: options.windowLayout || null,
-    blockedResourceTypes: ['image', 'media', 'font'],
+    blockedResourceTypes: Array.isArray(browserConfig.blockedResourceTypes)
+      ? browserConfig.blockedResourceTypes
+      : ['image', 'media', 'font'],
+    browserIdentity,
+    runtime: {
+      ...(browserConfig.runtime && typeof browserConfig.runtime === 'object' ? browserConfig.runtime : {}),
+      browserIdentity,
+      proxyCountryCode: String(options?.proxy?.countryCode || options?.proxy?.proxyCountryCode || '').trim(),
+      proxyCountryName: String(options?.proxy?.countryName || options?.proxy?.proxyCountryName || '').trim(),
+      countryCode: String(options?.account?.countryCode || options?.proxy?.countryCode || options?.proxy?.proxyCountryCode || '').trim(),
+      countryName: String(options?.account?.countryName || options?.proxy?.countryName || options?.proxy?.proxyCountryName || '').trim(),
+    },
   });
 }
 
@@ -1420,6 +1466,7 @@ async function runSingleAccountWithNewArchitecture(options = {}) {
   const credentialConfig = (batchConfig && batchConfig.credential) || {};
 
   const runtimeBundle = await createWorkerRuntime({
+    account,
     proxy,
     headed,
     slowMo,

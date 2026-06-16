@@ -32,6 +32,15 @@
       "font"
     ]
   },
+  "browserIdentity": {
+    "_comment": "Browser identity strategy: bind fingerprint lifecycle to proxy/IP identity, align locale/timezone/language with proxy country, and start each identity in a clean context.",
+    "enabled": true,
+    "stableByProxy": true,
+    "stableFingerprintTtlMs": 21600000,
+    "alignGeoWithProxy": true,
+    "includeAcceptLanguageHeader": true,
+    "clearStorageOnStart": true
+  },
   "proxy": {
     "_comment": "代理管理策略",
     "maxRetriesPerAccount": 2,
