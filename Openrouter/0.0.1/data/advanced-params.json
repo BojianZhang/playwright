@@ -3,5 +3,9 @@
   "zipRetry": "0",
   "maxConcurrency": "10",
   "fastMode": "on",
-  "changepwRequirePurchase": "on"
+  "changepwRequirePurchase": "on",
+  "selPageloadStrategy": "eager",
+  "mailVerifyDeadline": "80",
+  "adsQuotaFailfast": "on",
+  "launchStagger": "3"
 }

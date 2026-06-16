@@ -12,6 +12,20 @@ module.exports = {
     const browser = await chromium.connectOverCDP(ws, { timeout: 30000 });
     const context = browser.contexts()[0] || (await browser.newContext());
     const page = context.pages()[0] || (await context.newPage());
-    return { driver: 'playwright', browser, context, page, detach: async () => { await browser.close().catch(() => {}); } };
+    const {
+      applyConnectedRuntimeIdentity,
+      buildConnectedRuntimeIdentityError,
+    } = require('../../../../shared-browser-runtime/connected-runtime');
+    const identityRuntime = await applyConnectedRuntimeIdentity(context, page, endpoint)
+      .catch((error) => buildConnectedRuntimeIdentityError(error, 'automation-driver-identity-error'));
+    return {
+      driver: 'playwright',
+      browser,
+      context,
+      page,
+      fingerprint: identityRuntime.fingerprint,
+      storageCleanup: identityRuntime.storageCleanup,
+      detach: async () => { await browser.close().catch(() => {}); },
+    };
   },
 };

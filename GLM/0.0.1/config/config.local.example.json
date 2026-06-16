@@ -1,0 +1,18 @@
+{
+  "_note": "复制本文件为 config/config.local.json 后填入真实密钥。本模板无密钥、可入库;config.local.json 含密钥、已 gitignore 绝不入库。",
+  "captcha": {
+    "provider": "twocaptcha",
+    "apiKey": "你的 2captcha key（解 z.ai 滑块缺口坐标）"
+  },
+  "mailbox": {
+    "apiBaseUrl": "https://firstmail.ltd",
+    "apiKey": "你的 firstmail X-API-KEY"
+  },
+  "adspower": {
+    "apiBase": "http://127.0.0.1:50325",
+    "apiKey": "AdsPower 本地网关一般留空;远程/带鉴权网关填 token"
+  },
+  "security": {
+    "authToken": ""
+  }
+}

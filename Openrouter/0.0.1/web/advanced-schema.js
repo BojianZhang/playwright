@@ -26,6 +26,8 @@ const FIELDS = [
   { key: 'mailVerifyAttempts', env: 'MAIL_VERIFY_ATTEMPTS', type: 'number', scope: 'selenium', group: '邮箱验证', def: '12' },
   { key: 'mailVerifyCycles', env: 'MAIL_VERIFY_CYCLES', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
   { key: 'mailVerifyInterval', env: 'MAIL_VERIFY_INTERVAL', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
+  // ── 邮箱验证总死线(秒):>0 时整段验证超时快速放弃,砍 200-517s 长尾;留空=关=不限(老流程) ──
+  { key: 'mailVerifyDeadline', env: 'MAIL_VERIFY_DEADLINE', type: 'number', scope: 'selenium', group: '邮箱验证', def: '' },
   // ── 加卡 / Fix C 核(纯Selenium + 混合 都走 fixc_core)─────────────────────
   { key: 'fixcSuccessHold', env: 'FIXC_SUCCESS_HOLD', type: 'number', scope: 'both', group: '加卡', def: '4' },
   { key: 'fixcZipDeadline', env: 'FIXC_ZIP_DEADLINE', type: 'number', scope: 'both', group: '加卡', def: '60' },
@@ -36,8 +38,14 @@ const FIELDS = [
   // ── 驱动 / 环境(两套共用)────────────────────────────────────────────────
   // ★并发硬上限:engine-runner 起 job 时把任何引擎的每进程并发钳到 ≤ 它(防 AdsPower 高并发批量掉线);空=不限。
   { key: 'maxConcurrency', env: 'OPENROUTER_MAX_CONCURRENCY', type: 'number', scope: 'both', group: '驱动环境', def: '' },
+  // ── 错峰启动间隔(秒):并发跑时每号启动间隔,设大让它们错峰撞加卡/邮箱等待;留空=老行为 min(gap,3) ──
+  { key: 'launchStagger', env: 'OPENROUTER_LAUNCH_STAGGER', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selPageloadTimeout', env: 'SEL_PAGELOAD_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selScriptTimeout', env: 'SEL_SCRIPT_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
+  // ── 页面加速:Selenium 加载策略(eager/none),脚本更早可操作元素;留空=normal 不变;零反检测风险 ──
+  { key: 'selPageloadStrategy', env: 'SEL_PAGELOAD_STRATEGY', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'eager', 'none'] },
+  // ── AdsPower 配额满快速失败:on=「环境数达上限」立即失败(不空耗代理、不误退好代理);留空=关=老流程 ──
+  { key: 'adsQuotaFailfast', env: 'ADS_QUOTA_FAILFAST', type: 'select', scope: 'both', group: '驱动环境', def: '', options: ['', 'on'] },
   { key: 'adsMaxLaunch', env: 'ADS_MAX_LAUNCH', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'envScreenRes', env: 'ENV_SCREEN_RES', type: 'text', scope: 'both', group: '驱动环境', def: '' },
   // ── 卡池(两套共用,载卡时 ledger 读)──────────────────────────────────────

@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "schemes": {
+    "activeId": "s_sel_full",
+    "presets": [
+      {
+        "id": "s_sel_full",
+        "name": "已验证·纯Selenium全流程",
+        "builtin": true,
+        "cfg": {
+          "engine": "selenium",
+          "mode": "auto",
+          "conc": "3",
+          "count": "0",
+          "chk": {
+            "headed": false,
+            "resume": true,
+            "humanLike": false
+          },
+          "stages": {
+            "key": true,
+            "addr": false,
+            "card": true,
+            "charge": true,
+            "pwd": false
+          },
+          "browserProvider": "none",
+          "envIds": "",
+          "useAdspowerPool": true,
+          "useProxyPool": true,
+          "useAddressPool": false,
+          "useDispatch": false,
+          "shipResources": true
+        }
+      },
+      {
+        "id": "s_hybrid_full",
+        "name": "已验证·混合全流程",
+        "builtin": true,
+        "cfg": {
+          "engine": "hybrid",
+          "mode": "auto",
+          "conc": "2",
+          "count": "0",
+          "chk": {
+            "headed": false,
+            "resume": true,
+            "humanLike": false
+          },
+          "stages": {
+            "key": true,
+            "addr": true,
+            "card": true,
+            "charge": true,
+            "pwd": false
+          },
+          "browserProvider": "none",
+          "envIds": "",
+          "useAdspowerPool": true,
+          "useProxyPool": true,
+          "useAddressPool": false,
+          "useDispatch": false,
+          "shipResources": true
+        }
+      },
+      {
+        "id": "s_split",
+        "name": "两套分流(衔接+秒关)",
+        "builtin": true,
+        "cfg": {
+          "engine": "split",
+          "mode": "auto",
+          "conc": "3",
+          "count": "0",
+          "chk": {
+            "headed": false,
+            "resume": true,
+            "humanLike": false
+          },
+          "stages": {
+            "key": true,
+            "addr": true,
+            "card": true,
+            "charge": true,
+            "pwd": false
+          },
+          "browserProvider": "none",
+          "envIds": "",
+          "useAdspowerPool": true,
+          "useProxyPool": true,
+          "useAddressPool": false,
+          "useDispatch": false,
+          "shipResources": true
+        }
+      }
+    ]
+  }
+}

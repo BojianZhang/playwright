@@ -66,7 +66,10 @@ def scan_text(text: str):
         # ③ 密钥赋值:apiKey/token/secret/password = '非空非占位的长串'
         for m in re.finditer(r"(?i)(api[_-]?key|secret|token|password|passwd|pwd)\s*[:=]\s*['\"]([^'\"]{12,})['\"]", line):
             val = m.group(2)
-            if not re.search(r"(?i)(example|your|placeholder|xxxx|\$\{|process\.env|os\.environ|<.*>)", val):
+            # 排除「值其实是 JS 代码片段」的误报:形如 'apikey:' + (r.key_reason || 'x') 的字符串拼接,
+            #   正则会把 ` + (r.key_reason || ` 当成密钥值。真实硬编码密钥是连续串,绝不含 ` + `(空格加号空格)、
+            #   `||`、`=> ` 这类代码运算符——含这些即判为代码、非密钥。
+            if not re.search(r"(?i)(example|your|placeholder|xxxx|\$\{|process\.env|os\.environ|<.*>| \+ |\|\||=> )", val):
                 hits.append((ln, "硬编码密钥(%s)" % m.group(1), val[:6] + "…"))
         # ④ 代理内嵌凭证:socks5://user:pass@host  或  host:port:user:pass
         if re.search(r"socks5?://[^:/\s]+:[^@/\s]+@", line) or re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}:\w{3,}:\w{3,}", line):

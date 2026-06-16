@@ -1975,9 +1975,20 @@ function buildFingerprintSummary(input = null) {
     viewport: String(summary?.viewport || ''),
     locale: String(summary?.locale || ''),
     timezoneId: String(summary?.timezoneId || ''),
+    acceptLanguage: String(summary?.acceptLanguage || ''),
     colorScheme: String(summary?.colorScheme || ''),
     deviceScaleFactor: Number(summary?.deviceScaleFactor || 0),
     randomEnabled: Boolean(summary?.randomEnabled),
+    identityStable: Boolean(summary?.identityStable),
+    identityKey: String(summary?.identityKey || ''),
+    identityHash: String(summary?.identityHash || ''),
+    identitySeed: String(summary?.identitySeed || ''),
+    identityTtlBucket: summary?.identityTtlBucket === null || summary?.identityTtlBucket === undefined
+      ? null
+      : Number(summary.identityTtlBucket),
+    countryCode: String(summary?.countryCode || ''),
+    geoSource: String(summary?.geoSource || ''),
+    storagePolicy: String(summary?.storagePolicy || ''),
   };
 }
 
@@ -2295,6 +2306,8 @@ async function createDreaminaCliRuntime(options = {}) {
   return await createBrowserRuntime({
     runtime: options?.runtime || {},
     proxy,
+    account: options?.account || null,
+    browserIdentity: options?.browserIdentity || null,
     headed,
     slowMo,
     windowLayout,

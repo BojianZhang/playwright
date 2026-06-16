@@ -63,6 +63,16 @@ def _acquire_browser(proxies, start_idx, group_id, name, max_try=5):
             return (env_id, port, proxy)
         except Exception as e:
             last[0] = str(e)
+            # 【开关 ADS_QUOTA_FAILFAST=on】AdsPower 环境数达上限="If the number of imported accounts exceeds the limit"
+            #   = 全局错误(非本代理问题):不误标代理 dead(否则把好代理批量退役)、不再换 max_try 个代理空耗,
+            #   清掉残环境后直接上抛快速失败。默认关=逐字节同原行为(不影响老流程)。
+            if os.environ.get("ADS_QUOTA_FAILFAST", "") == "on" and "imported accounts exceeds" in last[0].lower():
+                if env_id:
+                    try: common.adspower_stop(env_id)
+                    except Exception: pass
+                    try: adspower_env.delete_env(env_id)
+                    except Exception: pass
+                raise RuntimeError("ADS_QUOTA_FULL:AdsPower 环境数达上限,先删环境/关「跑完保留环境」再跑(%s)" % last[0][:80])
             try:
                 common.mark_proxy_result(proxy, "dead")   # 启动失败=该IP不可用,累计进共享 fail_streak(到阈值自动退役)
             except Exception:

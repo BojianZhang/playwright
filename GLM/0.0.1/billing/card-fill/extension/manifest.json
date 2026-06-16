@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "OR Card Fill Helper",
+  "version": "1.0",
+  "description": "Fills Stripe card fields on OpenRouter when signaled by the automation (window message OR_FILL). Pre-install into the AdsPower profile.",
+  "content_scripts": [
+    {
+      "matches": ["https://js.stripe.com/*"],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": ["content.js"]
+    }
+  ]
+}

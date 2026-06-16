@@ -11,7 +11,7 @@
 import re
 import time
 
-from common import http_post_json, log
+from common import HttpPostError, http_post_json, http_post_text, log
 
 DEFAULT_BASE = "https://firstmail.ltd"
 
@@ -20,7 +20,7 @@ def get_latest_message(email, password, api_key, base_url=DEFAULT_BASE, folder="
     # 【#9 修】单次超时 30→12s:住宅代理间歇飙延迟时,14 次轮询最坏 14×(30+3)≈462s,远超预期。
     #   降到 12s 让卡顿的请求快速失败、由外层 14 次轮询继续重试(总墙钟回到几十秒量级)。change_mailbox_password 另有独立 timeout 不受影响。
     return http_post_json(
-        base_url + "/api/v1/email/messages/latest",
+        base_url.rstrip("/") + "/api/v1/email/messages/latest",
         {"email": email, "password": password, "folder": folder},
         headers={"X-API-KEY": api_key}, timeout=timeout)
 
@@ -173,31 +173,23 @@ def change_mailbox_password(email, current, new, api_key, base_url=DEFAULT_BASE,
     【按 HTTP 状态判定,不靠 body 形状】2xx=接口接受=改成(原来 http_post_json 对空/非JSON的200会 json.loads 抛错→误判失败,
     且非2xx直接 raise 把真因吞掉)。非2xx读出 error body 记真因(密码不对/key失效/限频一目了然)。
     幂等:旧密码被拒(4xx)时再用 new 当 current 试一次——上轮已改过则当前真实密码=new,确认即视为成功,不重复失败。"""
-    import json as _json
-    import urllib.request as _ur
-    import urllib.error as _ue
-    url = base_url + "/api/v1/email/password/change/"
+    url = base_url.rstrip("/") + "/api/v1/email/password/change/"
     hdr = {"Content-Type": "application/json", "accept": "application/json", "X-API-KEY": api_key}
-    opener = _ur.build_opener(_ur.ProxyHandler({}))   # 直连,不走系统代理(同 http_post_json,避免系统代理把外网 API 打成 502)
 
     def _post(cur):
-        data = _json.dumps({"email": email, "current_password": cur, "new_password": new}).encode("utf-8")
-        req = _ur.Request(url, data=data, method="POST", headers=hdr)
-        with opener.open(req, timeout=timeout) as r:
-            code = getattr(r, "status", None) or r.getcode()
-            body = r.read().decode("utf-8", "replace")
+        code, body = http_post_text(
+            url,
+            {"email": email, "current_password": cur, "new_password": new},
+            headers=hdr,
+            timeout=timeout)
         return code, body
 
     try:
         code, body = _post(current)
         log("改邮箱密码: 成功 (HTTP %s) %s" % (code, body[:80]))   # 2xx 即成
         return True
-    except _ue.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", "replace")
-        except Exception:
-            pass
+    except HttpPostError as e:
+        body = e.body
         # 旧密码被拒 → 可能上轮已把密码改成 new(当前真实密码=new)→ 用 new 当 current 确认一次,幂等收尾
         if e.code in (400, 401, 403, 409, 422) and current != new:
             try:

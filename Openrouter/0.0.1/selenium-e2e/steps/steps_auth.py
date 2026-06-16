@@ -226,7 +226,14 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0)
     _v_attempts = max(1, int(os.environ.get("MAIL_VERIFY_ATTEMPTS", "12") or 12))   # 每轮读链接轮询次数
     _v_interval = float(os.environ.get("MAIL_VERIFY_INTERVAL", "3") or 3)           # 每次轮询间隔(秒)
     _mailbox_ok = False; _bad_mail_seen = False   # 坏邮箱判据:跨轮累计(任一轮读到信=邮箱可用;任一轮多次404=坏)
+    # 【开关·可前端调:邮箱验证组】总死线(墙钟秒):>0 时整段验证超时即快速放弃,砍掉「收不到信」的 200-517s 长尾、
+    #   释放并发槽给别的号。默认 0=关=逐字节同原行为(不影响老流程)。
+    _v_deadline = float(os.environ.get("MAIL_VERIFY_DEADLINE", "0") or 0)
+    _v_t0 = time.time()
     for _cycle in range(_v_cycles):                  # 1 次初始 + (cycles-1) 次重发
+        if _v_deadline > 0 and (time.time() - _v_t0) > _v_deadline:
+            log("[验证] 超总死线 %ss(开关 MAIL_VERIFY_DEADLINE)→ 快速放弃" % _v_deadline)
+            break
         _mst = {}
         link = firstmail.wait_verify_link(email, mailbox_pw, cfg.get("mail_key"), cfg.get("mail_base"),
                                           attempts=_v_attempts, interval=_v_interval, alt_password=op_password, status=_mst, since_ts=since_ts)
@@ -478,7 +485,7 @@ def login(page, email, op_password, mailbox_pw, cfg):
         # OpenRouter 直接封禁/拒绝该邮箱 → 上报 NOT_ALLOWED,编排层会登记并永久跳过
         log("[登录] %s 被 OpenRouter 拒绝(not allowed to access this application)" % email)
         return "fail:NOT_ALLOWED"
-    if any(s in t for s in ["couldn't find", "no account", "not found", "isn't right", "incorrect", "password is incorrect"]):
+    if any(s in t for s in ["couldn't find", "no account", "not found", "isn't right", "incorrect", "password is incorrect", "invalid credentials"]):
         # 密码不对/无账号 → 【就地返回】,不再白解 Turnstile + 等 OTP(那是纯浪费 2captcha 余额 + 干耗墙钟,
         #   账号根本进不去)。模糊文案("isn't right")保守归为密码错(不致永久跳过);明确"找不到账号"归 NO_ACCOUNT。
         if "incorrect" in t or "isn't right" in t:

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dreamina 0.0.4 控制台</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --ink:#e6e9ef; --mut:#8b93a3; --acc:#3da9fc; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#f0b429; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"Microsoft YaHei",sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header b { font-size:16px; letter-spacing:.5px; }
+  header .tag { color:var(--mut); font-size:12px; }
+  .wrap { display:grid; grid-template-columns: 360px 1fr; gap:0; height:calc(100vh - 53px); }
+  .side { border-right:1px solid var(--line); overflow:auto; padding:16px; }
+  .main { overflow:auto; padding:16px 20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .card h3 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); }
+  label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
+  input, select, textarea { width:100%; background:#0d0f14; border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:8px 10px; font:inherit; }
+  textarea { min-height:84px; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  .chk { display:flex; align-items:center; gap:8px; margin-top:8px; } .chk input { width:auto; }
+  button { background:var(--acc); color:#04121f; border:0; border-radius:7px; padding:9px 14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); font-weight:500; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .danger { color:var(--warn); font-size:12px; margin-top:6px; }
+  .stages { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 14px; }
+  .stages .s { font-size:11px; padding:4px 8px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  .stages .s.active { border-color:var(--acc); color:var(--acc); }
+  .stages .s.done { border-color:var(--ok); color:var(--ok); }
+  #log { background:#0a0c10; border:1px solid var(--line); border-radius:8px; padding:10px; height:46vh; overflow:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; white-space:pre-wrap; }
+  #log .l { color:var(--mut); } #log .ok { color:var(--ok); } #log .bad { color:var(--bad); } #log .st { color:var(--acc); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; }
+  .pill { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); }
+  .muted { color:var(--mut); font-size:12px; }
+  .hint { font-size:11px; color:var(--mut); margin-top:6px; }
+  .ok-c { color:var(--ok); } .bad-c { color:var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <b>Dreamina</b><span class="tag">0.0.4 控制台 · 注册→验证→生日→升级→收银台加卡支付</span>
+  <span style="margin-left:auto" class="tag" id="health">·</span>
+</header>
+<div class="wrap">
+  <div class="side">
+    <div class="card">
+      <h3>开始批量跑</h3>
+      <div class="row">
+        <div><label>并发 concurrency</label><input id="concurrency" type="number" value="2" min="1"></div>
+        <div><label>本批账号上限</label><input id="accountLimit" type="number" value="" placeholder="不填=全部"></div>
+      </div>
+      <div class="row">
+        <div><label>套餐 plan</label><select id="plan"><option>Advanced</option><option>Standard</option><option>Basic</option><option>Free</option></select></div>
+        <div><label>周期 tab</label><select id="tab"><option>1-month</option><option>Monthly</option><option>Yearly</option></select></div>
+      </div>
+      <label>金额 amount（用于台账/校验）</label><input id="amount" type="number" value="84">
+      <div class="chk"><input id="dryRun" type="checkbox" checked><label style="margin:0">Dry-run（填完卡<b>不点 Pay</b>，零成本验证）</label></div>
+      <div class="chk"><input id="headed" type="checkbox"><label style="margin:0">有头模式（显示浏览器）</label></div>
+      <div class="chk"><input id="ignoreKnownExists" type="checkbox"><label style="margin:0">忽略已知已存在账号</label></div>
+      <div class="chk"><input id="noUpgrade" type="checkbox"><label style="margin:0">跳过升级/支付（仅注册）</label></div>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button id="runBtn">▶ 开始</button>
+        <button class="ghost" id="clearBtn">清空日志</button>
+      </div>
+      <div class="danger" id="chargeWarn"></div>
+    </div>
+
+    <div class="card">
+      <h3>套餐 / 支付设置（写回 config）</h3>
+      <div class="chk"><input id="realCharge" type="checkbox"><label style="margin:0"><b>真实扣款</b>（关=全局 dry-run）</label></div>
+      <div class="row" style="margin-top:8px">
+        <div><label>maxCardTries</label><input id="maxCardTries" type="number" value="3"></div>
+        <div><label>填卡引擎</label><input id="cardFillEngine" value="playwright,osinput"></div>
+      </div>
+      <div style="margin-top:10px"><button class="ghost" id="saveCfg">保存设置</button></div>
+      <div class="hint">注：单次跑可用上方 Dry-run 勾选临时覆盖，不改全局。</div>
+    </div>
+
+    <div class="card">
+      <h3>卡池</h3>
+      <div class="muted" id="cardStats">加载中…</div>
+      <label>导入卡（每行一张：卡号 有效期MM/YY CVC [次数]）</label>
+      <textarea id="cardText" placeholder="4242424242424242 04/30 123 5"></textarea>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:0 0 110px"><label>默认次数</label><input id="cardMaxUses" type="number" value="10"></div>
+        <div style="align-self:end"><button class="ghost" id="importCards">导入</button></div>
+      </div>
+      <div class="hint" id="cardImportMsg"></div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="card">
+      <h3>实时进度</h3>
+      <div class="stages" id="stages"></div>
+      <div class="muted" id="jobInfo">未开始</div>
+      <div id="log" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h3>卡池快照</h3>
+      <div style="overflow:auto"><table id="cardTable"><thead><tr><th>尾号</th><th>状态</th><th>用量</th><th>declines</th><th>最后结果</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const STAGES = ['proxy-precheck','entry','credential-submit','verification-submit','profile-completion-submit','post-auth-ready','upgrade','payment','account-delivery'];
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+function logLine(cls, text){ const d=document.createElement('div'); d.className=cls; d.textContent=text; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+function renderStages(active, doneSet){ const c=$('stages'); c.innerHTML=''; STAGES.forEach(s=>{ const e=document.createElement('span'); e.className='s'+(s===active?' active':'')+(doneSet.has(s)?' done':''); e.textContent=s; c.appendChild(e); }); }
+let es=null, doneStages=new Set();
+
+async function startRun(){
+  const body = {
+    concurrency:+$('concurrency').value||2, accountLimit:+$('accountLimit').value||0,
+    plan:$('plan').value, tab:$('tab').value, amount:+$('amount').value||0,
+    dryRun:$('dryRun').checked, headed:$('headed').checked,
+    ignoreKnownExists:$('ignoreKnownExists').checked, noUpgrade:$('noUpgrade').checked,
+  };
+  $('runBtn').disabled=true; doneStages=new Set(); renderStages(null,doneStages);
+  logLine('st','▶ 提交任务…');
+  const r = await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+  if(!r.ok){ logLine('bad','启动失败: '+(r.error||'?')); $('runBtn').disabled=false; return; }
+  $('jobInfo').textContent='任务 '+r.jobId+'  args: '+r.args.join(' ');
+  logLine('st','jobId='+r.jobId);
+  if(es) es.close();
+  es = new EventSource('/api/events?jobId='+encodeURIComponent(r.jobId));
+  const onEvt=(e)=>{ try{ const o=JSON.parse(e.data); const d=o.data||{}; const line=d.line||JSON.stringify(d);
+    if(o.type==='account-success') logLine('ok','✓ '+line);
+    else if(o.type==='account-failed') logLine('bad','✗ '+line);
+    else if(o.type==='worker-update'){ if(d.stage){ renderStages(d.stage,doneStages); doneStages.add(d.stage);} logLine('st',line); }
+    else if(o.type==='job-done'){ logLine(d.ok?'ok':'bad','■ 任务结束 code='+d.code); $('runBtn').disabled=false; es.close(); loadCards(); }
+    else logLine('l',line);
+  }catch(_e){} };
+  ['log','worker-update','account-success','account-failed','job-start','job-done','job-error'].forEach(t=>es.addEventListener(t,onEvt));
+  es.onerror=()=>{};
+}
+
+async function loadCards(){
+  try{ const r=await fetch('/api/cards').then(r=>r.json()); if(!r.ok) return;
+    const s=r.stats||{}; $('cardStats').textContent='可用 '+(r.available||0)+' · 共 '+(s.total||(r.snapshot||[]).length||0)+' 张 · active '+(s.active||0)+' · disabled '+(s.disabled||0);
+    const tb=$('cardTable').querySelector('tbody'); tb.innerHTML='';
+    (r.snapshot||[]).forEach(c=>{ const tr=document.createElement('tr');
+      tr.innerHTML='<td>•••• '+(c.last4||'')+'</td><td><span class="pill">'+(c.status||'')+'</span></td><td>'+(c.usedCount||0)+'/'+(c.maxUses||0)+'</td><td>'+(c.declineCount||0)+'</td><td class="muted">'+(c.lastResult||'')+'</td>'+
+        '<td><button class="ghost" data-id="'+c.id+'" data-act="'+(c.status==='disabled'?'enable':'disable')+'">'+(c.status==='disabled'?'启用':'禁用')+'</button></td>';
+      tb.appendChild(tr); });
+    tb.querySelectorAll('button').forEach(b=>b.onclick=async()=>{ await fetch('/api/cards/'+b.dataset.act,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.id})}); loadCards(); });
+  }catch(_e){}
+}
+async function importCards(){ const text=$('cardText').value.trim(); if(!text) return;
+  const r=await fetch('/api/cards/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,maxUses:+$('cardMaxUses').value||10})}).then(r=>r.json());
+  $('cardImportMsg').textContent='已导入 '+(r.added||0)+' 张'+(r.errors&&r.errors.length?(' · '+r.errors.length+' 行解析失败'):''); $('cardText').value=''; loadCards(); }
+
+async function loadCfg(){ const r=await fetch('/api/config').then(r=>r.json()); if(!r.ok) return; const b=r.billing||{}, u=r.upgrade||{};
+  $('realCharge').checked=b.realCharge!==false; $('maxCardTries').value=b.maxCardTries||3; $('cardFillEngine').value=b.cardFillEngine||'playwright,osinput';
+  if(u.plan) $('plan').value=u.plan; if(u.tab) $('tab').value=u.tab; if(b.amount) $('amount').value=b.amount;
+  $('chargeWarn').textContent = b.realCharge!==false ? '⚠ 全局真实扣款已开启：非 dry-run 的成功跑会真实扣费。' : ''; }
+async function saveCfg(){ const body={ upgrade:{plan:$('plan').value, tab:$('tab').value}, billing:{ realCharge:$('realCharge').checked, amount:+$('amount').value||0, maxCardTries:+$('maxCardTries').value||3, cardFillEngine:$('cardFillEngine').value } };
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); loadCfg(); $('cardImportMsg').textContent=''; logLine('st','已保存套餐/支付设置'); }
+
+$('runBtn').onclick=startRun; $('clearBtn').onclick=()=>logEl.innerHTML='';
+$('importCards').onclick=importCards; $('saveCfg').onclick=saveCfg;
+$('realCharge').onchange=()=>{ $('chargeWarn').textContent=$('realCharge').checked?'⚠ 全局真实扣款已开启。':''; };
+fetch('/api/health').then(r=>r.json()).then(h=>$('health').textContent='● 在线 :'+h.port).catch(()=>$('health').textContent='● 离线');
+renderStages(null,new Set()); loadCards(); loadCfg();
+</script>
+</body>
+</html>

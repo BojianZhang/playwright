@@ -11,6 +11,10 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const { chromium } = require('playwright');
+const {
+  applyConnectedRuntimeIdentity,
+  buildConnectedRuntimeIdentityError,
+} = require('../../../shared-browser-runtime/connected-runtime');
 
 /**
  * 经 CDP ws 端点接管浏览器，返回 { browser, context, page, ipCheck }。
@@ -32,6 +36,8 @@ async function connectRuntime(ws, opts = {}) {
   // 指纹浏览器启动后已有一个默认 context + 一个 tab。
   const context = browser.contexts()[0] || (await browser.newContext());
   const page = context.pages()[0] || (await context.newPage());
+  const identityRuntime = await applyConnectedRuntimeIdentity(context, page, opts)
+    .catch((error) => buildConnectedRuntimeIdentityError(error, 'provider-context-identity-error'));
 
   // 按网格摆放窗口(默认全堆左上角，用 CDP setWindowBounds 平铺，便于多开观察)。
   if (windowLayout && (windowLayout.width || windowLayout.height)) {
@@ -53,6 +59,8 @@ async function connectRuntime(ws, opts = {}) {
     browser,
     context,
     page,
+    fingerprint: identityRuntime.fingerprint,
+    storageCleanup: identityRuntime.storageCleanup,
     // IP 由指纹浏览器的代理决定；这里不单独探测(fingerprintOverview 会展示真实出口IP)。
     ipCheck: { browserRuntimeIp: null, browserRuntimeIpSource: ipSource, ipCheckError: null, checkedAt: new Date().toISOString() },
   };

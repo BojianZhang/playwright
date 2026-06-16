@@ -1,0 +1,42 @@
+{
+  "_comment": "S8 收银台支付结果识别信号（单一来源）。字段选择器在 billing/card-fill/selectors.js（与填卡引擎共用）；这里只放「支付成功/拒付/错误」的判定文案与 URL 片段。全部多候选，抗改版。",
+  "name": "dreamina",
+  "stage": "payment",
+
+  "successSignals": {
+    "texts": [
+      "Thank you",
+      "Payment successful",
+      "Payment succeeded",
+      "Your payment was successful",
+      "Order confirmed",
+      "Subscription active",
+      "Success",
+      "支付成功",
+      "购买成功"
+    ],
+    "urlIncludes": ["success", "thank", "complete", "confirmation", "receipt", "result=ok", "paid"]
+  },
+
+  "declineSignals": {
+    "texts": [
+      "declined",
+      "was declined",
+      "insufficient",
+      "invalid card",
+      "invalid card number",
+      "card was declined",
+      "Payment failed",
+      "Payment was not successful",
+      "try another card",
+      "do not honor",
+      "被拒绝",
+      "支付失败",
+      "余额不足"
+    ]
+  },
+
+  "errorSignals": {
+    "texts": ["something went wrong", "unexpected error", "Please try again", "timeout", "服务异常"]
+  }
+}

@@ -7,6 +7,7 @@ import time
 import urllib.request
 
 from .base import log
+from .fingerprint_bridge import inject_shared_fingerprint
 from .osnative import IS_MAC   # macOS 上 byte-patch 后须 ad-hoc 重签名,否则 Apple Silicon 拒绝执行
 
 # 隐身脚本(Page.addScriptToEvaluateOnNewDocument 在页面脚本前注入,每次导航生效):
@@ -154,6 +155,11 @@ def attach_chrome(port, driver_path="", retries=8, delay=4):
         driver_path = _patch_chromedriver(driver_path)
     opts = Options()
     opts.add_experimental_option("debuggerAddress", "127.0.0.1:%s" % port)
+    # 页面加速(SEL_PAGELOAD_STRATEGY=eager/none):不等图片/子资源加载完就放行,d.get() 更早返回、脚本更早可操作元素。
+    #   留空/其它=normal(默认,等整页加载完,逐字节不变)。纯 Selenium 会话能力,零反检测风险(不 enable 任何 CDP 域、不屏蔽资源)。
+    _pls = os.environ.get("SEL_PAGELOAD_STRATEGY", "").strip().lower()
+    if _pls in ("eager", "none"):
+        opts.page_load_strategy = _pls
     if not _port_ready(port, 8):
         log("调试端口 %s 8s 内未就绪,仍尝试接管" % port)   # 取代固定 sleep(4):就绪即走,通常省 ~3s
     last = None
@@ -175,6 +181,7 @@ def attach_chrome(port, driver_path="", retries=8, delay=4):
                     d.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS})
                 except Exception as _e:
                     log("[stealth] 注入隐身脚本失败(忽略): %s" % str(_e)[:50])
+            inject_shared_fingerprint(d, "openrouter:%s" % port)
             return d
         except Exception as e:
             last = e

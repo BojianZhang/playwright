@@ -38,8 +38,9 @@ export default function RunDetailPage() {
   const success = data?.success || [];
   const failed = data?.failed || [];
   const incomplete = data?.incomplete || [];
-  // 未完整里【可续跑】的(banned/坏邮箱是永久态,不重跑)→ 给「只续跑未完整」按钮用
-  const resumableEmails = incomplete.filter((r) => r.status === 'incomplete' || r.status === 'not-run').map((r) => r.email).filter(Boolean);
+  // 未完整里【可续跑】的(banned/坏邮箱是永久态,不重跑;已被后续续跑救回的也不再续跑)→ 给「只续跑未完整」按钮用
+  const resumableEmails = incomplete.filter((r) => (r.status === 'incomplete' || r.status === 'not-run') && !r.recovered).map((r) => r.email).filter(Boolean);
+  const recoveredCount = incomplete.filter((r) => r.recovered).length;   // 已被后续续跑救回的未完整号数(server 对账回写)
   // ★M21:大批次详情(后端封顶 5000 行)若整表渲染进 DOM 会卡顿 → 只渲染前 RENDER_CAP 行,溢出给提示+引导下载(完整数据在 .csv/.txt)。
   const RENDER_CAP = 1000;
   const copy = (txt: string) => navigator.clipboard.writeText(txt).then(() => toast.push('已复制', 'ok'), () => toast.push('复制失败', 'err'));
@@ -289,7 +290,7 @@ export default function RunDetailPage() {
         <>
           <div className="section-gap" />
           <section className="card">
-            <div className="card-head"><span className="idx c-amber"><Icon name="alert" size={12} /></span><h3>未完整 / 未运行 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{incomplete.length}</span></h3>
+            <div className="card-head"><span className="idx c-amber"><Icon name="alert" size={12} /></span><h3>未完整 / 未运行 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{incomplete.length}{recoveredCount > 0 ? ` · ${recoveredCount} 已续跑恢复` : ''}</span></h3>
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span className="z-hint">这些号本批没产出结果(被中断/并发没排到/丢结果),已逐号标明原因</span>
                 {isPy && resumableEmails.length > 0 && (
@@ -306,9 +307,12 @@ export default function RunDetailPage() {
                   <thead><tr><th>邮箱</th><th>状态</th><th>为啥未完整(可续跑性)</th></tr></thead>
                   <tbody>
                     {incomplete.slice(0, RENDER_CAP).map((a: IncompleteRow, i) => (
-                      <tr key={i}>
+                      <tr key={i} style={a.recovered ? { opacity: 0.6 } : undefined}>
                         <td className="mono">{a.email}</td>
-                        <td>{INCOMPLETE_BADGE[a.status] || <span className="kbadge neutral">{a.status}</span>}</td>
+                        <td>
+                          {INCOMPLETE_BADGE[a.status] || <span className="kbadge neutral">{a.status}</span>}
+                          {a.recovered && <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 4, fontSize: 11, background: '#dcfce7', color: '#166534', whiteSpace: 'nowrap' }} title={`已在续跑 ${String(a.recoveredBy || '').slice(-10)} 中成功,无需再续跑`}>✓已续跑恢复</span>}
+                        </td>
                         <td className="mono" style={{ color: 'var(--text-2)' }}>{a.reason}</td>
                       </tr>
                     ))}
