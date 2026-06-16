@@ -321,6 +321,23 @@ def _dump_apikey_debug(page, tag):
         except Exception: pass
 
 
+def _apikey_content_ready(page):
+    """manage-apikey 取Key页【内容是否真渲染出来】(治黑屏:URL 对了但内容没出,只剩 logo+汉堡 → 永远找不到 Add 按钮)。
+       判:有 Add/Create 按钮文案 / API key 列表区 / 正文文本够多(黑屏页正文极短)。"""
+    try:
+        return bool(page.js(r"""return (function(){
+          try{
+            var bt=((document.body&&document.body.innerText)||'')+'';
+            if(/add api key|create api key|new api key|\+\s*add/i.test(bt)) return true;
+            if(document.querySelector('table,[class*="apikey" i],[class*="api-key" i],[class*="key-list" i],[class*="api_key" i]')) return true;
+            if(bt.replace(/\s+/g,'').length > 60) return true;   // 黑屏=只有 logo+汉堡,正文极短
+            return false;
+          }catch(e){return false;}
+        })();"""))
+    except Exception:
+        return False
+
+
 def get_api_key(page, name=None, on_key=None, relogin=None, on_node=None):
     """创建并抓取 API Key。返回 {ok, key, name, reason}。on_key(k) 抓到即回调(供 checkpoint 即时落盘)。
        relogin:可选无参回调,返回 bool —— 取 Key 页发现【未登录】(会话没从 chat.z.ai 带到 z.ai 取Key域,
@@ -355,6 +372,34 @@ def get_api_key(page, name=None, on_key=None, relogin=None, on_node=None):
 
     # ★登录后先判推广弹窗(GLM Coding Plan / Value Subscription)有没有 → 有就关(只点 X,绝不点 Join Now),再创建
     _nd("apikey_promo", "ok" if dismiss_promo_modal(page) else "fail:PROMO_STUCK")
+
+    # ★Opt1(开关 APIKEY_WAIT_CONTENT 默认开;旋钮 APIKEY_CONTENT_WAIT 默认12s):取Key页常【黑屏/空白】
+    #   (URL 对但内容没渲染,只剩 logo+汉堡)→ 旧码无脑等 22s 找不存在的 Add 按钮(实测此环节 0% 成功、纯浪费)。
+    #   改:先等【真内容渲染】,好了直接往下(更快);过半还黑屏→强制催渲染(关弹窗+滚动+resize,APIKEY_FORCE_RELOAD 开则硬刷);
+    #   仍黑屏→快速失败 APIKEY_PAGE_BLANK(不再干等 22s,且失败原因更准,便于排查)。关掉(=0)则走老逻辑逐字节不变。
+    if str(os.environ.get("APIKEY_WAIT_CONTENT", "1")).strip().lower() not in ("0", "false", "no", "off"):
+        _cw = float(os.environ.get("APIKEY_CONTENT_WAIT", "12") or 12)
+        _cend = time.time() + _cw; _ready = False; _forced = False
+        while time.time() < _cend:
+            if _apikey_content_ready(page):
+                _ready = True; break
+            if (not _forced) and (time.time() > _cend - _cw * 0.5):
+                log("[apikey] 取Key页内容未渲染(黑屏)→ 强制催渲染")
+                try: page.clear_promo()
+                except Exception: pass
+                try: page.js("try{window.scrollTo(0,document.body.scrollHeight);window.scrollTo(0,0);window.dispatchEvent(new Event('resize'));}catch(e){}")
+                except Exception: pass
+                if str(os.environ.get("APIKEY_FORCE_RELOAD", "0")).strip().lower() in ("1", "true", "yes", "on"):
+                    try: page.js("location.reload(true)"); time.sleep(2.0)
+                    except Exception: pass
+                _forced = True
+            time.sleep(0.5)
+        if not _ready:
+            if str(os.environ.get("APIKEY_DEBUG", "1")).lower() not in ("0", "", "false", "no"):
+                _dump_apikey_debug(page, "%s-blank" % (name or "key"))
+            _nd("apikey_add_dialog", "fail:APIKEY_PAGE_BLANK")
+            log("[apikey] %.0fs 取Key页内容仍未渲染(黑屏)→ 快速失败 APIKEY_PAGE_BLANK" % _cw)
+            return {"ok": False, "key": None, "name": name, "reason": "APIKEY_PAGE_BLANK"}
 
     # ① 打开「Add API Key」/「Create API key」对话框
     _add = sel("apikey_add", "Add API Key", "Create API key", "Add API key", "New API Key", "+ Add API Key")

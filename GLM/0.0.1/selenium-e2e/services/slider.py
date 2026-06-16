@@ -41,7 +41,7 @@ def _trace(tag, msg):
         pass
 
 
-# ★拖拽诊断(写进 slider-trace.log 供我直接复盘):_drag_slider_to 每次填 scale/抓取探测位移/比例,_solve_simple 的"拖完"带上它。
+# ★拖拽诊断(写进 slider-trace.log 供我直接复盘):_drag_slider_to 每次填 scale/抓取探测位移/比例,solve 的"拖完"带上它。
 _LAST_DRAG_DIAG = {}
 
 
@@ -465,11 +465,46 @@ def _puzzle_ready(driver):
     return bool(m and m.get("piece") and m.get("bg"))
 
 
+def _captcha_sdk_present(driver):
+    """阿里云验证码 SDK / 容器 / 脚本是否已在页面(=控件还在异步加载,别急着刷页 —— 刷页会把没加载完的冲掉重来,
+       慢代理上永远加载不完;用户实证"页面元素经常不加载全")。判:全局对象 / aliyunCaptcha 容器 / 第三方验证码脚本。"""
+    try:
+        return bool(driver.execute_script(r"""return (function(){
+          try{
+            if (window.AliyunCaptcha||window.aliyunCaptcha||window.AWSC||window.initAliyunCaptcha||window.NoCaptcha) return true;
+            if (document.querySelector('[id*="aliyunCaptcha" i],[class*="aliyunCaptcha" i],[id*="captcha" i],[class*="captcha" i],[class*="nc_" i],[class*="nocaptcha" i]')) return true;
+            var ss=document.querySelectorAll('script[src]');
+            for (var i=0;i<ss.length;i++){var s=(ss[i].src||'').toLowerCase();
+              if(s.indexOf('aliyun')>=0||s.indexOf('awsc')>=0||s.indexOf('captcha')>=0) return true;}
+            return false;
+          }catch(e){return false;}
+        })();"""))
+    except Exception:
+        return False
+
+
+def _force_captcha_render(driver):
+    """★强制催渲染(控件 SDK 在、但触发器迟迟不出时):【不刷页、不重载】,只派发几个常能唤醒懒加载/重排的无害事件——
+       给密码框 focus/blur(很多表单在交互后才初始化验证码)、滚动到底再回顶、派发 window resize/scroll。
+       尽力而为(吞异常),不影响已填表单值,失败也不影响主流程。"""
+    try:
+        driver.execute_script(r"""(function(){
+          try{
+            var pw=document.querySelector('input[type=password]'); if(pw){pw.focus(); pw.blur(); pw.focus();}
+            window.scrollTo(0, document.body.scrollHeight); window.scrollTo(0,0);
+            window.dispatchEvent(new Event('resize')); window.dispatchEvent(new Event('scroll'));
+          }catch(e){}
+        })();""")
+        return True
+    except Exception:
+        return False
+
+
 def _ensure_open(driver, total_wait=None):
     """确保【真正可解的】拼图浮层已打开(base64 块+背景就绪),否则触发按钮一出现就点(0.4s 轮询、节流 1.5s、CDP/Selenium 交替)。
     ★判据用 _puzzle_ready(与解题同口径)→ 失败后旧残留图蒙不过去,会重新触发新拼图,重试才真生效。
     ★耗时≈阿里云控件真实异步加载时间,不在固定边界白等(实测把"打开"从 ~24s 压到 ~8s)。total_wait 上限(env SLIDER_OPEN_WAIT)。"""
-    total_wait = total_wait if total_wait is not None else float(os.environ.get("SLIDER_OPEN_WAIT", "22") or 22)
+    total_wait = total_wait if total_wait is not None else float(os.environ.get("SLIDER_OPEN_WAIT", "30") or 30)
     if _puzzle_ready(driver):
         return True
     end = time.time() + total_wait
@@ -477,6 +512,10 @@ def _ensure_open(driver, total_wait=None):
     n = 0
     vis_since = 0.0   # 拼图图【可见】起始时刻 —— 可见但 base64 迟迟取不到时,别干等满 22s(=卡死),给 grace 后就当开着放行
     _vis_grace = float(os.environ.get("SLIDER_OPEN_VIS_GRACE", "4") or 4)
+    no_ctrl_since = 0.0   # 连续【无触发元素也无浮层】起始时刻
+    _no_ctrl_grace = float(os.environ.get("SLIDER_NO_CONTROL_GRACE", "12") or 12)      # ★SDK 都不在(脚本真没加载)→ 超此即快速失败刷页(原8s太短=刷太快)
+    _no_ctrl_hardcap = float(os.environ.get("SLIDER_NO_CONTROL_HARDCAP", "25") or 25)  # ★SDK 在(还在加载)→ 耐心等到此硬上限再放弃,别刷页把加载冲掉
+    _forced = False       # 是否已催过一次渲染(强制加载)
     while time.time() < end:
         if _puzzle_ready(driver):
             log("[slider] 拼图浮层已打开(块+背景 base64 就绪)")
@@ -494,12 +533,33 @@ def _ensure_open(driver, total_wait=None):
             time.sleep(0.4); continue
         vis_since = 0.0
         tr = _find_trigger(driver)
-        if tr and (time.time() - last_click) >= 1.5:   # 仅在【无可见浮层】时点触发(节流防重复点;CDP 优先,交替 Selenium 兜底)
-            if n % 2 == 0:
-                log("[slider] CDP 可信点击触发 @%.0f,%.0f" % (tr["x"], tr["y"])); _cdp_click(driver, tr["x"], tr["y"])
-            else:
-                log("[slider] Selenium 点击触发"); _selenium_click_trigger(driver)
-            last_click = time.time(); n += 1
+        if tr:
+            no_ctrl_since = 0.0                          # 有触发元素=控件在加载 → 重置"无控件"计时
+            if (time.time() - last_click) >= 1.5:        # 仅在【无可见浮层】时点触发(节流防重复点;CDP 优先,交替 Selenium 兜底)
+                if n % 2 == 0:
+                    log("[slider] CDP 可信点击触发 @%.0f,%.0f" % (tr["x"], tr["y"])); _cdp_click(driver, tr["x"], tr["y"])
+                else:
+                    log("[slider] Selenium 点击触发"); _selenium_click_trigger(driver)
+                last_click = time.time(); n += 1
+        else:
+            # ★没触发器也没浮层 → 分两种,别一律就刷(用户:"刷太快,把没加载完的冲掉重来,永远加载不全"):
+            #   (a)验证码 SDK/容器/脚本【在】= 还在异步加载 → 耐心等到 hardcap,中途【强制催一次渲染】(不刷页);
+            #   (b)SDK 都【不在】= 脚本真没加载(代理挂/页面没渲染)→ 干等也没用,grace 秒快速失败交上层刷当前页重载。
+            now = time.time()
+            if no_ctrl_since == 0.0:
+                no_ctrl_since = now
+            _elapsed = now - no_ctrl_since
+            if _captcha_sdk_present(driver):
+                if (not _forced) and _elapsed >= max(3.0, _no_ctrl_grace * 0.5):
+                    log("[slider] 验证码 SDK 在但触发器未出(%.0fs)→ 强制催渲染(聚焦/滚动/resize,不刷页)" % _elapsed)
+                    _force_captcha_render(driver); _forced = True
+                if _elapsed >= _no_ctrl_hardcap:
+                    log("[slider] 验证码 SDK 在但 %.0fs 仍没出触发器(超硬上限)→ 放弃,交上层刷当前页" % _no_ctrl_hardcap)
+                    return False
+                # SDK 在、未超硬上限 → 继续等(绝不刷页把加载冲掉)
+            elif _elapsed >= _no_ctrl_grace:
+                log("[slider] %.0fs 无触发/无浮层/无验证码SDK=脚本真没加载 → 快速失败,交上层刷当前页重载" % _no_ctrl_grace)
+                return False
         time.sleep(0.4)
     log("[slider] 等触发/可解拼图渲染超时(%.0fs)" % total_wait)
     return False
@@ -850,12 +910,13 @@ def _find_slider_handle(driver):
         return None
 
 
-def _solve_simple(driver, cfg, timeout=120, label=""):
-    """★精简版滑块(默认走这条):单趟、不刷新、只判成功/失败。流程=
-         开浮层 → 等稳定拼图 → 缺口值(CapSolver 交付 + 本地饱和度/NCC 当裁判增加准确率) → 拖一次 → 判过没过。
-       失败【绝不在内部刷新重试】(用户定:"不用刷新滑块了")——交由上层 register/login 整页重进一次。
-       裁判逻辑:cap 与本地都有且接近=信 cap(交付 cap);严重分歧=本地裁判改用本地(catch 掉 CapSolver 的垃圾值);
-                只有一方有值就用那方;都没有=判失败。"""
+def solve(driver, cfg, timeout=120, attempts=None, label=""):
+    """★CapSolver 验证交付(用户终极逻辑·绝不换图):页面加载完→直接干活;本地(sat/ncc)当裁判,
+       【仅 cap 邻近本地(≤tol)才提交(拖)cap】;成功→上层下一步。
+       cap 不邻近本地 / 本地无裁判 / 拖完没过 → 返回 False,交上层 _verify_login_loop 刷【当前页】重来
+       (=用户"不成功刷新页面";刷出新页=新拼图重新算 cap/本地再判)。
+       ★【禁止 _refresh_puzzle 换图片】(用户:一进页面就换图会卡顿):所有"刷"都是刷【当前页】(外层)。
+       注:下面 for 循环现仅跑 1 次(换图分支已改为 return False);_max_verify/兜底分支保留但不再触发,留作一键回换图。"""
     api_key = cfg.get("captcha_key")
     provider = str(cfg.get("captcha_provider") or "twocaptcha").lower()
     tag = str(cfg.get("_env_id") or label or "slider")
@@ -864,356 +925,117 @@ def _solve_simple(driver, cfg, timeout=120, label=""):
         driver.execute_cdp_cmd("Page.enable", {})
     except Exception:
         pass
-    _trace(tag, "===== solve(精简) 开始 provider=%s =====" % provider)
-    # 1) 开浮层(CDP 可信点击);开不出来=页面空白/没加载 → 判失败(交上层整页重进,不在此空耗)
-    if not _ensure_open(driver):
-        if debug:
-            _dump_debug(driver, "%s-simple-noopen" % tag)
-        log("[slider][%s] 浮层没开(页面空白/未加载)→ 判失败" % tag); _trace(tag, "浮层没开→失败")
-        return False
-    # 2) 等稳定拼图 + 按钮就绪
-    m = _wait_puzzle_stable(driver)
-    if (not m or not (m.get("piece") and m.get("bg"))
-            or not m.get("btn") or not (m.get("btn_dispW") and float(m["btn_dispW"]) > 10)):
-        log("[slider][%s] 没等到稳定拼图/按钮 → 判失败" % tag); _trace(tag, "无稳定拼图→失败")
-        return False
-    bg_dispW = float(m["bg_dispW"] or 1); bg_natW = float(m["bg_natW"] or bg_dispW); piece_dispW = float(m["piece_dispW"] or 0)
-    _piece_natW = piece_dispW * (bg_natW / bg_dispW) if bg_dispW else (piece_dispW or 50)
-    _lo = max(8.0, _piece_natW * 0.85); _hi = bg_natW - _piece_natW * 0.5
-    def _ok_geo(v):
-        return (v is not None) and (_lo <= float(v) <= _hi)
-    # 3) 缺口值:本地裁判(免费,先算)+ CapSolver(交付)
-    sat = ncc = None
-    try:
-        _det = _detect_gap_py(m["piece"], m["bg"]) or {}
-        sat = _det.get("sat"); ncc = _det.get("ncc")
-    except Exception as _le:
-        log("[slider][%s] 本地认读异常: %s" % (tag, str(_le)[:60]))
-    sat_g = float(sat[0]) if (sat and _ok_geo(sat[0])) else None
-    ncc_g = float(ncc[0]) if (ncc and _ok_geo(ncc[0])) else None
-    local_ref = None   # 本地裁判值:双法接近取均值,否则取置信高者
-    if sat_g is not None and ncc_g is not None and abs(sat_g - ncc_g) <= 8:
-        local_ref = (sat_g + ncc_g) / 2.0
-    elif ncc and ncc_g is not None and ncc[1] >= 0.55:
-        local_ref = ncc_g
-    elif sat and sat_g is not None and sat[1] >= 2.5:
-        local_ref = sat_g
-    elif ncc_g is not None:
-        local_ref = ncc_g
-    elif sat_g is not None:
-        local_ref = sat_g
-    cap_g = None
-    if provider == "capsolver":
-        _cap_to = min(float(timeout or 120), float(os.environ.get("SLIDER_CAP_TIMEOUT", "40") or 40))
-        _trace(tag, "▶CapSolver求解中")
-        with timed("%s.slider.capsolver" % tag):
-            _c = _solve_capsolver_slider(api_key, m["piece"], m["bg"], website_url=_cur_url(driver), timeout=_cap_to)
-        cap_g = float(_c) if _ok_geo(_c) else None
     _tol = float(os.environ.get("SLIDER_VERIFY_TOL", "8") or 8)
-    if cap_g is not None and local_ref is not None:
-        if abs(cap_g - local_ref) <= _tol:
-            chosen = cap_g; src = "Cap+本地一致 g=%d" % int(cap_g)
+    _max_verify = int(os.environ.get("SLIDER_VERIFY_MAX_REFRESH", "3") or 3)
+    _trace(tag, "===== solve(验证交付) 开始 provider=%s tol=%.0f 求一致上限=%d =====" % (provider, _tol, _max_verify))
+    _dumped = False
+    for _vr in range(_max_verify + 1):
+        # ① 开浮层(控件没加载 → 快速失败,交上层刷当前页)
+        if not _ensure_open(driver):
+            if debug and not _dumped:
+                _dump_debug(driver, "%s-noopen" % tag); _dumped = True
+            log("[slider][%s] 浮层没开(控件/页面未加载)→ 判失败" % tag); _trace(tag, "浮层没开→失败(交上层刷当前页)")
+            return False
+        # ② 等稳定拼图 + 按钮就绪
+        m = _wait_puzzle_stable(driver)
+        if (not m or not (m.get("piece") and m.get("bg"))
+                or not m.get("btn") or not (m.get("btn_dispW") and float(m["btn_dispW"]) > 10)):
+            log("[slider][%s] 没等到稳定拼图/按钮 → 判失败" % tag); _trace(tag, "无稳定拼图→失败")
+            return False
+        bg_dispW = float(m["bg_dispW"] or 1); bg_natW = float(m["bg_natW"] or bg_dispW); piece_dispW = float(m["piece_dispW"] or 0)
+        _piece_natW = piece_dispW * (bg_natW / bg_dispW) if bg_dispW else (piece_dispW or 50)
+        _lo = max(8.0, _piece_natW * 0.85); _hi = bg_natW - _piece_natW * 0.5
+        def _ok_geo(v):
+            return (v is not None) and (_lo <= float(v) <= _hi)
+        # ③ 本地裁判(sat/ncc 免费,先算)
+        sat = ncc = None
+        try:
+            _det = _detect_gap_py(m["piece"], m["bg"]) or {}
+            sat = _det.get("sat"); ncc = _det.get("ncc")
+        except Exception as _le:
+            log("[slider][%s] 本地认读异常: %s" % (tag, str(_le)[:60]))
+        sat_g = float(sat[0]) if (sat and _ok_geo(sat[0])) else None
+        ncc_g = float(ncc[0]) if (ncc and _ok_geo(ncc[0])) else None
+        local_ref = None   # 本地裁判值:双法接近取均值,否则取置信高者
+        if sat_g is not None and ncc_g is not None and abs(sat_g - ncc_g) <= 8:
+            local_ref = (sat_g + ncc_g) / 2.0
+        elif ncc and ncc_g is not None and ncc[1] >= 0.55:
+            local_ref = ncc_g
+        elif sat and sat_g is not None and sat[1] >= 2.5:
+            local_ref = sat_g
+        elif ncc_g is not None:
+            local_ref = ncc_g
+        elif sat_g is not None:
+            local_ref = sat_g
+        # ④ CapSolver(交付值)
+        cap_g = None
+        if provider == "capsolver":
+            _cap_to = min(float(timeout or 120), float(os.environ.get("SLIDER_CAP_TIMEOUT", "40") or 40))
+            _trace(tag, "▶CapSolver求解中(验证交付)")
+            with timed("%s.slider.capsolver" % tag):
+                _c = _solve_capsolver_slider(api_key, m["piece"], m["bg"], website_url=_cur_url(driver), timeout=_cap_to)
+            cap_g = float(_c) if _ok_geo(_c) else None
+        # ⑤ 验证交付判定:本地当裁判,【cap 与本地一致才提交 cap】
+        _delta = abs(cap_g - local_ref) if (cap_g is not None and local_ref is not None) else None
+        _vinfo = "cap=%s 本地=%s Δ=%s tol=%.0f" % (
+            ("%.0f" % cap_g) if cap_g is not None else "无",
+            ("%.0f" % local_ref) if local_ref is not None else "无",
+            ("%.1f" % _delta) if _delta is not None else "-", _tol)
+        # ★Opt3(开关 SLIDER_STRICT_CONSENSUS,默认关=逐字节当前行为):严格共识——只在 sat 与 ncc 两个本地法
+        #   【互相一致】(都在且|Δ|≤tol)且 cap 与之一致时才拖;否则不拖→刷页。少拖那些"残差≈0却FAIL"的低共识值。
+        _strict = str(os.environ.get("SLIDER_STRICT_CONSENSUS", "")).strip().lower() in ("1", "true", "yes", "on")
+        _consensus = (sat_g is not None and ncc_g is not None and abs(sat_g - ncc_g) <= _tol)
+        # ★本地优先(UI「缺口识别策略=分歧优先本地」/ env SLIDER_LOCAL_FIRST):CapSolver 离群严重时(实测Δ常14~144,
+        #   "cap邻近本地才拖"→cap垃圾就永远不拖→一直刷当前页死循环)用它——信本地(sat/ncc),cap 仅在本地无值时兜底。
+        #   默认关=当前验证交付行为逐字节不变。trace 证明本地 sat≈ncc 算得准、垃圾的只有 CapSolver。
+        _local_first = str(os.environ.get("SLIDER_LOCAL_FIRST", "")).strip().lower() in ("1", "true", "yes", "on")
+        _accept = (_delta is not None and _delta <= _tol) and ((not _strict) or _consensus)
+        _last = (_vr >= _max_verify)
+        if _local_first and local_ref is not None:
+            chosen = local_ref; src = "本地优先→交付本地 g=%d(%s)" % (int(local_ref), _vinfo)
+        elif _local_first and cap_g is not None:
+            chosen = cap_g; src = "本地优先·本地无值→交付Cap g=%d(%s)" % (int(cap_g), _vinfo)
+        elif _accept:
+            chosen = cap_g; src = "✅Cap经本地验证一致→交付Cap g=%d(%s%s)" % (int(cap_g), _vinfo, "·严格共识" if _strict else "")
+        elif _last and (not _strict) and (local_ref is not None or cap_g is not None):
+            chosen = local_ref if local_ref is not None else cap_g
+            src = "求一致到上限(%d次)→兜底交付%s g=%d(%s)" % (_max_verify, "本地" if local_ref is not None else "Cap", int(chosen), _vinfo)
         else:
-            chosen = local_ref; src = "Cap(%d)与本地(%d)分歧→裁判取本地" % (int(cap_g), int(local_ref))
-    elif cap_g is not None:
-        chosen = cap_g; src = "仅Cap g=%d" % int(cap_g)
-    elif local_ref is not None:
-        chosen = local_ref; src = "仅本地 g=%d(Cap无值)" % int(local_ref)
-    else:
-        log("[slider][%s] 缺口无可用值(sat=%s ncc=%s cap=%s)→ 判失败" % (tag, sat, ncc, cap_g)); _trace(tag, "无缺口值→失败")
-        return False
-    # 4) 拖一次(闭环锚定块)
-    distance = float(chosen) * (bg_dispW / bg_natW)
-    distance = distance * float(os.environ.get("SLIDER_SCALE", "1") or 1) + float(os.environ.get("SLIDER_OFFSET", "0") or 0)
-    grab = m.get("btn") or _find_slider_handle(driver)
-    if not grab or distance <= 2:
-        log("[slider][%s] 没按钮或位移≈0 → 判失败" % tag); _trace(tag, "无按钮/位移≈0→失败")
-        return False
-    log("[slider][%s] [%s] 拖滑块 位移=%.0f" % (tag, src, distance)); _trace(tag, "▶拖拽中 dist=%.0f (%s)" % (distance, src))
-    _err = None
-    try:
-        with timed("%s.slider.drag" % tag):
-            _err = _drag_slider_to(driver, distance, y_hint=grab["cy"])
-    except Exception as e:
-        log("[slider] 拖拽异常: %s" % str(e)[:80]); _trace(tag, "拖拽异常 %s" % str(e)[:40])
-        return False
-    time.sleep(1.2)
-    if debug:
-        _dump_debug(driver, "%s-simple-postdrag" % tag)
-    _pass = _passed(driver, residual=_err)
-    _d = _LAST_DRAG_DIAG
-    _diag = (" 目标=%s 落点=%s" % (_d.get("target"), _d.get("landed"))) if _d else ""
-    _trace(tag, "拖完 残差=%s 判定=%s%s" % (("%.1f" % _err) if _err is not None else "?", "PASS" if _pass else "FAIL", _diag))
-    _trace(tag, "===== solve(精简) 结束: %s =====" % ("成功" if _pass else "失败(不刷新,交上层整页重进)"))
-    if _pass:
-        log("[slider][%s] ✓ 通过" % tag)
-    return bool(_pass)
-
-
-def solve(driver, cfg, timeout=120, attempts=None, label=""):
-    """解 z.ai 滑块。返回 True/False。driver 须为已接管(attach_chrome)的会话。
-       ★默认走【完整路径:CapSolver验证交付 + 本地当裁判,仅 cap↔本地一致才提交Cap值;不一致→刷新换图求一致,绝不照拖错值】
-         —— 早上 trace 实测 50 次 PASS、残差≈0 的就是这条。SLIDER_SIMPLE=1 才走精简单趟版(分歧直接取本地、不刷新),
-         该精简版实测会精准拖到错的本地值致 FAIL(残差≈0 却不过),仅保留作对照,默认不走。"""
-    if str(os.environ.get("SLIDER_SIMPLE", "0")).strip().lower() in ("1", "true", "yes", "on"):
-        return _solve_simple(driver, cfg, timeout=timeout, label=label)
-    # ───────────────────────── 完整验证交付路径(默认):一致才提交Cap值,不一致刷新求一致 ─────────────────────────
-    api_key = cfg.get("captcha_key")
-    provider = str(cfg.get("captcha_provider") or "twocaptcha").lower()
-    tag = str(cfg.get("_env_id") or label or "slider")   # 诊断文件名带 AdsPower 环境编号 → 并发也能对上是哪个号
-    scale_cal = float(os.environ.get("SLIDER_SCALE", "1") or 1)
-    offset_cal = float(os.environ.get("SLIDER_OFFSET", "0") or 0)
-    attempts = attempts or int(os.environ.get("SLIDER_ATTEMPTS", "4") or 4)
-    debug = str(os.environ.get("SLIDER_DEBUG", "1")).lower() not in ("0", "", "false", "no")
-    try:
-        driver.execute_cdp_cmd("Page.enable", {})   # 截图需要(一次性,无事件订阅风险)
-    except Exception:
-        pass
-    dumped = False; cap_saved = False; post_saved = False; noget_dumped = False
-    blank_noopen = 0   # 连续"浮层没开且页面是空白(无验证控件)"的次数 → 多半是页面没加载出来(代理/并发),早退别空耗
-    _verify_refreshes = 0   # ★验证交付模式:cap↔本地不一致时已为求一致刷新的次数(整个 solve 累计,跨 attempts)
-    # ★全局墙钟上限:各步虽各有 deadline,但 attempts×各步最坏叠加可达数分钟(看着像卡死)→ 到点 fail-fast,不空耗。
-    solve_deadline = time.time() + float(os.environ.get("SLIDER_TOTAL_DEADLINE", "180") or 180)
-    _trace(tag, "===== solve 开始 provider=%s attempts=%d =====" % (provider, attempts))
-    for att in range(attempts):
-        if time.time() > solve_deadline:
-            log("[slider] ✗ 总时限(%.0fs)到,已试 %d 次仍未过 → fail-fast(不空耗)" % (
-                float(os.environ.get("SLIDER_TOTAL_DEADLINE", "180") or 180), att))
-            _trace(tag, "总时限到 → fail-fast(已试%d次)" % att); break
-        # ★先确保拼图真的打开(CDP 可信点击触发 + 等真拼图渲染),否则别拿 logo/图标去解。
-        opened = _ensure_open(driver)
-        if debug and not dumped:
-            _dump_debug(driver, "%s-att1-%s" % (tag, "open" if opened else "noopen"))
-            dumped = True
-        if not opened:
-            # 浮层没开:看页面上到底有没有【验证控件】(触发按钮/拼图)。完全没有=页面空白(没加载出来,常见于并发/代理慢)。
-            has_widget = False
-            try:
-                has_widget = bool(driver.execute_script(
-                    "return !!document.querySelector('#aliyunCaptcha-float-wrapper,#aliyunCaptcha-img,img.puzzle,#aliyunCaptcha-sliding-slider')"
-                    "|| /click to start verification|complete .*verification|拼图|滑动/i.test((document.body&&document.body.innerText)||'');"))
-            except Exception:
-                pass
-            if has_widget:
-                blank_noopen = 0
-                log("[slider] 第%d次:有验证控件但浮层没展开 → 重试触发" % (att + 1)); _trace(tag, "att%d 控件在但没展开→重试" % (att + 1))
-                time.sleep(1.5); continue
-            blank_noopen += 1
-            log("[slider] 第%d次:页面无验证控件(疑页面没加载出来/代理慢)blank#%d" % (att + 1, blank_noopen))
-            _trace(tag, "att%d 页面空白无验证控件 blank#%d" % (att + 1, blank_noopen))
-            if blank_noopen >= 2:
-                log("[slider] ✗ 连续 %d 次页面空白无验证控件 → 判页面未加载(非滑块问题),fail-fast" % blank_noopen)
-                _trace(tag, "连续空白%d次→fail-fast(页面未加载)" % blank_noopen); break
-            time.sleep(2.0); continue
-        blank_noopen = 0
-        g, _ok = _puzzle_geom(driver)
-        if not g:
-            time.sleep(1.0); continue
-        popup, handle = g["popup"], g["handle"]
-        img = g.get("img") or popup
-        log("[slider] 实测 popup=(%.0f,%.0f %0.fx%0.f) handle=(cx%.0f) img=(%0.fx%0.f) piece=%s" % (
-            popup["x"], popup["y"], popup["w"], popup["h"], handle["cx"], img["w"], img["h"],
-            ("cx%.0f" % g["piece"]["cx"]) if g.get("piece") else "none"))
-        # —— 求滑动距离 + 拖拽起点(全部来自【实时 DOM 几何】,分辨率/DPR/缩放自适应,不写死任何像素)——
-        grab = None
-        if provider in ("capsolver", "local"):
-            # ★等【拼图块+背景都加载完成且连续稳定】再抓,并【直接拿稳定后的这份数据】(_wait_puzzle_stable 返回 m)——
-            #   阿里云先贴占位/旧帧(complete 已成立)再 swap 成带缺口真图;不等稳定就抓 → 送 CapSolver 半截/错图 → 垃圾距离
-            #   拖错位 → 阿里云重置回"点击开始验证"(用户实测拖完弹回触发态)。本步把"判稳定"和"取数据"合一,杜绝中间又换图。
-            _trace(tag, "att%d ▶等稳定拼图图" % (att + 1))   # 阶段标记:供 slider_monitor 实时显示(否则慢加载像「静默卡死」)
-            m = _wait_puzzle_stable(driver)
-            if not m or not (m.get("piece") and m.get("bg")):
-                if debug and not noget_dumped:
-                    _dump_debug(driver, "%s-noget" % tag); noget_dumped = True   # 抓失败/刷新后到底什么 DOM 导致取不到稳定拼图
-                log("[slider][%s] 第%d次:没等到稳定的拼图块/背景 → 重探" % (tag, att + 1)); time.sleep(0.6); continue
-            # 滑块按钮没就绪(钮宽=0,失败动画/刷新中途)→ 几何不可信,别用,重探。
-            if not m.get("btn") or not (m.get("btn_dispW") and float(m["btn_dispW"]) > 10):
-                log("[slider][%s] 第%d次:滑块按钮未就绪(钮0)→ 重探" % (tag, att + 1)); time.sleep(0.8); continue
-            bg_dispW = float(m["bg_dispW"] or 1); bg_natW = float(m["bg_natW"] or bg_dispW)
-            piece_dispW = float(m["piece_dispW"] or 0)
-            slide_piece = None; src = ""
-            # ★几何硬约束合理区间(块从左缘 x≈0 起步,缺口必在块右侧且留得下整块)——本地/CapSolver 的值都过这道闸。
-            #   越界(实测 g=7/45/48 这类)=认错,照单拖必失败 → 不要它。
-            _piece_natW = piece_dispW * (bg_natW / bg_dispW) if bg_dispW else (piece_dispW or 50)
-            _lo = max(8.0, _piece_natW * 0.85); _hi = bg_natW - _piece_natW * 0.5
-            def _plausible(v):
-                return (v is not None) and (_lo <= float(v) <= _hi)
-            # ★默认 = ""(三法共识投票:sat/ncc/CapSolver,任意两法一致=高置信;无共识也取最佳估计[cap]直接拖,靠下张重试兜错)。
-            #   ★早上 trace 实测 50 次 PASS、残差≈0 就是这条(决策"无共识→最佳估计[cap]"也能过)。
-            #   ★切勿默认改成 capsolver-verified:那条"cap≠本地(实测Δ常 43-174)就绝不拖、只刷新求一致"→ 永不一致=永不拖=全失败。
-            _gap_mode = str(os.environ.get("SLIDER_GAP_MODE", "")).strip().lower()
-            _pure_cap = (_gap_mode == "pure-capsolver") or (str(os.environ.get("SLIDER_PURE_CAPSOLVER", "")).strip().lower() in ("1", "true", "on", "yes"))
-            _local_first = (_gap_mode == "local-first") or (str(os.environ.get("SLIDER_LOCAL_FIRST", "")).strip().lower() in ("1", "true", "on", "yes"))
-            _cap_verified = _gap_mode in ("capsolver-verified", "cap-verified")   # ★以CapSolver值交付、本地精准检测当裁判过滤
-            _sat_min = float(os.environ.get("SLIDER_LOCAL_MIN_CONF", "2.5") or 2.5)   # 饱和度法置信阈
-            _verify_tol = float(os.environ.get("SLIDER_VERIFY_TOL", "6") or 6)        # 验证模式:cap↔本地一致容差(原生px)
-            _verify_max_refresh = int(os.environ.get("SLIDER_VERIFY_MAX_REFRESH", "3") or 3)  # 验证模式:不一致最多刷新几次求一致
-            # ★★缺口"一劳永逸"=三法共识投票(谁都先过几何闸,任意两法 ≤8px 一致 = 高置信;不够才换图):
-            #   ① 饱和度法 sat(缺口去色)②NCC 内容匹配 ncc(块=从缺口切下的纹理,亮度归一→雪/云/雾骗不了,峰高+次峰落差大才信)
-            #   ③ CapSolver。两个【免费本地法】先算(~110ms);它俩已一致就【跳过 CapSolver】(快+省钱);否则用 CapSolver 当裁判。
-            #   ★无共识不硬拖(认不准就别赌,拖错=浪费且前向不可逆)→ 换新拼图求更清晰的一张;到末次才用最佳猜测兜底。
-            sat = ncc = None
-            if not _pure_cap:
-                try:
-                    _det = _detect_gap_py(m["piece"], m["bg"]) or {}
-                    sat = _det.get("sat"); ncc = _det.get("ncc")
-                except Exception as _le:
-                    log("[slider][%s] 本地认读异常: %s" % (tag, str(_le)[:60]))
-            # 候选(各过几何闸)+ 各自置信门;一致用之,不一致【也不拒拖】=按偏好取一个可用估计直接拖(retry 兜错)。
-            sat_g = float(sat[0]) if (sat and _plausible(sat[0])) else None
-            ncc_g = float(ncc[0]) if (ncc and _plausible(ncc[0])) else None
-            sat_conf_ok = bool(sat and sat[1] >= _sat_min)
-            ncc_strong = bool(ncc and ncc[1] >= 0.55 and ncc[2] >= 0.2)
-            ncc_very = bool(ncc and ncc[1] >= 0.70 and ncc[2] >= 0.35)
-            votes = []   # 仅【有把握】的本地票参与共识
-            if sat_g is not None and sat_conf_ok: votes.append(("sat", sat_g))
-            if ncc_g is not None and ncc_strong: votes.append(("ncc", ncc_g))
-
-            def _cluster(vs):
-                best = None; bestn = 1
-                for i in range(len(vs)):
-                    grp = [vs[i][1]]
-                    for j in range(len(vs)):
-                        if j != i and abs(vs[j][1] - vs[i][1]) <= 8: grp.append(vs[j][1])
-                    if len(grp) >= 2 and len(grp) >= bestn:
-                        best = sum(grp) / len(grp); bestn = len(grp)
-                return best, bestn
-
-            chosen = None; gap_cap = None; cap_g = None
-            if _cap_verified and provider == "capsolver":
-                # ★★【CapSolver-验证交付】模式(SLIDER_GAP_MODE=capsolver-verified):
-                #   依据真机观察「只有以 CapSolver 值提交才过」→ 把 CapSolver 当【最终交付值】,
-                #   用我们【独立且经验证精准】的本地检测(sat/ncc 共识)当【裁判】过滤 CapSolver 的垃圾值:
-                #   仅当 |cap-本地| ≤ SLIDER_VERIFY_TOL 才提交 CapSolver 值(这就是"让 CapSolver 变准");
-                #   不一致/无值/本地认不准 → 绝不照拖,刷新换图重取,直到一致或到 SLIDER_VERIFY_MAX_REFRESH 上限;
-                #   到上限兜底交付本地精准值(其次 cap)。全程把 cap/本地/Δ 写 trace → 可实测验证假设,站得住脚不靠猜。
-                local_ref = None; local_lab = ""
-                _c2v, _n2v = _cluster(votes)
-                if _c2v is not None:                    local_ref, local_lab = _c2v, "双法一致"
-                elif ncc_very and ncc_g is not None:    local_ref, local_lab = ncc_g, "NCC强"
-                elif ncc_strong and ncc_g is not None:  local_ref, local_lab = ncc_g, "NCC"
-                elif sat_conf_ok and sat_g is not None: local_ref, local_lab = sat_g, "饱和度"
-                _cap_to = min(float(timeout or 120), float(os.environ.get("SLIDER_CAP_TIMEOUT", "40") or 40))
-                _trace(tag, "att%d ▶CapSolver求解中(验证模式)" % (att + 1))
-                with timed("%s.slider.capsolver#%d" % (tag, att + 1)):
-                    gap_cap = _solve_capsolver_slider(api_key, m["piece"], m["bg"], website_url=_cur_url(driver), timeout=_cap_to)
-                if debug and gap_cap is not None:
-                    _save_b64_png(m["piece"], "%s-cap-gap%d-piece" % (tag, int(gap_cap)))
-                    _save_b64_png(m["bg"], "%s-cap-gap%d-bg" % (tag, int(gap_cap)))
-                cap_g = float(gap_cap) if _plausible(gap_cap) else None
-                _delta = abs(cap_g - local_ref) if (cap_g is not None and local_ref is not None) else None
-                _vinfo = "cap=%s 本地%s=%s Δ=%s tol=%.0f" % (
-                    ("%.0f" % cap_g) if cap_g is not None else "无", local_lab or "-",
-                    ("%.0f" % local_ref) if local_ref is not None else "无",
-                    ("%.1f" % _delta) if _delta is not None else "-", _verify_tol)
-                if _delta is not None and _delta <= _verify_tol:
-                    chosen = cap_g; src = "✅Cap经本地验证一致→交付Cap g=%d(%s)" % (int(cap_g), _vinfo)
-                elif _verify_refreshes < _verify_max_refresh:
-                    _verify_refreshes += 1
-                    _why = ("Cap无可用值" if cap_g is None else
-                            ("本地认不准此图(无裁判)" if local_ref is None else "Cap与本地不一致Δ%.1f>%.0f" % (_delta, _verify_tol)))
-                    log("[slider][%s] 第%d次:%s → 刷新换图求一致(验证 %d/%d)[%s]" % (
-                        tag, att + 1, _why, _verify_refreshes, _verify_max_refresh, _vinfo))
-                    _trace(tag, "att%d 验证未过(%s)→刷新求一致 %d/%d" % (att + 1, _why, _verify_refreshes, _verify_max_refresh))
-                    _refresh_puzzle(driver, tag); continue
-                elif local_ref is not None:
-                    chosen = local_ref; src = "验证达上限未一致→兜底本地精准 g=%d(%s)" % (int(local_ref), _vinfo)
-                elif cap_g is not None:
-                    chosen = cap_g; src = "验证达上限→兜底Cap g=%d(%s)" % (int(cap_g), _vinfo)
-            else:
-                c2, _n = _cluster(votes)
-                if c2 is not None:                      # 两免费本地法一致 → 跳过 CapSolver(快+省钱)
-                    chosen = c2; src = "本地双法一致 g≈%d(sat+ncc,跳Cap)" % int(c2)
-                else:
-                    if provider == "capsolver":         # CapSolver 当第三票/兜底(封顶 40s)
-                        _cap_to = min(float(timeout or 120), float(os.environ.get("SLIDER_CAP_TIMEOUT", "40") or 40))
-                        _trace(tag, "att%d ▶CapSolver求解中" % (att + 1))   # 阶段标记:CapSolver 最长 40s,无此标记会被监控误判「静默卡死」
-                        with timed("%s.slider.capsolver#%d" % (tag, att + 1)):
-                            gap_cap = _solve_capsolver_slider(api_key, m["piece"], m["bg"], website_url=_cur_url(driver), timeout=_cap_to)
-                        if debug and gap_cap is not None:
-                            _save_b64_png(m["piece"], "%s-cap-gap%d-piece" % (tag, int(gap_cap)))
-                            _save_b64_png(m["bg"], "%s-cap-gap%d-bg" % (tag, int(gap_cap)))
-                    cap_g = float(gap_cap) if _plausible(gap_cap) else None
-                    if cap_g is not None: votes.append(("cap", cap_g))
-                    c3, n3 = _cluster(votes)
-                    if c3 is not None:
-                        chosen = c3; src = "共识%d法 g≈%d" % (n3, int(c3))
-                    elif ncc_very and ncc_g is not None:
-                        chosen = ncc_g; src = "NCC强匹配 g=%d(peak%.2f)" % (int(ncc_g), ncc[1])
-                    else:
-                        # ★无共识【绝不拒拖】(用户:刷新后必须真去拖)→ 按偏好取一个可用估计直接拖,错了靠下一张图重试。
-                        #   default 偏 CapSolver(场景感知);LOCAL_FIRST 偏本地。三法全没可用值才换图。
-                        pref = [("ncc", ncc_g), ("sat", sat_g), ("cap", cap_g)] if _local_first else [("cap", cap_g), ("ncc", ncc_g), ("sat", sat_g)]
-                        for _lab, _v in pref:
-                            if _v is not None:
-                                chosen = _v; src = "无共识→最佳估计[%s] g=%d(下张重试兜错)" % (_lab, int(_v)); break
-            if chosen is None:
-                # 三法都没给出几何合理的缺口值(没读到/全越界)→ 只能换新拼图重读(此时拖也无值可拖)
-                log("[slider][%s] 第%d次:三法均无可用缺口值(sat=%s ncc=%s cap=%s)→ 换新拼图重读" % (
-                    tag, att + 1, sat, ncc, gap_cap)); _trace(tag, "att%d 无可用缺口值 → 换图" % (att + 1)); _refresh_puzzle(driver, tag); continue
-            _trace(tag, "att%d 缺口决策: %s | sat=%s ncc=%s cap=%s" % (att + 1, src, sat, ncc, gap_cap))
-            slide_piece = float(chosen) * (bg_dispW / bg_natW)   # 缺口原生距离 → 屏幕拖拽距离(闭环锚定块)
-            distance = slide_piece            # ★传【拼图块要滑的距离】,闭环盯块本身,不用按钮↔块比例
-            grab = m.get("btn")
-            log("[slider][%s] 第%d次:[%s] 拼图块需滑%.0f(闭环锚定块) [显W%.0f 块%.0f 钮%.0f]" % (
-                tag, att + 1, src, slide_piece, bg_dispW, piece_dispW, m["btn_dispW"] or 0))
-        else:
-            b64 = _capture_clip(driver, img)
-            if not b64:
-                time.sleep(1.0); continue
-            coords = _solve_coordinates(api_key, b64,
-                "Click the center of the gap/notch where the puzzle piece should be placed to complete the picture.",
-                timeout=timeout)
-            if not coords:
-                log("[slider] 第%d次:2captcha 没返回坐标" % (att + 1)); time.sleep(1.0); continue
-            # 缺口X(图内像素=浮层内CSS;img clip 以 img.x 为原点 → 主视口X = img.x + gapX_in_img)
-            if len(coords) >= 2:
-                piece_img_x, gap_img_x = sorted([coords[0][0], coords[1][0]])   # 小的是块、大的是缺口
-                distance = (gap_img_x - piece_img_x)
-            else:
-                gap_img_x = coords[0][0]
-                if g.get("piece"):
-                    piece_x_in_img = g["piece"]["x"] - img["x"]
-                else:
-                    piece_x_in_img = max(0.0, handle["x"] - img["x"])
-                distance = gap_img_x - piece_x_in_img
-        distance = distance * scale_cal + offset_cal   # 仅留给人工微调(默认 ×1 +0 = 不动)
-        # ★先干活:不因"值小"就提前刷新(用户定);照常拖+验证,失败了再刷新(见循环末尾)。
-        #   只有位移≈0(真没法拖)才直接换图,免得拖个寂寞。
-        if distance <= 2:
-            log("[slider][%s] 第%d次:位移≈0 → 直接换新拼图" % (tag, att + 1)); _refresh_puzzle(driver, tag); continue
-        # 拖拽起点 = 滑块按钮(capsolver 已带;2captcha 现找)。找不到再试几次,仍无则跳过 —— 绝不拖错位置。
-        if not grab:
-            for _h in range(3):
-                grab = _find_slider_handle(driver)
-                if grab:
-                    break
-                time.sleep(0.4)
-        if not grab:
-            log("[slider] 第%d次:没定位到阿里云滑块按钮 → 跳过(不拖错位置)" % (att + 1)); _trace(tag, "att%d 没定位到滑块按钮→跳过" % (att + 1)); time.sleep(1.0); continue
-        log("[slider] 第%d次:闭环拖滑块 位移=%.0f(按钮当前cx%.0f)" % (att + 1, distance, grab["cx"]))
-        _trace(tag, "att%d ▶拖拽中 dist=%.0f" % (att + 1, distance))   # 阶段标记:拖拽闭环最长 12s
+            # ★用户:禁止一进页面就换图 → cap 不邻近本地 / 本地无裁判【绝不换图】,直接返回 False,
+            #   交上层 _verify_login_loop 刷【当前页】(=不成功刷新页面);刷出来的新页=新拼图,重新算 cap/本地再判。
+            _why = ("Cap无值" if cap_g is None else ("本地无裁判" if local_ref is None else "Cap不邻近本地Δ%.1f>%.0f" % (_delta, _tol)))
+            log("[slider][%s] %s → 不换图,交上层刷当前页[%s]" % (tag, _why, _vinfo))
+            _trace(tag, "未邻近(%s)→不换图,交上层刷当前页" % _why)
+            return False
+        # ⑥ 已确定交付值(经本地验证一致 / 上限兜底)→ 拖一次(闭环锚定块)
+        _trace(tag, "缺口决策: %s" % src)
+        distance = float(chosen) * (bg_dispW / bg_natW)
+        distance = distance * float(os.environ.get("SLIDER_SCALE", "1") or 1) + float(os.environ.get("SLIDER_OFFSET", "0") or 0)
+        grab = m.get("btn") or _find_slider_handle(driver)
+        if not grab or distance <= 2:
+            log("[slider][%s] 没按钮或位移≈0 → 判失败" % tag); _trace(tag, "无按钮/位移≈0→失败")
+            return False
+        log("[slider][%s] [%s] 拖滑块 位移=%.0f" % (tag, src, distance)); _trace(tag, "▶拖拽中 dist=%.0f (%s)" % (distance, src))
         _err = None
         try:
-            with timed("%s.slider.drag#%d" % (tag, att + 1)):
-                _err = _drag_slider_to(driver, distance, y_hint=grab["cy"])   # ★闭环:回读【拼图块】真实位置,块滑到缺口才停
-            if _err is not None:
-                log("[slider] 拼图块到位,残差=%.1fpx" % _err)
+            with timed("%s.slider.drag" % tag):
+                _err = _drag_slider_to(driver, distance, y_hint=grab["cy"])
         except Exception as e:
-            log("[slider] 拖拽异常: %s" % str(e)[:80]); _trace(tag, "att%d 拖拽异常 %s" % (att + 1, str(e)[:50]))
-        time.sleep(1.5)
-        if debug and not post_saved:
-            _dump_debug(driver, "%s-postdrag" % tag); post_saved = True   # 拖完截一张:量实际落点(按 env 编号命名)
-        with timed("%s.slider.verify#%d" % (tag, att + 1)):
-            _pass_ok = _passed(driver, residual=_err)
-        _trace(tag, "att%d 拖完 残差=%s 判定=%s" % (att + 1, ("%.1f" % _err) if _err is not None else "?", "PASS" if _pass_ok else "FAIL"))
-        if _pass_ok:
-            log("[slider] ✓ 第%d次通过" % (att + 1))
-            return True
-        log("[slider][%s] 第%d次未通过,刷新换新拼图重试" % (tag, att + 1))
-        _refresh_puzzle(driver, tag)   # 统一走刷新工具(没等到新图由下轮 _ensure_open 重新触发兜底)
-    log("[slider] ✗ %d 次都没通过" % attempts)
-    _trace(tag, "===== solve 结束: 失败(%d次未过)=====" % attempts)
+            log("[slider] 拖拽异常: %s" % str(e)[:80]); _trace(tag, "拖拽异常 %s" % str(e)[:40])
+            return False
+        time.sleep(1.2)
+        if debug and not _dumped:
+            _dump_debug(driver, "%s-postdrag" % tag); _dumped = True
+        _pass = _passed(driver, residual=_err)
+        _d = _LAST_DRAG_DIAG
+        _diag = (" 目标=%s 落点=%s" % (_d.get("target"), _d.get("landed"))) if _d else ""
+        _trace(tag, "拖完 残差=%s 判定=%s%s" % (("%.1f" % _err) if _err is not None else "?", "PASS" if _pass else "FAIL", _diag))
+        _trace(tag, "===== solve(验证交付) 结束: %s =====" % ("成功" if _pass else "失败(交上层刷当前页)"))
+        if _pass:
+            log("[slider][%s] ✓ 通过" % tag)
+        return bool(_pass)
+    # 求一致循环耗尽(上限分支理论上已兜底交付,不会到这)→ 失败,交上层刷当前页
+    _trace(tag, "===== solve(验证交付) 结束: 求一致耗尽未交付 =====")
     return False
 
 

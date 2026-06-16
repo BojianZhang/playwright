@@ -484,6 +484,21 @@ function buildEnv(p) {
   if (p.sliderVerifyTol !== undefined && p.sliderVerifyTol !== '' && Number.isFinite(_vTol) && _vTol > 0) env.SLIDER_VERIFY_TOL = String(_vTol);
   const _vRef = Number(p.sliderVerifyMaxRefresh);
   if (p.sliderVerifyMaxRefresh !== undefined && p.sliderVerifyMaxRefresh !== '' && Number.isFinite(_vRef) && _vRef >= 0) env.SLIDER_VERIFY_MAX_REFRESH = String(Math.floor(_vRef));
+  // 验证码【加载】超时(s):总等待 / 无SDK就刷页(="8秒"那个) / SDK在但触发器没出的硬上限。空=不注=Python 默认(30/12/25)。治"页面元素经常加载不全、刷太快把加载冲掉"。
+  const _ow = Number(p.sliderOpenWait);
+  if (p.sliderOpenWait !== undefined && p.sliderOpenWait !== '' && Number.isFinite(_ow) && _ow > 0) env.SLIDER_OPEN_WAIT = String(_ow);
+  const _ng = Number(p.sliderNoControlGrace);
+  if (p.sliderNoControlGrace !== undefined && p.sliderNoControlGrace !== '' && Number.isFinite(_ng) && _ng > 0) env.SLIDER_NO_CONTROL_GRACE = String(_ng);
+  const _nh = Number(p.sliderNoControlHardcap);
+  if (p.sliderNoControlHardcap !== undefined && p.sliderNoControlHardcap !== '' && Number.isFinite(_nh) && _nh > 0) env.SLIDER_NO_CONTROL_HARDCAP = String(_nh);
+  // ★优化开关(稳定后定去留)。默认行为:取key等内容渲染【默认开】(只在 UI 显式关掉时下发 '0');其余默认关(只在开时下发)。
+  if (p.apikeyWaitContent === false) env.APIKEY_WAIT_CONTENT = '0';            // 取key页等内容渲染(默认开;关掉=老逻辑干等22s)
+  const _acw = Number(p.apikeyContentWait);
+  if (p.apikeyContentWait !== undefined && p.apikeyContentWait !== '' && Number.isFinite(_acw) && _acw > 0) env.APIKEY_CONTENT_WAIT = String(_acw);
+  if (p.apikeyForceReload === true) env.APIKEY_FORCE_RELOAD = '1';            // 取key黑屏额外硬刷一次(实验)
+  const _adl = Number(p.accountDeadline);
+  if (p.accountDeadline !== undefined && p.accountDeadline !== '' && Number.isFinite(_adl) && _adl > 0) env.ACCOUNT_DEADLINE = String(Math.floor(_adl));  // 单号超时放弃(s)
+  if (p.sliderStrictConsensus === true) env.SLIDER_STRICT_CONSENSUS = '1';    // 滑块严格共识(sat∧ncc 互证才拖)
   // 自动重试失败号(run.py 读 AUTO_RETRY_FAILED + AUTO_RETRY_FAILED_TIMES):一批跑完后 resume 语义重跑失败号 N 轮,降失败率。
   //   默认关=不注 env=run.py range(0) 不重试,行为逐字节不变。resume 复用 prior_key/charged 防重复取key/扣款;NOT_ALLOWED/坏邮箱不重试。
   if (p.autoRetryFailed) {

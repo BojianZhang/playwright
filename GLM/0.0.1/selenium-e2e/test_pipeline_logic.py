@@ -227,12 +227,27 @@ def test_price_for():
     check("empty cfg -> 0", pipeline._price_for({}, "pro", "monthly") == 0)
 
 
+def test_on_apikey():
+    """P0 回归:detect_session 的 _on_apikey 判据 —— OAuth 回跳 URL(chat.z.ai/auth?...redirect_uri=...manage-apikey,
+       query 里含 apikey)【绝不】判成"在取Key页"(裸子串 'apikey' in url 会误判→在登出选择屏找 Add→ADD_BUTTON_NOT_FOUND);
+       只有真落到 z.ai/manage-apikey 才判 True。守住头号根因。"""
+    from steps.steps_auth import _on_apikey
+    check("on_apikey: OAuth回跳URL(query含apikey)判否",
+          _on_apikey("https://chat.z.ai/auth?response_type=code&redirect_uri=https%3A%2F%2Fz.ai%2Fmanage-apikey%2Fapikey-list&state=x") is False)
+    check("on_apikey: 真取Key页判是", _on_apikey("https://z.ai/manage-apikey/apikey-list") is True)
+    check("on_apikey: 真取Key页大写域判是", _on_apikey("https://Z.AI/manage-apikey") is True)
+    check("on_apikey: z.ai/subscribe判否", _on_apikey("https://z.ai/subscribe") is False)
+    check("on_apikey: chat首页判否", _on_apikey("https://chat.z.ai/") is False)
+    check("on_apikey: 裸/auth选择屏判否", _on_apikey("https://chat.z.ai/auth") is False)
+    check("on_apikey: 空/None判否", (_on_apikey("") is False) and (_on_apikey(None) is False))
+
+
 def main():
     global _FAIL
     for t in (test_prior_done, test_subscribe_gate, test_charge_disposition,
               test_commit_return_and_recovery, test_accounts_dedup, test_exists_proximity,
               test_save_progress_merge, test_attribution, test_charge_ledger,
-              test_slider_path, test_price_for):
+              test_slider_path, test_price_for, test_on_apikey):
         try:
             t()
         except Exception as e:

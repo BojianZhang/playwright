@@ -28,6 +28,8 @@ const DEFAULTS = {
     sliderScale: '', sliderOffset: '', sliderAttempts: '',   // 滑块校准(空=Python 内置默认,真机校准时填)
     sliderGapMode: '', sliderLocalMinConf: '',   // 缺口识别策略(''=本地+Cap交叉 / capsolver-verified / local-first / pure-capsolver)+ 本地置信阈值(空=2.5)
     sliderVerifyTol: '', sliderVerifyMaxRefresh: '',   // CapSolver验证交付:cap↔本地一致容差px(空=6)+ 求一致刷新上限(空=3)
+    sliderOpenWait: '', sliderNoControlGrace: '', sliderNoControlHardcap: '',   // 验证码【加载】超时(s):总等待(空=30)/无SDK就刷页(空=12=你说的"8秒"那个)/SDK在硬上限(空=25)
+    apikeyWaitContent: true, apikeyContentWait: '', apikeyForceReload: false, accountDeadline: '', sliderStrictConsensus: false,   // 优化开关(稳定后定去留):取key等内容渲染(默认开)/内容等待s/黑屏硬刷/单号超时放弃s/滑块严格共识
   },
 };
 

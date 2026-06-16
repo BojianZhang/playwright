@@ -123,6 +123,11 @@ def _acquire_browser(proxies, start_idx, group_id, name, max_try=5):
     raise RuntimeError("连续尝试代理都失败(真试 %d,扫描 %d/%d)，最后一个: %s" % (tried, scanned, n, last[0][:120]))
 
 
+class _AcctTimeout(Exception):
+    """★Opt2:单号超墙钟(ACCOUNT_DEADLINE)→ 在阶段边界抛出,主 try 捕获判 ACCOUNT_TIMEOUT 放弃换下一个号。"""
+    pass
+
+
 def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1, checkpoint=None):
     """acct={email,mailbox_pw,registered?,prior?,prior_key?,subscribed?}。
     opts:{cfg,do_apikey,do_subscribe,plan,cycle,real_charge,card_charge_gate,try_batch_charge,
@@ -134,11 +139,16 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
     cfg = opts["cfg"]
     res = {"email": email, "ok": False, "steps": {}, "timings": {}, "password": op_pw, "node_status": {}}
     t_start = time.perf_counter()
+    _ACCT_DEADLINE = float(os.environ.get("ACCOUNT_DEADLINE", "0") or 0)   # ★Opt2 单号墙钟(秒,0=关)
     _clk = {"name": None, "t": t_start}
     _node_clk = {"t": time.perf_counter()}   # ★逐节点计时:记上一节点完成时刻,算每环节耗时
 
     def _mark_stage(name):
         now = time.perf_counter()
+        # ★Opt2(ACCOUNT_DEADLINE 秒,0=关):单号总耗时超墙钟 → 阶段边界直接放弃换下一个号
+        #   (防个别号无限重试卡死,实测 max 478s/号,占着环境名额+撞 AdsPower 拖死整批吞吐)。
+        if name and _ACCT_DEADLINE > 0 and (now - t_start) > _ACCT_DEADLINE:
+            raise _AcctTimeout("ACCOUNT_TIMEOUT %.0fs>%.0fs" % (now - t_start, _ACCT_DEADLINE))
         if _clk["name"]:
             try: res["timings"][_clk["name"]] = round(now - _clk["t"], 1)
             except Exception: pass
@@ -159,6 +169,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             pass
 
     env_id = None; driver = None
+    common.alive_acquire()                       # ★P2:占在飞浏览器名额(建环境前,阻塞直到 ≤ADS_MAX_ALIVE);finally 必释放
     try:
         log_stage(slot, email, "env"); _mark_stage("env")
         env_id, port, proxy = _acquire_browser(proxies, start_idx, group_id, "glm-" + email.split("@")[0][:18])
@@ -175,7 +186,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
             pass
         steps_apikey.inject_key_capture(driver)   # 导航前注入 key 网络抓取钩子(创建 key 时后端返回明文即存 sessionStorage)
         page = common.Page(driver)
-        page.goto(common.CHAT_URL, wait=2)
+        # ★用户定:浏览器一接管就【直接到 chat.z.ai/auth】(此页既有登录又有注册),不先开 chat.z.ai 首页(省一次加载)。
+        #   每号用全新 AdsPower 环境=无残留登录态,故无需先去首页探"是否已登录";register_or_login 会在 /auth 上自走注册/登录。
+        page.goto(common.AUTH_URL, wait=2)
 
         # ── auth ───────────────────────────────────────────────────────────
         log_stage(slot, email, "auth"); _mark_stage("auth")
@@ -446,6 +459,12 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         except Exception:
             pass
         return res
+    except _AcctTimeout as _te:
+        # ★Opt2:超单号墙钟 → 放弃本号(换下一个),归因 ACCOUNT_TIMEOUT,不当普通异常
+        res["fail_stage"] = "account_timeout"; res["fail_reason"] = "ACCOUNT_TIMEOUT"
+        res["error"] = str(_te)[:120]
+        log("账号 %s 超墙钟放弃: %s" % (email, str(_te)[:80]))
+        return res
     except Exception as e:
         res["error"] = str(e)[:200]
         res["fail_stage"] = "exception"
@@ -483,6 +502,7 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                     log("[环境] ⚠ %s 删除失败(留孤儿环境 %s)→ 已标 env_leaked,建议事后批量清理" % (email, env_id))
             else:
                 log("保留环境 %s（--no-delete-env）" % env_id)
+        common.alive_release()                   # ★P2:删环境后释放在飞浏览器名额(与 alive_acquire 成对,保证 ≤ADS_MAX_ALIVE)
 
 
 def _price_for(cfg, plan, cycle):

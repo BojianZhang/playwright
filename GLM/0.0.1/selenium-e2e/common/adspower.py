@@ -29,6 +29,25 @@ def _ads_pace():
 # (默认2),启动并等就绪期间占名额,就绪后放给下一个排队的。浏览器启动后保持开着不占此闸。
 _LAUNCH_SEM = threading.Semaphore(int(os.environ.get("ADS_MAX_LAUNCH", "2")))
 
+# ★P2(救批量 invalid-session/no-such-window):_LAUNCH_SEM 只管"启动就绪"那一小段,浏览器起来即释放→
+#   全程无"同时开着的浏览器总数"封顶;--concurrency=10 时 10 个浏览器常驻,auth 阶段密集 CDP 截图把 AdsPower 压垮→
+#   同秒成簇丢窗口。_ALIVE_SEM 给"同时存活的浏览器总数"硬封顶(默认4,env ADS_MAX_ALIVE):run_account 建环境前 acquire、
+#   删环境后 release → 任意时刻在飞浏览器 ≤ ADS_MAX_ALIVE(镜像 OpenRouter 已验证的 maxConcurrency)。
+_ALIVE_SEM = threading.Semaphore(int(os.environ.get("ADS_MAX_ALIVE", "4") or 4))
+
+
+def alive_acquire():
+    """占一个"在飞浏览器"名额(阻塞直到有空位);run_account 建环境【前】调。"""
+    _ALIVE_SEM.acquire()
+
+
+def alive_release():
+    """释放"在飞浏览器"名额;run_account 删环境【后】在 finally 调。over-release 防御:吞异常。"""
+    try:
+        _ALIVE_SEM.release()
+    except Exception:
+        pass
+
 
 def ads_call(path, body=None, method=None, timeout=60, retries=5):
     """GET(body=None) 或 POST(body=dict)。本地网关频繁调用会 502/连接重置 → 退避重试。并发时全局节流。"""
@@ -111,6 +130,7 @@ def adspower_stop(env_id):
 
 
 __all__ = [
-    "_ADS_LOCK", "_ADS_LAST", "_LAUNCH_SEM", "_ads_pace",
+    "_ADS_LOCK", "_ADS_LAST", "_LAUNCH_SEM", "_ALIVE_SEM", "_ads_pace",
     "ads_call", "ads_get", "adspower_start", "adspower_stop",
+    "alive_acquire", "alive_release",
 ]

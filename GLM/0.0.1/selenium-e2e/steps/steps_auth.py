@@ -81,14 +81,15 @@ def _solve_slider(page, cfg, label=""):
 
 
 def _slider_reentry_count():
-    """滑块失败后【整页重进流程】重来的最大次数(env SLIDER_REENTRY,默认1 → 总滑块尝试=1+1=2,即"重进1次后放弃")。
-       0=关=滑块失败即返回。★比 slider 内部原地刷新更彻底:阿里云拖失败后把浮层重置成残废态,原地刷新清不干净
-       → 后续卡在"等稳定拼图"再也不拖(实测"滚动条不干活");整页回到干净 /auth 重新触发可清掉残废浮层。
-       注意:救不了【行为检测拒精准拖拽】那类(重进再拖还是机器轨迹)。"""
+    """滑块失败后【刷当前页重进流程】重来的最大次数(env SLIDER_REENTRY,默认3 → 总尝试=1+3=4)。
+       ★slider.solve 是【单趟·绝不换图】:cap 邻近本地才拖,不邻近/拖完没过→直接返回 False。
+         所以"求一致 / 求成功率"全靠【这里的外层刷当前页】——整页回干净 /auth、重新加载控件+新拼图,
+         cap 离群一张就刷下一张,直到拖到 cap 邻近本地的那张。3 次是吞吐与成功率的折中(env 可调)。
+       0=关=失败即返回。"""
     try:
-        return max(0, int(os.environ.get("SLIDER_REENTRY", "1") or 1))
+        return max(0, int(os.environ.get("SLIDER_REENTRY", "3") or 3))
     except Exception:
-        return 1
+        return 3
 
 
 def _reset_for_reentry(page):
@@ -153,6 +154,21 @@ def _submit_auth_form(page, texts, label="提交"):
     return page.click_text(texts, 6)
 
 
+def _on_apikey(u):
+    """★只认【真落到 z.ai/manage-apikey 取Key页】才算"在取Key页"。
+       ★绝不用裸子串 "apikey" in url —— OAuth 回跳 URL chat.z.ai/auth?response_type=code&redirect_uri=...%2Fmanage-apikey%2F...
+         的 query 里也含 "apikey",裸子串会把【登出选择屏】误判成已登录(ADD_BUTTON_NOT_FOUND 头号根因,救~81号)。
+       判据:netloc 是 z.ai 且【不是 chat.z.ai】 + path(非 query)含 manage-apikey + 不带 response_type(排除 OAuth 中转)。"""
+    try:
+        from urllib.parse import urlparse
+        uu = (u or "").lower()
+        p = urlparse(uu)
+        return (("z.ai" in p.netloc) and ("chat.z.ai" not in p.netloc)
+                and ("manage-apikey" in p.path) and ("response_type" not in uu))
+    except Exception:
+        return False
+
+
 def detect_session(page):
     """已登录返回 email(或 'logged-in');未登录返回 None。
     ★判据【正向】:goto 取 Key 页 → 等 OAuth 跳转稳定 →【只有真落到 manage-apikey 取Key页(url 含 apikey)才算已登录】。
@@ -161,6 +177,14 @@ def detect_session(page):
       ★★修真机【假阳性】:旧码靠"页面有没有 input[type=password]"判未登录,但选择屏/首页【根本没有密码框】→ 被误判【已登录】
         → auth=ok 却其实登出 → get_api_key 在登出页点「Add API Key」→ ADD_BUTTON_NOT_FOUND(真机 add-fail dump 实证页面是首页/选择屏)。
         改为正向只认"落到取Key页",选择屏/首页一律未登录,交上层 relogin。"""
+    # ★前置守卫(用户定):当前明显还在【登录表单】(url 含 /auth 且页面有密码框)= 还没登进去 → 直接判未登录,
+    #   【绝不导航到 z.ai/manage-apikey】,留在当前 OAuth 登录界面让上层重试登录(没到登录态就别白跳 manage-apikey 再弹回)。
+    try:
+        _cur = (page.url() or "").lower()
+        if "/auth" in _cur and page.js("return !!document.querySelector('input[type=password]')"):
+            return None
+    except Exception:
+        pass
     try:
         page.goto(APIKEY_URL, wait=2.0)
     except Exception:
@@ -171,7 +195,7 @@ def detect_session(page):
         u = page.url() or ""
         if not u:                         # 浏览器窗口已死(no such window)→ 判未登录交上层重起
             return None
-        if "apikey" in u.lower():         # ★落到取 Key 页 = 已登录(唯一正向判据)
+        if _on_apikey(u):                 # ★真落到 z.ai/manage-apikey 取Key页 = 已登录(精确判据,非裸子串)
             break
         if u == last_u:
             stable += 1
@@ -183,7 +207,7 @@ def detect_session(page):
             break
         time.sleep(0.6)
     _u = (page.url() or "").lower()
-    if "apikey" not in _u:
+    if not _on_apikey(_u):
         # ★★真机实证(add-fail dump):未建 z.ai 会话时 goto manage-apikey 会弹跳到登出的「Welcome to Z.ai」选择屏
         #   (Continue with Email/Google/Github + Skip for now),此屏【无密码框】且页面可能残留 token → 旧 token 兜底【假阳性】
         #   判已登录 → 跳过 OAuth 重登 → get_api_key 在登出页找 Add → ADD_BUTTON_NOT_FOUND。→ 显式识别选择屏,一律未登录。
@@ -221,11 +245,17 @@ def sign_out(page):
     return True
 
 
-def _open_auth(page):
+def _open_auth(page, oauth=False):
     """落到 /auth 登录/注册浮层。★直接 goto chat.z.ai/auth(此页本身既有登录又有注册)—— 不先开 chat.z.ai 首页再点
-       Sign in,省一次页面加载(用户定:打开浏览器直接到 /auth 自注册/登录)。已在 /auth 则不重复导航(别打断已渲染的表单/滑块)。"""
+       Sign in,省一次页面加载(用户定:打开浏览器直接到 /auth 自注册/登录)。已在 /auth 则不重复导航(别打断已渲染的表单/滑块)。
+       ★★oauth=True(取Key 的 OAuth 登录):【绝不 goto 任何页】——用户定:取key【只能从点 Login 进】,
+         goto 裸 /auth 或 manage-apikey 都【只到普通登录/注册页】、建不了 z.ai OAuth 会话 → 死循环根!
+         此处应已由 enter_apikey_oauth【点 Login】带到 OAuth 选择屏(/auth?response_type=code)。
+         · 已在 /auth → 选 Continue with Email 继续;· 不在 /auth(Login 没点中)→ 直接返回不导航(交由上层 Login 失败处理),绝不 goto 兜底。"""
     if "/auth" not in (page.url() or ""):
-        page.goto(AUTH_URL, wait=2.5)                      # ★一步到位:直达 /auth
+        if oauth:
+            return                                          # ★OAuth 只能点 Login 进,绝不 goto(goto 只到普通登录→死循环)
+        page.goto(AUTH_URL, wait=2.5)                      # 非 OAuth(标准登录/注册):直达 /auth
         # 兜底:万一直达没落到 /auth(极少)→ 回首页点 Sign in 再来一次
         if "/auth" not in (page.url() or ""):
             page.goto(CHAT_URL, wait=2.0)
@@ -284,8 +314,10 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0)
     return True
 
 
-def _complete_registration(page, op_pw):
-    """Complete Registration 页:设 Password + Confirm Password → 提交。返回 True/False。"""
+def _complete_registration(page, op_pw, cfg=None):
+    """Complete Registration 页:设 Password + Confirm Password →【若有滑块先解】→ 提交。返回 True/False。
+       ★这页和登录页一样可能带「Click to start verification」滑块,旧码没解 → 滑块挡着提交 → COMPLETE_REG_FAIL
+         → 密码没设成 op_pw → 后面登录/取key 登录"密码不正确"(SIGNIN_BAD_PASSWORD)。这里补上滑块解题根治。"""
     from selenium.webdriver.common.by import By
     if not _present(page, ["input[type=password]"], 20, "完成注册-密码框"):
         return False
@@ -301,7 +333,21 @@ def _complete_registration(page, op_pw):
         pass
     if pw_filled == 0:
         log("[完成注册] 密码框没填上"); return False
-    log("[完成注册] 已填 %d 个密码框,点 Complete Registration" % pw_filled)
+    # ★设密码页若有滑块(Click to start verification / 阿里云拼图)→ 先解掉再提交(否则被滑块挡住=COMPLETE_REG_FAIL,密码设不上)。
+    #   防御式:没滑块就跳过;有滑块解不过 → 返回 False,交上层 register 整页重进(用户定的失败刷当前页)。
+    _has_slider = False
+    try:
+        _has_slider = bool(page.js(
+            "return !!document.querySelector('#aliyunCaptcha-window-popup,#aliyunCaptcha-float-wrapper,#aliyunCaptcha-img,"
+            "#aliyunCaptcha-sliding-slider,.slider-move') || /click to start verification/i.test((document.body&&document.body.innerText)||'')"))
+    except Exception:
+        pass
+    if _has_slider:
+        log("[完成注册] 设密码页检测到滑块 → 先解滑块再提交")
+        if not _solve_slider(page, cfg or {}, "完成注册"):
+            log("[完成注册] 设密码页滑块未过 → 失败(交上层整页重进重设密码)")
+            return False
+    log("[完成注册] 已填 %d 个密码框%s,点 Complete Registration" % (pw_filled, "+滑块已过" if _has_slider else ""))
     page.click_text(sel("complete_registration", "Complete Registration", "完成注册"), 8)
     # ★用 common.poll_signal 轮询成功信号(注册落库是服务端动作,有延迟;只查一次会漏判→误判 COMPLETE_REG_FAIL)。
     def _check():
@@ -424,7 +470,7 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
         return "fail:VERIFY_LINK"
     if on_node: on_node("verify_email", "ok")
     with timed("auth.complete_reg"):
-        _crok = _complete_registration(page, op_pw)
+        _crok = _complete_registration(page, op_pw, cfg)
     if not _crok:
         if on_node: on_node("complete_registration", "fail:COMPLETE_REG_FAIL")
         return "fail:COMPLETE_REG_FAIL"
@@ -432,7 +478,9 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     if on_node: on_node("register", "ok")   # ★完成注册=账号已建,立刻登记;后面登录即便失败,下次也不再重注册
     log("[注册] 完成注册成功,确认会话")
     # ★优化:有些情况下完成注册后已直接处于登录态 → 先查会话,已登录就跳过重新登录(省掉【第二次滑块】+第二次取信)。
-    em = detect_session(page)
+    #   ★用 _current_logged_in(只读当前 chat.z.ai 的 localStorage token,【不导航】)——不再用 detect_session
+    #   (后者 goto z.ai/manage-apikey 确认 → 注册/登录时无谓蹦出 manage-apikey 链接,且跳错域 chat→z.ai 本就判不准)。
+    em = _current_logged_in(page)
     if em and (em == "logged-in" or str(em).lower() == email.lower()):
         log("[注册] 完成注册后已是登录态 → 跳过重新登录(省一次滑块)")
         if on_node: on_node("login", "ok")
@@ -445,13 +493,16 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     return "fail:REGISTER_UNCONFIRMED"
 
 
-def login(page, email, op_pw, mailbox_pw, cfg, on_node=None):
-    """登录已存在账号。返回 'ok' / 'fail:<reason>'。on_node(stage,status)=关键节点成功即刻登记。"""
+def login(page, email, op_pw, mailbox_pw, cfg, on_node=None, oauth=False):
+    """登录已存在账号。返回 'ok' / 'fail:<reason>'。on_node(stage,status)=关键节点成功即刻登记。
+       oauth=True:取Key 的 OAuth 登录(chat.z.ai/auth?response_type=code)→ 确认会话时用 detect_session(goto z.ai/manage-apikey
+       确认 z.ai 会话已建,那是取key正经目的);oauth=False(标准登录/注册后重登)→ 用 _current_logged_in(只读 chat.z.ai token、
+       【不导航】)→ 注册/登录时不再无谓蹦出 manage-apikey 链接。"""
     log("[登录] %s" % email)
 
     def _fill_signin_and_slide():
         """填登录表单 + 过滑块。返回 'ok' / 'fail:SIGNIN_NO_FORM' / 'fail:SLIDER_FAIL'。每次从干净 /auth 开始。"""
-        _open_auth(page)
+        _open_auth(page, oauth=oauth)   # ★OAuth取key登录:_open_auth 走 manage-apikey 触发 OAuth 302,绝不跳裸 /auth(保 state)
         if not _present(page, sel("signin_email", 'input[type=email]', 'input[placeholder*="email" i]'), 18, "登录表单"):
             return "fail:SIGNIN_NO_FORM"
         _fill(page, sel("signin_email", 'input[type=email]', 'input[placeholder*="email" i]'), email, "Email")
@@ -477,8 +528,8 @@ def login(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     if any(s in t for s in ["no account", "not found", "couldn't find", "账号不存在"]):
         if on_node: on_node("login_submit", "fail:SIGNIN_NO_ACCOUNT")
         return "fail:SIGNIN_NO_ACCOUNT"
-    # 确认会话
-    em = detect_session(page)
+    # 确认会话:OAuth 取key登录用 detect_session(确认 z.ai 会话);标准登录用 _current_logged_in(读 chat.z.ai token,不导航,不蹦 manage-apikey)
+    em = detect_session(page) if oauth else _current_logged_in(page)
     if em:
         if em != "logged-in" and str(em).lower() != email.lower():
             log("[登录] 会话邮箱(%s)≠目标(%s)→ 不算成功" % (em, email))
@@ -549,6 +600,23 @@ def _open_zai_menu(page):
     except Exception:
         pass
     return False
+
+
+def _widen_window_for_login(page, w=None):
+    """★放宽浏览器窗口,让 z.ai 响应式导航栏完整展开、露出「Login」——窄窗口下导航收成 ☰ 汉堡、Login 被藏进去,
+       是 oauth_login_click 大量失败的真因(用户实证:100%缩放只剩☰、80%才露出 Login;且取key只能从点 Login 进)。
+       放宽窗口 = 等效缩放到 80%,让导航过响应式断点。对后续滑块无害(滑块读 getBoundingClientRect CSS 像素 + CDP Input
+       同坐标系,放宽后读新坐标一致)。返回是否做了放宽。"""
+    try:
+        w = int(w or os.environ.get("OAUTH_WIDEN_PX", "1400") or 1400)
+        sz = page.d.get_window_size()
+        if int(sz.get("width") or 0) >= w:
+            return False
+        page.d.set_window_size(w, int(sz.get("height") or 900))
+        log("[取Key] 窗口太窄(%spx)导航收成☰藏了Login → 放宽到 %dpx 露出 Login" % (sz.get("width"), w))
+        return True
+    except Exception as e:
+        log("[取Key] 放宽窗口失败: %s" % str(e)[:60]); return False
 
 
 def enter_apikey_oauth(page, email, op_pw, mailbox_pw, cfg, on_node=None):
@@ -623,17 +691,31 @@ def enter_apikey_oauth(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     if "/auth" in (page.url() or ""):
         _nd("oauth_login_click", "ok")                     # 已到 OAuth 选择屏,无需点 Login
     else:
-        # z.ai/subscribe:先试直接点 Login;点不到(在 ☰ 菜单里)→ 开菜单再点(治"卡在 subscribe 页")
-        _login_ok = page.click_text(sel("zai_login", "Login", "Log in", "Sign in", "登录"), 4)
+        # ★一劳永逸(用户定):①屏幕分辨率/窗口宽度【实时变化】→导航时常收成☰把Login藏起→点不到;
+        #   ②取key【只能从点 Login 进】——goto 裸/auth 或 manage-apikey 只到【普通登录/注册页】,建不了 z.ai OAuth 会话→死循环。
+        #   做法:先【放宽窗口】(抗分辨率变化,让导航恒定展开露出 Login)再点;点不到再进☰菜单点。
+        _widen_window_for_login(page); time.sleep(0.8)
+        _login_ok = page.click_text(sel("zai_login", "Login", "Log in", "Sign in", "登录"), 5)
         if not _login_ok and "/auth" not in (page.url() or ""):
             if _open_zai_menu(page):
                 time.sleep(1.0)
                 _login_ok = page.click_text(sel("zai_login", "Login", "Log in", "Sign in", "登录"), 6)
         _nd("oauth_login_click", "ok" if (_login_ok or "/auth" in (page.url() or "")) else "fail:LOGIN_BTN_NOT_FOUND")
+        # ★点不到 Login 就【直接失败,绝不 goto 兜底】:goto 只到普通登录页、建不了 OAuth 会话 = 死循环根(用户实证)。
+        if (not _login_ok) and "/auth" not in (page.url() or ""):
+            log("[取Key] 放宽+菜单都点不到 Login → 直接失败(绝不 goto 兜底,goto 只到普通登录页会死循环)")
+            _nd("oauth_zai_login", "fail:LOGIN_BTN_NOT_FOUND")
+            return False
         time.sleep(2.0)
+    # ★P1:若已直接落到【真取Key页】(path1:z.ai 已登录)→ 无需再 OAuth 登录,直接成功(_on_apikey 精确判据,非裸子串)
+    if _on_apikey(page.url() or ""):
+        log("[取Key] 已在 z.ai 取Key页(已登录)→ 跳过 OAuth 重登")
+        _nd("oauth_zai_login", "ok")
+        return True
     # 现在应在 OAuth 选择屏 → login()(节点带 oauth_ 前缀)走 Continue with Email→填→Click to start verification 滑块→Sign in 完成 OAuth 兑换
-    r = login(page, email, op_pw, mailbox_pw, cfg, on_node=_oauth_nd)
-    _nd("oauth_zai_login", "ok" if r == "ok" else ("fail:" + r if isinstance(r, str) else "fail:OAUTH_LOGIN"))
+    r = login(page, email, op_pw, mailbox_pw, cfg, on_node=_oauth_nd, oauth=True)   # ★OAuth取key登录:确认 z.ai 会话(走 detect_session)
+    _r = r if isinstance(r, str) else "OAUTH_LOGIN"
+    _nd("oauth_zai_login", "ok" if r == "ok" else (_r if _r.startswith("fail:") else "fail:" + _r))   # ★不重复加 fail: 前缀(修 fail:fail:SLIDER_FAIL 噪声)
     return r == "ok"
 
 

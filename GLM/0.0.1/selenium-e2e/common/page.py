@@ -78,7 +78,9 @@ class Page:
             return bool(self.d.execute_script(r"""return (function(){
               try{
                 // ★只认【弹窗独有】文案 —— 绝不用 'coding plan'(左栏导航也叫 "GLM Coding Plan",会误删导航/整页!)。
-                var RE=/(value subscription|code beyond boundaries|join now|flagship models?|enjoy high quotas)/i;
+                //   两类:旧促销(value subscription…)+ 新版本公告弹窗(GLM-5.2 Now Available / Model Upgraded,登录后冒出来盖住首页+API入口)。
+                //   新弹窗用它【独有 bullet 文案】认,绝不用裸 "now available"(页面横幅 "GLM-5.1 is now available" 会误伤)。
+                var RE=/(value subscription|code beyond boundaries|join now|flagship models?|enjoy high quotas|model upgraded|ai slides upgraded|better artifacts|immersive roleplay|long-document boost|fluent long-form writing)/i;
                 var W=window.innerWidth||1280, H=window.innerHeight||800, AREA=W*H;
                 function vis(e){ try{ var r=e.getBoundingClientRect(); var s=getComputedStyle(e);
                   return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'; }catch(_){ return false; } }
