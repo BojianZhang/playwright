@@ -1,0 +1,25 @@
+{
+  "name": "openrouter-web-console",
+  "private": true,
+  "version": "1.0.0",
+  "description": "OpenRouter 自动化控制台 — React + Vite + TS 前端(构建产物输出到 public 由零依赖 CommonJS server.js 托管;故不设 type:module)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:nocheck": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

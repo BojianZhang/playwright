@@ -1,0 +1,108 @@
+{
+  "runMode": "run",
+  "mailbox": {
+    "provider": "firstmail",
+    "apiKey": "",
+    "apiBaseUrl": "https://firstmail.ltd",
+    "apiTimeoutMs": 30000,
+    "passwordChangeMode": "skip"
+  },
+  "browser": {
+    "headless": true,
+    "slowMo": 0,
+    "channel": "chrome",
+    "blockedResourceTypes": ["image", "media", "font"],
+    "window": {
+      "workspaceWidth": "auto",
+      "workspaceHeight": "auto",
+      "taskbarReservedPx": 48,
+      "gap": 16,
+      "outerMargin": 16
+    }
+  },
+  "captcha": {
+    "enabled": true,
+    "provider": "twocaptcha",
+    "apiKey": "",
+    "solveTimeoutMs": 120000,
+    "note": "z.ai 滑块拼图 → 2Captcha Coordinates 方法返回缺口坐标,本地可信 CDP 拖拽。apiKey 放 config.local.json 或环境变量 GLM_CAPTCHA_KEY。"
+  },
+  "proxy": {
+    "maxRetriesPerAccount": 2,
+    "connectivityTimeoutMs": 8000,
+    "primaryTargetTimeoutMs": 10000,
+    "secondaryTargetTimeoutMs": 8000,
+    "enableSecondaryTarget": true
+  },
+  "site": {
+    "homeUrl": "https://chat.z.ai",
+    "authUrl": "https://chat.z.ai/auth",
+    "apikeyUrl": "https://z.ai/manage-apikey/apikey-list",
+    "subscribeUrl": "https://z.ai/subscribe",
+    "paymentUrl": "https://z.ai/payment",
+    "primaryConnectivityCheckUrl": "https://chat.z.ai",
+    "secondaryConnectivityCheckUrl": "https://api.ipify.org?format=json"
+  },
+  "subscribe": {
+    "_note": "GLM Coding Plan:plan∈lite|pro|max,cycle∈monthly|quarterly|yearly。prices=每个组合的应扣金额(美元,占位值,真机 smoke 时按 z.ai 实际定价校正),用于充值容量账本与结果行金额。",
+    "defaultPlan": "pro",
+    "defaultCycle": "monthly",
+    "prices": {
+      "lite": { "monthly": 16.2, "quarterly": 43.2, "yearly": 151.2 },
+      "pro":  { "monthly": 64.8, "quarterly": 172.8, "yearly": 604.8 },
+      "max":  { "monthly": 144,  "quarterly": 384,   "yearly": 1344 }
+    },
+    "allowCharges": false
+  },
+  "navigation": {
+    "entryGotoTimeoutMs": 60000,
+    "firstLoadGraceWaitMs": 1500,
+    "humanPauseMinMs": 400,
+    "humanPauseMaxMs": 1200
+  },
+  "billing": {
+    "allowCharges": false,
+    "topUpAmount": 10,
+    "billingConcurrencyCap": 1,
+    "maxCardTries": 3,
+    "defaultCardMaxUses": 3,
+    "failureMode": "soft",
+    "cardPoolFile": "data/card-pool.json",
+    "_note": "allowCharges 由网页表单逐次覆盖(默认不勾=不扣费)。failureMode=soft 时充值失败不回退整账号(账号+Key 仍交付);hard 则判账号失败。卡池文件含卡号/CVC,已在 .gitignore。"
+  },
+  "export": {
+    "template": "{{email}} | {{apiKey}} | credits:{{topUpAmount}} | {{exitIp}}",
+    "writeSuccessFile": true
+  },
+  "batch": {
+    "concurrency": 1,
+    "maxAttempts": 3,
+    "maxGlobalConcurrency": "auto",
+    "perBrowserMemGb": 0.5,
+    "workerStartStaggerMs": 5000,
+    "workerStatusIntervalMs": 5000
+  },
+  "output": {
+    "baseDir": "data/batch-results"
+  },
+  "cluster": {
+    "_note": "中心机在此填所有跑任务机器的地址(静态)。也可用环境变量 GLM_CLUSTER_HOSTS。配合下面的自动注册后,这里可留空。",
+    "hosts": [],
+    "_note2": "【子机】centralUrl=中心机地址,设了之后本机启动会自动向中心机注册+每30s心跳,中心机自动聚合,无需手填。环境变量 GLM_CENTRAL_URL。",
+    "centralUrl": "",
+    "_note3": "【子机】selfUrl=本机对中心机可达的地址(可选)。不填则中心机用『心跳来源IP+端口』自动推断;NAT/端口映射等推断不准时再显式填,如 http://子机IP:4317。环境变量 GLM_SELF_URL。",
+    "selfUrl": ""
+  },
+  "security": {
+    "_note": "访问令牌:设置后所有页面/接口/节点聚合都需带 token,没 token 一律 401。建议放 config.local.json 或环境变量 GLM_AUTH_TOKEN。全集群用同一个 token。",
+    "token": "",
+    "_note2": "gateStatic=true 时连页面也要 token(陌生人有域名也打不开),用 ?token=xxx 访问一次即可。也可用 GLM_GATE_STATIC=1。",
+    "gateStatic": false,
+    "_note3": "allowIps:只放行这些 IP/网段(本机始终放行),其余 403。支持单 IP 与 CIDR。环境变量 GLM_ALLOW_IPS(逗号分隔)。",
+    "allowIps": [],
+    "_note4": "allowHosts:只接受这些域名(Host 头)的访问(localhost 始终放行),挡掉用裸 IP 或错误域名的扫描。支持 *.example.com。环境变量 GLM_ALLOW_HOSTS。",
+    "allowHosts": [],
+    "_note5": "trustForwardedFor=true:前置 Nginx 等反代时,用 X-Forwarded-For 取真实客户端 IP 做 IP 白名单(仅在确实有可信反代时开,否则可被伪造)。环境变量 GLM_TRUST_PROXY=1。",
+    "trustForwardedFor": false
+  }
+}

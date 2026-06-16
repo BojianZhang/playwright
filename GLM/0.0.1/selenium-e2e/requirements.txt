@@ -1,0 +1,19 @@
+# Python 依赖 —— selenium-e2e(纯 Selenium / 混合 流水线 + Fix C 原生CDP)
+# 装: python -m pip install -r selenium-e2e/requirements.txt
+#
+# 注:chromedriver 不在此 —— selenium 4.x 自带 Selenium Manager 会自动下载匹配内核的 driver。
+#     反检测用的 chromedriver_stealth(Windows 为 .exe)是【运行时】由 common/driver.py 改写 cdc_ 特征生成的
+#     二进制副本(写临时文件→chmod 0o755→原子替换;macOS/Apple Silicon 还会自动 codesign ad-hoc 重签名,
+#     否则 arm64 内核拒绝执行,详见 docs/macOS-跨平台运行.md),跨平台,不经 pip。
+#
+# 跨平台:本流水线 Windows / macOS 皆可。生产加卡链路 Fix C 是原生 CDP,纯跨平台、无 OS 级输入依赖。
+#   pyautogui / pygetwindow 只被【OS 级真键鼠兜底】(Fix B fixb_bind / osinput)用到:
+#     · macOS:需在「系统设置 → 隐私与安全性 → 辅助功能」给终端/Python 授权,pyautogui 真键鼠才生效;
+#              提前台改用系统自带 osascript(见 common/osnative.py),不依赖 pygetwindow。
+#     · pygetwindow 仅 Windows 有效 → 未列为硬依赖(Mac 上 import 失败已被 try/except 兜住)。
+
+selenium>=4.20            # WebDriver + Selenium Manager(自动取 chromedriver)
+websocket-client>=1.7     # 原生 CDP 连接(Fix C / cdp_raw.py / cdp_fetch.py)
+requests-go>=1.0.9        # Chrome TLS/JA3 HTTP client for external APIs(firstmail/captcha); urllib fallback if absent
+pyautogui>=0.9.54         # OS 级坐标点击兜底(Fix B / osinput);macOS 需辅助功能授权
+pygetwindow>=0.0.9 ; platform_system == "Windows"   # Fix B 提前台(仅 Windows;macOS 走 osascript)

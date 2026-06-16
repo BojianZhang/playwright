@@ -1,0 +1,67 @@
+# 运行日志（重启会覆盖，含诊断输出，不入库）
+_server.log
+_server.err.log
+*.log
+
+# 统一日志目录:内容(日志/截图,含邮箱/Key/卡尾号)全忽略,只留 README
+logs/*
+!logs/README.md
+
+# 账号状态/卡池/台账等本地运行数据（含卡号/CVC等敏感信息，绝不入库）
+data/card-pool.json
+data/accounts.json
+data/billing-ledger.json
+data/error-log.json
+data/runs.json
+data/run-details/
+data/_runs_tmp/
+data/batch-results/
+
+# 临时 UI 测试产物
+_uitest*.png
+_uitest*.js
+
+# 诊断/自测脚本（_selftest / _probe_* / _check_ads / _import_card 等，含真实卡号/账号，绝不入库）
+_*.js
+
+# 纯 Selenium 流水线（selenium-e2e/）的本地数据：账号文件/代理池/终态/截图/诊断脚本——含邮箱密码/Key/卡号
+selenium-e2e/_*.py
+# 归档到 scratch/ 后的下划线探针(含真实卡号)同样不入库;README.md 不匹配本规则仍可入库
+selenium-e2e/scratch/_*.py
+selenium-e2e/_*.png
+selenium-e2e/state/
+selenium-e2e/accounts*.txt
+selenium-e2e/proxies*.txt
+selenium-e2e/*.local.txt
+# 验证跑批的账号输入清单(含邮箱:密码明文,绝不入库) + selenium-e2e 运行日志目录
+selenium-e2e/val_*.txt
+selenium-e2e/val_*.log
+selenium-e2e/logs/
+
+# 卡片导入文件(真实卡号/CVC,绝不入库)
+cards*.txt
+selenium-e2e/cards*.txt
+# 卡池及其所有备份(真实卡号/CVC)
+data/card-pool*.json
+data/card-pool.json.*
+data/*.bak.*
+data/*.backup*
+# 主配置密钥(2captcha/firstmail key 等)
+config/config.local.json
+# 首次部署引导状态(本机运行态,非密钥)
+config/setup-state.json
+data/failure-policy.json
+data/strategies.json
+data/engine-configs.json
+data/proxies.json
+data/addresses.json
+data/adspower.json
+data/adspower-endpoints.json
+data/captcha-keys.json
+data/mailbox-keys.json
+data/usage.jsonl
+selenium-e2e/config.local.json
+selenium-e2e/*.local.json
+
+# BIN黑名单(含尾号片段,操作数据非代码)
+selenium-e2e/card-blacklist-bins.txt
