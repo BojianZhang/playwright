@@ -38,6 +38,8 @@ const FIELDS = [
   // ── 驱动 / 环境(两套共用)────────────────────────────────────────────────
   // ★并发硬上限:engine-runner 起 job 时把任何引擎的每进程并发钳到 ≤ 它(防 AdsPower 高并发批量掉线);空=不限。
   { key: 'maxConcurrency', env: 'OPENROUTER_MAX_CONCURRENCY', type: 'number', scope: 'both', group: '驱动环境', def: '' },
+  // ── 错峰启动间隔(秒):并发跑时每号启动间隔,设大让它们错峰撞加卡/邮箱等待;留空=老行为 min(gap,3) ──
+  { key: 'launchStagger', env: 'OPENROUTER_LAUNCH_STAGGER', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selPageloadTimeout', env: 'SEL_PAGELOAD_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   { key: 'selScriptTimeout', env: 'SEL_SCRIPT_TIMEOUT', type: 'number', scope: 'both', group: '驱动环境', def: '' },
   // ── 页面加速:Selenium 加载策略(eager/none),脚本更早可操作元素;留空=normal 不变;零反检测风险 ──

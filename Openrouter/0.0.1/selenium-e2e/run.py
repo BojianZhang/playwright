@@ -107,6 +107,9 @@ def main():
     ap.add_argument("--job-id", default="", help="本次任务 jobId:写进结果行 job_id,供 web 按 job 隔离取结果(防同引擎并发串号)")
     args = ap.parse_args()
     args.gap = max(0, args.gap)                   # 负 --gap → time.sleep(负数) 抛 ValueError,会中断整批(在 per-account try 之外)
+    # 【开关 OPENROUTER_LAUNCH_STAGGER 秒】并发错峰启动间隔:>0 时按它错开每个号的启动,让它们不在同一时刻
+    #   齐步撞上加卡 85s / 邮箱验证等待(治"一批页面同时不干活")。留空/0=用 min(gap,3) 老行为(逐字节不变)。
+    _launch_stagger = max(0.0, float(os.environ.get("OPENROUTER_LAUNCH_STAGGER", "0") or 0))
     args.concurrency = max(1, args.concurrency)   # 负/0 并发 → ThreadPoolExecutor 直接报错
 
     cfg = common.load_config()
@@ -288,7 +291,7 @@ def main():
             futs = []
             for i, acct in pending:
                 futs.append(ex.submit(worker, i, acct))
-                time.sleep(min(args.gap, 3))      # 错峰提交,避免同时猛建环境
+                time.sleep(_launch_stagger if _launch_stagger > 0 else min(args.gap, 3))   # 错峰提交(默认 min(gap,3) 防猛建环境;开关 OPENROUTER_LAUNCH_STAGGER 可调大以错开等待)
             for fu in concurrent.futures.as_completed(futs):
                 try:
                     fu.result()
@@ -394,7 +397,7 @@ def main():
                 _futs2 = []
                 for _i, _acct in _retry_pending:
                     _futs2.append(_ex2.submit(worker, _i, _acct))
-                    time.sleep(min(args.gap, 3))
+                    time.sleep(_launch_stagger if _launch_stagger > 0 else min(args.gap, 3))   # 错峰提交(AUTO_RETRY;同主批,开关 OPENROUTER_LAUNCH_STAGGER 可调大)
                 for _fu in concurrent.futures.as_completed(_futs2):
                     try:
                         _fu.result()
