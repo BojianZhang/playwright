@@ -5,6 +5,7 @@ import { Icon } from '../../lib/icons';
 import { withToken } from '../../lib/auth';
 import type { JobStreamState } from '../../lib/useJobStream';
 import { PoolTab, LedgerTab, StatusTab, ErrorsTab } from '../panels';
+import LogTerminal from './LogTerminal';
 import { STAGE_LABELS, STAGE_ORDER, SEL_STAGE_LABELS, SEL_STAGE_ORDER, type Engine, type TabKey } from './shared';
 
 export default function MonitorPanel({ state, isPython, submitting, jobId, runHint, onRun, requeue, onOpenPolicy }: {
@@ -128,11 +129,7 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
           {tab === 'ledger' && <LedgerTab />}
           {tab === 'status' && <StatusTab />}
           {tab === 'errors' && <ErrorsTab onOpenPolicy={onOpenPolicy} />}
-          {tab === 'logs' && (
-            <div className="io-box" style={{ minHeight: 200, maxHeight: 320 }}>
-              {state.logs.length ? state.logs.map((l, i) => <div key={i}><span style={{ color: 'var(--text-4)' }}>{l.ts}</span>  <span className={l.cls}>{l.msg}</span></div>) : '等待开始…'}
-            </div>
-          )}
+          {tab === 'logs' && <LogTerminal logs={state.logs} running={state.running} jobId={jobId} />}
         </div>
       </section>
     </>

@@ -112,7 +112,7 @@ export default function DiagnosePage() {
           <div className="section-gap" />
           <section className="card">
             <div className="eb-top"><span className="idx c-green">▥</span><h3>最近活动</h3><span className="head-hint">点任意行的 账号 / 卡 / 代理 / 环境 即下钻排查它的完整链路</span></div>
-            <DataTable rows={recent?.usage || []} columns={USAGE_COLS} rowKey={(_r, i) => i} getRowClass={(r) => r.ok ? undefined : 'is-banned'} initialSort={{ key: 'at', dir: 'desc' }} maxHeight={460} loading={recentLoading}
+            <DataTable rows={recent?.usage || []} columns={USAGE_COLS} rowKey={(_r, i) => i} getRowClass={(r) => r.ok ? undefined : 'is-banned'} initialSort={{ key: 'at', dir: 'desc' }} maxHeight={460} fillViewport loading={recentLoading}
               emptyText="还没有任何运行记录(跑过批次后这里会显示最近活动,点行可下钻)。" exportName="diagnose-recent" columnSettings={{ tableId: 'diag-recent' }}
               search={{ keys: [(r) => r.email, (r) => r.stage, (r) => r.reason, (r) => r.host, (r) => r.cardLast4], placeholder: '搜索 账号 / 阶段 / 错误 / 卡 / 代理…' }}
               filters={[{ key: 'ok', label: '结果', accessor: (r) => r.ok ? 'ok' : 'fail', options: [{ value: 'ok', label: '成功' }, { value: 'fail', label: '失败' }] }, { key: 'engine', label: '引擎', accessor: (r) => r.engine || '—', options: [...new Set((recent?.usage || []).map((r) => r.engine || '—'))].map((s) => ({ value: s, label: s }))} ]} />

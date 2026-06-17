@@ -1,0 +1,1 @@
+function w(r){const s=r.originalPassword||"",o=r.passwordChanged?r.password||r.originalPassword||"":r.originalPassword||"",n=r.password||"",i=r.password||"";return{mbOrig:s,mbCur:o,orOrig:n,orCur:i}}export{w as p};

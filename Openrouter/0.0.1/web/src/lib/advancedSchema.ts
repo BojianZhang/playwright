@@ -23,6 +23,10 @@ export const ADV_FIELDS: AdvField[] = [
   { key: 'mailVerifyCycles', env: 'MAIL_VERIFY_CYCLES', label: '重发轮数', hint: '读不到就点 Resend 重发再轮询的轮数(默认3);设 1=只读一轮不重发=最快失败', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
   { key: 'mailVerifyInterval', env: 'MAIL_VERIFY_INTERVAL', label: '轮询间隔(秒)', hint: '每次读链接之间隔秒数(默认3)', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
   { key: 'mailVerifyDeadline', env: 'MAIL_VERIFY_DEADLINE', label: '邮箱验证总死线(秒) ★砍长尾', hint: '整段邮箱验证超过这么多秒还没拿到链接就快速放弃,砍掉收不到信的 200-517s 长尾、把并发槽让给别的号。留空=关=不限(老流程逐字节不变)。建议 90~120 试', type: 'number', scope: 'selenium', group: '邮箱验证', def: '' },
+  { key: 'mailboxSoftBad', env: 'MAILBOX_SOFT_BAD', label: '软坏邮箱(治"重发空转") ★', hint: '信箱能登录(200)但永远收不到 OpenRouter 验证邮件的号:跨批累计到「阈值」次仍收不到 → 自动登记坏邮箱永久跳过,且重复犯号本批只试 1 轮快速失败(≈60s)。留空=默认【开】;选 off 关回老行为(永不因"收不到信"拉黑、每批烧~180s)', type: 'select', scope: 'selenium', group: '邮箱验证', def: '', options: ['', 'on', 'off'] },
+  { key: 'mailboxSoftBadMax', env: 'MAILBOX_SOFT_BAD_MAX', label: '软坏累计阈值(批)', hint: '同一邮箱跨批"可达但收不到信"累计达这么多次 → 升级坏邮箱永久跳过。留空=代码默认 3;成功收到信一次即清零', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
+  { key: 'mailboxDomainAutoBlock', env: 'MAILBOX_DOMAIN_AUTO_BLOCK', label: '整域自动拉黑(默认关)', hint: '可选:某域逐邮箱坏号数 ≥「域阈值」时,自动把整个 @域 拉黑(后续该域所有号永久跳过)。留空/不选=关=只在坏邮箱页给「建议+一键整域拉黑」,避免同域好号被连坐。开=on', type: 'select', scope: 'selenium', group: '邮箱验证', def: '', options: ['', 'on'] },
+  { key: 'mailboxDomainBadMax', env: 'MAILBOX_DOMAIN_BAD_MAX', label: '整域拉黑阈值(坏号数)', hint: '配合上面的「整域自动拉黑」:某域累计坏号达这么多个才整域拉黑。留空=代码默认 5', type: 'number', scope: 'selenium', group: '邮箱验证', def: '5' },
   // ── 加卡 / Fix C 核(纯Selenium + 混合 都走)──
   { key: 'fixcSuccessHold', env: 'FIXC_SUCCESS_HOLD', label: '绑成展示停留(秒)', hint: '绑成后停留几秒让你看到再走;无人值守设 0 更快', type: 'number', scope: 'both', group: '加卡', def: '4' },
   { key: 'fixcZipDeadline', env: 'FIXC_ZIP_DEADLINE', label: 'ZIP重试死线(秒)', hint: 'declined 换 ZIP 重试同一张卡的总上限', type: 'number', scope: 'both', group: '加卡', def: '60' },

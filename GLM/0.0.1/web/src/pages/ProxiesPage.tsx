@@ -116,7 +116,7 @@ export default function ProxiesPage() {
           rows={rows} columns={columns} rowKey={(r) => r.id}
           getRowClass={(r) => r.status === 'disabled' ? 'is-used' : r.lastOk === false ? 'is-banned' : undefined}
           search={{ keys: [(r) => `${r.host}:${r.port}`, (r) => r.label, (r) => r.user], placeholder: '搜索 地址 / 标签…' }}
-          filters={filters} columnSettings={{ tableId: 'proxies' }} maxHeight={520} exportName="proxies"
+          filters={filters} columnSettings={{ tableId: 'proxies' }} maxHeight={520} fillViewport exportName="proxies"
           selectable
           batchActions={(sel, clear) => (<>
             <button className="btn btn-ghost btn-sm" onClick={() => batchRun(sel, (r) => test.mutateAsync({ id: r.id }), { toast, verb: '测试', onDone: clear })}>测试</button>

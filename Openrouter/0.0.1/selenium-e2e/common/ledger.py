@@ -389,6 +389,73 @@ def mark_bad_mailbox(email, reason="mailbox-404"):
         pass
 
 
+def _verify_fail_file():
+    return os.path.join(paths.HERE, "state", "mailbox_verify_fails.json")
+
+
+def load_verify_fails():
+    """读【信箱可达(200)但收不到 OpenRouter 验证邮件】的跨批累计计数(email→{count,last_at,last_reason})。
+       区别于 bad_mailboxes:这些号信箱本身没坏(非 404/401),只是收不到验证信 → 累计到阈值才升级成坏邮箱永久跳过。
+       返回 dict email→info。"""
+    try:
+        with open(_verify_fail_file(), encoding="utf-8") as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+
+def mark_verify_fail(email, reason="no-verify-mail"):
+    """登记某号本批【可达但收不到验证信】,跨批累加计数并返回【累计次数】。幂等累加+原子写+跨进程锁。
+       供 steps_auth 据返回值判断是否达阈值升级成坏邮箱。不写 bad_mailboxes(那是升级后才做)。"""
+    if not email:
+        return 0
+    try:
+        with _file_lock(_verify_fail_file()):     # ★跨进程锁:两引擎并发累加计数不丢
+            d = load_verify_fails()
+            rec = d.get(email) or {"count": 0}
+            rec["count"] = int(rec.get("count", 0)) + 1
+            rec["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            if reason:
+                rec["last_reason"] = str(reason)[:80]
+            d[email] = rec
+            os.makedirs(os.path.dirname(_verify_fail_file()), exist_ok=True)
+            _atomic_write_json(_verify_fail_file(), d)
+        log("📨 收不到验证信累计 #%d: %s" % (rec["count"], email))
+        return int(rec["count"])
+    except Exception:
+        return 0
+
+
+def clear_verify_fail(email):
+    """某号本批【收到了验证信=信箱其实能用】→ 清掉它的累计计数(恢复即清零,防误升级成坏邮箱)。幂等+原子写。"""
+    if not email:
+        return
+    try:
+        with _file_lock(_verify_fail_file()):
+            d = load_verify_fails()
+            if email in d:
+                del d[email]
+                os.makedirs(os.path.dirname(_verify_fail_file()), exist_ok=True)
+                _atomic_write_json(_verify_fail_file(), d)
+    except Exception:
+        pass
+
+
+def count_bad_in_domain(domain, bad=None):
+    """统计 bad_mailboxes 里属于某 @域 的【逐邮箱】坏号数(不含已登记的整域条目本身)。供可选的「整域自动拉黑」判阈值。"""
+    if not domain:
+        return 0
+    dom = domain if domain.startswith("@") else ("@" + domain.split("@", 1)[-1])
+    bad = load_bad_mailboxes() if bad is None else bad
+    n = 0
+    for k in (bad or {}):
+        if k == dom:                                  # 整域条目本身不计
+            continue
+        if "@" in k and ("@" + k.split("@", 1)[1]) == dom:
+            n += 1
+    return n
+
+
 def mark_card_result(card, result):
     """加卡结果回写卡池(并发安全)：
        declined→【立即禁用】该卡(坏卡,不再用)；server-error/unknown→errorCount++,连续≥5次才禁(Radar限频非卡问题)；
@@ -767,6 +834,7 @@ __all__ = [
     "_CARD_LOCK", "_bin_of", "_read_bin_usage", "_bin_today", "_save_bin_usage", "load_card",
     "_hcaptcha_file", "load_hcaptcha_hits", "mark_hcaptcha",
     "_bad_mailbox_file", "load_bad_mailboxes", "is_bad_mailbox", "mark_bad_mailbox",
+    "_verify_fail_file", "load_verify_fails", "mark_verify_fail", "clear_verify_fail", "count_bad_in_domain",
     "mark_card_result", "note_decline_code", "list_active_cards", "get_card_by_id",
     # 充值容量账本 + 原子预留
     "get_card_capacity", "reserve_charge", "commit_charge", "release_charge", "reap_stale_inflight", "fundable_count",

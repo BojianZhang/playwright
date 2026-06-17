@@ -28,6 +28,13 @@ const FIELDS = [
   { key: 'mailVerifyInterval', env: 'MAIL_VERIFY_INTERVAL', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
   // ── 邮箱验证总死线(秒):>0 时整段验证超时快速放弃,砍 200-517s 长尾;留空=关=不限(老流程) ──
   { key: 'mailVerifyDeadline', env: 'MAIL_VERIFY_DEADLINE', type: 'number', scope: 'selenium', group: '邮箱验证', def: '' },
+  // ── 软坏邮箱(治"重发空转"):信箱可达(200)但永远收不到验证信的号,跨批累计阈值次后自动登记坏邮箱永久跳过。
+  //   留空=Python 默认【开】;选 off 关回老行为(永不因"收不到信"拉黑)。重复犯号本批自动只试 1 轮快速失败。
+  { key: 'mailboxSoftBad', env: 'MAILBOX_SOFT_BAD', type: 'select', scope: 'selenium', group: '邮箱验证', def: '', options: ['', 'on', 'off'] },
+  { key: 'mailboxSoftBadMax', env: 'MAILBOX_SOFT_BAD_MAX', type: 'number', scope: 'selenium', group: '邮箱验证', def: '3' },
+  // ── 整域自动拉黑(可选·默认关):某域逐邮箱坏号数 ≥ 阈值时整域拉黑;留空/off=关(只在 web 给「建议+一键」)──
+  { key: 'mailboxDomainAutoBlock', env: 'MAILBOX_DOMAIN_AUTO_BLOCK', type: 'select', scope: 'selenium', group: '邮箱验证', def: '', options: ['', 'on'] },
+  { key: 'mailboxDomainBadMax', env: 'MAILBOX_DOMAIN_BAD_MAX', type: 'number', scope: 'selenium', group: '邮箱验证', def: '5' },
   // ── 加卡 / Fix C 核(纯Selenium + 混合 都走 fixc_core)─────────────────────
   { key: 'fixcSuccessHold', env: 'FIXC_SUCCESS_HOLD', type: 'number', scope: 'both', group: '加卡', def: '4' },
   { key: 'fixcZipDeadline', env: 'FIXC_ZIP_DEADLINE', type: 'number', scope: 'both', group: '加卡', def: '60' },

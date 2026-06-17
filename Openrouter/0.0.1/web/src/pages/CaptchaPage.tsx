@@ -93,7 +93,7 @@ export default function CaptchaPage() {
             { key: 'status', label: '状态', accessor: (k) => k.status, options: [{ value: 'active', label: '启用' }, { value: 'disabled', label: '停用' }] },
             { key: 'balance', label: '余额', accessor: (k) => k.balance == null ? 'unq' : k.balance > 0 ? 'funded' : 'empty', options: [{ value: 'funded', label: '有额度' }, { value: 'empty', label: '耗尽' }, { value: 'unq', label: '未查' }] },
           ]}
-          columnSettings={{ tableId: 'captcha-keys' }} maxHeight={460} exportName="captcha-keys"
+          columnSettings={{ tableId: 'captcha-keys' }} maxHeight={460} fillViewport exportName="captcha-keys"
           selectable
           batchActions={(sel, clear) => (<>
             <button className="btn btn-ghost btn-sm" onClick={() => batchRun(sel, (k) => bal.mutateAsync({ id: k.id }), { toast, verb: '查余额', onDone: clear })}>查余额</button>

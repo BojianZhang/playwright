@@ -10,7 +10,7 @@ import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { Modal } from '../components/Modal';
-import type { AccountsResp, CardRow, CardsResp, ErrorSummary, LedgerSummary } from '../lib/types';
+import type { AccountsResp, CardRow, CardsResp, ErrorEntry, ErrorSummary, LedgerEntry, LedgerSummary } from '../lib/types';
 import { DataTable, type Column, type FilterDef } from '../components/DataTable';
 import { RowMenu } from '../components/RowMenu';
 import { batchRun } from '../lib/batch';
@@ -158,6 +158,7 @@ export function PoolTab() {
       columnSettings={{ tableId: 'cards' }}
       exportName="cards"
       maxHeight={460}
+      fillViewport
       selectable
       batchActions={(sel, clear) => (<>
         <button className="btn btn-primary btn-sm" title="给选中的卡一次性设 可用次数/充值次数/金额/同卡并发(留空=不改)" onClick={() => openBatchSet(sel, clear)}><Icon name="refresh" size={12} />批量设值</button>
@@ -210,6 +211,19 @@ const BILL: Record<string, JSX.Element> = {
   'no-card': <span className="kbadge neutral">无卡</span>, 'no-address': <span className="kbadge neutral">无地址</span>,
   'page-closed': <span className="kbadge fail">页面关闭</span>,
 };
+// 充值台账表迁到通用 DataTable(原手写 .tbl-wrap):加排序/搜索/筛选/列设置/虚拟化/fillViewport;每列展示与原表逐字段等价。
+const LEDGER_COLS: Column<LedgerEntry>[] = [
+  { key: 'at', label: '时间', className: 'mono', cellStyle: { color: 'var(--text-3)' }, sortAccessor: (e) => e.at || '', exportValue: (e) => shortTime(e.at), render: (e) => shortTime(e.at) },
+  { key: 'email', label: '邮箱', className: 'mono', sortAccessor: (e) => e.email || '', render: (e) => e.email },
+  { key: 'cardLast4', label: '卡', className: 'mono', exportValue: (e) => e.cardLast4 || '', render: (e) => e.cardLast4 ? '•••• ' + e.cardLast4 : '—' },
+  { key: 'charged', label: '金额', className: 'mono', sortAccessor: (e) => e.charged || 0, exportValue: (e) => e.charged || '', render: (e) => e.charged ? '$' + e.charged : '—' },
+  { key: 'result', label: '结果', sortAccessor: (e) => e.result, exportValue: (e) => e.result, render: (e) => BILL[e.result] || e.result },
+  { key: 'declineCode', label: '拒付原因', className: 'mono', sortAccessor: (e) => e.declineCode || '', exportValue: (e) => e.declineCode || '', render: (e) => <span style={{ color: e.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : ''}>{e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : '—'}</span> },
+  { key: 'error', label: '错误', className: 'mono', render: (e) => <span style={{ color: e.error ? 'var(--danger)' : 'var(--text-4)' }} title={e.error || ''}>{e.error ? String(e.error).slice(0, 24) : '—'}</span> },
+];
+const LEDGER_FILTERS: FilterDef<LedgerEntry>[] = [{ key: 'result', label: '结果', accessor: (e) => e.result, options: [
+  { value: 'success', label: '成功' }, { value: 'declined', label: '被拒' }, { value: 'card-bound', label: '加卡' }, { value: 'address-bound', label: '地址' }, { value: 'no-card', label: '无卡' }, { value: 'no-address', label: '无地址' }, { value: 'page-closed', label: '页面关闭' },
+] }];
 export function LedgerTab() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -234,26 +248,14 @@ export function LedgerTab() {
           <button className="btn btn-danger-soft btn-sm" onClick={async () => { if (!confirm('清空充值台账?')) return; await apiPost('/api/billing/clear'); qc.invalidateQueries({ queryKey: ['billing'] }); toast.push('台账已清空', 'ok'); }}><Icon name="trash" size={12} />清空台账</button>
         </div>
       </SubHead>
-      {!entries.length ? <div className="empty-note">暂无充值记录。</div> : (
-        <div className="tbl-wrap" style={{ maxHeight: 460 }}>
-          <table className="tbl">
-            <thead><tr><th>时间</th><th>邮箱</th><th>卡</th><th>金额</th><th>结果</th><th>拒付原因</th><th>错误</th></tr></thead>
-            <tbody>
-              {entries.map((e, i) => (
-                <tr key={i} className={e.result === 'declined' ? 'is-banned' : ''}>
-                  <td className="mono" style={{ color: 'var(--text-3)' }}>{shortTime(e.at)}</td>
-                  <td className="mono">{e.email}</td>
-                  <td className="mono">{e.cardLast4 ? '•••• ' + e.cardLast4 : '—'}</td>
-                  <td className="mono">{e.charged ? '$' + e.charged : '—'}</td>
-                  <td>{BILL[e.result] || e.result}</td>
-                  <td className="mono" style={{ color: e.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : ''}>{e.declineCode ? (DECLINE_LABEL_P[e.declineCode] || e.declineCode) : '—'}</td>
-                  <td className="mono" style={{ color: e.error ? 'var(--danger)' : 'var(--text-4)' }} title={e.error || ''}>{e.error ? String(e.error).slice(0, 24) : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        rows={entries} columns={LEDGER_COLS} rowKey={(_e, i) => i}
+        getRowClass={(e) => e.result === 'declined' ? 'is-banned' : undefined}
+        search={{ keys: [(e) => e.email, (e) => e.cardLast4 || '', (e) => e.declineCode || '', (e) => e.error || ''], placeholder: '搜索 邮箱 / 卡 / 拒付 / 错误…' }}
+        filters={LEDGER_FILTERS} columnSettings={{ tableId: 'billing' }}
+        maxHeight={600} fillViewport
+        emptyText="暂无充值记录。"
+      />
     </>
   );
 }
@@ -322,6 +324,7 @@ export function StatusTab() {
         columnSettings={{ tableId: 'accounts' }}
         exportName="accounts"
         maxHeight={520}
+        fillViewport
         selectable
         batchActions={(sel, clear) => (
           <button className="btn btn-danger-soft btn-sm" onClick={() => { if (!confirm(`重置选中的 ${sel.length} 个账号?将从头跑(解黑/清进度)。`)) return; batchRun(sel, (a) => apiPost('/api/accounts/reset', { email: a.email }), { toast, verb: '重置', onDone: () => { qc.invalidateQueries({ queryKey: ['accounts'] }); clear(); } }); }}>批量重置 / 解黑</button>
@@ -333,6 +336,16 @@ export function StatusTab() {
 }
 
 /* ---------------- 错误记录 ---------------- */
+// 错误记录表迁到通用 DataTable(原手写 .tbl-wrap):加排序/搜索/筛选/列设置/虚拟化/fillViewport;每列展示与原表逐字段等价。
+const ERR_COLS: Column<ErrorEntry>[] = [
+  { key: 'at', label: '时间', className: 'mono', cellStyle: { color: 'var(--text-3)' }, sortAccessor: (e) => e.at || '', exportValue: (e) => shortTime(e.at), render: (e) => shortTime(e.at) },
+  { key: 'email', label: '邮箱', className: 'mono', sortAccessor: (e) => e.email || '', render: (e) => e.email || '—' },
+  { key: 'stage', label: '阶段', className: 'mono', cellStyle: { color: 'var(--text-2)' }, sortAccessor: (e) => e.stage || '', render: (e) => e.stage || '—' },
+  { key: 'reason', label: '错误', className: 'mono', cellStyle: { color: 'var(--danger)' }, sortAccessor: (e) => e.reason, render: (e) => e.reason },
+  { key: 'action', label: '动作', sortAccessor: (e) => e.action || '', exportValue: (e) => ERR_ACTION[e.action || ''] || e.action || '', render: (e) => <span className={'kbadge ' + (e.action === 'blacklist' ? 'fail' : 'warn')}>{ERR_ACTION[e.action || ''] || e.action || '—'}</span> },
+  { key: 'attempt', label: '第几次', className: 'mono', sortAccessor: (e) => e.attempt ?? -1, render: (e) => e.attempt != null ? e.attempt : '—' },
+];
+const ERR_FILTERS: FilterDef<ErrorEntry>[] = [{ key: 'action', label: '动作', accessor: (e) => e.action || '', options: Object.entries(ERR_ACTION).map(([value, label]) => ({ value, label })) }];
 export function ErrorsTab({ onOpenPolicy }: { onOpenPolicy: () => void }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -352,25 +365,13 @@ export function ErrorsTab({ onOpenPolicy }: { onOpenPolicy: () => void }) {
       </SubHead>
       <p className="help" style={{ margin: '-2px 0 10px' }}>每次阶段失败都会记一条(含被路由成什么动作)。错误的「说明 / 策略配置」在 <button className="link-inline" onClick={onOpenPolicy}>📖 错误策略 / 说明</button> 里改。</p>
       {chips.length > 0 && <div className="err-summary">{chips}</div>}
-      {!entries.length ? <div className="empty-note">暂无错误记录。</div> : (
-        <div className="tbl-wrap" style={{ maxHeight: 420 }}>
-          <table className="tbl">
-            <thead><tr><th>时间</th><th>邮箱</th><th>阶段</th><th>错误</th><th>动作</th><th>第几次</th></tr></thead>
-            <tbody>
-              {entries.map((e, i) => (
-                <tr key={i}>
-                  <td className="mono" style={{ color: 'var(--text-3)' }}>{shortTime(e.at)}</td>
-                  <td className="mono">{e.email || '—'}</td>
-                  <td className="mono" style={{ color: 'var(--text-2)' }}>{e.stage || '—'}</td>
-                  <td className="mono" style={{ color: 'var(--danger)' }}>{e.reason}</td>
-                  <td><span className={'kbadge ' + (e.action === 'blacklist' ? 'fail' : 'warn')}>{ERR_ACTION[e.action || ''] || e.action || '—'}</span></td>
-                  <td className="mono">{e.attempt != null ? e.attempt : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        rows={entries} columns={ERR_COLS} rowKey={(_e, i) => i}
+        search={{ keys: [(e) => e.email || '', (e) => e.stage || '', (e) => e.reason], placeholder: '搜索 邮箱 / 阶段 / 错误…' }}
+        filters={ERR_FILTERS} columnSettings={{ tableId: 'errors' }}
+        maxHeight={600} fillViewport
+        emptyText="暂无错误记录。"
+      />
     </>
   );
 }

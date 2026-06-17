@@ -279,6 +279,37 @@ def test_bad_mailbox():
     check("坏邮箱:空安全", common.is_bad_mailbox("", bad) is False)
 
 
+def test_verify_fail_counter():
+    """软坏邮箱(可达但收不到验证信)跨批计数器:mark 自增返回累计、clear 清零、达阈值升级坏邮箱、域坏号计数。"""
+    import shutil
+    d = tempfile.mkdtemp(prefix="orsoftbad_")
+    _saved = common.paths.HERE
+    try:
+        common.paths.HERE = d                       # 把 state/ 指到临时目录(_verify_fail_file/_bad_mailbox_file 都派生自 HERE)
+        em = "nomail@example.com"
+        check("软坏:初始无记录", common.load_verify_fails().get(em) is None)
+        check("软坏:mark 返回累计 1", common.mark_verify_fail(em, "no-verify-mail") == 1)
+        check("软坏:mark 返回累计 2", common.mark_verify_fail(em) == 2)
+        check("软坏:count 落盘=2", int(common.load_verify_fails()[em]["count"]) == 2)
+        common.clear_verify_fail(em)
+        check("软坏:clear 后清零", common.load_verify_fails().get(em) is None)
+        n = 0
+        for _ in range(3):
+            n = common.mark_verify_fail(em)
+        check("软坏:三次后累计=3", n == 3)
+        common.mark_bad_mailbox(em, "no-verify-mail:3x")   # 达阈值升级
+        check("软坏:升级后 is_bad_mailbox 命中", common.is_bad_mailbox(em) is True)
+        # 域坏号计数(供整域拉黑判阈值):整域条目本身不计入
+        common.mark_bad_mailbox("a@deaddom.com")
+        common.mark_bad_mailbox("b@deaddom.com")
+        check("域:count_bad_in_domain=2", common.count_bad_in_domain("@deaddom.com") == 2)
+        common.mark_bad_mailbox("@deaddom.com")
+        check("域:整域条目本身不计仍=2", common.count_bad_in_domain("deaddom.com") == 2)
+    finally:
+        common.paths.HERE = _saved
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_card_captcha_disable():
     """spread:弹框累计冷却,但撞≥5次禁用本卡(防反复重用热卡;2026-06-13)。"""
     _tmpstate()
@@ -356,6 +387,7 @@ TESTS = [
     test_recovery_should_retry,
     test_is_banned_reason,
     test_bad_mailbox,
+    test_verify_fail_counter,
     test_card_captcha_disable,
     test_file_lock,
     test_grid_min_size,

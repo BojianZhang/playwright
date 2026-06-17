@@ -10,6 +10,7 @@
 
 import re
 import time
+import os
 
 from common import HttpPostError, http_post_json, http_post_text, log
 
@@ -66,7 +67,7 @@ def wait_verify_link(email, password, api_key, base_url=DEFAULT_BASE, attempts=1
          ★坏邮箱判定改在【轮询过程中】统计 404(邮箱不存在/不可访问,确定性返回 404),不再靠上层事后【补一次请求恰好复现 404】
            (住宅代理抖动时那一次可能 timeout/连不上→不含 404→漏登记→下次重复浪费整轮注册)。"""
     _pws = list(dict.fromkeys([p for p in (password, alt_password) if p]))   # 主+备用密码,去重去空,保序
-    _n_404 = 0; _n_err = 0; _got_msg = False
+    _n_404 = 0; _n_err = 0; _n_401 = 0; _got_msg = False
     for i in range(attempts):
         msg = None
         _err = None
@@ -93,15 +94,32 @@ def wait_verify_link(email, password, api_key, base_url=DEFAULT_BASE, attempts=1
                 log("Firstmail 第 %d 次轮询：暂无验证链接" % (i + 1))
         else:
             _n_err += 1
-            if _err is not None and "404" in str(_err):
+            _es = str(_err)
+            if _err is not None and "404" in _es:
                 _n_404 += 1
-            log("Firstmail 轮询出错：%s" % str(_err)[:80])
+            # ★401「Invalid email or password」= 邮箱凭证无效(密码错/失效,非邮件慢)→ 连续计数,达阈值快速判坏邮箱不干耗。
+            #   只认【连续】401(穿插别的错就清零),防 Firstmail 服务端偶发抖动误杀好邮箱。开关 MAILBOX_401_FAILFAST(默认 on)。
+            if _err is not None and ("401" in _es or "Invalid email or password" in _es):
+                _n_401 += 1
+            else:
+                _n_401 = 0
+            log("Firstmail 轮询出错：%s" % _es[:80])
+            if (os.environ.get("MAILBOX_401_FAILFAST", "on") != "off" and not _got_msg
+                    and _n_401 >= int(os.environ.get("MAILBOX_401_MAX", "3") or 3)):
+                log("Firstmail 连续 %d 次 401(邮箱密码错/凭证无效)→ 快速判坏邮箱,不再干耗后续轮询" % _n_401)
+                if status is not None:
+                    status["bad_mailbox"] = True
+                    status["bad_reason"] = "bad-credentials(401:邮箱密码错/失效)"
+                    status["n_404"] = _n_404; status["n_err"] = _n_err; status["n_401"] = _n_401
+                return None
         if i < attempts - 1:
             time.sleep(interval)
     if status is not None:
-        # 全程没读到任何信 + 至少 2 次确认 404(404 是确定性"邮箱不存在",抖动只会 timeout 不会 404)→ 坏邮箱
-        status["n_404"] = _n_404; status["n_err"] = _n_err
-        status["bad_mailbox"] = (not _got_msg) and _n_404 >= 2
+        # 全程没读到任何信 + 至少 2 次确认 404(邮箱不存在)或 2 次 401(凭证无效)→ 坏邮箱(抖动只会 timeout,不会 404/401)
+        status["n_404"] = _n_404; status["n_err"] = _n_err; status["n_401"] = _n_401
+        status["bad_mailbox"] = (not _got_msg) and (_n_404 >= 2 or _n_401 >= 2)
+        if status["bad_mailbox"] and not status.get("bad_reason"):
+            status["bad_reason"] = ("bad-credentials(401:邮箱密码错/失效)" if _n_401 >= 2 else "mailbox-404(邮箱不存在/不可达)")
     return None
 
 

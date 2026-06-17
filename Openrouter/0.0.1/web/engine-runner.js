@@ -909,4 +909,4 @@ function adspowerSelftest({ timeoutMs = 90000 } = {}) {
   });
 }
 
-module.exports = { spawnEngine, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, purchaseOutcome, parseResultLine, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };
+module.exports = { spawnEngine, buildEnv, RESULTS, isSuccessRow, dedupBySuccess, classifyIncomplete, purchaseOutcome, parseResultLine, readTail, countLines, readDetail, mapRow, renderTpl, handoffTarget, bridgeToAccountStore, isNotAllowed, pyFailReason, reasonFromLine, adspowerSelftest };

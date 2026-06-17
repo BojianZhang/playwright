@@ -79,7 +79,7 @@ export default function MailboxPage() {
           getRowClass={(k) => k.status === 'disabled' ? 'is-used' : undefined}
           search={{ keys: [(k) => k.label, (k) => k.provider, (k) => k.apiBaseUrl], placeholder: '搜索 标签 / 服务商 / 地址…' }}
           filters={[{ key: 'status', label: '状态', accessor: (k) => k.status, options: [{ value: 'active', label: '可用' }, { value: 'disabled', label: '停用' }] }]}
-          columnSettings={{ tableId: 'mailbox-keys' }} maxHeight={460} exportName="mailbox-keys"
+          columnSettings={{ tableId: 'mailbox-keys' }} maxHeight={460} fillViewport exportName="mailbox-keys"
           selectable
           batchActions={(sel, clear) => (<>
             <button className="btn btn-ghost btn-sm" onClick={() => batchRun(sel, (k) => upd.mutateAsync({ id: k.id, patch: { status: 'active' } }), { toast, verb: '启用', onDone: clear })}>启用</button>

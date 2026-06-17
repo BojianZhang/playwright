@@ -34,6 +34,25 @@ export interface AccountRow {
   timings?: Record<string, number> | null;   // 逐步耗时分解(env/auth/key/card/charge/changepw,秒)→ 详情页排查「哪步慢」
   originalPassword?: string; password?: string; nodeId?: string; jobId?: string; topUpAmount?: number;
 }
+// 改密「覆盖 + 存档」账本(pw-changes-store):前端把 {original,current} 叠加到结果页四列。
+export interface PwOverrideEntry { original: string; current: string; updatedAt: string; }
+export interface PwOverride { mailbox?: PwOverrideEntry; openrouter?: PwOverrideEntry; }
+export type PwOverridesMap = Record<string, PwOverride>;   // key = email
+export interface PwOverridesResp { overrides: PwOverridesMap; }
+export type PwChangeType = 'mailbox' | 'openrouter';
+export interface PwChangeItemResult { email: string; ok: boolean; reason?: string; }
+export interface PwChangeResp { type: PwChangeType; ok: number; fail: number; results: PwChangeItemResult[]; phaseB?: boolean; message?: string; }
+export interface PwLogEntry { at: string; email: string; type: PwChangeType; from: string; to: string; ok: boolean; by: string; reason: string; }
+export interface PwLogResp { log: PwLogEntry[]; total?: number; limit?: number; }
+
+// 「获取新Key」覆盖 + 存档账本(key-changes-store):前端把 apiKey 叠加到结果页 API Key 列(keyView 覆盖优先)。
+export interface KeyOverride { apiKey: string; apiKeyName?: string; updatedAt: string; by?: string; }
+export type KeyOverridesMap = Record<string, KeyOverride>;   // key = email
+export interface KeyOverridesResp { overrides: KeyOverridesMap; }
+export interface GetKeyResp { ok: number; fail: number; concurrency?: number; results: { email: string; ok: boolean; reason: string }[]; }
+export interface KeyLogEntry { at: string; email: string; apiKey: string; apiKeyName?: string; ok: boolean; by: string; reason: string; }
+export interface KeyLogResp { log: KeyLogEntry[]; }
+
 export interface StageSummary { total: number; registered: number; key: number; address: number; card: number; charge: number; changepw: number; blacklisted: number; }
 export interface AccountsResp { count: number; accounts: AccountRow[]; summary?: StageSummary; }
 
@@ -173,3 +192,11 @@ export interface AnalyticsResp {
 export interface EnginePreset { id: string; name: string; builtin?: boolean; opts: Record<string, string | boolean>; }
 export interface EngineGroup { activeId: string; presets: EnginePreset[]; }
 export interface EngineConfigsResp { version: number; engines: Record<string, EngineGroup>; }
+
+// 坏邮箱管理:bad_mailboxes.json(已永久跳过) + mailbox_verify_fails.json(软坏累计,未达阈值)。
+export type BadMailboxType = 'hard404' | 'hard401' | 'soft' | 'manual' | 'manual-domain' | 'domain-auto' | 'other';
+export interface BadMailboxRow { key: string; email: string; domain: string; kind: 'domain' | 'email'; reason: string; reasonType: BadMailboxType; at: string; }
+export interface BadMailboxSoftfail { email: string; domain: string; count: number; lastAt: string; lastReason: string; }
+export interface BadMailboxDomain { domain: string; badCount: number; softCount: number; blocked: boolean; }
+export interface BadMailboxStats { total: number; hard: number; soft: number; manual: number; domainsBlocked: number; domainsAffected: number; byType: Record<string, number>; }
+export interface BadMailboxSnapshot { items: BadMailboxRow[]; softfails: BadMailboxSoftfail[]; stats: BadMailboxStats; domains: BadMailboxDomain[]; }
