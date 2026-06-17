@@ -934,6 +934,13 @@ def solve(driver, cfg, timeout=120, attempts=None, label=""):
         if not _ensure_open(driver):
             if debug and not _dumped:
                 _dump_debug(driver, "%s-noopen" % tag); _dumped = True
+            # ★回写"验证码控件没加载"信号给上层(per-account cfg["_diag"])→ run_account 据此【退役该慢IP+换IP重试】
+            try:
+                _d = cfg.get("_diag")
+                if isinstance(_d, dict):
+                    _d["no_control"] = int(_d.get("no_control", 0)) + 1
+            except Exception:
+                pass
             log("[slider][%s] 浮层没开(控件/页面未加载)→ 判失败" % tag); _trace(tag, "浮层没开→失败(交上层刷当前页)")
             return False
         # ② 等稳定拼图 + 按钮就绪
@@ -997,6 +1004,12 @@ def solve(driver, cfg, timeout=120, attempts=None, label=""):
             chosen = cap_g; src = "本地优先·本地无值→交付Cap g=%d(%s)" % (int(cap_g), _vinfo)
         elif _accept:
             chosen = cap_g; src = "✅Cap经本地验证一致→交付Cap g=%d(%s%s)" % (int(cap_g), _vinfo, "·严格共识" if _strict else "")
+        elif (not _strict) and _consensus:
+            # ★★治"cap离群空刷"(默认开;SLIDER_STRICT_CONSENSUS=1 可关回严格):CapSolver 返回垃圾值(实测Δ常14~144)但
+            #   sat≈ncc【两个本地法自洽、可信】→ 直接拖本地,不再因 cap 垃圾就空刷死循环(trace 实证 cap≈本地必 PASS=本地准)。
+            #   只在本地自洽(sat≈ncc)时才信本地 → 安全;cap 离群【且】本地也不自洽时才走下面刷页。
+            chosen = (sat_g + ncc_g) / 2.0
+            src = "Cap离群(%s)但本地自洽 sat≈ncc(Δ%.0f)→交付本地 g=%d" % (("%.0f" % cap_g) if cap_g is not None else "无", abs(sat_g - ncc_g), int(chosen))
         elif _last and (not _strict) and (local_ref is not None or cap_g is not None):
             chosen = local_ref if local_ref is not None else cap_g
             src = "求一致到上限(%d次)→兜底交付%s g=%d(%s)" % (_max_verify, "本地" if local_ref is not None else "Cap", int(chosen), _vinfo)

@@ -374,6 +374,16 @@ def _complete_registration(page, op_pw, cfg=None):
     return bool(r)
 
 
+def _slider_result(page, cfg, label=""):
+    """解滑块并区分失败类型:'ok' / 'fail:SLIDER_NO_CONTROL'(★验证码控件没加载出来=慢IP,刷当前页没用、该换IP)/ 'fail:SLIDER_FAIL'(拖了没过)。
+       靠 cfg['_diag']['no_control'] 解前后增量判断控件是否没加载(slider 在浮层没开时回写该计数)。"""
+    _nc0 = int((cfg.get("_diag") or {}).get("no_control", 0)) if isinstance(cfg, dict) else 0
+    if _solve_slider(page, cfg, label):
+        return "ok"
+    _nc1 = int((cfg.get("_diag") or {}).get("no_control", 0)) if isinstance(cfg, dict) else 0
+    return "fail:SLIDER_NO_CONTROL" if _nc1 > _nc0 else "fail:SLIDER_FAIL"
+
+
 def _verify_login_loop(page, fill_and_slide, no_form_status, on_node, form_node, slider_node, label):
     """★统一的【验证码登录】工具 —— 三处共用同一套逻辑:注册表单 / 登录表单 / 取Key 的 OAuth 登录表单(后者走 login() 间接用它)。
        fill_and_slide(): 填好表单 + 调 _solve_slider 解滑块,返回 'ok' / no_form_status(没表单) / 'fail:SLIDER_FAIL'。
@@ -394,6 +404,10 @@ def _verify_login_loop(page, fill_and_slide, no_form_status, on_node, form_node,
         if _r == no_form_status:
             if on_node: on_node(form_node, no_form_status)
             return _r   # 没表单 ≠ 滑块问题,重试无用,直接返回
+        if _r == "fail:SLIDER_NO_CONTROL":
+            # ★验证码控件【没加载出来】=慢IP/被盯:刷当前页(同IP)没用 → 不再刷页空耗,直接出循环,交上层【退役该IP+换新IP重试】
+            log("[%s] 验证码控件没加载(慢IP)→ 不刷页空耗,交上层换IP" % label)
+            break
     if _r != "ok":
         if on_node: on_node(slider_node, "fail:SLIDER_FAIL")
         return "fail:SLIDER_FAIL"
@@ -423,7 +437,7 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
         _fill(page, sel("signup_password", 'input[type=password]'), op_pw, "Password")
         time.sleep(0.6)
         with timed("auth.slider.register"):
-            return "ok" if _solve_slider(page, cfg, "注册") else "fail:SLIDER_FAIL"
+            return _slider_result(page, cfg, "注册")
 
     # ★验证码登录走【统一工具】:成功→下一步;滑块失败→刷新当前页重试;没表单直接返回。三处共用同一逻辑。
     _r = _verify_login_loop(page, _fill_signup_and_slide, "fail:NO_SIGNUP_FORM", on_node, "signup_form", "register_slider", "注册")
@@ -493,6 +507,37 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     return "fail:REGISTER_UNCONFIRMED"
 
 
+def _confirm_oauth_landed(page, timeout=None):
+    """OAuth Sign in 后【不 goto、等回调(z.ai/login/callback)自然落地】确认 z.ai 会话。
+       ★★绝不 goto(manage-apikey):那会在回调还在 Loading 时把它导航走、会话建一半 → 弹回 auth → NOT_LOGGED_IN 死循环根
+         (用户实证:点完 Login/Sign in 后还没登录好就被 goto 跳走)。只【轮询当前 URL】等它自己落地:
+         落到 z.ai/manage-apikey → 已登录(返回 email/'logged-in');稳定停在 chat.z.ai/auth 登录/选择屏 → 未登录(None)。"""
+    end = time.time() + float(timeout or os.environ.get("OAUTH_LAND_WAIT", "20") or 20)
+    last = None; stable = 0
+    while time.time() < end:
+        u = page.url() or ""
+        if not u:
+            return None
+        if _on_apikey(u):                                  # 回调自己落到真取Key页 = z.ai 会话建成
+            try: page.clear_promo()
+            except Exception: pass
+            try:
+                em = page.js("try{var x=JSON.parse(localStorage.getItem('user')||'{}');return x.email||'';}catch(e){return '';}") or ""
+            except Exception:
+                em = ""
+            return em or "logged-in"
+        ul = u.lower()
+        if "chat.z.ai/auth" in ul:                         # 被弹回 chat.z.ai/auth 登录/选择屏 = 没建会话;连续稳定几次=已定型→未登录
+            if u == last: stable += 1
+            else: stable = 0; last = u
+            if stable >= 5:
+                return None
+        else:
+            stable = 0; last = u                            # 还在 /login/callback Loading 或中转 → 继续等(绝不打断)
+        time.sleep(0.5)
+    return ("logged-in" if _on_apikey(page.url() or "") else None)
+
+
 def login(page, email, op_pw, mailbox_pw, cfg, on_node=None, oauth=False):
     """登录已存在账号。返回 'ok' / 'fail:<reason>'。on_node(stage,status)=关键节点成功即刻登记。
        oauth=True:取Key 的 OAuth 登录(chat.z.ai/auth?response_type=code)→ 确认会话时用 detect_session(goto z.ai/manage-apikey
@@ -509,7 +554,7 @@ def login(page, email, op_pw, mailbox_pw, cfg, on_node=None, oauth=False):
         _fill(page, sel("signin_password", 'input[type=password]'), op_pw, "Password")
         time.sleep(0.5)
         with timed("auth.slider.login"):
-            return "ok" if _solve_slider(page, cfg, "登录") else "fail:SLIDER_FAIL"
+            return _slider_result(page, cfg, "登录")
 
     # ★验证码登录走【统一工具】(与注册、取Key OAuth登录同一套):成功→下一步;滑块失败→刷新当前页重试;没表单直接返回。
     _r = _verify_login_loop(page, _fill_signin_and_slide, "fail:SIGNIN_NO_FORM", on_node, "signin_form", "login_slider", "登录")
@@ -528,8 +573,9 @@ def login(page, email, op_pw, mailbox_pw, cfg, on_node=None, oauth=False):
     if any(s in t for s in ["no account", "not found", "couldn't find", "账号不存在"]):
         if on_node: on_node("login_submit", "fail:SIGNIN_NO_ACCOUNT")
         return "fail:SIGNIN_NO_ACCOUNT"
-    # 确认会话:OAuth 取key登录用 detect_session(确认 z.ai 会话);标准登录用 _current_logged_in(读 chat.z.ai token,不导航,不蹦 manage-apikey)
-    em = detect_session(page) if oauth else _current_logged_in(page)
+    # 确认会话:★OAuth 取key登录用 _confirm_oauth_landed(【不 goto、等回调自然落地】,绝不打断还在 Loading 的 OAuth 回调=死循环根);
+    #   标准登录用 _current_logged_in(读 chat.z.ai token,不导航)。两者都【不 goto manage-apikey】。
+    em = _confirm_oauth_landed(page) if oauth else _current_logged_in(page)
     if em:
         if em != "logged-in" and str(em).lower() != email.lower():
             log("[登录] 会话邮箱(%s)≠目标(%s)→ 不算成功" % (em, email))
