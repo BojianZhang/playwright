@@ -1,3 +1,4 @@
 {
-  "maxConcurrency": "12"
+  "maxConcurrency": "12",
+  "fixcSuccessHold": "5"
 }

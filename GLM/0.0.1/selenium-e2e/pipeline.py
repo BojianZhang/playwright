@@ -168,34 +168,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         except Exception:
             pass
 
-    env_id = None; driver = None
+    env_id = None; driver = None; proxy = None
     common.alive_acquire()                       # ★P2:占在飞浏览器名额(建环境前,阻塞直到 ≤ADS_MAX_ALIVE);finally 必释放
     try:
-        log_stage(slot, email, "env"); _mark_stage("env")
-        env_id, port, proxy = _acquire_browser(proxies, start_idx, group_id, "glm-" + email.split("@")[0][:18])
-        res["env_id"] = env_id
-        res["proxy"] = "%s:%s" % (proxy.get("host"), proxy.get("port"))
-        driver = common.attach_chrome(port, common.resolve_chromedriver(port))
-        try:
-            common.place_window(driver, common.grid_rect(slot, slots_total))
-        except Exception:
-            pass
-        try:
-            driver.execute_cdp_cmd("Browser.grantPermissions", {"permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"]})
-        except Exception:
-            pass
-        steps_apikey.inject_key_capture(driver)   # 导航前注入 key 网络抓取钩子(创建 key 时后端返回明文即存 sessionStorage)
-        page = common.Page(driver)
-        # ★用户定:浏览器一接管就【直接到 chat.z.ai/auth】(此页既有登录又有注册),不先开 chat.z.ai 首页(省一次加载)。
-        #   每号用全新 AdsPower 环境=无残留登录态,故无需先去首页探"是否已登录";register_or_login 会在 /auth 上自走注册/登录。
-        page.goto(common.AUTH_URL, wait=2)
-
-        # ── auth ───────────────────────────────────────────────────────────
-        log_stage(slot, email, "auth"); _mark_stage("auth")
-        _node_clk["t"] = time.perf_counter()   # ★从 auth 起算逐节点耗时(否则首个节点 dur 含 env+建浏览器,失真)
-        # ★每个关键节点【成功即刻落盘】,不做糊涂账(成功就是成功):注册成功就标 registered,
-        #   即便后面登录失败,下次也不再重注册;各子节点(register_slider/verify_email/complete_reg/login_slider/login)
-        #   独立记录在 checkpoint stages 子树 + res["steps"],续跑据此跳过已完成节点。
         res["steps"].setdefault("auth_nodes", {})
 
         def _on_node(stage, status="ok", **prod):
@@ -207,14 +182,55 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
                 try: checkpoint(email, registered=True, env_id=env_id)
                 except Exception: pass
 
-        # 传 env_id 给下游(滑块诊断按环境编号命名,并发也能对上是哪个号);per-account 拷贝,不污染共享 cfg。
-        auth = steps_auth.register_or_login(page, email, op_pw, mailbox_pw,
-                                            {**cfg, "_env_id": env_id or ""},
-                                            registered=bool(acct.get("registered")),
-                                            on_node=_on_node)
-        res["steps"]["auth"] = auth
-        # ★给当前 IP 记滑块战绩(用户策略:拖到正确位置仍过不去 → 标记该 IP、后续优先用没用过的 IP)。
-        #   SLIDER_FAIL=滑块没过(多为该 IP 被行为检测盯上)→ slider-fail;走到过了滑块的任一节点 → slider-pass(证明该 IP 能过)。
+        # ★IP 评分+切换(用户定):验证码校验框【一轮没加载出来】= 慢IP/被盯 → 立即退役该IP + 换新IP重试这个号
+        #   (别在同一个慢IP上刷页空耗,也别让后面的号再踩它)。GLM_IP_SWITCHES 最多换几次,GLM_NOCTRL_RETIRE 触发阈值(默认1=一轮就换)。
+        _ip_switches = int(os.environ.get("GLM_IP_SWITCHES", "2") or 2)
+        _noctrl_retire = int(os.environ.get("GLM_NOCTRL_RETIRE", "1") or 1)
+        auth = "fail:NO_ENV"
+        for _ip_try in range(_ip_switches + 1):
+            log_stage(slot, email, "env"); _mark_stage("env")
+            env_id, port, proxy = _acquire_browser(proxies, start_idx + _ip_try, group_id, "glm-" + email.split("@")[0][:18])
+            res["env_id"] = env_id
+            res["proxy"] = "%s:%s" % (proxy.get("host"), proxy.get("port"))
+            driver = common.attach_chrome(port, common.resolve_chromedriver(port))
+            try:
+                common.place_window(driver, common.grid_rect(slot, slots_total))
+            except Exception:
+                pass
+            try:
+                driver.execute_cdp_cmd("Browser.grantPermissions", {"permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"]})
+            except Exception:
+                pass
+            steps_apikey.inject_key_capture(driver)   # 导航前注入 key 网络抓取钩子(创建 key 时后端返回明文即存 sessionStorage)
+            page = common.Page(driver)
+            page.goto(common.AUTH_URL, wait=2)        # 浏览器一接管直接到 chat.z.ai/auth(此页既有登录又有注册)
+
+            # ── auth ───────────────────────────────────────────────────────────
+            log_stage(slot, email, "auth"); _mark_stage("auth")
+            _node_clk["t"] = time.perf_counter()   # ★从 auth 起算逐节点耗时(否则首个节点 dur 含 env+建浏览器,失真)
+            _diag = {}                              # ★per-account 信号:滑块在浮层没开(验证码控件没加载)时回写 no_control 计数
+            auth = steps_auth.register_or_login(page, email, op_pw, mailbox_pw,
+                                                {**cfg, "_env_id": env_id or "", "_diag": _diag},
+                                                registered=bool(acct.get("registered")),
+                                                on_node=_on_node)
+            res["steps"]["auth"] = auth
+            # ★验证码控件【没加载出来】(浮层没开 ≥ 阈值)且没登录成功 → 立即退役该慢IP + 换新IP重试(还有 IP 额度时)
+            if auth != "ok" and int(_diag.get("no_control", 0)) >= _noctrl_retire and _ip_try < _ip_switches:
+                try: common.mark_proxy_result(proxy, "retire-now")     # 立即退役,不等连击
+                except Exception: pass
+                res["ip_switched"] = res.get("ip_switched", 0) + 1
+                log("[IP] %s 验证码控件没加载%d次=慢IP/被盯 → 立即退役 + 换新IP重试(第%d次)" % (res.get("proxy"), _diag.get("no_control", 0), _ip_try + 1))
+                try:
+                    if driver: driver.quit()
+                except Exception: pass
+                try: common.adspower_stop(env_id)
+                except Exception: pass
+                try: adspower_env.delete_env(env_id)
+                except Exception: pass
+                env_id = None; driver = None
+                continue                            # 换新 IP(start_idx+_ip_try 错开,退役的自动跳过)重试 auth
+            break                                   # auth 完成(ok / 非控件类失败)→ 出循环,用当前 env 继续后面取key/订阅
+        # ★给当前 IP 记滑块战绩(拖到正确位置仍过不去 → 标记该 IP、后续优先用没用过的 IP)。
         try:
             _an = res["steps"].get("auth_nodes") or {}
             if auth == "fail:SLIDER_FAIL":

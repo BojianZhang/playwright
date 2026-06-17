@@ -76,10 +76,13 @@ def mark_proxy_result(proxy, result):
         s = stats.setdefault(key, {})
         s[result] = s.get(result, 0) + 1
         s["last"] = result
-        if result == "card-bound":
+        if result in ("card-bound", "good"):       # 成功(绑卡/取key成功)→ 清失败连击(好 IP,保住)
             s["fail_streak"] = 0
-        elif result in ("dead", "unknown"):
-            s["fail_streak"] = s.get("fail_streak", 0) + 1
+        elif result == "retire-now":                # ★立即退役(用户定:验证码校验框【加载不出来】=慢IP/被盯)→ 不等连击,一次就退役
+            s["fail_streak"] = max(int(s.get("fail_streak", 0)), _envint("PROXY_RETIRE_STREAK", 5))
+            s["retired_reason"] = "no-captcha-control"
+        elif result in ("dead", "unknown", "slow"):  # ★slow=加载慢致验证码控件/表单/取key页【没渲染出来】(浮层没开/NO_SIGNUP_FORM/页面黑屏)
+            s["fail_streak"] = s.get("fail_streak", 0) + 1   # → 计失败连击,连续 ≥PROXY_RETIRE_STREAK(5)退役,后面选IP自动跳过,别让其他号再踩这个慢IP
         _atomic_write_json(paths.PROXY_STATS_FILE, stats)
 
 
