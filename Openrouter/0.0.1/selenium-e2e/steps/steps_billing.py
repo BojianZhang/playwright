@@ -631,6 +631,22 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
 
 
 def _balance(page):
+    # ★充值检测修(PURCHASE_DETECT_FIX,默认 on;设 off 回退老行为):
+    #   /credits 顶部那个独立余额是【主文档】里的 $X.XX(用户实测 充值前=$0.00、充成=$5.00)。
+    #   旧实现 all_frames_text() 把 Stripe/Clerk iframe 里的杂散 $(如 $9)也拼进来、且只取第一个 →
+    #   读到的根本不是积分余额 → 真扣成功了余额也"没变" → 判 unknown。
+    #   改:只读主文档 body.innerText(input 的值不在 innerText → 购买框 $ 金额自动排除),取第一个 $ = 真实余额。
+    if os.environ.get("PURCHASE_DETECT_FIX", "on") != "off":
+        try:
+            page.d.switch_to.default_content()
+            txt = page.d.find_element(page.By.TAG_NAME, "body").get_attribute("innerText") or ""
+            cands = re.findall(r"\$\s*([\d][\d,]*\.?\d*)", txt)
+            if cands:
+                log("[充值] 余额候选(主文档,排除iframe): %s → 取首个=%s" % (cands[:6], cands[0]))
+                return cands[0].replace(",", "")
+            log("[充值] 主文档没读到 $ 候选 → 回退 all_frames")
+        except Exception as _e:
+            log("[充值] 主文档读余额异常(回退 all_frames): %s" % str(_e)[:60])
     m = re.search(r"\$\s*([\d][\d,]*\.?\d*)", page.all_frames_text() or "")
     return m.group(1).replace(",", "") if m else ""
 
