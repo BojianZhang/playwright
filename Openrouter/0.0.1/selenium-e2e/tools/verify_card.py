@@ -78,8 +78,23 @@ try:
     d.get("https://openrouter.ai/settings/credits")
     time.sleep(10)
     try:
-        _bm = re.search(r"\$\s*([\d][\d,]*\.?\d*)", d.find_element(By.TAG_NAME, "body").text or "")
-        log("★ 当前余额: $%s" % (_bm.group(1) if _bm else "?"))
+        # ★对齐 steps_billing._balance(0e6c42a):/credits 余额卡带 aria-label="Remaining credits: N" 最准,
+        #   不被购买框 / Stripe iframe / Save card? 弹窗的杂散 $ 干扰;读不到再回退主文档第一个可见 $。
+        d.switch_to.default_content()
+        _bal = d.execute_script(r'''
+          var el = document.querySelector('[aria-label^="Remaining credits"]');
+          if (el) {
+            var m = (el.getAttribute('aria-label')||'').match(/Remaining credits:\s*([\d.,]+)/i);
+            if (m) return m[1];
+            var t = (el.innerText||'').match(/\$\s*([\d.,]+)/);
+            if (t) return t[1];
+          }
+          return '';
+        ''')
+        if not _bal:
+            _bm = re.search(r"\$\s*([\d][\d,]*\.?\d*)", d.find_element(By.TAG_NAME, "body").text or "")
+            _bal = _bm.group(1) if _bm else ""
+        log("★ 当前余额: $%s" % ((str(_bal).replace(",", "")) or "?"))
     except Exception:
         pass
     # 已保存的卡只在「Add Credits」购买弹窗里显示，不在信用页主面 → 点开它再看。

@@ -83,7 +83,7 @@ export default function AddressesPage() {
           rows={rows} columns={columns} rowKey={(r) => r.id}
           getRowClass={(r) => r.status === 'disabled' ? 'is-used' : undefined}
           search={{ keys: [(r) => r.name, (r) => r.line1, (r) => r.city, (r) => r.zip], placeholder: '搜索 姓名 / 街道 / 城市 / 邮编…' }}
-          filters={filters} columnSettings={{ tableId: 'addresses' }} maxHeight={520} exportName="addresses"
+          filters={filters} columnSettings={{ tableId: 'addresses' }} maxHeight={520} fillViewport exportName="addresses"
           selectable
           batchActions={(sel, clear) => (<>
             <button className="btn btn-ghost btn-sm" onClick={() => batchRun(sel, (r) => update.mutateAsync({ id: r.id, patch: { status: 'active' } }), { toast, verb: '启用', onDone: clear })}>启用</button>

@@ -213,6 +213,24 @@ def _enter_otp(page, email, mailbox_pw, cfg, since_ts, op_password=""):
     return True
 
 
+def _maybe_auto_block_domain(email):
+    """可选·默认关:某 @域 逐邮箱坏号数 ≥ MAILBOX_DOMAIN_BAD_MAX(默认5)且 MAILBOX_DOMAIN_AUTO_BLOCK=on → 整域拉黑。
+       默认关=不自动整域(防一个域里有好号被连坐);默认只在 web 给「建议+一键」。"""
+    try:
+        if str(os.environ.get("MAILBOX_DOMAIN_AUTO_BLOCK", "off")).strip().lower() not in ("1", "on", "true", "yes"):
+            return
+        if "@" not in (email or ""):
+            return
+        dom = "@" + email.split("@", 1)[1]
+        thresh = max(2, int(os.environ.get("MAILBOX_DOMAIN_BAD_MAX", "5") or 5))
+        n = common.count_bad_in_domain(dom)
+        if n >= thresh:
+            common.mark_bad_mailbox(dom, "domain-auto:%dx(整域坏号达阈值)" % n)
+            log("[验证] 域 %s 已有 %d 个坏号 ≥ %d → 整域自动拉黑" % (dom, n, thresh))
+    except Exception:
+        pass
+
+
 def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0):
     """注册邮箱验证 = Clerk 魔法链接（非验证码）：读链接 → 同浏览器打开 → 回 keys 确认。
     收不到链接时点页面上的 'Resend' 让 OpenRouter 重发再轮询(最多3轮),应对首封邮件丢失/晚到。
@@ -225,7 +243,20 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0)
     _v_cycles = max(1, int(os.environ.get("MAIL_VERIFY_CYCLES", "3") or 3))         # 重发轮数(1 次初始 + 其余重发)
     _v_attempts = max(1, int(os.environ.get("MAIL_VERIFY_ATTEMPTS", "12") or 12))   # 每轮读链接轮询次数
     _v_interval = float(os.environ.get("MAIL_VERIFY_INTERVAL", "3") or 3)           # 每次轮询间隔(秒)
-    _mailbox_ok = False; _bad_mail_seen = False   # 坏邮箱判据:跨轮累计(任一轮读到信=邮箱可用;任一轮多次404=坏)
+    # ★【软坏邮箱·治"重发空转"】信箱能登录(200)但永远收不到 OpenRouter 验证邮件的号 → 现状永不拉黑、每批烧~180s。
+    #   跨批累计 MAILBOX_SOFT_BAD_MAX(默认3)次仍收不到 → 自动登记坏邮箱永久跳过;且【重复犯快速失败】:
+    #   上批已记过(prior≥1)的号这批只试 1 轮(≈60s),不再耗满 3 轮。MAILBOX_SOFT_BAD=off 整体关回老行为。
+    _soft_bad_on = str(os.environ.get("MAILBOX_SOFT_BAD", "on")).strip().lower() not in ("0", "off", "false", "no")
+    _soft_bad_max = max(1, int(os.environ.get("MAILBOX_SOFT_BAD_MAX", "3") or 3))
+    if _soft_bad_on:
+        try:
+            _soft_prior = int((common.load_verify_fails().get(email) or {}).get("count", 0))
+        except Exception:
+            _soft_prior = 0
+        if _soft_prior >= 1:
+            _v_cycles = 1   # 重复犯:不再耗满 3 轮重发,这批 1 轮没读到就放弃(省~120s)
+            log("[验证] %s 上批已记「收不到信」%d 次 → 本批快速失败(只试 1 轮)" % (email, _soft_prior))
+    _mailbox_ok = False; _bad_mail_seen = False; _bad_reason = ""   # 坏邮箱判据:跨轮累计(任一轮读到信=邮箱可用;多次404=邮箱不存在/连续401=密码错→坏)
     # 【开关·可前端调:邮箱验证组】总死线(墙钟秒):>0 时整段验证超时即快速放弃,砍掉「收不到信」的 200-517s 长尾、
     #   释放并发槽给别的号。默认 0=关=逐字节同原行为(不影响老流程)。
     _v_deadline = float(os.environ.get("MAIL_VERIFY_DEADLINE", "0") or 0)
@@ -241,6 +272,7 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0)
             _mailbox_ok = True
         elif _mst.get("bad_mailbox"):
             _bad_mail_seen = True
+            _bad_reason = _mst.get("bad_reason") or _bad_reason
         if link:
             break
         if _cycle < _v_cycles - 1:
@@ -257,10 +289,21 @@ def _verify_email_link(page, email, mailbox_pw, cfg, op_password="", since_ts=0)
         # 坏邮箱判定:轮询【过程中】确认多次 404(邮箱不存在/不可访问)且全程读不到任何信 → 登记永久跳过。
         # 不再靠"事后补一次请求恰好复现 404"(住宅代理抖动那一次易 timeout/连不上→漏登记→重复浪费整轮注册)。
         if _bad_mail_seen and not _mailbox_ok:
-            common.mark_bad_mailbox(email, "mailbox-404(收不到验证邮件)")
-            log("[验证] 该邮箱多次 404 → 登记坏邮箱,后续永久跳过")
+            common.mark_bad_mailbox(email, _bad_reason or "mailbox-404(收不到验证邮件)")
+            log("[验证] 该邮箱坏(%s)→ 登记坏邮箱,后续永久跳过" % (_bad_reason or "多次404收不到"))
+        elif _soft_bad_on and _mailbox_ok:
+            # ★软坏:信箱可达(200)但这批仍没收到验证信 → 跨批累加计数;达阈值升级成坏邮箱永久跳过(治"重发空转")。
+            _n = common.mark_verify_fail(email, "no-verify-mail")
+            if _n >= _soft_bad_max:
+                common.mark_bad_mailbox(email, "no-verify-mail:%dx(可达但收不到验证信)" % _n)
+                log("[验证] %s 连续 %d 批可达但收不到验证信 → 升级坏邮箱,后续永久跳过" % (email, _n))
+                _maybe_auto_block_domain(email)
+            else:
+                log("[验证] %s 可达但收不到验证信(第 %d/%d 批)→ 记一次,达 %d 批自动拉黑" % (email, _n, _soft_bad_max, _soft_bad_max))
         return False
     log("[验证] 打开验证链接(同浏览器,使邮箱验证生效)…")
+    if _soft_bad_on:
+        common.clear_verify_fail(email)   # 收到信=信箱其实能用 → 清掉累计,防误升级成坏邮箱
     page.goto(link, wait=4)
     page.goto(KEYS_URL, wait=3)
     return True
@@ -511,9 +554,11 @@ def login(page, email, op_password, mailbox_pw, cfg):
 
 
 def register_or_login(page, email, op_password, mailbox_pw, cfg, registered=False):
-    """先看是否已登录(干净环境不会)；【已知注册过(registered=True)→直接登录,绝不再点注册】;否则注册,撞 exists 转登录。
+    """先看是否已登录(干净环境不会)；【已知注册过(registered=True)→优先直接登录;登录成功即返回,
+    登录失败才回退试注册(标记可能有误/密码不符;register 撞 exists 会自动转登录,不会卡死)】;否则正常注册,撞 exists 转登录。
     返回 'ok' / 'fail:<reason>'。registered 来自历史标记(state/results.jsonl 该号有过 auth=ok)——
-    解决"已注册号重跑又去点注册→账号已存在→卡 verify→REGISTER_UNCONFIRMED"。"""
+    主要解决"已注册号重跑【上来就】点注册→账号已存在→卡 verify→REGISTER_UNCONFIRMED";登录失败的回退注册是
+    对【误标 registered】的兜底(真号会在 register 处得到 exists→转登录),不是无脑重注册。"""
     em = detect_session(page)
     if em:
         if em.lower() == email.lower():

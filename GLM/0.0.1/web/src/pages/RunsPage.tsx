@@ -70,6 +70,7 @@ export default function RunsPage() {
           exportName="runs"
           initialSort={{ key: 'startedAt', dir: 'desc' }}
           maxHeight={640}
+          fillViewport
           emptyText="还没有运行记录。去控制台跑一批,这里会自动出现(含进行中)。"
           toolbarLeft={<>
             <button className="btn btn-ghost btn-sm" onClick={() => qc.invalidateQueries({ queryKey: ['runs'] })}><Icon name="refresh" size={12} />刷新</button>

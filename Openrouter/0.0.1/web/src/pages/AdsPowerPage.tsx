@@ -144,7 +144,7 @@ export default function AdsPowerPage() {
             emptyText="环境池为空。点「添加环境」粘贴 envId(一行一个或逗号),并选所属端点。"
             toolbarLeft={<>
               <button className="btn btn-soft btn-sm" onClick={() => { setEnvEp(''); setEnvOpen(true); }}><Icon name="upload" size={12} />添加环境</button>
-              <button className="btn btn-danger-soft btn-sm" disabled={!envs.length} onClick={() => { if (confirm('清空环境池?')) envClear.mutate({}); }}><Icon name="trash" size={12} />清空</button>
+              <button className="btn btn-danger-soft btn-sm" disabled={!envs.length} onClick={() => { if (confirm(`清空全部 ${envs.length} 个环境?\n\n这会清空整个环境池(不受当前搜索/筛选影响),不可恢复。只想删部分请勾选后用批量栏的「删除」。`)) envClear.mutate({}); }}><Icon name="trash" size={12} />清空全部</button>
             </>}
             toolbarRight={<><span className="lg-dot" style={{ background: 'var(--success)' }} />可用 {envActive}</>}
           />

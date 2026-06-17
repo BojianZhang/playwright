@@ -118,7 +118,7 @@ export default function MonitorPanel({ state, isPython, submitting, jobId, runHi
           {tab === 'status' && <StatusTab />}
           {tab === 'errors' && <ErrorsTab onOpenPolicy={onOpenPolicy} />}
           {tab === 'logs' && (
-            <div className="io-box" style={{ minHeight: 200, maxHeight: 320 }}>
+            <div className="io-box" style={{ minHeight: 200, maxHeight: 520 }}>
               {state.logs.length ? state.logs.slice(-200).map((l, i) => <div key={i}><span style={{ color: 'var(--text-4)' }}>{l.ts}</span>  <span className={l.cls}>{l.msg}</span></div>) : '等待开始…'}
             </div>
           )}

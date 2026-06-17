@@ -60,6 +60,11 @@ data/adspower-endpoints.json
 data/captcha-keys.json
 data/mailbox-keys.json
 data/usage.jsonl
+# 改密 / 取新Key 运行态账本:明文密码 / API Key(含 .tmp-<pid> 原子写中间件 + .corrupt 备份)——绝不入库
+data/pw-changes.json
+data/pw-changes.json.*
+data/key-changes.json
+data/key-changes.json.*
 selenium-e2e/config.local.json
 selenium-e2e/*.local.json
 

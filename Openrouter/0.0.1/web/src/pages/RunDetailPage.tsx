@@ -8,7 +8,8 @@ import { Icon } from '../lib/icons';
 import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { fmtDateTime, fmtDuration, trunc } from '../lib/parse';
-import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow, FailedRecord } from '../lib/types';
+import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow, FailedRecord, PwOverridesMap, PwOverridesResp } from '../lib/types';
+import { pwView } from '../lib/pwView';
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
 import { Modal } from '../components/Modal';
 import { DECLINE_LABEL } from '../lib/labels';   // ★单一来源(原本地副本,与 panels/Diagnose 三处重复)
@@ -32,6 +33,9 @@ export default function RunDetailPage() {
   const [selProfileId, setSelProfileId] = useState('');       // 选中的恢复方案 id(空=用自动推荐)
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['run-detail', jobId], queryFn: () => apiGet<RunDetailResp>(`/api/runs/detail?jobId=${encodeURIComponent(jobId)}`, true), refetchInterval: (q) => (q.state.data?.summary?.status === 'running' ? 5000 : false) });
   const { data: recData } = useRecovery();   // 恢复方案预设(全局缓存)+ 历史恢复战绩
+  // 改密覆盖账本:让本页密码列/复制/导出与结果页四列同口径(改过密的号反映新值)。
+  const { data: ovResp } = useQuery({ queryKey: ['pw-overrides'], queryFn: () => apiGet<PwOverridesResp>('/api/accounts/pw-overrides', true) });
+  const overrides: PwOverridesMap = ovResp?.overrides || {};
   const recPresets = recData?.recovery?.presets || [];
   const resumedStats = recData?.resumedStats || null;
   const s = data?.summary;
@@ -80,6 +84,9 @@ export default function RunDetailPage() {
   })();
   const selectedRows = failed.filter((a) => a.email && selFailed.has(a.email));
   const selectedRecoverable = selectedRows.filter((a) => riOf(a).recoverable);
+  // 失败表的「复制 / .csv 导出」也遵循勾选:有勾选→只导选中的,没勾选→导全部(与 ResultsPage 同口径)。
+  // 勾选本是为「批量恢复」建的(selFailed),这里复用同一份选择驱动复制/导出,避免「勾了 2 个却复制全部」。
+  const failExportRows = selectedRows.length ? selectedRows : failed;
   // 选中行的原因分布(弹窗里逐组诚实标注)
   const selectedGroups = (() => {
     const m = new Map<string, { info: ReasonInfo; n: number }>();
@@ -190,7 +197,7 @@ export default function RunDetailPage() {
           <div className="card-head"><span className="idx c-green"><Icon name="okcircle" size={12} /></span><h3>成功账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{success.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => copy(success.map((a) => `${a.email || ''}:${a.apiKey || ''}`).join('\n'))}>复制 邮箱:Key</button>
-              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '耗时s', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.durationSec != null ? a.durationSec : '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '耗时s', '邮箱现密码', 'OR现密码'], success.map((a) => { const pv = pwView(a, overrides[a.email || '']); return [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.durationSec != null ? a.durationSec : '', pv.mbCur, pv.orCur]; }))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => window.open(withToken(`/download?jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -228,10 +235,10 @@ export default function RunDetailPage() {
                   <Icon name="refresh" size={13} />批量恢复{selectedRecoverable.length ? `(${selectedRecoverable.length})` : ''}
                 </button>
               )}
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="现密码=OpenRouter 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.password || a.originalPassword || ''}`).join('\n'))}>复制 邮箱:密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="原密码=账号原始/邮箱密码" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '恢复动作', '人机模式', '拒付码', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', actionClassOf(riOf(a)), a.failClass || '', a.declineCode || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failExportRows.length} title="OR现密码=OpenRouter 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录。勾选了行→只复制选中的,没勾选→复制全部" onClick={() => copy(failExportRows.map((a) => `${a.email || ''}:${pwView(a, overrides[a.email || '']).orCur}`).join('\n'))}>复制 邮箱:OR密码{selectedRows.length ? <span className="dim">(选中 {selectedRows.length})</span> : ''}</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failExportRows.length} title="邮箱现密码=当前邮箱登录密码(改密后为新值;失败号通常=原邮箱密码)。重导入 accounts.txt 重跑用这个。勾选了行→只复制选中的,没勾选→复制全部" onClick={() => copy(failExportRows.map((a) => `${a.email || ''}:${pwView(a, overrides[a.email || '']).mbCur}`).join('\n'))}>复制 邮箱:邮箱现密码{selectedRows.length ? <span className="dim">(选中 {selectedRows.length})</span> : ''}</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failExportRows.length} title="导出失败明细 CSV(邮箱现/OR现/邮箱原 三种密码)。勾选了行→只导选中的,没勾选→导全部" onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '恢复动作', '人机模式', '拒付码', '尝试', '出口/代理', '邮箱现密码', 'OR现密码', '邮箱原密码'], failExportRows.map((a) => { const pv = pwView(a, overrides[a.email || '']); return [a.email || '', a.reason || '', a.stage || '', actionClassOf(riOf(a)), a.failClass || '', a.declineCode || '', a.attempts ?? '', a.proxy || '', pv.mbCur, pv.orCur, pv.mbOrig]; }))}><Icon name="download" size={12} />.csv{selectedRows.length ? <span className="dim">(选中 {selectedRows.length})</span> : ''}</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="下载完整失败名单 .txt(服务端按模板生成,始终是【全部】失败号;要只导选中的请用上面的「复制」或「.csv」)" onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
           {/* 按原因分组 chips:点一组=一键选中该组(再点取消);用于「选中所有 declined / 所有 hCaptcha」批量恢复 */}
@@ -257,11 +264,12 @@ export default function RunDetailPage() {
                 <table className="tbl">
                   <thead><tr>
                     {isPy && <th style={{ width: 28 }}><input type="checkbox" checked={allFailEmails.length > 0 && allFailEmails.every((e) => selFailed.has(e))} onChange={toggleAllFail} title="全选/全不选" /></th>}
-                    <th>邮箱</th><th>原因</th><th>阶段</th><th title="基于失败原因建议的恢复动作(换环境/换卡/换IP);原 hcap_mode 移到悬停">恢复动作</th><th>拒付码</th><th>试</th><th>出口/代理</th><th>现密码</th>
+                    <th>邮箱</th><th>原因</th><th>阶段</th><th title="基于失败原因建议的恢复动作(换环境/换卡/换IP);原 hcap_mode 移到悬停">恢复动作</th><th>拒付码</th><th>试</th><th>出口/代理</th><th title="OR现密码=OpenRouter 登录密码(续跑重登用);邮箱密码见悬停/导出">OR现密码</th>
                   </tr></thead>
                   <tbody>
                     {failed.slice(0, RENDER_CAP).map((a, i) => {
                       const ri = riOf(a);
+                      const pv = pwView(a, overrides[a.email || '']);
                       return (
                       <tr key={i} className={'is-banned' + (a.email && selFailed.has(a.email) ? ' is-selected' : '')}>
                         {isPy && <td><input type="checkbox" disabled={!ri.recoverable} checked={!!(a.email && selFailed.has(a.email))} onChange={() => a.email && toggleFail(a.email)} title={ri.recoverable ? '选中以批量恢复' : '永久态,不可恢复'} /></td>}
@@ -272,7 +280,7 @@ export default function RunDetailPage() {
                         <td className="mono" style={{ color: a.declineCode === 'insufficient_funds' ? 'var(--danger)' : 'var(--text-3)' }} title={a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : ''}>{a.declineCode ? (DECLINE_LABEL[a.declineCode] || a.declineCode) : '—'}</td>
                         <td className="mono">{a.attempts ?? '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }} title={a.proxy}>{a.proxy ? String(a.proxy).split(':').slice(0, 2).join(':') : '—'}</td>
-                        <td className="mono" style={{ color: 'var(--primary-text)', cursor: a.password ? 'pointer' : 'default' }} title={'现密码=当前 OpenRouter 登录密码(设了统一密码就是它)' + (a.password ? '·点击复制' : '') + (a.originalPassword && a.originalPassword !== a.password ? '\n原密码:' + a.originalPassword : '')} onClick={() => a.password && copy(a.password)}>{a.password ? trunc(a.password, 16) : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--primary-text)', cursor: pv.orCur ? 'pointer' : 'default' }} title={'OR现密码=当前 OpenRouter 登录密码(设了统一密码就是它)' + (pv.orCur ? '·点击复制' : '') + (pv.mbCur && pv.mbCur !== pv.orCur ? '\n邮箱现密码:' + pv.mbCur : '')} onClick={() => pv.orCur && copy(pv.orCur)}>{pv.orCur ? trunc(pv.orCur, 16) : '—'}</td>
                       </tr>
                       );
                     })}

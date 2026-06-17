@@ -631,6 +631,36 @@ def add_card(page, card, address, cfg, manual_hcaptcha=True, save_timeout=60, pa
 
 
 def _balance(page):
+    # ★充值检测修(PURCHASE_DETECT_FIX,默认 on;设 off 回退老行为):
+    #   /credits 余额卡带 aria-label="Remaining credits: N"(N=美元余额;用户 DevTools 实测)→ 优先读它最准,
+    #   完全不受页面多个 $(购买框 / Stripe iframe / Save card? 弹窗)干扰。旧 all_frames_text() 抓第一个 $ 会读到
+    #   iframe 里的杂散值(如 $9)→ 真扣成功了余额也"没变" → 判 unknown。次选主文档第一个 $,最后兜底 all_frames。
+    if os.environ.get("PURCHASE_DETECT_FIX", "on") != "off":
+        try:
+            page.d.switch_to.default_content()
+            # ① 最准:余额卡 aria-label="Remaining credits: N"(N 即美元余额)
+            bal = page.d.execute_script(r'''
+              var el = document.querySelector('[aria-label^="Remaining credits"]');
+              if (el) {
+                var m = (el.getAttribute('aria-label')||'').match(/Remaining credits:\s*([\d.,]+)/i);
+                if (m) return m[1];
+                var t = (el.innerText||'').match(/\$\s*([\d.,]+)/);
+                if (t) return t[1];
+              }
+              return '';
+            ''')
+            if bal:
+                log("[充值] 余额(aria-label Remaining credits)=%s" % bal)
+                return str(bal).replace(",", "")
+            # ② 次选:主文档第一个 $(input 值不在 innerText → 购买框金额自动排除)
+            txt = page.d.find_element(page.By.TAG_NAME, "body").get_attribute("innerText") or ""
+            cands = re.findall(r"\$\s*([\d][\d,]*\.?\d*)", txt)
+            if cands:
+                log("[充值] 余额候选(主文档兜底): %s → 取首个=%s" % (cands[:6], cands[0]))
+                return cands[0].replace(",", "")
+            log("[充值] aria-label/主文档都没读到 $ → 回退 all_frames")
+        except Exception as _e:
+            log("[充值] 读余额异常(回退 all_frames): %s" % str(_e)[:60])
     m = re.search(r"\$\s*([\d][\d,]*\.?\d*)", page.all_frames_text() or "")
     return m.group(1).replace(",", "") if m else ""
 

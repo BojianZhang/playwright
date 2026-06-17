@@ -39,6 +39,8 @@ const strategiesStore = require('./strategies-store');
 const schemesStore = require('./schemes-store');
 const engineConfigStore = require('./engine-config-store');
 const recoveryStore = require('./recovery-store');
+const pwChangesStore = require('./pw-changes-store');   // 结果聚合页「更新邮箱/OpenRouter 密码」覆盖+存档账本
+const keyChangesStore = require('./key-changes-store');   // 结果聚合页「获取新Key」覆盖+存档账本(独立,不写 results)
 const advancedStore = require('./advanced-store');
 const selectorsStore = require('./selectors-store');
 const selectorsSchema = require('./selectors-schema');
@@ -51,11 +53,13 @@ const usageStore = require('./usage-store');
 const failureAnalytics = require('./failure-analytics');
 const captchaStore = require('./captcha-store');
 const mailboxStore = require('./mailbox-store');
+const badMailboxStore = require('./bad-mailbox-store');
 const setupStore = require('./setup-store');
 
 const PORT = Number(process.env.OPENROUTER_WEB_PORT) || 4317;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const RESULTS_DIR = path.join(__dirname, '..', 'data', 'batch-results');
+const SELENIUM_DIR = path.join(__dirname, '..', 'selenium-e2e');   // 改密工具 tools/change_mailbox_pw.py 的 cwd/脚本根
 const PUSHED_DIR = path.join(RESULTS_DIR, '_pushed'); // 子机推送过来的结果(每个节点一个文件)
 // 节点标识：分布式多机部署时用于区分来源、保证文件名/jobId 跨机不重复。
 const NODE_ID = (process.env.OPENROUTER_NODE_ID || os.hostname() || 'node').replace(/[^\w-]/g, '-').slice(0, 40);
@@ -782,6 +786,218 @@ async function handleApiResultsClear(req, res) {
   sendJson(res, 200, { ok: true, files, records, pushedFiles });
 }
 
+// ── 改密:结果聚合页「更新邮箱密码 / 更新 OpenRouter 密码」(单个 + 批量 + 确认) ──────
+// 覆盖+存档走 pw-changes-store(独立账本,不碰续跑/恢复字段)。前端把账本的 {original,current}
+// 叠加到展示四列;执行只改真实密码(邮箱=firstmail API,OpenRouter=Phase B 待交付)。
+function handlePwOverrides(res) {
+  try { sendJson(res, 200, { overrides: pwChangesStore.getOverrides() }); }
+  catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }); }
+}
+function handlePwChangeLog(res, params) {
+  try {
+    const limit = Number(params && params.get('limit')) || 200;
+    // 带 total:前端据此显示「最近 N / 共 M」,>limit 时诚实标注被截断(对齐 billing/error summary 的 returned/total 口径)。
+    sendJson(res, 200, { log: pwChangesStore.getLog(limit), total: pwChangesStore.logCount(), limit });
+  }
+  catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }); }
+}
+
+// spawn tools/change_mailbox_pw.py:items 走 stdin(JSON),避免密码进 argv(进程列表可见)。
+// 返回子进程全部 stdout(逐行 JSON);调用方按行 JSON.parse 过滤出 {email,ok}。
+function runMailboxChangeTool(items, concurrency) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const py = process.env.OPENROUTER_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const tool = path.join(SELENIUM_DIR, 'tools', 'change_mailbox_pw.py');
+    let child;
+    try {
+      child = spawn(py, [tool], {
+        cwd: SELENIUM_DIR,
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+        stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      });
+    } catch (e) { return reject(e); }
+    if (!child.pid) return reject(new Error('python 未拿到 pid(未安装?设环境变量 OPENROUTER_PYTHON)'));
+    let out = '', err = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    child.on('error', reject);
+    const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_e) { /* */ } reject(new Error('改密工具超时(>5min)')); }, 5 * 60 * 1000);
+    child.on('close', () => { clearTimeout(killer); resolve({ out, err }); });
+    try { child.stdin.write(JSON.stringify({ items, concurrency: concurrency || 6 })); child.stdin.end(); }
+    catch (_e) { /* 子进程可能已退;close 会兜底 resolve */ }
+  });
+}
+
+async function handleChangePw(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  const type = body.type === 'openrouter' ? 'openrouter' : 'mailbox';
+  const itemsIn = Array.isArray(body.items) ? body.items : [];
+  const items = itemsIn
+    .map((i) => ({ email: String((i && i.email) || '').trim(), current: String((i && i.current) || ''), next: String((i && i.next) || '') }))
+    .filter((i) => i.email && i.next);
+  if (!items.length) { sendJson(res, 400, { error: '无有效改密项(每项需 email + 新密码)' }); return; }
+  if (items.length > 500) { sendJson(res, 400, { error: '单次最多 500 个,请分批操作' }); return; }
+  const by = items.length > 1 ? 'batch' : 'single';
+
+  // OpenRouter 改密 = Phase B(浏览器自动化,逐号登录改 Clerk 密码),本期未实现 → 明确回报,不静默假成功、不写存档。
+  if (type === 'openrouter') {
+    const results = items.map((i) => ({ email: i.email, ok: false, reason: 'PHASE_B_NOT_IMPLEMENTED' }));
+    sendJson(res, 200, { type, phaseB: true, ok: 0, fail: results.length, results, message: 'OpenRouter 改密为 Phase B(浏览器自动化),下一步交付' });
+    return;
+  }
+
+  // 邮箱改密:spawn Python 工具(firstmail Chrome-JA3 客户端 + 幂等重试),收逐行 JSON 结果。
+  // 防重复提交(双标签页/手抖重点):同一批(按邮箱)正在改密时再次提交 → 409,避免重复 spawn + 存档重复记录。
+  const _bk = _batchKey('change-pw', items);
+  if (_batchInflight.has(_bk)) { sendJson(res, 409, { error: '相同改密批次已在运行中(疑重复提交),请等它结束再试' }); return; }
+  _batchInflight.set(_bk, 'change-pw-' + Date.now());
+  try {
+    let tool;
+    try { tool = await runMailboxChangeTool(items); }
+    catch (e) { sendJson(res, 500, { error: '改密工具执行失败:' + String((e && e.message) || e) }); return; }
+    const byEmail = new Map();
+    let fatal = '';
+    for (const line of String(tool.out || '').split('\n')) {
+      const s = line.trim(); if (!s) continue;
+      let o; try { o = JSON.parse(s); } catch (_e) { continue; }   // firstmail 自身的 log 行非 JSON → 跳过
+      if (o && o._fatal) { fatal = String(o._fatal); continue; }
+      if (o && o.email) byEmail.set(o.email, o);
+    }
+    // 没产出任何结果行、也没 _fatal,但 stderr 有内容(多半 import/启动期就崩、JSON 还没发)→ 别静默回「全 no-result」,把 stderr 暴露出来。
+    if (!fatal && byEmail.size === 0 && String(tool.err || '').trim()) fatal = '工具未产出结果(stderr): ' + String(tool.err).trim().slice(0, 500);
+    if (fatal) { sendJson(res, 500, { error: '改密工具:' + fatal }); return; }
+
+    const results = items.map((i) => {
+      const o = byEmail.get(i.email);
+      const ok = !!(o && o.ok);
+      // 记存档 + 滚动覆盖(ok 才滚 original/current;成败都进 log)。current 用前端送来的「改前现密码」。
+      pwChangesStore.recordChange({ email: i.email, type: 'mailbox', from: i.current, to: i.next, ok, by, reason: (o && o.reason) || (o ? '' : 'no-result(工具未回该号)') });
+      return { email: i.email, ok, reason: ok ? '' : ((o && o.reason) || 'no-result') };
+    });
+    const okN = results.filter((r) => r.ok).length;
+    sendJson(res, 200, { type, ok: okN, fail: results.length - okN, results });
+  } finally { _batchInflight.delete(_bk); }
+}
+
+// ── 获取新Key:结果聚合页对【已 card-bound 但 API Key 空】的号登录后新建一把 Key(单个 + 批量并发) ──
+// 覆盖+存档走 key-changes-store(独立账本,不写 results.jsonl、不污染聚合)。前端把账本 apiKey 叠加到 API Key 列。
+function handleKeyOverrides(res) {
+  try { sendJson(res, 200, { overrides: keyChangesStore.getOverrides() }); }
+  catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }); }
+}
+function handleKeyChangeLog(res, params) {
+  try { sendJson(res, 200, { log: keyChangesStore.getLog(Number(params && params.get('limit')) || 200) }); }
+  catch (e) { sendJson(res, 500, { error: String((e && e.message) || e) }); }
+}
+
+// spawn tools/get_new_key.py:登录已有账号 → 工作台新建一把 Key。items/proxies 走 stdin(JSON),
+// 避免密码进 argv。env 复用 engine-runner.buildEnv(AdsPower端点 + 验证码/邮箱key + selectors/advanced 覆盖)。
+// 逐行解析 stdout:每解析到一条完整 JSON 即回调 onLine(实时落盘,断连/超时也不丢已取回的 Key)。
+function runGetKeyTool({ items, proxies, concurrency, adspowerEndpoint, keyName, proxyOffset }, onLine) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const py = process.env.OPENROUTER_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const tool = path.join(SELENIUM_DIR, 'tools', 'get_new_key.py');
+    let env;
+    try { env = { ...engineRunner.buildEnv({ adspowerEndpoint }), PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }; }
+    catch (_e) { env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }; }
+    let child;
+    try {
+      child = spawn(py, [tool], { cwd: SELENIUM_DIR, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    } catch (e) { return reject(e); }
+    if (!child.pid) return reject(new Error('python not available'));
+    let buf = '', err = '', fatal = '';
+    child.stdout.on('data', (d) => {
+      buf += d.toString();
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {   // 按行切:每条完整 JSON 立即处理(实时落盘)
+        const s = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!s) continue;
+        let o; try { o = JSON.parse(s); } catch (_e) { continue; }   // 工具内 log 行非 JSON → 跳过
+        if (o && o._fatal) { fatal = String(o._fatal); continue; }
+        if (o && o.email) { try { onLine(o); } catch (_e) { /* 单行落盘失败不阻断 */ } }
+      }
+    });
+    child.stderr.on('data', (d) => { err += d.toString(); });
+    child.on('error', reject);
+    // 浏览器流程较慢:批量按并发跑,放宽到 45min;到点 SIGKILL(已取回的 Key 在 onLine 中已落盘)。
+    const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_e) { /* */ } reject(new Error('timeout')); }, 45 * 60 * 1000);
+    child.on('close', () => { clearTimeout(killer); resolve({ err, fatal }); });
+    try { child.stdin.write(JSON.stringify({ items, proxies, concurrency, key_name: keyName || null, proxy_offset: proxyOffset || 0 })); child.stdin.end(); }
+    catch (_e) { /* stdin 关闭异常由 close/timeout 兜底 */ }
+  });
+}
+
+async function handleGetKey(req, res) {
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { sendJson(res, 400, { error: e.message }); return; }
+  // items:{email, password(=OR现密码,登录用), mailboxPassword(=邮箱现密码,读 factor-two 验证码用)}。
+  //   ★登录会触发 Clerk factor-two 邮箱 OTP → Python 侧用 mailbox_pw 读各号邮箱里的新验证码(密码错→firstmail 401)。
+  //   mailbox_pw 缺省时 Python 退回用 op_pw 当邮箱密码(仅统一密码号能读到 OTP)。引擎当前仅纯 Selenium(engine 字段保留)。
+  const itemsIn = Array.isArray(body.items) ? body.items : [];
+  const items = itemsIn
+    .map((i) => ({
+      email: String((i && i.email) || '').trim(),
+      op_pw: String((i && i.password) || ''),
+      mailbox_pw: String((i && i.mailboxPassword) || ''),
+    }))
+    .filter((i) => i.email && i.op_pw);
+  if (!items.length) { sendJson(res, 400, { error: '无有效项(每项需 email + OR 登录密码;缺 OR现密码的号无法登录取Key)' }); return; }
+  if (items.length > 500) { sendJson(res, 400, { error: '单次最多 500 个,请分批操作' }); return; }
+  // 代理:显式 proxiesRaw 优先,否则用保存的代理池(activeLines)。新建 AdsPower 环境必须配代理。
+  const rawProxies = (body.proxiesRaw && String(body.proxiesRaw).trim())
+    ? String(body.proxiesRaw) : String(proxyStore.activeLines() || '');
+  const proxies = rawProxies.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!proxies.length) { sendJson(res, 400, { error: '代理池为空 —— 取Key需新建 AdsPower 环境,请先配代理或粘贴代理' }); return; }
+  // 并发 clamp 到 AdsPower 上限(advanced-store.maxConcurrency;>0 才限),与主流程同口径防压垮 AdsPower。
+  let conc = Math.max(1, Math.min(Math.floor(Number(body.concurrency) || 6), 16));
+  try { const cap = Number((advancedStore.get() || {}).maxConcurrency) || 0; if (cap > 0 && conc > cap) conc = cap; } catch (_e) { /* */ }
+  const by = items.length > 1 ? 'batch' : 'single';
+
+  // 防重复提交:★取Key = 登录后在工作台【新建】一把 Key,不是幂等读取 —— 重复提交会在上游真创建多把 Key
+  // (账本只存最后一把,其余成「孤儿 Key」用户看不到)。同一批(按邮箱)在跑就 409 拦住。
+  const _bk = _batchKey('get-key', items);
+  if (_batchInflight.has(_bk)) { sendJson(res, 409, { error: '相同取Key批次已在运行中(疑重复提交),请等它结束再试 —— 重复取会在上游多建 Key' }); return; }
+  _batchInflight.set(_bk, 'get-key-' + Date.now());
+  try {
+    const byEmail = new Map();
+    let tool;
+    try {
+      tool = await runGetKeyTool(
+        { items, proxies, concurrency: conc, adspowerEndpoint: body.adspowerEndpoint, keyName: body.keyName, proxyOffset: body.proxyOffset },
+        (o) => {
+          byEmail.set(o.email, o);
+          const ok = !!o.ok, key = String(o.key || '');
+          // 实时落盘:覆盖账本(展示)+ account-store(规范库,幂等),断连/超时也不丢已取回的 Key。
+          keyChangesStore.recordKey({ email: o.email, key, name: o.key_name, ok, by, reason: o.reason || '' });
+          // account-store.update 返回 Promise(mutex):原先同步 try/catch 接不住 rejection、且 fire-and-forget。
+          // → 挂 .catch 记录失败(不静默丢规范库写);并在工具结束后 flushNow,确保 400ms 去抖窗口内的 apiKey 真落到
+          //   accounts.json 再回响应,避免「展示账本有 Key、accounts.json 还没有」的脑裂。
+          if (ok && key) {
+            Promise.resolve(accountStore.update(o.email, { apiKey: key, apiKeyName: o.key_name || '' }))
+              .catch((e) => { try { console.error('[get-key] accountStore.update 失败', o.email, e && e.message); } catch (_e2) { /* */ } });
+          }
+        },
+      );
+    } catch (e) { sendJson(res, 500, { error: '取Key工具执行失败:' + String((e && e.message) || e) }); return; }
+    try { accountStore.flushNow(); } catch (_e) { /* 尽力刷盘:把 onLine 里去抖的 apiKey 真正落到 accounts.json 再回响应 */ }
+    if (tool.fatal) { sendJson(res, 500, { error: '取Key工具:' + tool.fatal }); return; }
+    // 没产出任何结果行、也没 _fatal,但 stderr 有内容 → 别静默回「全 no-result」,把 stderr 暴露出来。
+    if (byEmail.size === 0 && String(tool.err || '').trim()) { sendJson(res, 500, { error: '取Key工具未产出结果(stderr): ' + String(tool.err).trim().slice(0, 500) }); return; }
+
+    // key 不回响应体(前端走 /api/accounts/key-overrides 拉取叠加),响应只给成败 + 原因。
+    const results = items.map((i) => {
+      const o = byEmail.get(i.email);
+      const ok = !!(o && o.ok);
+      return { email: i.email, ok, reason: ok ? '' : ((o && o.reason) || 'no-result(工具未回该号)') };
+    });
+    const okN = results.filter((r) => r.ok).length;
+    sendJson(res, 200, { ok: okN, fail: results.length - okN, concurrency: conc, results });
+  } finally { _batchInflight.delete(_bk); }
+}
+
 // ── 多机派发:中心机把一批账号拆给多台目标机(本机+在线子机)各自跑 ──────────
 // 复用各机已有的 /jobs(playwright)/ /api/run(python)作为执行端口(已 token 门);
 // 结果经已有 push/aggregate 回收(见结果聚合页)。本机作为目标=loopback 到自身 /jobs。
@@ -1501,6 +1717,13 @@ async function handleProxiesUpdate(req, res) { const b = await _body(req, res); 
 async function handleProxiesRemove(req, res) { const b = await _body(req, res); if (!b) return; proxyStore.remove(String(b.id || '')); sendJson(res, 200, { ok: true, items: proxyStore.list() }); }
 async function handleProxiesClear(res) { proxyStore.clear(); sendJson(res, 200, { ok: true, items: [] }); }
 async function handleProxiesSetType(req, res) { const b = await _body(req, res); if (!b) return; const r = proxyStore.setAllType(String(b.type || '')); sendJson(res, 200, { ok: true, ...r, items: proxyStore.list() }); }
+// ── 坏邮箱管理(读写 selenium-e2e/state/bad_mailboxes.json + mailbox_verify_fails.json,跨进程锁与 run.py 互斥) ──
+function handleBadMailboxesGet(res) { try { sendJson(res, 200, badMailboxStore.snapshot()); } catch (e) { sendJson(res, 500, { error: 'BADMAIL_READ_FAILED', message: String(e && e.message) }); } }
+async function handleBadMailboxesAdd(req, res) { const b = await _body(req, res); if (!b) return; const r = await badMailboxStore.add(String(b.email || ''), b.reason ? String(b.reason) : ''); sendJson(res, r.ok ? 200 : 400, { ...r, ...badMailboxStore.snapshot() }); }
+async function handleBadMailboxesRemove(req, res) { const b = await _body(req, res); if (!b) return; const r = await badMailboxStore.remove(String(b.email || '')); sendJson(res, r.ok ? 200 : 400, { ...r, ...badMailboxStore.snapshot() }); }
+async function handleBadMailboxesClearSoft(req, res) { const b = await _body(req, res); if (!b) return; const r = await badMailboxStore.clearSoftfail(String(b.email || '')); sendJson(res, r.ok ? 200 : 400, { ...r, ...badMailboxStore.snapshot() }); }
+async function handleBadMailboxesBlockDomain(req, res) { const b = await _body(req, res); if (!b) return; const r = await badMailboxStore.blockDomain(String(b.domain || '')); sendJson(res, r.ok ? 200 : 400, { ...r, ...badMailboxStore.snapshot() }); }
+async function handleBadMailboxesUnblockDomain(req, res) { const b = await _body(req, res); if (!b) return; const r = await badMailboxStore.unblockDomain(String(b.domain || '')); sendJson(res, r.ok ? 200 : 400, { ...r, ...badMailboxStore.snapshot() }); }
 // TCP 连通性测试(仅可达性 + 延迟,不做规避评分)
 function tcpPing(host, port, timeoutMs) {
   return new Promise((resolve) => {
@@ -1892,7 +2115,7 @@ process.on('uncaughtException', (err) => { try { console.error('[uncaughtExcepti
 // Python/浏览器占代理与句柄);然后关闭 server 退出。幂等(_shuttingDown 防重入)。
 let _shuttingDown = false;
 function flushAllStores() {
-  for (const [name, fn] of [['account', accountStore.flushNow], ['billing', billingLedger.flushNow], ['policy', policyStore.flushNow], ['error-log', errorLog.flushNow], ['recovery', recoveryStore.flushNow]]) {
+  for (const [name, fn] of [['account', accountStore.flushNow], ['billing', billingLedger.flushNow], ['policy', policyStore.flushNow], ['error-log', errorLog.flushNow], ['recovery', recoveryStore.flushNow], ['pw-changes', pwChangesStore.flushNow], ['key-changes', keyChangesStore.flushNow]]) {
     try { if (typeof fn === 'function') fn(); } catch (e) { try { console.error(`[shutdown] ${name} 刷盘失败:`, e && e.message); } catch (_e) { /* ignore */ } }
   }
 }
@@ -1964,6 +2187,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/aggregate') return void handleApiAggregate(req, res);
   if (req.method === 'POST' && pathname === '/api/results/delete') return void handleApiResultsDelete(req, res);
   if (req.method === 'POST' && pathname === '/api/results/clear') return void handleApiResultsClear(req, res);
+  if (req.method === 'GET' && pathname === '/api/accounts/pw-overrides') return void handlePwOverrides(res);
+  if (req.method === 'GET' && pathname === '/api/accounts/pw-log') return void handlePwChangeLog(res, url.searchParams);
+  if (req.method === 'POST' && pathname === '/api/accounts/change-pw') return void handleChangePw(req, res);
+  if (req.method === 'GET' && pathname === '/api/accounts/key-overrides') return void handleKeyOverrides(res);
+  if (req.method === 'GET' && pathname === '/api/accounts/key-log') return void handleKeyChangeLog(res, url.searchParams);
+  if (req.method === 'POST' && pathname === '/api/accounts/get-key') return void handleGetKey(req, res);
   if (req.method === 'GET' && pathname === '/api/cards') return void handleCardsList(res);
   if (req.method === 'GET' && pathname === '/api/cards/capacity') return void handleCardsCapacity(res, url.searchParams);
   if (req.method === 'POST' && pathname === '/api/cards/import') return void handleCardsImport(req, res);
@@ -2026,6 +2255,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/proxies/clear') return void handleProxiesClear(res);
   if (req.method === 'POST' && pathname === '/api/proxies/set-type') return void handleProxiesSetType(req, res);
   if (req.method === 'POST' && pathname === '/api/proxies/test') return void handleProxiesTest(req, res);
+  if (req.method === 'GET' && pathname === '/api/bad-mailboxes') return void handleBadMailboxesGet(res);
+  if (req.method === 'POST' && pathname === '/api/bad-mailboxes/add') return void handleBadMailboxesAdd(req, res);
+  if (req.method === 'POST' && pathname === '/api/bad-mailboxes/remove') return void handleBadMailboxesRemove(req, res);
+  if (req.method === 'POST' && pathname === '/api/bad-mailboxes/clear-softfail') return void handleBadMailboxesClearSoft(req, res);
+  if (req.method === 'POST' && pathname === '/api/bad-mailboxes/block-domain') return void handleBadMailboxesBlockDomain(req, res);
+  if (req.method === 'POST' && pathname === '/api/bad-mailboxes/unblock-domain') return void handleBadMailboxesUnblockDomain(req, res);
   if (req.method === 'GET' && pathname === '/api/addresses') return void handleAddressesGet(res);
   if (req.method === 'POST' && pathname === '/api/addresses/import') return void handleAddressesImport(req, res);
   if (req.method === 'POST' && pathname === '/api/addresses/update') return void handleAddressesUpdate(req, res);

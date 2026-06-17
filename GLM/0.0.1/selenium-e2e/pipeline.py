@@ -233,7 +233,9 @@ def run_account(acct, proxies, start_idx, group_id, opts, slot=0, slots_total=1,
         # ★给当前 IP 记滑块战绩(拖到正确位置仍过不去 → 标记该 IP、后续优先用没用过的 IP)。
         try:
             _an = res["steps"].get("auth_nodes") or {}
-            if auth == "fail:SLIDER_FAIL":
+            if auth == "fail:SLIDER_NO_CONTROL":
+                common.mark_proxy_result(proxy, "slow")        # 换IP额度耗尽仍控件没加载=慢IP→扣分(连击够退役)
+            elif auth == "fail:SLIDER_FAIL":
                 common.mark_proxy_result(proxy, "slider-fail")
             elif auth == "ok" or _an.get("register_slider") == "ok" or _an.get("login_slider") == "ok":
                 common.mark_proxy_result(proxy, "slider-pass")

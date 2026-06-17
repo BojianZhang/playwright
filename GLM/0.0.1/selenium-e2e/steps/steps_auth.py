@@ -409,8 +409,10 @@ def _verify_login_loop(page, fill_and_slide, no_form_status, on_node, form_node,
             log("[%s] 验证码控件没加载(慢IP)→ 不刷页空耗,交上层换IP" % label)
             break
     if _r != "ok":
-        if on_node: on_node(slider_node, "fail:SLIDER_FAIL")
-        return "fail:SLIDER_FAIL"
+        # ★精确归因(便于排查):控件没加载=NO_CONTROL(慢IP,上层据 _diag 换IP),拖了没过=SLIDER_FAIL。
+        _sfail = "fail:SLIDER_NO_CONTROL" if _r == "fail:SLIDER_NO_CONTROL" else "fail:SLIDER_FAIL"
+        if on_node: on_node(slider_node, _sfail)
+        return _sfail
     if on_node: on_node(form_node, "ok")
     if on_node: on_node(slider_node, "ok")
     return "ok"
@@ -491,15 +493,24 @@ def register(page, email, op_pw, mailbox_pw, cfg, on_node=None):
     if on_node: on_node("complete_registration", "ok")
     if on_node: on_node("register", "ok")   # ★完成注册=账号已建,立刻登记;后面登录即便失败,下次也不再重注册
     log("[注册] 完成注册成功,确认会话")
-    # ★优化:有些情况下完成注册后已直接处于登录态 → 先查会话,已登录就跳过重新登录(省掉【第二次滑块】+第二次取信)。
-    #   ★用 _current_logged_in(只读当前 chat.z.ai 的 localStorage token,【不导航】)——不再用 detect_session
-    #   (后者 goto z.ai/manage-apikey 确认 → 注册/登录时无谓蹦出 manage-apikey 链接,且跳错域 chat→z.ai 本就判不准)。
-    em = _current_logged_in(page)
+    # ★★用户定:完成注册后【落到 chat.z.ai 登录态首页 = 就算注册成功】。原来只查【一次】_current_logged_in 就走 login(),
+    #   但 ① token 要一两秒才写进 localStorage ② GLM-5.2 公告弹窗盖住首页 → 常【没认出登录态】→ 误走 login()(多半撞单邮箱限流
+    #   "Too many requests"/又过一次滑块)→ 失败误标 REGISTER_UNCONFIRMED(其实号已注册成功)。
+    #   修:先关弹窗(clear_promo 按 DOM 关、不依赖分辨率)+ 【轮询几秒等 token 落地】,认出登录态就直接判成功,绝不急着重登。
+    em = None
+    _conf_dl = time.time() + float(os.environ.get("REGISTER_CONFIRM_WAIT", "8") or 8)
+    while time.time() < _conf_dl:
+        try: page.clear_promo()              # 关 GLM-5.2/促销弹窗(盖在登录态首页上),别挡确认
+        except Exception: pass
+        em = _current_logged_in(page)
+        if em and (em == "logged-in" or str(em).lower() == email.lower()):
+            break
+        time.sleep(0.6)
     if em and (em == "logged-in" or str(em).lower() == email.lower()):
-        log("[注册] 完成注册后已是登录态 → 跳过重新登录(省一次滑块)")
+        log("[注册] 完成注册后已在登录态首页 → 注册成功(跳过重新登录)")
         if on_node: on_node("login", "ok")
         return "ok"
-    # 否则按 z.ai 常规:注册完成跳登录页 → 登录拿会话(会再过一次滑块)。
+    # 等够了仍没认出登录态 → 才按常规登录拿会话(会再过一次滑块)。
     r = login(page, email, op_pw, mailbox_pw, cfg, on_node=on_node)
     if r == "ok":
         return "ok"

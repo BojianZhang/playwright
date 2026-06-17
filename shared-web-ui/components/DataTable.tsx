@@ -36,7 +36,8 @@ export interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   selectable?: boolean;        // 开启行多选(复选框列 + 批量栏)
   batchActions?: (selectedRows: T[], clear: () => void) => ReactNode;  // 选中≥1时批量栏里的按钮(各页传)
-  onSelectionChange?: (selectedRows: T[]) => void;  // 选中变化时上报给父(父据此让 masthead 的复制/导出按钮"选中优先")
+  onSelectionChange?: (selectedRows: T[]) => void;  // 选中变化时上报给父:上报【当前筛选下可见的选中行】(所见即所选,不含被筛选隐藏的)
+  onViewChange?: (view: T[]) => void;  // 当前(搜索/筛选/排序后)视图变化时上报给父 → masthead「未勾选则导全部」用筛选后视图而非原始全量
   search?: { keys: ((row: T) => string)[]; placeholder?: string };
   filters?: FilterDef<T>[];
   columnSettings?: { tableId: string };
@@ -44,6 +45,10 @@ export interface DataTableProps<T> {
   toolbarRight?: ReactNode;
   initialSort?: { key: string; dir: 'asc' | 'desc' };
   maxHeight?: number;
+  // fillViewport:让滚动容器长到「填满视口剩余高度」(而非固定 maxHeight)。仅适合页面唯一/主导的大表
+  // (代理/账号/卡池/结果等底部主表)。绝不低于 maxHeight(地板),所以矮屏不变、高屏才长。默认 false → 行为逐字节不变。
+  fillViewport?: boolean;
+  fillGutter?: number;         // fillViewport 时表底到视口底保留的余量(默认 64,对齐 .page 的 60px 底部留白,避免双滚动条)
   emptyText?: ReactNode;
   footer?: ReactNode;
   exportName?: string;         // 传了就显示「导出」按钮:把当前(筛选/排序后)视图导出为 CSV
@@ -66,7 +71,7 @@ function loadHidden<T>(tableId: string | undefined, columns: Column<T>[]): Set<s
   return h;
 }
 
-export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, selectable, batchActions, onSelectionChange, search, filters, columnSettings, toolbarLeft, toolbarRight, initialSort, maxHeight = 560, emptyText = '暂无数据', footer, exportName, loading, error }: DataTableProps<T>) {
+export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, selectable, batchActions, onSelectionChange, onViewChange, search, filters, columnSettings, toolbarLeft, toolbarRight, initialSort, maxHeight = 560, fillViewport, fillGutter = 64, emptyText = '暂无数据', footer, exportName, loading, error }: DataTableProps<T>) {
   const [sort, setSort] = useState<SortState>(initialSort || null);
   const [q, setQ] = useState('');
   const [fvals, setFvals] = useState<Record<string, string>>({});
@@ -79,6 +84,7 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
   const [scrollTop, setScrollTop] = useState(0);  // 当前滚动位置
   const [vpH, setVpH] = useState(maxHeight);       // 可视区高度
   const [rowH, setRowH] = useState(36);            // 实测行高(首行测量后校准)
+  const [fillH, setFillH] = useState<number | undefined>(undefined);  // fillViewport 时实测的「填满视口剩余高度」(否则恒为 undefined,不参与计算)
 
   useEffect(() => {
     if (!colOpen) return;
@@ -104,6 +110,29 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
     }
     return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf); if (ro) ro.disconnect(); };
   }, [maxHeight]);
+
+  // fillViewport:把滚动容器长到「视口底 − 容器顶 − fillGutter」,但取与 maxHeight 的较大者(只增不减,矮屏保持地板)。
+  // 只在【窗口缩放】和【容器上方内容回流(工具栏/批量栏/KPI/图表 出现或塌陷会推动 top)】时重算;★不监听滚动 ——
+  // 否则页面下滑时 top 变小会反复把表撑高造成抖动。容器向下长高时 top 不变 → avail 不变 → fillH 不变 → 不自激、ResizeObserver 稳定。
+  // 容器长高后,上面那个挂在 .tbl-wrap 上的 ResizeObserver 会因 clientHeight 变化自动重测 vpH → 虚拟化窗口随之跟上,无需在此另动 vpH。
+  useEffect(() => {
+    if (!fillViewport) { setFillH(undefined); return; }
+    const el = wrapRef.current;
+    if (!el || typeof window === 'undefined') return;
+    const recompute = () => {
+      const top = el.getBoundingClientRect().top;                 // 容器顶到视口顶的距离(视口相对)
+      const avail = window.innerHeight - top - fillGutter;        // 到视口底留 fillGutter 的可用高
+      setFillH(Math.max(maxHeight, Math.floor(avail)));           // 取「填满」与「页面地板」较大者 → 只在高屏才长
+    };
+    recompute();
+    window.addEventListener('resize', recompute);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(recompute);
+      ro.observe(document.body);   // 上方内容高度变化 → body 尺寸变 → 重算(兜「内容回流后留白」)
+    }
+    return () => { window.removeEventListener('resize', recompute); if (ro) ro.disconnect(); };
+  }, [fillViewport, fillGutter, maxHeight]);
 
   function toggleHidden(key: string) {
     setHidden((prev) => {
@@ -167,7 +196,6 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
   const viewSel = selectable ? view.filter((r, i) => selected.has(keyOf(r, i))) : [];
   const allSel = view.length > 0 && viewSel.length === view.length;
   const someSel = viewSel.length > 0 && !allSel;
-  const selectedRows = selectable ? rows.filter((r, i) => selected.has(keyOf(r, i))) : [];
   const clearSel = () => setSelected(new Set());
   const toggleRow = (k: string | number) => setSelected((p) => { const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const toggleAll = () => setSelected((p) => { const n = new Set(p); if (allSel) view.forEach((r, i) => n.delete(keyOf(r, i))); else view.forEach((r, i) => n.add(keyOf(r, i))); return n; });
@@ -181,11 +209,14 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
       return changed ? next : prev;
     });
   }, [rows, rowKey]);
-  // 上报选中给父(masthead 的复制/自定义导出据此"选中优先")。只依赖 selected:
-  // 行被删/刷新会先由上面的清理 effect 改 selected → 这里随之触发,无需再依赖 rows。
-  // 若把 rows 放进依赖:父在 onSelectionChange 里 setState 后,只要它传的 rows 不是稳定引用就会
-  // 「setState→重渲染→新 rows→再触发」死循环,整页卡死、复选框也点不动。
-  useEffect(() => { onSelectionChange?.(selectedRows); }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 上报给父:① 当前筛选下【可见的选中行】viewSel(所见即所选 —— 不含被当前筛选/搜索隐藏的选中行,
+  //   避免父的 masthead 复制/批量改密误把看不见的行算进去);② 当前(搜索/筛选/排序后)视图 view
+  //   (父的「未勾选则导全部」据此用筛选后视图,而非原始全量)。
+  // deps 只放【真正会变的状态】selected/rows/q/fvals/sort —— 它们在普通重渲染之间引用稳定,只有用户
+  //   真的改选择/数据刷新/搜索/筛选/排序时才变;★绝不放 view/viewSel/search/filters(每渲染新建引用),
+  //   否则父在回调里 setState→重渲染→新引用→再触发 死循环(原注释的血教训)。onSelectionChange 的唯一
+  //   消费方(ResultsPage)rows 传的是稳定的 state(all),故 rows 入依赖不致循环;其它页没传这两个回调则空操作。
+  useEffect(() => { onSelectionChange?.(viewSel); onViewChange?.(view); }, [selected, rows, q, fvals, sort]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 导出当前视图为 CSV:只取"可见列 × 当前(搜索/筛选/排序后)的 view",所见即所导。
   // 每列取值优先级:exportValue → sortAccessor → row[key](原始值);纯 JSX/操作列(无取值器且值非原始)自动跳过。
@@ -230,14 +261,18 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
   const padTop = startIdx * (rowH || 36);
   const padBottom = Math.max(0, (view.length - endIdx) * (rowH || 36));
   const windowRows = virtualize ? view.slice(startIdx, endIdx) : view;
+  // fillViewport 模式用实测的填满高度,否则用页面传入的固定 maxHeight(默认行为)。
+  const effMaxHeight = (fillViewport && fillH != null) ? fillH : maxHeight;
 
   return (
     <>
       {selectable && selected.size > 0 && (
         <div className="dt-batchbar">
-          <span className="bb-count">已选 <b>{selected.size}</b> 项</span>
+          {/* 计数与批量操作都只针对【当前筛选下可见的选中行】viewSel(所见即所操作);被筛选隐藏的选中行
+              不计数、不参与批量操作,并明确提示 —— 避免「删/改了看不见的行」。 */}
+          <span className="bb-count">已选 <b>{viewSel.length}</b> 项{selected.size > viewSel.length ? <span className="dim" style={{ marginLeft: 6 }}>(另有 {selected.size - viewSel.length} 项被当前筛选隐藏,不会被操作)</span> : null}</span>
           <span style={{ flex: 1 }} />
-          {batchActions?.(selectedRows, clearSel)}
+          {batchActions?.(viewSel, clearSel)}
           <button className="btn btn-ghost btn-sm" onClick={clearSel}>清除选择</button>
         </div>
       )}
@@ -274,7 +309,7 @@ export function DataTable<T>({ rows, columns, rowKey, getRowClass, onRowClick, s
           )}
         </div>
       )}
-      <div className="tbl-wrap" style={{ maxHeight }} ref={wrapRef}>
+      <div className="tbl-wrap" style={{ maxHeight: effMaxHeight }} ref={wrapRef}>
         <table className="tbl">
           <thead>
             <tr>

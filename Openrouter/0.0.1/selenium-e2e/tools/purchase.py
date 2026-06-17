@@ -119,6 +119,29 @@ def click_text(labels, timeout=10):
 
 
 def balance_now():
+    # ★对齐 steps_billing._balance(0e6c42a):/credits 余额卡带 aria-label="Remaining credits: N"(N=美元余额)
+    #   → 优先精确读它,完全不受购买框 / Stripe iframe / Save card? 弹窗里的杂散 $ 干扰(旧 all_text() 抓全帧第一个 $
+    #   常读到 iframe 杂散值如 $9 → 真扣成功了"余额也没变" → 误判)。次选主文档第一个 $,最后兜底全帧。
+    try:
+        d.switch_to.default_content()
+        bal = d.execute_script(r'''
+          var el = document.querySelector('[aria-label^="Remaining credits"]');
+          if (el) {
+            var m = (el.getAttribute('aria-label')||'').match(/Remaining credits:\s*([\d.,]+)/i);
+            if (m) return m[1];
+            var t = (el.innerText||'').match(/\$\s*([\d.,]+)/);
+            if (t) return t[1];
+          }
+          return '';
+        ''')
+        if bal:
+            return str(bal).replace(",", "")
+        txt = d.find_element(By.TAG_NAME, "body").get_attribute("innerText") or ""
+        cands = re.findall(r"\$\s*([\d][\d,]*\.?\d*)", txt)
+        if cands:
+            return cands[0].replace(",", "")
+    except Exception:
+        pass
     m = re.search(r"\$\s*([\d][\d,]*\.?\d*)", all_text())
     return m.group(1).replace(",", "") if m else ""
 

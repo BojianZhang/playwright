@@ -33,6 +33,7 @@ const AddressesPage = lazy(() => import('./pages/AddressesPage'));
 const AdsPowerPage = lazy(() => import('./pages/AdsPowerPage'));
 const CaptchaPage = lazy(() => import('./pages/CaptchaPage'));
 const MailboxPage = lazy(() => import('./pages/MailboxPage'));
+const BadMailboxPage = lazy(() => import('./pages/BadMailboxPage'));
 const ClusterPage = lazy(() => import('./pages/ClusterPage'));
 const DiagnosePage = lazy(() => import('./pages/DiagnosePage'));
 const AnalysisPage = lazy(() => import('./pages/AnalysisPage'));
@@ -59,6 +60,7 @@ const NAV: NavGroup[] = [
     { to: '/adspower', label: 'AdsPower', icon: 'cpu' },
     { to: '/captcha', label: '验证码', icon: 'shield' },
     { to: '/mailbox', label: '邮箱', icon: 'mail' },
+    { to: '/bad-mailbox', label: '坏邮箱', icon: 'alert' },
   ] },
   { group: '系统', items: [
     { to: '/setup', label: '部署引导', icon: 'play' },
@@ -184,6 +186,7 @@ export default function App() {
           <Route path="/adspower" element={<AdsPowerPage />} />
           <Route path="/captcha" element={<CaptchaPage />} />
           <Route path="/mailbox" element={<MailboxPage />} />
+          <Route path="/bad-mailbox" element={<BadMailboxPage />} />
           <Route path="/cluster" element={<ClusterPage />} />
           <Route path="/diagnose" element={<DiagnosePage />} />
           <Route path="/analysis" element={<AnalysisPage />} />

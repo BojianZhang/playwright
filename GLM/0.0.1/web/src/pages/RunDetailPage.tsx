@@ -9,6 +9,7 @@ import { useToast } from '../lib/toast';
 import { downloadCsv } from '../lib/export';
 import { fmtDateTime, fmtDuration, trunc } from '../lib/parse';
 import type { RunDetailResp, StartJobResp, IncompleteRow, AccountRow } from '../lib/types';
+import { pwView } from '../lib/pwView';
 import { RunStatus, BILLING_ACTION_LABEL, EngineBadge } from '../features/runs';
 
 const PY_ENGINES = ['selenium', 'hybrid', 'split'];
@@ -105,7 +106,7 @@ export default function RunDetailPage() {
           <div className="card-head"><span className="idx c-green"><Icon name="okcircle" size={12} /></span><h3>成功账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{success.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => copy(success.map((a) => `${a.email || ''}:${a.apiKey || ''}`).join('\n'))}>复制 邮箱:Key</button>
-              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '耗时s', '现密码'], success.map((a) => [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.durationSec != null ? a.durationSec : '', a.password || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => downloadCsv('run-success', ['邮箱', 'API Key', '账单', '充值状态', '充值额', '卡末4', '出口IP', '耗时s', '邮箱现密码', 'z.ai现密码'], success.map((a) => { const pv = pwView(a); return [a.email || '', a.apiKey || '', a.billingStatus || '', PURCHASE_LABEL[a.purchaseStatus || ''] || (a.charged ? '成功' : '—'), a.charged != null ? a.charged : '', a.cardLast4 || '', a.exitIp || '', a.durationSec != null ? a.durationSec : '', pv.mbCur, pv.orCur]; }))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!success.length} onClick={() => window.open(withToken(`/download?jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -138,9 +139,9 @@ export default function RunDetailPage() {
         <section className="card">
           <div className="card-head"><span className="idx c-amber"><Icon name="xcircle" size={12} /></span><h3>失败账号 <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>{failed.length}</span></h3>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="现密码=z.ai 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.password || a.originalPassword || ''}`).join('\n'))}>复制 邮箱:密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="原密码=账号原始/邮箱密码" onClick={() => copy(failed.map((a) => `${a.email || ''}:${a.originalPassword || a.password || ''}`).join('\n'))}>复制 邮箱:原密码</button>
-              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '尝试', '出口/代理', '现密码', '原密码'], failed.map((a) => [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.attempts ?? '', a.proxy || '', a.password || '', a.originalPassword || '']))}><Icon name="download" size={12} />.csv</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="z.ai现密码=z.ai 登录密码(设了统一密码就是它);重跑已注册的失败号(如 key:false)用这个登录" onClick={() => copy(failed.map((a) => `${a.email || ''}:${pwView(a).orCur}`).join('\n'))}>复制 邮箱:z.ai密码</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} title="邮箱现密码=当前邮箱登录密码(改密后为新值;失败号通常=原邮箱密码)。重导入 accounts.txt 重跑用这个" onClick={() => copy(failed.map((a) => `${a.email || ''}:${pwView(a).mbCur}`).join('\n'))}>复制 邮箱:邮箱现密码</button>
+              <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => downloadCsv('run-failed', ['邮箱', '原因', '阶段', '分类', '尝试', '出口/代理', '邮箱现密码', 'z.ai现密码', '邮箱原密码'], failed.map((a) => { const pv = pwView(a); return [a.email || '', a.reason || '', a.stage || '', a.failClass || '', a.attempts ?? '', a.proxy || '', pv.mbCur, pv.orCur, pv.mbOrig]; }))}><Icon name="download" size={12} />.csv</button>
               <button className="btn btn-ghost btn-sm" disabled={!failed.length} onClick={() => window.open(withToken(`/download?type=failed&jobId=${encodeURIComponent(jobId)}`), '_blank')}><Icon name="download" size={12} />.txt</button>
             </div>
           </div>
@@ -148,9 +149,9 @@ export default function RunDetailPage() {
             {!failed.length ? <div className="empty-note">无失败账号。</div> : (
               <div className="tbl-wrap" style={{ maxHeight: 460 }}>
                 <table className="tbl">
-                  <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th><th>现密码</th></tr></thead>
+                  <thead><tr><th>邮箱</th><th>原因</th><th>阶段</th><th>分类</th><th>试</th><th>出口/代理</th><th title="z.ai现密码=z.ai 登录密码(续跑重登用);邮箱密码见悬停/导出">z.ai现密码</th></tr></thead>
                   <tbody>
-                    {failed.slice(0, RENDER_CAP).map((a, i) => (
+                    {failed.slice(0, RENDER_CAP).map((a, i) => { const pv = pwView(a); return (
                       <tr key={i} className="is-banned">
                         <td className="mono">{a.email}</td>
                         <td className="mono" style={{ color: 'var(--danger)' }}>{a.reason}</td>
@@ -158,9 +159,9 @@ export default function RunDetailPage() {
                         <td className="mono" style={{ color: 'var(--text-3)' }}>{a.failClass || '—'}</td>
                         <td className="mono">{a.attempts ?? '—'}</td>
                         <td className="mono" style={{ color: 'var(--text-3)' }} title={a.proxy}>{a.proxy ? String(a.proxy).split(':').slice(0, 2).join(':') : '—'}</td>
-                        <td className="mono" style={{ color: 'var(--primary-text)', cursor: a.password ? 'pointer' : 'default' }} title={'现密码=当前 z.ai 登录密码(设了统一密码就是它)' + (a.password ? '·点击复制' : '') + (a.originalPassword && a.originalPassword !== a.password ? '\n原密码:' + a.originalPassword : '')} onClick={() => a.password && copy(a.password)}>{a.password ? trunc(a.password, 16) : '—'}</td>
+                        <td className="mono" style={{ color: 'var(--primary-text)', cursor: pv.orCur ? 'pointer' : 'default' }} title={'z.ai现密码=当前 z.ai 登录密码(设了统一密码就是它)' + (pv.orCur ? '·点击复制' : '') + (pv.mbCur && pv.mbCur !== pv.orCur ? '\n邮箱现密码:' + pv.mbCur : '')} onClick={() => pv.orCur && copy(pv.orCur)}>{pv.orCur ? trunc(pv.orCur, 16) : '—'}</td>
                       </tr>
-                    ))}
+                    ); })}
                   </tbody>
                 </table>
                 {failed.length > RENDER_CAP && <div className="empty-note">仅显示前 {RENDER_CAP} / 共 {failed.length} 行(防卡顿)——完整数据请用上方「.csv」「.txt」下载。</div>}
